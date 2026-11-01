@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 __all__ = [
     "CapabilityEvidence",
@@ -336,7 +336,7 @@ def render_markdown(matrix: CapabilityMatrix) -> bytes:
     """Render a deterministic human-readable table view of the JSON matrix."""
 
     lines = [
-        "# Yoetz capability matrix",
+        "# FinishUP capability matrix",
         "",
         f"Candidate artifact: `{matrix.candidate_artifact_digest}`",
         f"Policy: `{matrix.policy_digest}`",

@@ -14,14 +14,14 @@ from typing import cast
 import pytest
 
 from builders.large_semantic_cases import large_case
-from yoetz.application import semantic_case as semantic_case_module
-from yoetz.application.check import (
+from finishup.application import semantic_case as semantic_case_module
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     REVIEW_PACKET_ITEM_ID,
     SemanticCaseTooLarge,
     bounded_case_envelope,
@@ -29,8 +29,8 @@ from yoetz.application.semantic_case import (
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.privacy import (
+from finishup.domain.findings import Finding
+from finishup.domain.privacy import (
     MAX_EGRESS_ENVELOPE_BYTES,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -38,10 +38,10 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.ids import IdKind, new_id
 
 _SCOPE = AuthorizationScope(
     AuthorizationScopeKind.TASK,
@@ -61,7 +61,7 @@ def _findings_for(case: DeterministicCase) -> tuple[Finding, ...]:
     assessments, _ = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     return allocate_findings(
         _Ids(),
@@ -126,7 +126,8 @@ def _original_reduction_states(case: SemanticCase) -> Iterator[bytes]:
             packet[key] = rows
             counts[f"{key}_dropped_count"] += 1
             yield encoded()
-    while module._drop_catalog_row(envelope):  # pyright: ignore[reportPrivateUsage]
+    protected = module._protected_catalog_item_ids(case)  # pyright: ignore[reportPrivateUsage]
+    while module._drop_catalog_row(envelope, protected):  # pyright: ignore[reportPrivateUsage]
         counts["catalog_dropped_count"] += 1
         yield encoded()
 
@@ -256,7 +257,7 @@ def test_non_catalog_reduction_is_reported_as_minimization(
 ) -> None:
     """Removing assessment links must be visible even when no catalog row is dropped."""
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     semantic = _semantic(ReviewContextProfile.EXPANDED)
     original = bounded_case_envelope(semantic)
@@ -280,7 +281,7 @@ def test_minimization_terminates_and_is_accounted_under_a_tiny_bound(
     counted rather than silently vanishing.
     """
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     monkeypatch.setattr(module, "MAX_EGRESS_ENVELOPE_BYTES", 8_192)
     semantic = _semantic(ReviewContextProfile.EXPANDED)
@@ -302,7 +303,7 @@ def test_minimization_never_leaves_a_dangling_item_reference(
 ) -> None:
     """No packet id may reference an item the catalog no longer carries."""
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     monkeypatch.setattr(module, "MAX_EGRESS_ENVELOPE_BYTES", 8_192)
     document = _parsed(bounded_case_envelope(_semantic(ReviewContextProfile.EXPANDED)))
@@ -337,7 +338,7 @@ def test_candidate_context_offers_only_catalogued_content(
     packet would claim coverage of material the provider never saw.
     """
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     monkeypatch.setattr(module, "MAX_EGRESS_ENVELOPE_BYTES", 8_192)
     semantic = _semantic(ReviewContextProfile.EXPANDED)
@@ -364,7 +365,7 @@ def test_prepared_payload_matches_the_authorized_envelope(
 ) -> None:
     """The provider document must describe exactly what privacy was asked to approve."""
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     monkeypatch.setattr(module, "MAX_EGRESS_ENVELOPE_BYTES", 8_192)
     semantic = _semantic(ReviewContextProfile.EXPANDED)
@@ -404,7 +405,7 @@ def test_irreducible_core_raises_a_typed_terminal(monkeypatch: pytest.MonkeyPatc
     instead of treating the case as an unexpected coordinator fault.
     """
 
-    import yoetz.application.semantic_case as module
+    import finishup.application.semantic_case as module
 
     monkeypatch.setattr(module, "MAX_EGRESS_ENVELOPE_BYTES", 1)
     with pytest.raises(SemanticCaseTooLarge):
@@ -447,10 +448,10 @@ def test_non_ascii_ledger_content_still_builds_a_case() -> None:
 def test_bounded_json_round_trips_non_ascii(text: str) -> None:
     """Every character class an agent realistically writes must survive encoding."""
 
-    from yoetz.application import semantic_case as module
+    from finishup.application import semantic_case as module
 
     value = {"text": text}
-    encoded, truncated = module._bounded_json(value)  # pyright: ignore[reportPrivateUsage]
-    assert truncated is False
+    encoded, fit = module._bounded_json(value)  # pyright: ignore[reportPrivateUsage]
+    assert fit == "whole"
     assert text in encoded
     assert text in module._structural_json(value)  # pyright: ignore[reportPrivateUsage]

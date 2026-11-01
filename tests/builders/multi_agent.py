@@ -16,16 +16,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.application.service import Application
-from yoetz.config.models import YoetzConfig
-from yoetz.ports.control import ServiceState
-from yoetz.ports.diagnostics import StartupCheckResult
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.application.service import Application
+from finishup.config.models import FinishUpConfig
+from finishup.ports.control import ServiceState
+from finishup.ports.diagnostics import StartupCheckResult
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.vault import VaultMode, VaultService
 
 INSTALLATION_ID = "ins_58000000-0000-4000-8000-000000000001"
 INSTANCE_ID = "svc_58000000-0000-4000-8000-000000000001"
@@ -99,7 +99,7 @@ class MultiAgentService:
     lifecycle: ServiceLifecycle
     root: Path
     memory: LocalSecretMemory
-    config: YoetzConfig
+    config: FinishUpConfig
     retired_memories: list[LocalSecretMemory] = field(
         default_factory=_empty_retired_memories, repr=False
     )
@@ -113,7 +113,7 @@ def private_service_root() -> Generator[Path]:
     Keep the synthetic vault/catalog/state tree in a namespaced home-cache directory instead.
     """
 
-    base = (Path.home() / ".cache" / "yoetz-conformance").resolve()
+    base = (Path.home() / ".cache" / "finishup-conformance").resolve()
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     base.chmod(0o700)
     root = Path(tempfile.mkdtemp(prefix="yz-", dir=base))
@@ -126,7 +126,7 @@ def private_service_root() -> Generator[Path]:
 
 @asynccontextmanager
 async def multi_agent_service(
-    root: Path, *, config: YoetzConfig | None = None
+    root: Path, *, config: FinishUpConfig | None = None
 ) -> AsyncGenerator[MultiAgentService]:
     del root  # callers retain pytest labels; private service data cannot live below shared /tmp.
     with private_service_root() as root:
@@ -154,7 +154,7 @@ async def multi_agent_service(
                 vault_store_factory=lambda: EncryptedVaultStore(root / "vault"),
                 pristine_state_digest="sha256:" + "b" * 64,
             )
-            selected_config = config or YoetzConfig()
+            selected_config = config or FinishUpConfig()
             initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(_PASSPHRASE))
             await vault.initialize_passphrase(initialize, "sha256:" + "c" * 64)
             assert vault is not None

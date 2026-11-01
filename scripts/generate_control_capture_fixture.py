@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 
 _FIXTURE_RELATIVE = Path("fixtures/canonical/control-native-capture-2.5.case.json")
 _FIXTURE_MANIFEST_PATH = "canonical/control-native-capture-2.5.case.json"

@@ -1,7 +1,7 @@
 """Synchronize and prove packaged resource parity between public sources and the installed wheel.
 
 This is the sole repository tool allowed to copy canonical resources into
-``src/yoetz/resources/`` and regenerate ``src/yoetz/resources/manifest.json``. Its default
+``src/finishup/resources/`` and regenerate ``src/finishup/resources/manifest.json``. Its default
 ``--check`` mode is strictly read-only; ``--sync`` stages a complete tree, atomically replaces
 current inventory-owned destination files, and retires destinations from the prior inventory.
 """
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
@@ -37,8 +37,10 @@ __all__ = [
     "load_inventory_config",
     "main",
     "sync_resource_tree",
+    "uninventoried_sources",
     "verify_codex_skill_manifest",
     "verify_resource_tree",
+    "verify_source_coverage",
 ]
 
 
@@ -99,10 +101,11 @@ class ResourceManifestError(Exception):
 # Constants
 # --------------------------------------------------------------------------
 
-_PACKAGE_NAME: Final = "yoetz"
+_PACKAGE_NAME: Final = "finishup"
 _RESOURCE_SET_VERSION: Final = "0.1.0"
+# Frozen legacy identifier (ADR-048): resource-manifest format tag (lockstep with version.py).
 _MANIFEST_SCHEMA: Final = "yoetz.resource-manifest/1"
-_PACKAGE_RESOURCE_ROOT: Final = "src/yoetz/resources"
+_PACKAGE_RESOURCE_ROOT: Final = "src/finishup/resources"
 _ALLOWED_SOURCE_ROOTS: Final = (
     "schemas/",
     "migrations/",
@@ -113,9 +116,9 @@ _ALLOWED_SOURCE_ROOTS: Final = (
 )
 _MAX_TEXT_BYTES: Final = 2_000_000
 _MAX_BINARY_BYTES: Final = 20_000_000
-_CODEX_SKILL_MANIFEST = "skills/codex/yoetz/manifest.json"
+_CODEX_SKILL_MANIFEST = "skills/codex/finishup/manifest.json"
 _CODEX_SKILL_MEMBERS: Final = (
-    ("SKILL.md", "harness_owned", "skill", "skills/codex/yoetz/SKILL.md"),
+    ("SKILL.md", "harness_owned", "skill", "skills/codex/finishup/SKILL.md"),
     (
         "references/agent-instructions.md",
         "shared_guidance",
@@ -141,11 +144,206 @@ _CODEX_SKILL_MEMBERS: Final = (
         "guidance/request-templates.md",
     ),
     ("references/workflow.md", "shared_guidance", "guidance", "guidance/workflow.md"),
+    ("references/startup.md", "shared_guidance", "guidance", "guidance/startup.md"),
+    ("references/recovery.md", "shared_guidance", "guidance", "guidance/recovery.md"),
+    ("references/publication.md", "shared_guidance", "guidance", "guidance/publication.md"),
+    ("references/review.md", "shared_guidance", "guidance", "guidance/review.md"),
+    ("references/receipt.md", "shared_guidance", "guidance", "guidance/receipt.md"),
+    ("references/delegation.md", "shared_guidance", "guidance", "guidance/delegation.md"),
+    ("references/consent.md", "shared_guidance", "guidance", "guidance/consent.md"),
+    ("references/page-delivery.md", "shared_guidance", "guidance", "guidance/page-delivery.md"),
 )
+
+# Source-root content that is deliberately NOT packaged: test corpora and repository-only artifacts
+# that the runtime never reads. Every other file beneath an allowed source root must appear in the
+# inventory below, so a new vector, schema, guidance page, or support file cannot silently miss the
+# wheel: ``--check`` and ``--sync`` both fail closed on an uninventoried source (``source_unpackaged``).
+# Each prefix is either a directory (trailing ``/``) or one exact file.
+_UNPACKAGED_SOURCE_PREFIXES: Final[tuple[str, ...]] = (
+    "fixtures/adversarial/",
+    "fixtures/backward-read/",
+    "fixtures/codex-tool-boundary/",
+    "fixtures/imports/",
+    "fixtures/integrations/",
+    "fixtures/manifest.json",
+    "fixtures/observations/",
+    "fixtures/privacy/",
+    "fixtures/receipts/",
+    "fixtures/replay/",
+    "fixtures/service/",
+    "support/npm-launcher/",
+)
+# Editor, OS, and interpreter droppings never count as sources.
+_IGNORED_SOURCE_NAMES: Final = frozenset({".DS_Store", "__pycache__"})
 
 # The reviewed, explicit v0.1 inventory across 6 canonical source roots. Every entry
 # is deliberately listed here; nothing is discovered by scanning the repository.
 _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
+    (
+        "fixtures/canonical/verification-coverage-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "schemas/operations/check-result-1.7.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/receipt-result-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/status-request-1.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/status-result-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/privacy/review-packet-row-2.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/review-packet-rows-2.0.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/advice-egress-1.1.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-agent-next-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-inspection-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-observations-awaited-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-totals-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/deferred-before-first-edit-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-reviewer-record-1.6.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/review-mode-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    ("guidance/startup.md", "guidance", "text/markdown", True),
+    ("guidance/recovery.md", "guidance", "text/markdown", True),
+    ("guidance/publication.md", "guidance", "text/markdown", True),
+    ("guidance/review.md", "guidance", "text/markdown", True),
+    ("guidance/receipt.md", "guidance", "text/markdown", True),
+    ("guidance/delegation.md", "guidance", "text/markdown", True),
+    ("guidance/consent.md", "guidance", "text/markdown", True),
+    ("guidance/page-delivery.md", "guidance", "text/markdown", True),
+    (
+        "schemas/events/check-recorded-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/check-recorded-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/check-recorded-1.6.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/finding-recorded-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    ("schemas/findings/finding-1.4.0.schema.json", "json_schema", "application/schema+json", True),
+    (
+        "schemas/findings/provider-judgment-1.2.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/findings/reviewer-reply-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/check-result-1.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/check-result-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/check-result-1.6.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/check-conclusion-1.3.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/review-dialogue-1.3.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
     (
         "schemas/integrations/mcp-removal-1.0.0.schema.json",
         "json_schema",
@@ -162,6 +360,24 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "schemas/integrations/host-connection-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/integrations/host-connection-batch-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/integrations/ai-status-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/host-connection-batch.case.json",
+        "canonical_vector",
+        "application/json",
         True,
     ),
     (
@@ -237,6 +453,18 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/result-verification-1.1.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/task-statement.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/control-native-capture-2.5.case.json",
         "canonical_vector",
         "application/json",
@@ -263,6 +491,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("fixtures/canonical/identifiers.case.json", "canonical_vector", "application/json", True),
     ("fixtures/canonical/object-envelope.case.json", "canonical_vector", "application/json", True),
     (
+        "fixtures/canonical/publish-action-notices-1.1.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/publication-request-identity.case.json",
         "canonical_vector",
         "application/json",
@@ -287,13 +521,49 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/server-filled-brief-status-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/status-check-admission-1.4.0.case.json",
         "canonical_vector",
         "application/json",
         True,
     ),
     (
+        "fixtures/canonical/status-check-admission-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/status-check-outcome-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/status-evidence-author-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/status-finding-frontier-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/status-semantic-progress-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/status-semantic-progress-1.5.0.case.json",
         "canonical_vector",
         "application/json",
         True,
@@ -311,6 +581,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        # Frozen legacy identifier (ADR-048): released canonical vector path and media type.
         "fixtures/canonical/OBS-001-captured-evidence.case.json",
         "canonical_vector",
         "application/vnd.yoetz.fixture-case+json",
@@ -336,11 +607,17 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ("migrations/bundle/0013.sql", "migration", "application/sql", True),
     ("migrations/bundle/0014.sql", "migration", "application/sql", True),
     ("migrations/bundle/0015.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0016.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0017.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0018.sql", "migration", "application/sql", True),
+    ("migrations/bundle/0019.sql", "migration", "application/sql", True),
     ("migrations/catalog/0001.sql", "migration", "application/sql", True),
     ("migrations/catalog/0002.sql", "migration", "application/sql", True),
     ("migrations/catalog/0003.sql", "migration", "application/sql", True),
     ("migrations/catalog/0004.sql", "migration", "application/sql", True),
     ("migrations/catalog/0005.sql", "migration", "application/sql", True),
+    ("migrations/catalog/0006.sql", "migration", "application/sql", True),
+    ("migrations/catalog/0007.sql", "migration", "application/sql", True),
     (
         "schemas/common/actor-assertion-1.0.0.schema.json",
         "json_schema",
@@ -373,6 +650,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/schema+json",
         True,
     ),
+    # Frozen legacy identifier (ADR-048): released config schema family "yoetz-config".
     (
         "schemas/config/yoetz-config-1.0.0.schema.json",
         "json_schema",
@@ -590,6 +868,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/check-recorded-1.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/events/claim-recorded-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -603,6 +887,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/events/decision-recorded-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/decision-recorded-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -710,7 +1000,19 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/response-recorded-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/events/result-recorded-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/result-recorded-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -768,7 +1070,25 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/closure-prepare-request-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/closure-prepare-result-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/findings/provider-judgment-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/findings/provider-judgment-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -852,6 +1172,42 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/session-resumed-1.2.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/plan-published-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/plan-revised-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/obligation-published-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/privacy/privacy-policy-1.2.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/privacy/privacy-policy-1.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/events/work-abandoned-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -871,6 +1227,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/events/work-written-off-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/events/contact-expectation-declared-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -1051,6 +1413,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/publish-work-result-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/operations/read-guidance-request-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -1058,6 +1426,18 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/operations/read-guidance-result-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/read-guidance-request-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/read-guidance-result-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -1087,7 +1467,19 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/respond-request-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/operations/respond-result-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/operations/respond-result-1.1.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -1141,6 +1533,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/privacy/egress-receipt-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/privacy/outbound-case-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -1148,6 +1546,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/privacy/outbound-case-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/privacy/outbound-case-1.2.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -1524,11 +1928,11 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/schema+json",
         True,
     ),
-    ("skills/claude-code/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/codex/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/codex/yoetz/manifest.json", "compatibility_manifest", "application/json", True),
-    ("skills/cursor/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/portable/yoetz/SKILL.md", "skill", "text/markdown", True),
+    ("skills/claude-code/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/codex/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/codex/finishup/manifest.json", "compatibility_manifest", "application/json", True),
+    ("skills/cursor/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/portable/finishup/SKILL.md", "skill", "text/markdown", True),
     (
         "support/agent-plugins/1.0.0/mcp.schema.json",
         "json_schema",
@@ -1543,20 +1947,14 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     ("support/runtime-support.json", "runtime_support", "application/json", True),
     (
-        "support/codex-evaluator/0.150.1/config.toml",
+        "support/codex-evaluator/config.toml",
         "runtime_config",
         "application/toml",
         True,
     ),
     (
-        "support/codex-evaluator/0.150.1/cell.json",
-        "compatibility_manifest",
-        "application/json",
-        True,
-    ),
-    (
-        "support/codex-evaluator/0.150.1/cell-linux-x64.json",
-        "compatibility_manifest",
+        "support/codex-evaluator/reviewer-model-catalog-0.162.1.json",
+        "runtime_config",
         "application/json",
         True,
     ),
@@ -1664,6 +2062,52 @@ def load_inventory_config() -> ResourceInventory:
     )
 
 
+def _is_unpackaged_source(path: str) -> bool:
+    return any(
+        path.startswith(prefix) if prefix.endswith("/") else path == prefix
+        for prefix in _UNPACKAGED_SOURCE_PREFIXES
+    )
+
+
+def uninventoried_sources(inventory: ResourceInventory, *, repo_root: Path) -> tuple[str, ...]:
+    """Return source-root files that are neither inventoried nor declared repository-only."""
+
+    inventoried = {entry.source_path for entry in inventory.entries}
+    found: list[str] = []
+    for source_root in _ALLOWED_SOURCE_ROOTS:
+        root = repo_root / source_root.rstrip("/")
+        if root.is_symlink():
+            raise ResourceManifestError("symlink_forbidden", detail=source_root.rstrip("/"))
+        if not root.is_dir():
+            continue
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.name in _IGNORED_SOURCE_NAMES:
+                        continue
+                    path = Path(entry.path)
+                    relative = path.relative_to(repo_root).as_posix()
+                    if entry.is_symlink():
+                        raise ResourceManifestError("symlink_forbidden", detail=relative)
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                        continue
+                    if relative in inventoried or _is_unpackaged_source(relative):
+                        continue
+                    found.append(relative)
+    return tuple(sorted(found, key=str.encode))
+
+
+def verify_source_coverage(inventory: ResourceInventory, *, repo_root: Path) -> None:
+    """Fail closed when a source file would silently miss the package."""
+
+    missing = uninventoried_sources(inventory, repo_root=repo_root)
+    if missing:
+        raise ResourceManifestError("source_unpackaged", detail=" ".join(missing))
+
+
 def build_codex_skill_manifest(*, repo_root: Path) -> bytes:
     """Render nested managed-member identities from their single owning source bytes."""
 
@@ -1676,9 +2120,10 @@ def build_codex_skill_manifest(*, repo_root: Path) -> bytes:
     if not isinstance(parsed, Mapping):
         raise ResourceManifestError("codex_skill_manifest_invalid", detail=str(path))
     source = cast(Mapping[str, JsonValue], parsed)
+    # Frozen legacy identifier (ADR-048): codex skill manifest format tag.
     if (
         source.get("schema") != "yoetz.codex-skill-manifest/1"
-        or source.get("skill") != "yoetz"
+        or source.get("skill") != "finishup"
         or source.get("harness") != "codex"
     ):
         raise ResourceManifestError("codex_skill_manifest_invalid", detail=str(path))
@@ -1915,7 +2360,7 @@ def sync_resource_tree(
     if previous_manifest.is_file() and not previous_manifest.is_symlink():
         try:
             previous_document = strict_json_parse(previous_manifest.read_bytes())
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             previous_document = None
         if isinstance(previous_document, Mapping):
             previous_entries = previous_document.get("entries")
@@ -2013,6 +2458,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_skill_manifest = build_codex_skill_manifest(repo_root=repo_root)
             (repo_root / _CODEX_SKILL_MANIFEST).write_bytes(expected_skill_manifest)
         inventory = load_inventory_config()
+        verify_source_coverage(inventory, repo_root=repo_root)
         resources = collect_source_entries(inventory, repo_root=repo_root)
         if not args.sync:
             verify_codex_skill_manifest(repo_root=repo_root)

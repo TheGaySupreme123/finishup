@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from yoetz.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
+from finishup.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
+from finishup.ports.plugin_artifacts import ArtifactAuthority
 
 _DIGEST = "sha256:" + "a" * 64
 _REVIEW_ID = "b" * 64
@@ -26,9 +26,11 @@ def test_macos_presence_uses_fixed_local_authentication_prompt(
         return subprocess.CompletedProcess(command, 0, b"approved\n", b"")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.macos_artifact_presence.sys.platform", "darwin"
+        "finishup.adapters.integrations.macos_artifact_presence.sys.platform", "darwin"
     )
-    monkeypatch.setattr("yoetz.adapters.integrations.macos_artifact_presence.subprocess.run", run)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.macos_artifact_presence.subprocess.run", run
+    )
 
     MacOSArtifactUserPresence().verify_artifact_review(_authority())
 
@@ -64,10 +66,10 @@ def test_macos_presence_denial_or_invalid_result_fails_closed(
         return completed
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.macos_artifact_presence.sys.platform", "darwin"
+        "finishup.adapters.integrations.macos_artifact_presence.sys.platform", "darwin"
     )
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.macos_artifact_presence.subprocess.run",
+        "finishup.adapters.integrations.macos_artifact_presence.subprocess.run",
         run,
     )
 
@@ -76,7 +78,9 @@ def test_macos_presence_denial_or_invalid_result_fails_closed(
 
 
 def test_non_macos_presence_fails_before_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("yoetz.adapters.integrations.macos_artifact_presence.sys.platform", "linux")
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.macos_artifact_presence.sys.platform", "linux"
+    )
     called = False
 
     def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
@@ -84,7 +88,9 @@ def test_non_macos_presence_fails_before_subprocess(monkeypatch: pytest.MonkeyPa
         called = True
         return subprocess.CompletedProcess([], 0, b"approved\n", b"")
 
-    monkeypatch.setattr("yoetz.adapters.integrations.macos_artifact_presence.subprocess.run", run)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.macos_artifact_presence.subprocess.run", run
+    )
 
     with pytest.raises(RuntimeError, match="human_authority_unavailable"):
         MacOSArtifactUserPresence().verify_artifact_review(_authority())

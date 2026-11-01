@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from yoetz.adapters.providers.factory import (
+from finishup.adapters.providers.factory import (
     ChatCompletionsExternalFactory,
     OpenAIResponsesExternalFactory,
     external_factory_builders_from_config,
 )
-from yoetz.config.models import ProviderProfileConfig
-from yoetz.config.write import (
+from finishup.config.models import ProviderProfileConfig
+from finishup.config.write import (
     anthropic_provider,
     fireworks_provider,
     google_gemini_provider,

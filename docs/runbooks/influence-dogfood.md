@@ -1,9 +1,9 @@
 # Influence dogfood runbook
 
-This runbook governs sessions that measure whether Yoetz **changed the agent's work product**, not
-merely whether Yoetz was healthy, authorable, or able to emit feedback. Its purpose is to force four
+This runbook governs sessions that measure whether FinishUP **changed the agent's work product**, not
+merely whether FinishUP was healthy, authorable, or able to emit feedback. Its purpose is to force four
 questions to be answered **separately**, so a zero-influence run with a healthy service and an honest
-receipt is never summarized as “Yoetz improved the agent.”
+receipt is never summarized as “FinishUP improved the agent.”
 
 It exists because of the 2026-08-03 codex-testing postmortem (a private drafting input under the
 gitignored `docs/postmortems/`, not shipped; this runbook is self-contained without it), which
@@ -20,7 +20,7 @@ For the 0.2 multi-round workflow and recovery follow-up, use
 feedback scope, evidence reuse, repair qualification, safe recovery, and final-receipt agreement to
 each named host cell while keeping package delivery separate from actual guidance use.
 
-**Issue:** [#133](https://github.com/TheGaySupreme123/yoetz/issues/133).  
+**Issue:** [#133](https://github.com/TheGaySupreme123/finishup/issues/133).  
 **Design gate:** docs/test-only evaluation protocol — no public runtime behavior change.  
 **Out of scope here:** product fixes owned by #128–#132 (schema authorability, nested errors,
 undeclared scope, evidence provenance, AI-powered review route preflight).
@@ -29,7 +29,7 @@ undeclared scope, evidence provenance, AI-powered review route preflight).
 
 ## 1. Purpose and non-conflation rules
 
-Record and score these as **independent** claims. Do not collapse them into one “Yoetz helped”
+Record and score these as **independent** claims. Do not collapse them into one “FinishUP helped”
 sentence.
 
 | Claim class | Must not be inferred from |
@@ -42,7 +42,7 @@ sentence.
 Hard rules:
 
 1. **Registration / tool listing is never activation or influence.** A registered MCP entry or a
-   successful `tools/list` says what the host *could* launch, not that the agent used Yoetz, that a
+   successful `tools/list` says what the host *could* launch, not that the agent used FinishUP, that a
    model was shown anything, or that any work changed.
 2. **Operational health ≠ authoring UX ≠ AI-powered review quality ≠ work-product influence.** Score
    each stream on its own evidence. A pass on A does not raise D.
@@ -53,7 +53,7 @@ Hard rules:
    “poor AI-powered feedback.”** The route declined to attempt review; that is not a measurement of
    review quality. See [AI-powered review dogfood](semantic-dogfood.md) Profile A and §3 provenance
    gate.
-5. **A zero-influence run with healthy service and honest receipt must not be summarized as “Yoetz
+5. **A zero-influence run with healthy service and honest receipt must not be summarized as “FinishUP
    improved the agent.”** Enforce the forbidden-summary check in §5.
 
 Closed vocabulary for stream scores (use only these tokens):
@@ -78,17 +78,17 @@ Every influence dogfood report **must** contain four separately scored sections.
 
 | Stream | Question | Counts as success only when… |
 |---|---|---|
-| **A Operational health** | Was Yoetz healthy? | Service completed intended ops honestly: listing/registration posture recorded, six tools visible when expected, start/attach, write accept/reject, dry-run non-evidential, status/check/receipt, latency/errors within experiment bounds |
+| **A Operational health** | Was FinishUP healthy? | Service completed intended ops honestly: listing/registration posture recorded, six tools visible when expected, start/attach, write accept/reject, dry-run non-evidential, status/check/receipt, latency/errors within experiment bounds |
 | **B Authoring / corrective UX** | Could the agent use it efficiently? | First-call success where required, rejection rate (excluding resource reads), identical structural retries bounded, source-inspection detours recorded, repair from **public** feedback alone, time-to-valid-plan / first obligation |
 | **C AI-powered review availability & quality** | Did the reviewer produce valid feedback? | **Only when** the [provenance gate](semantic-dogfood.md#3-the-provenance-gate) says an attempt happened: eligibility/preflight, dispatch + status/reason, packet coverage, finding specificity/actionability, FP/miss |
-| **D Agent influence** | Did that feedback **materially improve** the work? | Attributable work-product revision bound to a Yoetz output (finding, status frontier, or local check outcome), with before→after action + evidence + recheck — or explicit `not_demonstrated` |
+| **D Agent influence** | Did that feedback **materially improve** the work? | Attributable work-product revision bound to a FinishUP output (finding, status frontier, or local check outcome), with before→after action + evidence + recheck — or explicit `not_demonstrated` |
 
 ### Stream A detail
 
 Record that the service did what the experiment asked without lying about coverage. Typical
 checklist: attach/start, publication accept and reject paths exercised as designed, dry-run not
 treated as evidence, status/check/receipt available, structural errors and latencies noted.
-Registration alone does **not** pass Stream A as “agent used Yoetz”; it only establishes that a
+Registration alone does **not** pass Stream A as “agent used FinishUP”; it only establishes that a
 route *could* exist.
 
 ### Stream B detail
@@ -122,7 +122,7 @@ streams remain answerable; do not reframe the run to claim Stream D success afte
 
 ### 3.1 Control or recording-only arm
 
-Where feasible, run a **control** (no Yoetz, or Yoetz recording-only without mid-work checks) on the
+Where feasible, run a **control** (no FinishUP, or FinishUP recording-only without mid-work checks) on the
 same seeded task. If a control is not run, state that limitation explicitly in the report metrics
 (`control_run: not_run`) and do not invent incremental cost/time deltas.
 
@@ -171,18 +171,18 @@ For **each** claimed work-product influence, record:
 
 | Field | Content |
 |---|---|
-| `yoetz_output_ref` | Finding id, status frontier, check id, or other bounded token (no freeform transcript) |
+| `finishup_output_ref` | Finding id, status frontier, check id, or other bounded token (no freeform transcript) |
 | `agent_decision_before` | Closed token or short enum of the pre-finding state (e.g. `no_revision_planned`) |
 | `bounded_action_after` | What changed (obligation respond, source revision, evidence republish) |
 | `new_evidence_ref` | Digest-bound evidence id if any |
-| `counterfactual` | `would_have_happened_without_yoetz`: `yes` \| `no` \| `uncertain` |
+| `counterfactual` | `would_have_happened_without_finishup`: `yes` \| `no` \| `uncertain` |
 | `recheck_result` | `passed` \| `failed` \| `not_run` \| `not_applicable` |
 
 Without this record, do not mark `work_product_influence: demonstrated`.
 
 ### 3.6 Miss taxonomy (mandatory when seeded defect not remediated by influence)
 
-When the seeded defect is **not** remediated via attributable Yoetz influence, classify exactly one:
+When the seeded defect is **not** remediated via attributable FinishUP influence, classify exactly one:
 
 | Class | Meaning |
 |---|---|
@@ -221,7 +221,7 @@ Include at least:
 | `findings_deterministic_count` | Integer |
 | `findings_semantic_count` | Integer (score only if Stream C eligible) |
 | `findings_accepted` / `disputed` / `ignored` / `false_positive` | Integers |
-| `material_revisions_attributable_to_yoetz` | Integer |
+| `material_revisions_attributable_to_finishup` | Integer |
 | `material_revisions_rechecked` | Integer |
 | `seeded_defect_outcome` | `remediated` \| `missed` \| `not_seeded` |
 | `seeded_defect_miss_class` | Miss taxonomy token or `null` |
@@ -249,7 +249,7 @@ Required final report shape:
 3. Unresolved hypotheses
 4. Stream A…D scores (separate)
 5. Forbidden summary check: if Stream D = not_demonstrated (or work_product_influence =
-   not_demonstrated), final prose must not say Yoetz improved work quality / agent quality /
+   not_demonstrated), final prose must not say FinishUP improved work quality / agent quality /
    implementation quality
 ```
 
@@ -300,7 +300,7 @@ if prose claims improvement.
 ## 7. Explicit non-goals
 
 - No protocol field, ADR, privacy, storage, or MCP surface changes in the name of this protocol.
-- No requirement that every task use Yoetz.
+- No requirement that every task use FinishUP.
 - No live dogfood execution required to merge the protocol (operator live run is optional follow-up).
 - No claim of causal certainty from one uncontrolled historical postmortem.
 - Do not re-implement #128–#132 product work under this runbook.

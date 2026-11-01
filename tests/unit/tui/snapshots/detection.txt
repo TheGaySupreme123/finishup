@@ -1,5 +1,5 @@
 Detected:
 ✓ Codex Desktop 0.44
-✓ Git project: yoetz
+✓ Git project: finishup
 ✓ System secure storage
-○ Yoetz is not connected yet
+○ FinishUP is not connected yet

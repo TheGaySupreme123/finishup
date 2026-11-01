@@ -21,9 +21,9 @@ from builders.operations import (
     start_request,
     status_request,
 )
-from property.strategies.events import strategy_valid_event_payloads
-from yoetz.domain.events import ClientKind, IntegrationKind, encode_payload
-from yoetz.domain.values import ActorType
+from finishup.domain.events import ClientKind, IntegrationKind, encode_payload
+from finishup.domain.values import ActorType
+from property.strategies.events import event_schema_version_for, strategy_valid_event_payloads
 
 __all__ = [
     "strategy_check_requests",
@@ -172,7 +172,7 @@ def _event_draft_wire(draw: st.DrawFn) -> dict[str, JsonValue]:
     return build_event_draft(
         event_id=event_id(draw(_seed())),
         schema_name=family,
-        schema_version=_SCHEMA_VERSION,
+        schema_version=event_schema_version_for(payload),
         occurred_at=draw(_timestamp_wire()),
         causal_parents=(),
         payload=payload_json,
@@ -304,9 +304,9 @@ def _check_requests(draw: st.DrawFn) -> tuple[dict[str, JsonValue], str | None]:
             draw(
                 st.sampled_from(
                     (
-                        ["work-integrity/0.1.0"],
-                        ["research-evidence/0.1.0"],
-                        ["research-evidence/0.1.0", "work-integrity/0.1.0"],
+                        ["work-integrity/0.3.0"],
+                        ["research-evidence/0.2.0"],
+                        ["research-evidence/0.2.0", "work-integrity/0.3.0"],
                     )
                 )
             ),

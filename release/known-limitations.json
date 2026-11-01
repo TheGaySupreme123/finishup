@@ -7,15 +7,15 @@
     },
     {
       "code": "native_service_manager_install_deferred",
-      "description": "Yoetz provides the foreground 'yoetz service run' entrypoint for a user-selected external supervisor; native launchd and systemd-user installer commands are deferred."
+      "description": "FinishUP provides the foreground 'finishup service run' entrypoint for a user-selected external supervisor; native launchd and systemd-user installer commands are deferred."
     },
     {
       "code": "public_doctor_command_deferred",
-      "description": "Startup safety validation, 'yoetz version --json', 'yoetz service diagnostics' (one durable owner-only diagnostic record by correlation id), and the terminal interface's read-only '/doctor' report are available; a standalone public 'yoetz doctor' CLI command and support-bundle schema remain deferred."
+      "description": "Startup safety validation, 'finishup version --json', 'finishup service diagnostics' (one durable owner-only diagnostic record by correlation id), and the terminal interface's read-only '/doctor' report are available; a standalone public 'finishup doctor' CLI command and support-bundle schema remain deferred."
     },
     {
       "code": "linux_approved_command_sandbox_unavailable",
-      "description": "On Linux v0.1, approved external-command checks fail closed because the bubblewrap launch profile is not release-certified. Ledger operations and Yoetz's built-in deterministic checks remain available; no external command is reported as checked when the sandbox cannot enforce its boundary."
+      "description": "On Linux v0.1, approved external-command checks fail closed because the bubblewrap launch profile is not release-certified. Ledger operations and FinishUP's built-in deterministic checks remain available; no external command is reported as checked when the sandbox cannot enforce its boundary."
     },
     {
       "code": "open_questions_ledger_not_automatically_enforced",

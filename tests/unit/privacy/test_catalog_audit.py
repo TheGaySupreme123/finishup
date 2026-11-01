@@ -16,33 +16,34 @@ import apsw
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.memory.privacy import (
+from finishup.adapters.memory.privacy import (
     MemoryPrivacyAudit,
     MemoryPrivacyCatalogState,
     MemoryPrivacyPolicyStore,
 )
-from yoetz.adapters.privacy.catalog import (  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.privacy.catalog import (  # pyright: ignore[reportPrivateUsage]
     _LOOKUP_DOMAIN,  # pyright: ignore[reportPrivateUsage]
     CatalogPrivacyAudit,
     CatalogPrivacyPolicyStore,
     _mac,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation_advice_semantic import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation_advice_semantic import (
     SqliteObservationAdviceSemanticRepository,
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressAttemptUnknown,
     SemanticEgressAwaitingHuman,
 )
-from yoetz.application.observation_advice_semantic import (
+from finishup.application.observation_advice_semantic import (
     ObservationAdviceSemanticAttempt,
     ObservationAdviceSemanticOutcome,
     ObservationAdviceSemanticWorker,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
+    MAX_WITHHELD_ITEM_IDS,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -64,20 +65,21 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import format_rfc3339_millis
-from yoetz.ports.objects import (
+from finishup.domain.values import format_rfc3339_millis
+from finishup.ports.objects import (
     ObjectMetadata,
     ObjectRef,
     ObjectSource,
     ObjectStorePort,
     StagedObject,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     AgentProjectionRequest,
     CompletedAgentProjection,
     ConsumedAuthorization,
@@ -92,17 +94,19 @@ from yoetz.ports.privacy import (
     PolicyTransitionProposal,
     PrivacyAuditPort,
     PrivacyAuditState,
+    PrivacyAuditUnreadable,
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
     PrivacyReceiptAudience,
+    PrivacyReceiptCursorInvalid,
     PrivacyReceiptPage,
     PrivacyReceiptQuery,
     PrivacyReceiptView,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 7, 19, tzinfo=UTC)
 _INSTALLATION = "ins_30000000-0000-4000-8000-000000000001"
@@ -293,6 +297,21 @@ def _receipt() -> LocalDisclosureReceipt:
         ReceiptSecretScan("scanner-v1", _DIGEST, 0, True),
         None,
         1,
+    )
+
+
+def _legacy_receipt_view(
+    receipt: LocalDisclosureReceipt | EgressReceipt,
+) -> LocalDisclosureReceipt | EgressReceipt:
+    """Memory and SQLite expose the same uncertainty for released 1.0 receipt bytes."""
+
+    return replace(
+        receipt,
+        secret_scan=replace(
+            receipt.secret_scan,
+            stage=ReceiptSecretScanStage.LEGACY_UNKNOWN,
+            not_run_reason=None,
+        ),
     )
 
 
@@ -636,6 +655,9 @@ def test_memory_and_sqlite_projection_replay_and_cursor_behavior_match() -> None
             PrivacyReceiptQuery(limit=1, cursor=memory_first.next_cursor),
             PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL,
         )
+        assert tuple(
+            view.receipt for view in sqlite_first.receipts + sqlite_second.receipts
+        ) == tuple(view.receipt for view in memory_first.receipts + memory_second.receipts)
         return (
             tuple(
                 view.receipt.receipt_id for view in sqlite_first.receipts + sqlite_second.receipts
@@ -759,6 +781,8 @@ def test_memory_and_sqlite_content_proposal_root_sets_match() -> None:
         results: list[tuple[object, ...]] = []
         for audit in (sqlite, memory):
             reserved = await audit.prepare_disclosure_proposal(request)
+            assert reserved.proposal.scanner_registry_version == minimized.scanner_registry_version
+            assert reserved.proposal.scanner_profile_digest == minimized.scanner_profile_digest
             roots = await audit.live_object_roots(_TASK, _ROUTE_DIGEST)
             results.append(
                 (
@@ -774,6 +798,14 @@ def test_memory_and_sqlite_content_proposal_root_sets_match() -> None:
 
     assert sqlite_result == memory_result
     assert sqlite_result[3] == (_OBJECT,)
+
+
+def test_minimized_disclosure_rejects_an_oversized_opaque_omission_set() -> None:
+    minimized = _external_disclosure_request().minimized
+    too_many = tuple(f"item-{index:03d}" for index in range(MAX_WITHHELD_ITEM_IDS + 1))
+
+    with pytest.raises(ValueError, match="invalid_privacy_port_value"):
+        replace(minimized, withheld_item_ids=too_many)
 
 
 def test_memory_and_sqlite_agree_on_which_disclosures_are_still_decidable() -> None:
@@ -951,6 +983,72 @@ def test_catalog_resume_finds_disclosure_by_case_digest() -> None:
     assert isinstance(result, SemanticEgressAwaitingHuman)
     assert result.request_id == _REQUEST
     assert result.privacy_proposal_id == _PROPOSAL
+
+
+def test_catalog_resume_rejects_replaced_active_route() -> None:
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+
+    async def run() -> None:
+        prepared = await audit.prepare_disclosure_proposal(_external_disclosure_request())
+        assert prepared.proposal.route_identity_digest == _ROUTE_DIGEST
+        assert prepared.proposal.included_item_ids == ("item-1",)
+        db.execute(
+            "UPDATE task_routes SET active_route_identity_digest = ? WHERE task_id = ?",
+            (f"sha256:{'9' * 64}", _TASK),
+        )
+        assert await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id) is None
+
+    asyncio.run(run())
+
+
+def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
+    """PL2-1 (issue #982): refs and lines survive the proposal round trip; absent stays absent."""
+
+    from finishup.protocol.redacted_values import SemanticRedactedValue
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+    values = (SemanticRedactedValue("item-1", "value_replaced", (2, 5), "evd_ref-1"),)
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, redacted_values=values))
+        )
+        assert prepared.proposal.redacted_values == values
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None
+        assert loaded.redacted_values == values
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("spans", ((), ((3, 13), (40, 79))))
+def test_catalog_proposal_persists_recorded_marker_spans_for_resume(
+    spans: tuple[tuple[int, int], ...],
+) -> None:
+    """#1248 P-D1: the recorded spans survive the proposal round trip; absent stays absent."""
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, marker_spans=spans))
+        )
+        assert prepared.proposal.marker_spans == spans
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None and loaded.marker_spans == spans
+
+    asyncio.run(run())
 
 
 def test_catalog_disclosure_attempt_rejects_tampered_lookup_identity() -> None:
@@ -1184,7 +1282,7 @@ def _advice_repository() -> tuple[apsw.Connection, SqliteObservationAdviceSemant
     basis = f"sha256:{'9' * 64}"
     repository.schedule(
         workspace=_WORKSPACE,
-        yoetz_session_id=_SESSION,
+        finishup_session_id=_SESSION,
         basis_digest=basis,
         subject_digest=basis,
         coverage_gaps=(),
@@ -1244,11 +1342,14 @@ def test_cancelled_advice_attempt_reconciles_consumed_egress_to_unknown() -> Non
             prepared.proposal.prepared_case_digest,
             _NOW,
         )
-        await audit.consume(authorization.authorization_id, _DISPATCH, _NOW)
-        # The gateway parks the receipt it owes before the provider call; cancellation lands in
-        # that admitted window. Recording it here is what the shielded finalizer does in
-        # production, so this test exercises the recovery contract, not the transport.
-        await audit.park_attempt_reconciliation(_DISPATCH, _unknown_attempt_receipt(authorization))
+        # The gateway stores the receipt it owes in the consume transaction, before the provider
+        # call; cancellation lands in that admitted window.
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
         raise asyncio.CancelledError
 
     async def reconcile(
@@ -1276,7 +1377,7 @@ def test_cancelled_advice_attempt_reconciles_consumed_egress_to_unknown() -> Non
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(worker.run_once())
 
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     # Cancellation provenance: this row names the consumed egress reservation it reconciled and
@@ -1340,8 +1441,12 @@ def test_startup_reconciliation_closes_a_receipt_pending_row_left_by_a_restart()
             prepared.proposal.prepared_case_digest,
             _NOW,
         )
-        await audit.consume(authorization.authorization_id, _DISPATCH, _NOW)
-        await audit.park_attempt_reconciliation(_DISPATCH, _unknown_attempt_receipt(authorization))
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
 
     asyncio.run(seed())
     assert _audit_row_state(db) == ("receipt_pending", None, None, None)
@@ -1363,6 +1468,43 @@ def test_startup_reconciliation_closes_a_receipt_pending_row_left_by_a_restart()
     assert view is not None
     assert view.receipt.outcome is PrivacyOutcome.TRANSPORT_FAILED
     assert view.receipt.safe_failure_reason is PrivacyReason.OUTCOME_UNKNOWN
+
+
+def test_consume_parks_the_owed_receipt_in_the_same_transaction() -> None:
+    """#1118 unit 1: a crash right after consume still leaves the owed receipt to reconcile.
+
+    No separate parking write follows the consume, so there is no window in which the
+    authorization is spent but its ``outcome_unknown`` receipt is missing.
+    """
+
+    db = _database()
+    _insert_task_route(db)
+    audit = CatalogPrivacyAudit(db, _StoredObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    coordinator = _coordinator(audit)
+
+    async def consume_then_crash() -> None:
+        prepared = await audit.prepare_disclosure_proposal(_external_disclosure_request())
+        authorization = await audit.authorize(
+            prepared.proposal.privacy_proposal_id,
+            prepared.proposal.prepared_case_digest,
+            _NOW,
+        )
+        await audit.consume(
+            authorization.authorization_id,
+            _DISPATCH,
+            _NOW,
+            owed_receipt=_unknown_attempt_receipt(authorization),
+        )
+
+    asyncio.run(consume_then_crash())
+    assert _audit_row_state(db) == ("receipt_pending", None, None, None)
+    assert asyncio.run(coordinator.reconcile_started_attempts(_NOW + timedelta(minutes=1))) == 1
+    assert _audit_row_state(db) == (
+        "attempt_completed",
+        "transport_failed",
+        "outcome_unknown",
+        _RECEIPT,
+    )
 
 
 def test_advice_cancellation_before_consume_leaves_authority_unspent() -> None:
@@ -1408,7 +1550,7 @@ def test_advice_cancellation_before_consume_leaves_authority_unspent() -> None:
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(worker.run_once())
 
-    row = repository.lookup(yoetz_session_id=_SESSION, basis_digest=basis)
+    row = repository.lookup(finishup_session_id=_SESSION, basis_digest=basis)
     assert row is not None
     assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
     assert (row.attempt_receipt, row.provider_identity) == (None, None)
@@ -1416,6 +1558,37 @@ def test_advice_cancellation_before_consume_leaves_authority_unspent() -> None:
     assert _audit_row_state(catalog_db) == ("authorized", None, None, None)
     assert asyncio.run(coordinator.reconcile_started_attempts(_NOW + timedelta(minutes=1))) == 0
     advice_db.close()
+
+
+def test_unreadable_audit_keeps_the_cancelled_call_usage_unknown() -> None:
+    """An audit that cannot be read never proves a minted request sent nothing (#923).
+
+    ``recover_started_request`` must not collapse an unreadable lookup into ``None`` (the proof
+    that authority was never consumed): the cancelled advice row then keeps its provider marker.
+    """
+
+    from finishup.application.observation_advice_semantic import (
+        reconcile_cancelled_advice_request,
+    )
+
+    class _UnreadableAudit(CatalogPrivacyAudit):
+        async def load_started_disclosure_attempt(self, request_id: str) -> None:
+            raise apsw.IOError("disk I/O error")
+
+    catalog_db = _database()
+    audit = _UnreadableAudit(catalog_db, _StoredObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    coordinator = _coordinator(audit)
+
+    with pytest.raises(apsw.IOError):
+        asyncio.run(coordinator.recover_started_request(_REQUEST))
+    outcome = asyncio.run(
+        reconcile_cancelled_advice_request(
+            (_REQUEST, "provider-under-test"), coordinator.recover_started_request
+        )
+    )
+    assert outcome == ObservationAdviceSemanticOutcome(
+        status="cancelled", failure_reason="cancelled", provider_identity="provider-under-test"
+    )
 
 
 def _network_receipt(authorization: EgressAuthorization) -> EgressReceipt:
@@ -1496,7 +1669,8 @@ def test_completed_network_egress_receipt_is_retrievable_and_listable() -> None:
 
     receipt, fetched, by_provider, other_provider = asyncio.run(run())
 
-    assert fetched == NetworkEgressReceiptView("network_egress", receipt)
+    expected = cast(EgressReceipt, _legacy_receipt_view(receipt))
+    assert fetched == NetworkEgressReceiptView("network_egress", expected)
     assert by_provider.receipts == (fetched,)
     assert other_provider.receipts == ()
 
@@ -1534,3 +1708,293 @@ def test_stored_receipts_of_both_kinds_list_together_newest_first() -> None:
         LocalDisclosureReceiptView,
     ]
     assert [view.receipt.receipt_id for view in page.receipts] == [_RECEIPT, _RECEIPT_2]
+
+
+def _stored_projection(audit: CatalogPrivacyAudit, index: int) -> LocalDisclosureReceipt:
+    receipt = replace(
+        _receipt(),
+        receipt_id=f"egr_30000000-0000-4000-8000-{index:012d}",
+        request_id=f"req_30000000-0000-4000-8000-{index:012d}",
+        privacy_proposal_id=f"ppr_30000000-0000-4000-8000-{index:012d}",
+        finished_at=_NOW - timedelta(seconds=index),
+    )
+    request = _projection_request(receipt.privacy_proposal_id, receipt.request_id)
+    asyncio.run(audit.complete_agent_projection(request, receipt))
+    return receipt
+
+
+def test_an_unreadable_row_is_skipped_counted_and_named_not_fatal_to_the_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #921: one stored row that cannot be read back used to fail every receipt beside it."""
+
+    import finishup.observability.diagnostics as diagnostics_module
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    db = _database()
+    audit = CatalogPrivacyAudit(db, _UnusedObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    stored = [_stored_projection(audit, index) for index in range(1, 7)]
+    garbled, older, moved = stored[1], stored[3], stored[4]
+    db.execute(
+        "UPDATE privacy_audit_records SET receipt_canonical = ? WHERE receipt_id = ?",
+        (b"{not a receipt", garbled.receipt_id),
+    )
+    # An older build could store final_bytes up to 512 KiB; the published wire stops at 262,144.
+    row = db.execute(
+        "SELECT receipt_canonical FROM privacy_audit_records WHERE receipt_id = ?",
+        (older.receipt_id,),
+    ).fetchone()
+    assert row is not None
+    shape = json.loads(cast(bytes, row[0]))
+    shape["counts"]["final_bytes"] = 300_000
+    db.execute(
+        "UPDATE privacy_audit_records SET receipt_canonical = ? WHERE receipt_id = ?",
+        (canonical_encode(shape), older.receipt_id),
+    )
+    # A receipt whose own bytes disagree with the column the page is ordered by.
+    db.execute(
+        "UPDATE privacy_audit_records SET receipt_finished_at = ? WHERE receipt_id = ?",
+        (format_rfc3339_millis(_NOW - timedelta(seconds=30)), moved.receipt_id),
+    )
+
+    first = asyncio.run(
+        audit.list_receipts(
+            PrivacyReceiptQuery(limit=3), PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL
+        )
+    )
+    assert first.next_cursor is not None
+    second = asyncio.run(
+        audit.list_receipts(
+            PrivacyReceiptQuery(limit=3, cursor=first.next_cursor),
+            PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL,
+        )
+    )
+
+    assert [view.receipt for view in first.receipts] == [
+        _legacy_receipt_view(stored[0]),
+        _legacy_receipt_view(stored[2]),
+    ]
+    assert (first.undecodable_count, first.undecodable_receipt_ids) == (1, (garbled.receipt_id,))
+    assert [view.receipt for view in second.receipts] == [_legacy_receipt_view(stored[5])]
+    assert (second.undecodable_count, second.undecodable_receipt_ids) == (
+        2,
+        (older.receipt_id, moved.receipt_id),
+    )
+    assert second.next_cursor is None
+    with pytest.raises(PrivacyAuditUnreadable) as fetched:
+        asyncio.run(
+            audit.get_receipt(garbled.receipt_id, PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL)
+        )
+    assert fetched.value.reason == "privacy_audit_local_row_undecodable"
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "service.diagnostics.jsonl").read_text().splitlines()
+    ]
+    assert [
+        (record["operation"], record["reason"], record["request_id"]) for record in records
+    ] == [
+        (
+            "privacy_receipts_list_row_skipped",
+            "privacy_audit_local_row_undecodable",
+            row.request_id,
+        )
+        for row in (garbled, older, moved)
+    ]
+    assert "not a receipt" not in json.dumps(records)
+
+
+@pytest.mark.parametrize("adapter", ["sqlite", "memory"])
+def test_a_bad_cursor_is_the_one_typed_caller_error(adapter: str) -> None:
+    if adapter == "sqlite":
+        audit: PrivacyAuditPort = CatalogPrivacyAudit(
+            _database(),
+            _UnusedObjects(),  # type: ignore[arg-type]
+            _Key(),
+            _Clock(),
+        )
+    else:
+        audit = MemoryPrivacyAudit(
+            MemoryPrivacyCatalogState(),
+            _UnusedObjects(),  # type: ignore[arg-type]
+            _Key(),
+            _Clock(),
+        )
+
+    with pytest.raises(PrivacyReceiptCursorInvalid):
+        asyncio.run(
+            audit.list_receipts(
+                PrivacyReceiptQuery(cursor="AAAA"), PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL
+            )
+        )
+
+
+def test_skipped_row_diagnostics_are_bounded_per_page_while_the_page_names_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heavily corrupt audit listed again and again must not flood the diagnostics ring."""
+
+    import finishup.observability.diagnostics as diagnostics_module
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    db = _database()
+    audit = CatalogPrivacyAudit(db, _UnusedObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    stored = [_stored_projection(audit, index) for index in range(1, 9)]
+    for receipt in stored:
+        db.execute(
+            "UPDATE privacy_audit_records SET receipt_canonical = ? WHERE receipt_id = ?",
+            (b"[]", receipt.receipt_id),
+        )
+
+    page = asyncio.run(
+        audit.list_receipts(PrivacyReceiptQuery(), PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL)
+    )
+
+    assert page.receipts == ()
+    assert page.undecodable_count == 8
+    assert page.undecodable_receipt_ids == tuple(receipt.receipt_id for receipt in stored)
+    records = (tmp_path / "service.diagnostics.jsonl").read_text().splitlines()
+    assert [json.loads(line)["request_id"] for line in records] == [
+        receipt.request_id for receipt in stored[:5]
+    ]
+
+
+def _corrupt_columns(
+    db: apsw.Connection,
+    receipt: LocalDisclosureReceipt,
+    *,
+    finished_at: str | None = None,
+    receipt_id: str | None = None,
+) -> None:
+    """Corrupt a row's indexed columns the way disk damage or tampering could; the schema
+    constrains their type (STRICT TEXT) and presence, not their format."""
+
+    db.execute(
+        """UPDATE privacy_audit_records
+           SET receipt_finished_at = coalesce(?, receipt_finished_at),
+               receipt_id = coalesce(?, receipt_id)
+           WHERE receipt_id = ?""",
+        (finished_at, receipt_id, receipt.receipt_id),
+    )
+
+
+def _page_through(
+    audit: CatalogPrivacyAudit, limit: int
+) -> tuple[list[str], list[PrivacyReceiptPage]]:
+    pages: list[PrivacyReceiptPage] = []
+    cursor: str | None = None
+    while True:
+        page = asyncio.run(
+            audit.list_receipts(
+                PrivacyReceiptQuery(limit=limit, cursor=cursor),
+                PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL,
+            )
+        )
+        pages.append(page)
+        assert len(pages) <= 20, "paging must always make progress"
+        cursor = page.next_cursor
+        if cursor is None:
+            return [
+                view.receipt.receipt_id for view in (v for p in pages for v in p.receipts)
+            ], pages
+
+
+def test_a_corrupt_row_at_either_end_of_a_page_never_strands_the_pages_behind_it() -> None:
+    """The cursor carries the last row's key as stored, so a corrupt row can end one page and
+    start the next while every readable receipt after it stays reachable and the skip is named.
+    """
+
+    db = _database()
+    audit = CatalogPrivacyAudit(db, _UnusedObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    stored = [_stored_projection(audit, index) for index in range(1, 9)]
+    ending, starting = stored[2], stored[3]
+    # Last row of page one: neither indexed column is canonical any more, but both still sort
+    # where the row was.
+    _corrupt_columns(
+        db,
+        ending,
+        finished_at=format_rfc3339_millis(ending.finished_at) + "~corrupt",
+        receipt_id="egr_corrupted",
+    )
+    # First row of page two: only its finish time is damaged, so its structural id is named.
+    _corrupt_columns(
+        db, starting, finished_at=format_rfc3339_millis(starting.finished_at) + "~corrupt"
+    )
+
+    listed, pages = _page_through(audit, 3)
+
+    readable = [receipt for receipt in stored if receipt not in (ending, starting)]
+    assert listed == [receipt.receipt_id for receipt in readable]
+    assert [(page.undecodable_count, page.undecodable_receipt_ids) for page in pages] == [
+        (1, ()),
+        (1, (starting.receipt_id,)),
+        (0, ()),
+    ]
+
+
+def test_a_row_whose_finish_time_is_not_a_timestamp_is_disclosed_not_dropped() -> None:
+    """Text such as ``zzzz`` sorts above every snapshot bound; it must still be listed as
+    unreadable instead of silently falling outside the listing."""
+
+    db = _database()
+    audit = CatalogPrivacyAudit(db, _UnusedObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    stored = [_stored_projection(audit, index) for index in range(1, 4)]
+    _corrupt_columns(db, stored[1], finished_at="zzzz-not-a-timestamp")
+
+    listed, pages = _page_through(audit, 1)
+
+    assert listed == [stored[0].receipt_id, stored[2].receipt_id]
+    assert pages[0].undecodable_receipt_ids == (stored[1].receipt_id,)
+    assert sum(page.undecodable_count for page in pages) == 1
+
+
+def test_a_cursor_this_store_minted_with_a_non_text_position_is_a_store_fault() -> None:
+    """Only this store can mint a cursor whose MAC and query digest verify, so a malformed one
+    is the store's integrity fault -- never the caller's ``invalid_request``."""
+
+    db = _database()
+    audit = CatalogPrivacyAudit(db, _UnusedObjects(), _Key(), _Clock())  # type: ignore[arg-type]
+    for index in range(1, 4):
+        _stored_projection(audit, index)
+    first = asyncio.run(
+        audit.list_receipts(
+            PrivacyReceiptQuery(limit=1), PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL
+        )
+    )
+    assert first.next_cursor is not None
+    payload = dict(audit._decode_cursor(first.next_cursor))  # pyright: ignore[reportPrivateUsage]
+    payload["after_at"] = 17
+    minted = audit._encode_cursor(payload)  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(PrivacyAuditUnreadable) as raised:
+        asyncio.run(
+            audit.list_receipts(
+                PrivacyReceiptQuery(limit=1, cursor=minted),
+                PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL,
+            )
+        )
+
+    assert raised.value.reason == "privacy_audit_page_invariant_violated"
+
+
+def test_sqlite_status_reports_the_grant_a_pending_carry_forward_will_create() -> None:
+    """Issue #982 review: the derivation matches what carry-forward then writes."""
+
+    from finishup.application.privacy_policy import credential_heuristic_state
+    from finishup.domain.privacy import CredentialHeuristic
+
+    db = _database()
+    store = CatalogPrivacyPolicyStore(db, _Clock())
+    machine = replace(minimal_external_policy(), credential_heuristic=CredentialHeuristic.DISABLED)
+    repository = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, "hmac-sha256:" + "1" * 64
+    )
+
+    async def run() -> tuple[object, object]:
+        await store.seed_if_absent(machine)
+        before = credential_heuristic_state(await store.repository_authority(repository))
+        carried = await store.carry_forward_repository_authority(repository)
+        return before, credential_heuristic_state(carried)
+
+    before, after = asyncio.run(run())
+    assert (before.repository, before.machine_default) == ("disabled", "disabled")  # type: ignore[attr-defined]
+    assert after.repository == before.repository  # type: ignore[attr-defined]

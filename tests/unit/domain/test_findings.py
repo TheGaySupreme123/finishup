@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CandidateFinding,
     CheckVerdict,
@@ -33,7 +33,7 @@ from yoetz.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     claim_id,
@@ -41,9 +41,9 @@ from yoetz.domain.values import (
     finding_id,
     obligation_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -53,9 +53,9 @@ from yoetz.protocol.coverage import (
     PublicationChannel,
     weakest,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.schemas import validate_schema_instance
 
 _UUID_ONE = "00000000-0000-4000-8000-000000000001"
 _UUID_TWO = "00000000-0000-4000-8000-000000000002"
@@ -204,6 +204,10 @@ def test_finding_kind_traits_are_exhaustive_and_exact() -> None:
         FindingKind.MATERIAL_LIMITATION_OMITTED: (1, True),
         FindingKind.QUESTIONABLE_FINDING_REJECTION: (2, True),
         FindingKind.COORDINATION_OVERLAP: (2, True),
+        FindingKind.CODE_DEFECT: (1, True),
+        FindingKind.TASK_REQUIREMENT_UNMET: (1, True),
+        FindingKind.AGENT_CRITERION_UNMET: (2, True),
+        FindingKind.DECISION_NEEDED: (3, False),
     }
     assert isinstance(FINDING_KIND_TRAITS, MappingProxyType)
     assert dict(FINDING_KIND_TRAITS) == expected
@@ -220,8 +224,12 @@ def test_nominal_public_enums_are_closed() -> None:
     assert tuple(WaiverScope) == (WaiverScope.FINDING_ONLY,)
     assert {member.value for member in ResponseDisposition} == {
         "acknowledged",
+        "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
+        "self_verified",
         "waived",
     }
     assert "pass" not in {member.value for member in CheckVerdict}
@@ -394,7 +402,12 @@ def test_reviewer_challenge_uses_existing_summary_and_detail() -> None:
         "subject_frontier",
         "coverage",
         "provenance",
+        "challenge",
+        "related_finding_ids",
     ]
+    # The remaining challenge fields are event facts (issue #905); the public finding wire keeps
+    # carrying the challenge only as summary and detail.
+    assert "challenge" not in finding_to_json(challenge)
 
 
 def test_sampling_usage_cost_and_provenance_are_strict_and_frozen() -> None:

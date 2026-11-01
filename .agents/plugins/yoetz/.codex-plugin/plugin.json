@@ -1,1 +1,0 @@
-{"description":"Yoetz local work ledger plugin: skill, MCP server, and lifecycle hooks. Automatic activation is not claimed without exact-host capability evidence.","hooks":"./hooks/hooks.json","mcpServers":"./.mcp.json","name":"yoetz","skills":"./skills/","version":"0.3.0"}

@@ -10,15 +10,15 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryArtifact,
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     create_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.control import ServiceState
-from yoetz.ports.secret_memory import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.control import ServiceState
+from finishup.ports.secret_memory import (
     HumanAuthorizationProof,
     SecretConsumer,
     SecretHandle,
@@ -27,8 +27,8 @@ from yoetz.ports.secret_memory import (
     UserPresenceCapability,
     UserPresenceChallenge,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.service.confidential_protocol import (
+from finishup.protocol.canonical import canonical_digest
+from finishup.service.confidential_protocol import (
     AuthorizationRequiredPhase,
     ClientActionEnvelope,
     ClientOpenEnvelope,
@@ -44,11 +44,14 @@ from yoetz.service.confidential_protocol import (
     InstallationRecoveryResult,
     InstallationRecoveryTarget,
     KeyringRetryPreview,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryResult,
     PortableRecoveryTarget,
     PrivacyDecisionResult,
     PrivacyDisclosureDecisionPreview,
     PrivacyPendingTarget,
+    ProviderCredentialRemoveResult,
     ProviderCredentialResult,
     ProviderCredentialSetPreview,
     ProviderCredentialTarget,
@@ -61,8 +64,8 @@ from yoetz.service.confidential_protocol import (
     VaultStateResult,
     VaultUnlockPreview,
 )
-from yoetz.service.human_control import HumanControlError, HumanControlService
-from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleStore
+from finishup.service.human_control import HumanControlError, HumanControlService
+from finishup.service.unlock import UnlockCoordinator, UnlockThrottleStore
 
 INSTALLATION_ID = "ins_20000000-0000-4000-8000-000000000001"
 SERVICE_ID = "svc_20000000-0000-4000-8000-000000000002"
@@ -389,7 +392,20 @@ class _Effects:
         secret.consume(SecretConsumer.PROVIDER_AUTHORIZER, bytes)
         proof.consume("provider_credential_set", TARGET_DIGEST, 7, 3, None, now_monotonic)
         self.proofs.append(proof)
-        return ProviderCredentialResult(target.action, 1, "stored")
+        assert target.action in {"set", "rotate"}
+        return ProviderCredentialResult(cast(Literal["set", "rotate"], target.action), 1, "stored")
+
+    async def remove_provider_credential(
+        self,
+        target: ProviderCredentialTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> ProviderCredentialRemoveResult:
+        proof.consume(
+            "provider_credential_remove", target.target_digest(), 7, 3, None, now_monotonic
+        )
+        self.proofs.append(proof)
+        return ProviderCredentialRemoveResult()
 
     async def rotate_vault_passphrase(
         self,
@@ -432,6 +448,15 @@ class _Effects:
         now_monotonic: float,
     ) -> IdleRelockPolicyResult:
         del target, now_monotonic
+        raise AssertionError("not used")
+
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult:
+        del target, proof, now_monotonic
         raise AssertionError("not used")
 
 
@@ -950,3 +975,77 @@ async def test_close_during_secret_wait_does_not_deadlock(tmp_path: Path) -> Non
     with pytest.raises(HumanControlError, match="cancelled"):
         await asyncio.wait_for(waiter, 1.0)
     assert lifecycle.state is ServiceState.LOCKED
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["secret_reauthentication", "os_user_presence"])
+async def test_provider_remove_reauthenticates_without_a_new_credential(
+    tmp_path: Path, source: str
+) -> None:
+    from finishup.service import confidential_protocol as protocol
+
+    memory = LocalSecretMemory()
+    handles = (
+        [
+            memory.capture(
+                SecretPurpose.PROVIDER_REAUTHENTICATION, bytearray(b"correct horse battery")
+            )
+        ]
+        if source == "secret_reauthentication"
+        else []
+    )
+
+    class Effects(_Effects):
+        async def prepare(
+            self, request: ClientOpenEnvelope
+        ) -> tuple[HumanPreview, str, int | None]:
+            target = cast(ProviderCredentialTarget, request.target)
+            return protocol.ProviderCredentialRemovePreview(target), target.target_digest(), None
+
+    effects = Effects()
+    presence = _Presence() if source == "os_user_presence" else None
+    service, _, _, _, _ = _service(
+        tmp_path,
+        mode="passphrase" if presence is None else "os_keyring",
+        ready=True,
+        handles=handles,
+        effects=effects,
+        presence=presence,
+    )
+    target = ProviderCredentialTarget(
+        "remove",
+        "openai",
+        "gpt-5",
+        "responses",
+        "1",
+        "semantic-review",
+        ZERO_DIGEST,
+        canonical_digest({"purpose": "semantic-review"}),
+    )
+    opened = await service.open_ceremony(
+        ClientOpenEnvelope(
+            "3" * 64,
+            HumanCeremonyKind("provider_credential_remove"),
+            target,
+        )
+    )
+    phase = await service.submit_action(
+        ClientActionEnvelope(
+            opened.ceremony_id,
+            2,
+            SelectAuthorizationSourceAction(
+                cast(Literal["secret_reauthentication", "os_user_presence"], source)
+            ),
+        )
+    )
+    if source == "secret_reauthentication":
+        assert isinstance(phase, ServerPhaseEnvelope)
+        assert isinstance(phase.phase, SecretRequiredPhase)
+        assert phase.phase.binding.purpose is ConfidentialSecretPurpose.PROVIDER_REAUTHENTICATION
+        phase = await service.secret_completed(opened.ceremony_id)
+    assert isinstance(phase, ServerResultEnvelope)
+    assert phase.result == protocol.ProviderCredentialRemoveResult()
+    assert len(effects.proofs) == 1
+    if presence is not None:
+        assert presence.attestation.used
+    memory.close()

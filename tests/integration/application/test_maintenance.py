@@ -9,7 +9,7 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.application.maintenance import (
+from finishup.application.maintenance import (
     BackupRequest,
     Confirmation,
     ConfirmationChannel,
@@ -17,7 +17,7 @@ from yoetz.application.maintenance import (
     MigrationRequest,
     RestoreRequest,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     Timestamp,
@@ -25,9 +25,9 @@ from yoetz.domain.values import (
     session_id,
     task_id,
 )
-from yoetz.ports.diagnostics import MaintenanceDiagnostic
-from yoetz.ports.keys import RecoverySecret
-from yoetz.ports.maintenance import (
+from finishup.ports.diagnostics import MaintenanceDiagnostic
+from finishup.ports.keys import RecoverySecret
+from finishup.ports.maintenance import (
     BackupCommand,
     BackupMode,
     BackupPlan,
@@ -44,8 +44,8 @@ from yoetz.ports.maintenance import (
     RestorePlan,
     RestoreResult,
 )
-from yoetz.ports.secret_memory import SecretConsumer, SecretPurpose
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.secret_memory import SecretConsumer, SecretPurpose
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _D0 = "sha256:" + "0" * 64
 _D1 = "sha256:" + "1" * 64

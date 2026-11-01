@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from yoetz.adapters import git_subject_state as git_subject_state_module
-from yoetz.adapters.git_subject_state import GitSubjectStateAdapter, open_local_workspace
-from yoetz.ports.subject_state import (
+from finishup.adapters import git_subject_state as git_subject_state_module
+from finishup.adapters.git_subject_state import GitSubjectStateAdapter, open_local_workspace
+from finishup.ports.subject_state import (
     SubjectStateBound,
     SubjectStateCaptureCommand,
     SubjectStateCaptureResult,
@@ -19,7 +20,7 @@ from yoetz.ports.subject_state import (
     SubjectStateLimitDetail,
     SubjectStateStatus,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 def test_limit_detail_requires_an_actual_overflow() -> None:
@@ -69,9 +70,9 @@ def _repository(tmp_path: Path, *, committed: bool = True) -> Path:
         _git(
             repository,
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=yoetz@example.invalid",
+            "user.email=finishup@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -137,9 +138,9 @@ def test_clean_dirty_staged_untracked_and_ignored_states_are_comparable(
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -314,9 +315,9 @@ def test_path_safety_malicious_config_and_capture_are_read_only(tmp_path: Path) 
     _git(
         filter_repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -433,9 +434,9 @@ def test_a_nested_git_inside_a_fully_ignored_subtree_is_deliberately_not_rejecte
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -489,3 +490,34 @@ def test_hash_untracked_file_limit_reports_bound_observed_and_limit(tmp_path: Pa
     assert excinfo.value.detail == SubjectStateLimitDetail(
         SubjectStateBound.UNTRACKED_FILE_COUNT, 2, 1
     )
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_repository_is_captured_only_for_a_user_private_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    """A repository made under Ubuntu's default umask is g+w throughout (#n5 umask)."""
+
+    from finishup.config import foreign_write
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
+    previous = os.umask(0o002)
+    try:
+        repository = _repository(tmp_path)
+        repository.chmod(0o775)
+        (repository / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    finally:
+        os.umask(previous)
+    if not private:
+        with pytest.raises(ValueError, match="unsafe_root"):
+            open_local_workspace(repository)
+        return
+    result = GitSubjectStateAdapter().capture(_command(repository))
+    assert result.status is SubjectStateStatus.CAPTURED
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer

@@ -18,7 +18,7 @@ from typing import Final
 
 import pytest
 
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 
@@ -120,7 +120,7 @@ def test_root_and_installed_migration_trees_are_byte_identical() -> None:
             installed_file = (
                 _REPO_ROOT
                 / "src"
-                / "yoetz"
+                / "finishup"
                 / "resources"
                 / "migrations"
                 / family
@@ -131,7 +131,7 @@ def test_root_and_installed_migration_trees_are_byte_identical() -> None:
 
 def test_each_migration_family_has_contiguous_versions(installed: _Installed) -> None:
     probe = (
-        "from yoetz.adapters.sqlite.migrations import ("
+        "from finishup.adapters.sqlite.migrations import ("
         "BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS, current_schema_version)\n"
         "import json\n"
         "print(json.dumps({\n"
@@ -142,7 +142,7 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "}))\n"
     )
     payload = _run_probe(installed, probe)
-    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005"]
+    assert payload["catalog_versions"] == ["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
     assert payload["bundle_versions"] == [
         "0001",
         "0002",
@@ -159,14 +159,18 @@ def test_each_migration_family_has_contiguous_versions(installed: _Installed) ->
         "0013",
         "0014",
         "0015",
+        "0016",
+        "0017",
+        "0018",
+        "0019",
     ]
-    assert payload["catalog_current"] == 5
-    assert payload["bundle_current"] == 15
+    assert payload["catalog_current"] == 7
+    assert payload["bundle_current"] == 19
 
 
 def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Installed) -> None:
     for family, versions in (
-        ("catalog", ("0001", "0002", "0003", "0004", "0005")),
+        ("catalog", ("0001", "0002", "0003", "0004", "0005", "0006", "0007")),
         (
             "bundle",
             (
@@ -185,6 +189,13 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 "0013",
                 "0014",
                 "0015",
+                # 0016 rebuilds the operations table and is reviewed by its own integration
+                # tests; 0017 (#1118 reviewer-loop steps) only creates a table.
+                "0017",
+                # 0018 (#1173) rebuilds that step table with wider ordinal bounds, below.
+                "0018",
+                # 0019 (#1239) rebuilds events exactly as 0014 did, below.
+                "0019",
             ),
         ),
     ):
@@ -192,7 +203,7 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
             text = (
                 _REPO_ROOT
                 / "src"
-                / "yoetz"
+                / "finishup"
                 / "resources"
                 / "migrations"
                 / family
@@ -215,6 +226,23 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
                 drop = "DROP TABLE EVENTS;"
                 rename = "ALTER TABLE EVENTS_V14_NEW RENAME TO EVENTS;"
                 assert upper.count(drop) == 1
+                assert upper.index(copy) < upper.index(drop) < upper.index(rename)
+                upper = upper.replace(drop, "", 1)
+            if (family, version) == ("bundle", "0019"):
+                copy = "INSERT INTO EVENTS_V19_NEW ("
+                drop = "DROP TABLE EVENTS;"
+                rename = "ALTER TABLE EVENTS_V19_NEW RENAME TO EVENTS;"
+                assert upper.count(drop) == 1
+                assert upper.index(copy) < upper.index(drop) < upper.index(rename)
+                upper = upper.replace(drop, "", 1)
+            if (family, version) == ("bundle", "0018"):
+                # Every step row is copied, unfiltered, before the original is dropped; row
+                # preservation is exercised by test_migration_0018_review_steps.py and the
+                # ledger-port upgrade test.
+                copy = "INSERT INTO SEMANTIC_REVIEW_STEPS_V18 SELECT * FROM SEMANTIC_REVIEW_STEPS;"
+                drop = "DROP TABLE SEMANTIC_REVIEW_STEPS;"
+                rename = "ALTER TABLE SEMANTIC_REVIEW_STEPS_V18 RENAME TO SEMANTIC_REVIEW_STEPS;"
+                assert upper.count(copy) == upper.count(drop) == upper.count(rename) == 1
                 assert upper.index(copy) < upper.index(drop) < upper.index(rename)
                 upper = upper.replace(drop, "", 1)
             if (family, version) == ("catalog", "0004"):
@@ -249,8 +277,8 @@ def test_fresh_catalog_and_bundle_initialize_at_current_schema_version(
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import initialize_catalog, initialize_bundle\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity\n"
+        "from finishup.adapters.sqlite.migrations import initialize_catalog, initialize_bundle\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
         "catalog_identity = verify_schema_identity(catalog)\n"
@@ -267,9 +295,9 @@ def test_fresh_catalog_and_bundle_initialize_at_current_schema_version(
     payload = _run_probe(installed, probe)
     assert payload == {
         "catalog_state": "current",
-        "catalog_version": 5,
+        "catalog_version": 7,
         "bundle_state": "current",
-        "bundle_version": 15,
+        "bundle_version": 19,
     }
 
 
@@ -278,7 +306,7 @@ def test_replaying_migrations_on_an_already_current_database_is_a_verified_noop(
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import initialize_catalog, run_migrations, CATALOG_MIGRATIONS\n"
+        "from finishup.adapters.sqlite.migrations import initialize_catalog, run_migrations, CATALOG_MIGRATIONS\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
         "report = run_migrations(catalog, CATALOG_MIGRATIONS, maintenance=None)\n"
@@ -289,13 +317,13 @@ def test_replaying_migrations_on_an_already_current_database_is_a_verified_noop(
         "}))\n"
     )
     payload = _run_probe(installed, probe)
-    assert payload == {"from_version": 5, "to_version": 5, "applied_versions": []}
+    assert payload == {"from_version": 7, "to_version": 7, "applied_versions": []}
 
 
 def test_uninitialized_database_reports_uninitialized_not_current(installed: _Installed) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity\n"
         "fresh = apsw.Connection(':memory:')\n"
         "identity = verify_schema_identity(fresh)\n"
         "print(json.dumps({'state': identity.state, 'user_version': identity.user_version}))\n"
@@ -309,12 +337,12 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import ("
+        "from finishup.adapters.sqlite.migrations import ("
         "initialize_catalog, run_migrations, CATALOG_MIGRATIONS)\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
-        "catalog.execute('PRAGMA user_version = 6')\n"
+        "catalog.execute('PRAGMA user_version = 8')\n"
         "identity_reason = None\n"
         "try:\n"
         "    verify_schema_identity(catalog)\n"
@@ -335,7 +363,7 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
 def test_wrong_application_id_is_rejected_as_unsafe(installed: _Installed) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "db = apsw.Connection(':memory:')\n"
         "db.execute('PRAGMA application_id = 12345')\n"
         "db.execute('CREATE TABLE decoy(id INTEGER PRIMARY KEY)')\n"
@@ -357,7 +385,7 @@ def test_unknown_older_than_current_user_version_requires_initialization_not_sil
     # silently treat it as current.
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import run_migrations, CATALOG_MIGRATIONS\n"
+        "from finishup.adapters.sqlite.migrations import run_migrations, CATALOG_MIGRATIONS\n"
         "fresh = apsw.Connection(':memory:')\n"
         "reason = None\n"
         "try:\n"

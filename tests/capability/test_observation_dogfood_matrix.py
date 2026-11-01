@@ -22,29 +22,29 @@ from tests.capability.evidence import (
 )
 
 from builders.codex_rollout import completed_shell_rollout
-from yoetz.adapters.importers.codex_jsonl import (
+from finishup.adapters.importers.codex_jsonl import (
     SUPPORTED_CODEX_PROFILES,
     CodexCapabilityProfile,
     parse_codex_jsonl,
     profile_for_codex_version,
 )
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     SessionStreamReader,
     default_stream_profile,
     envelope_from_stream_record,
     structural_from_stream_record,
 )
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationGapCode,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _EMPTY = "hmac-sha256:" + ("0" * 64)
@@ -83,8 +83,8 @@ def test_synthetic_unknown_future_codex_version_generic_ingest(tmp_path: Path) -
     session = store.session_commitment("future-codex")
     store.bind_session(workspace, session)
 
-    from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-    from yoetz.domain.values import JsonObject
+    from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+    from finishup.domain.values import JsonObject
 
     # Unfamiliar future host wrapper — not a known profile envelope injection.
     future_record = CodexParsedRecord(

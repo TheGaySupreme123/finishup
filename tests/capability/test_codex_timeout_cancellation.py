@@ -1,8 +1,8 @@
 """Client timeout and cancellation capability evidence.
 
-Non-live cells prove MCP child cancellation is not wrapped as a Yoetz internal error and that the
+Non-live cells prove MCP child cancellation is not wrapped as a FinishUP internal error and that the
 local application layer resolves an identical request without duplicate effect after an ambiguous
-delivery. Live Codex client timeout cells require ``YOETZ_LIVE_CODEX=1``.
+delivery. Live Codex client timeout cells require ``FINISHUP_LIVE_CODEX=1``.
 """
 
 from __future__ import annotations
@@ -31,18 +31,18 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import CandidateContext
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import Frontier
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_digest
-from yoetz.protocol.models import FrontierModel, PublishWorkRequest
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.service import Application, VerificationPolicy
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import CandidateContext
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import Frontier
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.models import FrontierModel, PublishWorkRequest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"
@@ -51,7 +51,7 @@ _DIGEST = "sha256:" + "7" * 64
 
 class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -97,6 +97,7 @@ async def _semantic_forbidden(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("strict-local must never invoke the AI-powered evaluator")
@@ -104,7 +105,7 @@ async def _semantic_forbidden(
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -220,7 +221,7 @@ async def test_post_commit_retry_resolves_one_effect(tmp_path: Path) -> None:
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.STRICT_LOCAL,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )

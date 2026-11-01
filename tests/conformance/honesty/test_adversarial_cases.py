@@ -1,4 +1,4 @@
-"""Honesty conformance: adversarial fixtures never let Yoetz overclaim capability or coverage.
+"""Honesty conformance: adversarial fixtures never let FinishUP overclaim capability or coverage.
 
 Grounded entirely in the reviewed ``fixtures/adversarial/ADV-*.case.json`` corpus and its
 ``owns_requirements`` declarations: every registered ``FindingKind`` is owned by exactly one of the
@@ -10,11 +10,11 @@ describe structurally admissible, policy-bound findings rather than free-form pr
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from typing import Any, cast
 
-from fixture_loader import FixtureLoader, JsonValue
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     AcceptedEvent,
     EventPayload,
@@ -34,8 +34,8 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.findings import CandidateFinding, Finding, FindingKind, finding_from_json
-from yoetz.domain.values import (
+from finishup.domain.findings import CandidateFinding, Finding, FindingKind, finding_from_json
+from finishup.domain.values import (
     Actor,
     ActorType,
     EventId,
@@ -54,18 +54,18 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     UnavailableCapturedObject,
     build_deterministic_case,
     healthy_storage_availability,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
-from yoetz.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
+from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -75,6 +75,7 @@ from yoetz.protocol.coverage import (
     PublicationChannel,
     coverage_to_json,
 )
+from fixture_loader import FixtureLoader, JsonValue
 
 # The exhaustive public policy-rule mapping frozen by the fixture ``owns_requirements`` fields.
 # The fourteen built-in policy FindingKind values are owned by exactly one of these seven
@@ -603,7 +604,14 @@ def _finding_expectation(value: CandidateFinding | dict[str, object]) -> dict[st
             "detail": value.detail,
             "priority": value.priority,
         }
-    return {key: cast(JsonValue, value[key]) for key in _FINDING_EXPECTATION_KEYS}
+    expected = {key: cast(JsonValue, value[key]) for key in _FINDING_EXPECTATION_KEYS}
+    # The fixture records pre-rename wording and keeps its exact bytes (ADR-048). Compare the
+    # current engine against a separate current-brand expectation, leaving every other field
+    # and the original fixture untouched, as the receipt-rendering conformance does.
+    expected["detail"] = (
+        cast(str, expected["detail"]).replace("Yoetz", "FinishUP").replace("yoetz-", "finishup-")
+    )
+    return expected
 
 
 def _finding_set_bytes(
@@ -660,6 +668,17 @@ def _decode_findings(variant: dict[str, object]) -> tuple[Finding, ...]:
         wire = {key: value for key, value in raw.items() if key in _FINDING_WIRE_KEYS}
         findings.append(finding_from_json(freeze_json(cast(JsonValue, wire))))
     return tuple(findings)
+
+
+def test_pre_rename_adversarial_vector_retains_its_recorded_bytes(
+    fixture_loader: FixtureLoader,
+) -> None:
+    """A brand-only golden refresh must never overwrite the historical adversarial vector."""
+
+    recorded = fixture_loader.load_bytes(_fixture_path("ADV-001-abandoned-obligation"))
+    assert hashlib.sha256(recorded).hexdigest() == (
+        "d7a62d9af0bcbfe13d35c23141fd97549456244dde8ae7e27923a1e0ed309a49"
+    )
 
 
 def test_adversarial_expected_findings_match_deterministic_engine(
@@ -729,8 +748,24 @@ def test_adv_claim_fixtures_fail_closed(fixture_loader: FixtureLoader) -> None:
         overlap = union & kinds
         assert not overlap, (adv_id, overlap)
         union |= kinds
+    # Kinds outside the adversarial corpus, each with its owning coverage:
+    # - COORDINATION_OVERLAP comes from the coordination projection, not a policy pack.
+    # - CODE_DEFECT is named only by the AI-powered verifying reviewer (#906).
+    # - TASK_REQUIREMENT_UNMET is AI-reviewer-named, and its one deterministic producer (an
+    #   unjustified pre-existing test edit, #961) is locked by
+    #   tests/unit/kernel/test_test_edit_visibility.py and
+    #   tests/integration/application/test_check.py; it has no ADV case yet.
+    # - AGENT_CRITERION_UNMET is named only by the reviewer or routed to it by the check's fence
+    #   (#1043); no local pack emits it. tests/unit/kernel/test_review_frame.py and
+    #   tests/unit/application/test_tb4n4_review_frame.py lock it.
     expected_generic_kinds = frozenset(FindingKind) - {
         FindingKind.COORDINATION_OVERLAP,
+        FindingKind.CODE_DEFECT,
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        FindingKind.AGENT_CRITERION_UNMET,
+        # #1146: advisory interpretation choices are reviewer-only; lifecycle coverage lives in
+        # test_review_judgment.py and test_review_dialogue.py.
+        FindingKind.DECISION_NEEDED,
     }
     assert union == expected_generic_kinds, expected_generic_kinds - union
 

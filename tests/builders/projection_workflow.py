@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-import yoetz.service.ready_composition as ready_composition
+import finishup.service.ready_composition as ready_composition
 from builders.ledger_adapters import MemoryObjects, ownership_fence
+from builders.review_manifests import provider_bound_manifest
 from builders.start_application import (
     MemoryStartRuntime,
     StartTestLookup,
@@ -32,16 +33,15 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.privacy import (
+from finishup.adapters.memory.privacy import (
     MemoryPrivacyAudit,
     MemoryPrivacyCatalogState,
     MemoryPrivacyPolicyStore,
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
@@ -49,29 +49,29 @@ from yoetz.application.service import (
     UnprojectedControlBody,
     VerificationPolicy,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.findings import SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.privacy import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     PrivacyPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import SamplingParams, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.semantic import SamplingParams, SemanticJudgment
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
@@ -139,7 +139,7 @@ class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
         """Return an empty importer snapshot for the requested session."""
 
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -184,7 +184,7 @@ def _versions() -> ReceiptVersionSlice:
     """Return a stable version slice for local disclosure receipts."""
 
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -219,6 +219,7 @@ async def _semantic_never(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     """Fail if a local-only composition reaches AI-powered evaluation."""
 
@@ -231,6 +232,7 @@ async def _semantic_succeeds(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     """Return a succeeded AI-powered review outcome that raises no challenge of its own.
 
@@ -264,6 +266,7 @@ async def _semantic_succeeds(
             egress_authorization_id=protocol_id("aut_", 1492),
             request_commitment="hmac-sha256:" + "b" * 64,
         ),
+        provider_input_manifest=provider_bound_manifest(),
     )
 
 
@@ -300,8 +303,13 @@ async def build_projection_application(
     *,
     seed: int = 1400,
     max_findings: int = 3,
+    policy_transform: Callable[[PrivacyPolicy], PrivacyPolicy] | None = None,
 ) -> tuple[Application, PrivacyPolicy]:
-    """A ready application whose disclosure boundary is the real coordinator and default policy."""
+    """A ready application whose disclosure boundary is the real coordinator and default policy.
+
+    ``policy_transform`` derives the seeded policy from the shipped default, for a test that needs
+    a different ceiling (an owner who granted ``repository_excerpt`` to the agent context).
+    """
 
     start_app, start_runtime, clock, catalog = start_composition()
     ids = start_runtime.ids
@@ -313,13 +321,16 @@ async def build_projection_application(
         policy_digest=PROJECTION_DIGEST,
         created_at=_NOW,
     )
+    if policy_transform is not None:
+        policy = policy_transform(policy)
     await policies.seed_if_absent(policy)
     audit = MemoryPrivacyAudit(
         privacy_state, cast(ObjectStorePort, MemoryObjects(ids)), StartTestLookup(), clock
     )
     coordinator = PrivacyCoordinator(
         policies,
-        LocalPrivacyEnforcer(),
+        # The enforcer the daemon composes, including its trusted provenance resolver (#914).
+        ready_composition.build_local_privacy_enforcer(),
         audit,
         _Gateway(),  # type: ignore[arg-type]
         clock,
@@ -334,7 +345,7 @@ async def build_projection_application(
         ids=ids,
         verification_policy=VerificationPolicy(semantic=semantic, max_findings=max_findings),
         privacy=coordinator,
-        status_cursor_key=b"projection-workflow-cursor-key",
+        status_cursor_key=b"projection-workflow-status-cursor-key",
         waiver_policy_digest=PROJECTION_DIGEST,
         semantic_evaluator=_semantic_never if semantic == "disabled" else _semantic_succeeds,
         disclosure_scope_for=_scope,
@@ -342,7 +353,7 @@ async def build_projection_application(
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
         connected_provider_ids=() if semantic == "disabled" else ("fake",),
@@ -384,9 +395,14 @@ class ProjectionWorkflow:
 
 
 async def project_case(
-    app: Application, case: ProjectionCase, seed: int
+    app: Application,
+    case: ProjectionCase,
+    seed: int,
+    *,
+    context: ClientProjectionContext | None = None,
+    paginate: bool = False,
 ) -> Mapping[str, JsonValue]:
-    """Run the daemon's exact post-commit projection for an MCP bridge client."""
+    """Sweep complete disclosure fields; opt into the separately tested wire presentation."""
 
     facts = await app.projection_binding_facts(case.method, case.request_body, case.internal)
     rpc_id = protocol_id("rpc_", seed)
@@ -404,15 +420,18 @@ async def project_case(
                 "method": case.method.value,
                 "service_instance_id": service_instance_id,
                 "service_generation": "1",
+                "body": dict(case.request_body),
             }
         ),
     )
     projected = await app.project_result_for_client(
-        ClientProjectionContext(
+        context
+        or ClientProjectionContext(
             ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
         ),
         binding,
         case.internal,
+        _paginate=paginate,
     )
     return public_model_to_wire(projected)
 
@@ -543,8 +562,13 @@ async def run_projection_workflow(
     *,
     seed: int = 1400,
     max_findings: int = 3,
+    event_drafts: Callable[[list[JsonValue]], list[JsonValue]] | None = None,
 ) -> ProjectionWorkflow:
-    """Run one workflow and collect a case for every public result model and status view."""
+    """Run one workflow and collect a case for every public result model and status view.
+
+    ``event_drafts`` rewrites the published batch (a test that needs particular agent text in the
+    ledger, such as a marker stored by an earlier release); ids and event shapes stay the same.
+    """
 
     app, policy = await build_projection_application(semantic, seed=seed, max_findings=max_findings)
     cases: list[ProjectionCase] = []
@@ -557,12 +581,15 @@ async def run_projection_workflow(
 
     obligation_id = protocol_id("obl_", seed + 2)
     obligation_event_id = protocol_id("evt_", seed + 3)
+    drafts = _event_drafts(seed, obligation_event_id, obligation_id)
+    if event_drafts is not None:
+        drafts = event_drafts(drafts)
     publish_body: dict[str, JsonValue] = {
         **request_base(protocol_id("req_", seed + 4)),
         "session_id": started.session_id,
         "writer_id": started.writer_id,
         "expected_frontier": frontier_json(started.frontier),
-        "event_drafts": _event_drafts(seed, obligation_event_id, obligation_id),
+        "event_drafts": drafts,
     }
     published = await app.publish_work(PublishWorkRequest.model_validate(publish_body))
     # A first, non-replayed publish always yields the internal result; the replay branch returns a

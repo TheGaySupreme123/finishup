@@ -8,9 +8,9 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import load_schema_catalog
-from yoetz.service.control_protocol import (
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import load_schema_catalog
+from finishup.service.control_protocol import (
     MAX_CONTROL_FRAME_BYTES,
     ControlProtocolError,
     decode_control_frame,

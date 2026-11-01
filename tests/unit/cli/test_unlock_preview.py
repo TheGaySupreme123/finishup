@@ -16,12 +16,12 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli.unlock import (
+from finishup.cli.unlock import (
     HumanCeremonyCliError,
     _verify_preview,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.service.confidential_client import HumanControlSession
-from yoetz.service.confidential_protocol import (
+from finishup.service.confidential_client import HumanControlSession
+from finishup.service.confidential_protocol import (
     DecisionRequiredPhase,
     HumanCeremonyBinding,
     HumanCeremonyKind,
@@ -80,7 +80,7 @@ def _opened_session(target: ProviderCredentialTarget) -> HumanControlSession:
             ceremony_id="1" * 64,
             secret_challenge="2" * 64,
             purpose=__import__(
-                "yoetz.service.confidential_protocol", fromlist=["ConfidentialSecretPurpose"]
+                "finishup.service.confidential_protocol", fromlist=["ConfidentialSecretPurpose"]
             ).ConfidentialSecretPurpose.PROVIDER_CREDENTIAL,
             service_instance_id=_SERVICE_ID,
             service_generation=3,
@@ -226,3 +226,33 @@ def test_client_rejects_a_recovery_preview_bound_to_a_server_chosen_plan() -> No
 
     with pytest.raises(HumanCeremonyCliError, match="preview_invalid"):
         _verify_preview(HumanCeremonyKind.INSTALLATION_RECOVERY, target, session)
+
+
+@pytest.mark.anyio
+async def test_remove_requires_the_foreground_terminal_even_with_supplied_reauthentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.cli import unlock
+
+    opened: list[bool] = []
+
+    class Client:
+        async def close(self) -> None:
+            return None
+
+    class Terminal:
+        def __enter__(self) -> None:
+            opened.append(True)
+            raise HumanCeremonyCliError("trusted_console_required")
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(unlock, "HumanControlClient", Client)
+    monkeypatch.setattr(unlock, "_ForegroundTerminal", Terminal)
+    target = replace(_target(repository_bound=False), action="remove")
+    secret = bytearray(b"scoped-test-reauthentication")
+    with pytest.raises(HumanCeremonyCliError, match="trusted_console_required"):
+        await unlock.remove_provider_credential(target, secret)
+    assert opened == [True]
+    assert secret == bytearray(len(secret))

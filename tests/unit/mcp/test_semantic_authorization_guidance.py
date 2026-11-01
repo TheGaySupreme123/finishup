@@ -1,7 +1,7 @@
 """The agent-facing text must explain standing authority and the nonterminal check outcome.
 
 In the supervised dogfood run the agent, on reaching a pending disclosure, went looking in
-Yoetz's SQLite catalog and product source for the pending id, issued a fresh check request, and
+FinishUP's SQLite catalog and product source for the pending id, issued a fresh check request, and
 told the user the task was complete before AI-powered closure. None of those are things the text
 told it to do — they are what an agent does when the text says nothing.
 """
@@ -14,10 +14,10 @@ from typing import Final
 
 import pytest
 
-from yoetz.mcp.descriptors import descriptor_for
+from finishup.mcp.descriptors import descriptor_for
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
-_SKILL: Final = _REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md"
+_SKILL: Final = _REPO_ROOT / "skills" / "codex" / "finishup" / "SKILL.md"
 _AGENT_INSTRUCTIONS: Final = _REPO_ROOT / "guidance" / "agent-instructions.md"
 
 
@@ -32,10 +32,22 @@ def _flat(path: Path) -> str:
 
 
 def _review_guidance(entrypoint: Path) -> str:
-    # Procedures are conditional, but each entrypoint must make their owner reachable.
+    # Procedures are conditional, but each entrypoint must make their owners reachable. Since the
+    # progressive-guidance split (#961) the budgeted skills name only the mandatory core, and the
+    # core names the review owner (coverage-and-receipts) and the closure owner (workflow).
     text = _flat(entrypoint)
-    assert "yoetz://guidance/coverage-and-receipts.md" in text
-    return text + " " + _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md")
+    if entrypoint != _AGENT_INSTRUCTIONS:
+        assert "finishup://guidance/agent-instructions.md" in text
+        text += " " + _flat(_AGENT_INSTRUCTIONS)
+    assert "finishup://guidance/coverage-and-receipts.md" in text
+    assert "finishup://guidance/workflow.md" in text
+    return " ".join(
+        (
+            text,
+            _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md"),
+            _flat(_REPO_ROOT / "guidance/workflow.md"),
+        )
+    )
 
 
 def _skill() -> str:
@@ -67,12 +79,12 @@ def test_text_separates_host_authorization_from_a_disclosure_decision(
 
 
 @pytest.mark.parametrize("source", (_skill, _instructions))
-def test_text_handles_host_auto_review_before_yoetz_runs(source: Callable[[], str]) -> None:
+def test_text_handles_host_auto_review_before_finishup_runs(source: Callable[[], str]) -> None:
     text = source()
 
     assert "host auto-review" in text
-    assert "not a yoetz result" in text
-    assert "yoetz did not run" in text
+    assert "not a finishup result" in text
+    assert "finishup did not run" in text
     assert "exact proposed `check` body" in text
     assert "host approval authorizes this tool invocation only" in text
     assert "do not publish a completion claim" in text
@@ -84,10 +96,10 @@ def test_check_descriptor_handles_host_auto_review_before_invocation() -> None:
     description = descriptor_for("check").description
 
     assert "pre-invocation approval refusal or hold" in description
-    assert "not a Yoetz result" in description
-    assert "Yoetz did not run" in description
+    assert "not a FinishUP result" in description
+    assert "FinishUP did not run" in description
     assert "exact proposed check body and request_id" in description
-    assert "does not change Yoetz privacy policy" in description
+    assert "does not change FinishUP privacy policy" in description
     assert "Do not publish a completion claim" in description
     assert (
         "continue without AI-powered review only after the user explicitly chooses" in description
@@ -102,13 +114,15 @@ def test_text_gives_the_awaiting_human_procedure(source: Callable[[], str]) -> N
     assert "nonterminal" in text
     # Do not mint a new request: a fresh one abandons the proposal being decided.
     assert "do not create a new check request" in text
-    # Recovery is a protocol read, never a look inside Yoetz's own storage or source.
+    # Recovery is a protocol read, never a look inside FinishUP's own storage or source.
     assert "view=operation" in text
     assert "request_id" in text
 
 
 @pytest.mark.parametrize("source", (_skill, _instructions))
-def test_text_forbids_reading_yoetz_storage_or_source_to_recover(source: Callable[[], str]) -> None:
+def test_text_forbids_reading_finishup_storage_or_source_to_recover(
+    source: Callable[[], str],
+) -> None:
     text = source()
 
     assert "sqlite" in text or "databases" in text
@@ -139,7 +153,7 @@ def test_missing_repository_grant_handoff_stays_in_the_trusted_surface(
     text = source()
 
     assert "repository grant" in text
-    assert "yoetz --privacy" in text
+    assert "finishup --privacy" in text
     assert "chat" in text
     assert "standing" in text
     assert "one-use" in text
@@ -157,9 +171,11 @@ def test_check_descriptor_states_the_bounded_standing_policy() -> None:
     assert "installed route binding and privacy policy" in description
 
 
-def test_check_mode_cue_preserves_the_configured_default_and_final_requirement() -> None:
+def test_check_mode_cue_names_the_task_review_mode_and_final_requirement() -> None:
     description = descriptor_for("check").description
-    assert "Omit mode to preserve the configured default" in description
+    # ADR-049 review round 1: an omitted mode runs in the task's review mode.
+    assert "Omit mode to run in the task's review mode (status review_mode" in description
+    assert "configured default" not in description
     assert "semantic_if_configured only when review is known to be optional" in description
     assert "including subsequent final checks" in description
     assert "Do not downgrade required review to finish" in description
@@ -179,7 +195,7 @@ def test_closure_descriptors_require_the_recorded_resolution_and_receipt_counts(
 def test_check_descriptor_gives_the_continuation_procedure() -> None:
     description = descriptor_for("check").description
 
-    assert "awaiting_human is the one nonterminal result" in description
+    assert "awaiting_human and awaiting_input are the nonterminal check results" in description
     assert "do not create a new check request" in description
     assert "same request_id" in description
 
@@ -187,7 +203,7 @@ def test_check_descriptor_gives_the_continuation_procedure() -> None:
 def test_check_descriptor_keeps_repository_grant_approval_out_of_agent_chat() -> None:
     description = descriptor_for("check").description
 
-    assert "yoetz --privacy" in description
+    assert "finishup --privacy" in description
     assert "agent chat" in description
     assert "repository grant" in description
     assert "no dispatch" in description

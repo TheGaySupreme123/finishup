@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import ObservationCaptureBacklog
-from yoetz.domain.values import Timestamp
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import ObservationCaptureBacklog
+from finishup.domain.values import Timestamp
 
 _OLDEST = Timestamp("2026-09-10T00:00:00.000Z")
 _OBSERVED = Timestamp("2026-09-10T00:00:05.000Z")

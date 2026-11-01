@@ -34,12 +34,12 @@ import asyncio, os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from yoetz.adapters.control.unix_socket import bind_control_listener
-from yoetz.config.paths import state_dir
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
+from finishup.adapters.control.unix_socket import bind_control_listener
+from finishup.config.paths import state_dir
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
 
-DELAY = float(os.environ["_YOETZ_TEST_ACTIVATION_DELAY"])
+DELAY = float(os.environ["_FINISHUP_TEST_ACTIVATION_DELAY"])
 
 class Clock:
     def now_utc(self): return datetime(2026, 8, 13, tzinfo=UTC)
@@ -122,7 +122,7 @@ _SILENT_OWNER_PROBE = r"""
 import os, socket, time
 from platformdirs import PlatformDirs
 
-runtime = PlatformDirs(appname="yoetz", appauthor=False, roaming=False).user_runtime_path
+runtime = PlatformDirs(appname="finishup", appauthor=False, roaming=False).user_runtime_path
 runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
 os.chmod(runtime, 0o700)
 path = runtime / "control.sock"
@@ -140,9 +140,9 @@ server.close()
 _ON_DEMAND_PROBE = r"""
 import anyio, json, time
 
-from yoetz.config.paths import log_dir
-from yoetz.ports.control import ControlClientKind, ControlError
-from yoetz.service.client import connect_service_on_demand
+from finishup.config.paths import log_dir
+from finishup.ports.control import ControlClientKind, ControlError
+from finishup.service.client import connect_service_on_demand
 
 async def run():
     started = time.monotonic()
@@ -205,7 +205,7 @@ def test_slow_activation_first_on_demand_connect_succeeds_within_the_budget(
     tmp_path: Path,
 ) -> None:
     environment = isolated_environment(tmp_path / "installation")
-    environment["_YOETZ_TEST_ACTIVATION_DELAY"] = str(_ACTIVATION_DELAY_SECONDS)
+    environment["_FINISHUP_TEST_ACTIVATION_DELAY"] = str(_ACTIVATION_DELAY_SECONDS)
     stderr_path = tmp_path / "slow-daemon.stderr"
     stderr_stream = stderr_path.open("wb")
     owner = subprocess.Popen(  # noqa: S603 - fixed interpreter and in-repo probe

@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from yoetz.service.elevated_bootstrap import catalog_payload, status_payload
+from finishup.service.elevated_bootstrap import catalog_payload, status_payload
 
 _ROOT = Path(__file__).resolve().parents[3]
 _PUBLIC_ROOTS = (
     _ROOT / "docs",
     _ROOT / "guidance",
     _ROOT / "schemas",
-    _ROOT / "src" / "yoetz" / "resources",
+    _ROOT / "src" / "finishup" / "resources",
 )
 _FORBIDDEN = (
     "confirmation_phrase",

@@ -9,26 +9,27 @@ from dataclasses import replace
 import pytest
 
 from builders.policy_cases import make_case, obl, plan_record
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     MAX_SEMANTIC_ITEM_BYTES,
     LineageSemanticCapacityExceeded,
     build_semantic_case,
 )
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.events import PlanPublishedPayload
-from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import Frontier, event_id, finding_id, receipt_id, task_id
-from yoetz.kernel.lineage import (
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.events import PlanPublishedPayload
+from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import Frontier, event_id, finding_id, receipt_id, task_id
+from finishup.kernel.lineage import (
     ChildDependencySnapshot,
     ChildFindingSnapshot,
     LineageEvaluation,
     LineageManifest,
     evaluate_lineage,
 )
-from yoetz.ports.semantic import SemanticCase, SemanticCaseItem
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.ports.semantic import SemanticCase, SemanticCaseItem
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.models import DataCategory
 
 _DIGEST = "sha256:" + "1" * 64
 _FRONTIER = Frontier(3, _DIGEST)
@@ -169,7 +170,7 @@ def test_partition_is_deterministic_and_commits_the_manifest() -> None:
 
 
 def test_one_irreducible_child_is_a_capacity_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("yoetz.application.semantic_case.MAX_SEMANTIC_ITEM_BYTES", 32)
+    monkeypatch.setattr("finishup.application.semantic_case.MAX_SEMANTIC_ITEM_BYTES", 32)
     with pytest.raises(LineageSemanticCapacityExceeded, match="lineage_semantic_input_too_large"):
         _case(1)
 
@@ -193,7 +194,20 @@ def test_finding_heavy_allowed_fanout_is_a_typed_total_capacity_error() -> None:
 def test_total_capacity_includes_retained_parent_content(monkeypatch: pytest.MonkeyPatch) -> None:
     child_only = _case(1)
     boundary = sum(item.content_bytes for item in child_only.items)
-    monkeypatch.setattr("yoetz.application.semantic_case.MAX_SEMANTIC_CASE_BYTES", boundary)
+    monkeypatch.setattr("finishup.application.semantic_case.MAX_SEMANTIC_CASE_BYTES", boundary)
     assert _case(1) == child_only
+    # n7 RC7 (d0781f890, ADR-006): at the case bound the agent's own narrative (here the parent
+    # plan) is omitted before primary material, and independent lineage stays whole. The plan's
+    # omission is disclosed, never silent.
+    with_plan = _case(1, parent_plan=True)
+    assert _lineage_items(with_plan) == _lineage_items(child_only)
+    assert not any(item.section == "goal" for item in with_plan.items)
+    assert "content_unselected" in with_plan.packet.coverage.known_gaps
+    assert any(
+        omission.category is DataCategory.TASK_DESCRIPTION and omission.reason == "not_selected"
+        for omission in with_plan.packet.omissions
+    )
+    # Lineage alone over the bound is still refused, never cut.
+    monkeypatch.setattr("finishup.application.semantic_case.MAX_SEMANTIC_CASE_BYTES", boundary - 1)
     with pytest.raises(LineageSemanticCapacityExceeded, match="lineage_semantic_case_too_large"):
-        _case(1, parent_plan=True)
+        _case(1)

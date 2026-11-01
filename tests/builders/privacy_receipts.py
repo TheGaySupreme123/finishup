@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
@@ -26,7 +26,7 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     RequestCommitment,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     LocalDisclosureReceiptView,
     NetworkEgressReceiptView,
     PrivacyReceiptView,

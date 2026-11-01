@@ -1,4 +1,4 @@
-"""``yoetz privacy receipts`` renders the real decoded receipt values (issue #731).
+"""``finishup privacy receipts`` renders the real decoded receipt values (issue #731).
 
 The CLI's one result converter had no ``datetime`` case, so every successfully stored receipt --
 whose ``finished_at`` and ``dispatch_started_at`` are real ``datetime`` objects after the client
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, cast
 
@@ -27,20 +28,27 @@ from tests.builders.privacy_receipts import (
     network_receipt_view,
 )
 
-from yoetz.application.privacy_control import (
+from finishup.application.privacy_control import (
     encode_privacy_receipt_page,
     encode_privacy_receipt_view,
 )
-from yoetz.cli import bootstrap
-from yoetz.cli.app import (
+from finishup.cli import bootstrap
+from finishup.cli.app import (
     _privacy_receipts_get,  # pyright: ignore[reportPrivateUsage]
     _privacy_receipts_list,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlError
-from yoetz.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
-from yoetz.protocol.canonical import JsonValue
-from yoetz.service.client import (
+from finishup.domain.privacy import (
+    ConsentSource,
+    PrivacyOutcome,
+    PrivacyReason,
+    ReceiptCapacity,
+    ReceiptCounts,
+)
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlError
+from finishup.ports.privacy import NetworkEgressReceiptView, PrivacyReceiptPage, PrivacyReceiptView
+from finishup.protocol.canonical import JsonValue
+from finishup.service.client import (
     PrivacyReceiptGetResult,
     _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
     _receipt_page_from_wire,  # pyright: ignore[reportPrivateUsage]
@@ -100,13 +108,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, client: _Client) -> _Client:
     async def build(**_kwargs: object) -> _Client:
         return client
 
-    monkeypatch.setattr("yoetz.cli.app.build_service_client", build)
+    monkeypatch.setattr("finishup.cli.app.build_service_client", build)
     return client
 
 
 def _captured_json(monkeypatch: pytest.MonkeyPatch) -> list[JsonValue]:
     emitted: list[JsonValue] = []
-    monkeypatch.setattr("yoetz.cli.app._stdout_json", emitted.append)
+    monkeypatch.setattr("finishup.cli.app._stdout_json", emitted.append)
     return emitted
 
 
@@ -265,6 +273,91 @@ async def test_a_list_refusal_stays_a_bounded_error(
     assert captured.err.startswith("service_unavailable: ")
 
 
+async def test_the_old_benchmark_error_line_is_gone_for_a_store_side_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Issue #921: ``invalid_request: the local request could not be completed`` named the
+    caller for a request that had nothing wrong with it."""
+
+    correlation_id = "err_70000000-0000-4000-8000-00000000000c"
+    _install(
+        monkeypatch,
+        _FailingClient(ControlError("privacy_audit_unreadable", correlation_id=correlation_id)),
+    )
+    emitted = _captured_json(monkeypatch)
+
+    assert await _privacy_receipts_list(100, None, True) == 40
+
+    captured = capsys.readouterr()
+    assert "invalid_request" not in captured.err
+    assert captured.err.startswith(
+        "privacy_audit_unreadable: the request was valid, but the local privacy audit holds a "
+        f"receipt that could not be read back; correlation_id {correlation_id}\n"
+    )
+    assert "Continuation: privacy_audit_review" in captured.err
+    assert emitted == [
+        {
+            "ok": False,
+            "public_code": "STORAGE_CORRUPT",
+            "reason": "privacy_audit_unreadable",
+            "retryable": False,
+            "correlation_id": correlation_id,
+            "recovery": cast(dict[str, Any], emitted[0])["recovery"],
+        }
+    ]
+    assert cast(dict[str, Any], emitted[0])["recovery"]["continuation"] == "privacy_audit_review"
+
+
+async def test_a_partial_page_prints_every_readable_receipt_and_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    skipped = "egr_70000000-0000-4000-8000-00000000000d"
+    page = _receipt_page_from_wire(
+        cast(
+            JsonObject,
+            freeze_json(
+                encode_privacy_receipt_page(
+                    PrivacyReceiptPage(
+                        11, (network_receipt_view(), local_receipt_view()), None, 2, (skipped,)
+                    )
+                )
+            ),
+        )
+    )
+    _install(monkeypatch, _Client(page))
+    emitted = _captured_json(monkeypatch)
+
+    assert await _privacy_receipts_list(100, None, True) == 40
+
+    document = cast(dict[str, Any], emitted[0])
+    assert [item["receipt"]["receipt_id"] for item in document["receipts"]] == [
+        NETWORK_RECEIPT_ID,
+        LOCAL_RECEIPT_ID,
+    ]
+    assert document["undecodable_count"] == 2
+    assert document["undecodable_receipt_ids"] == [skipped]
+    captured = capsys.readouterr()
+    assert captured.err.startswith(
+        "privacy_audit_unreadable: this page is partial; 2 stored receipt(s) could not be read "
+        f"back and were skipped: {skipped}\n"
+    )
+
+
+async def test_a_complete_page_still_exits_zero_and_says_nothing_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install(monkeypatch, _Client(_decoded_page(network_receipt_view(), local_receipt_view())))
+    emitted = _captured_json(monkeypatch)
+
+    assert await _privacy_receipts_list(100, None, True) == 0
+
+    assert cast(dict[str, Any], emitted[0])["undecodable_count"] == 0
+    assert capsys.readouterr().err == ""
+
+
 def test_the_converter_renders_canonical_timestamps_without_a_catch_all() -> None:
     """Bullet 2 of #731: the datetime case is typed; unsupported values still refuse."""
 
@@ -275,7 +368,7 @@ def test_the_converter_renders_canonical_timestamps_without_a_catch_all() -> Non
 
 
 def test_a_non_canonical_timestamp_is_a_typed_refusal_not_an_invented_rendering() -> None:
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.protocol.errors import ProtocolValueError
 
     with pytest.raises(ProtocolValueError):
         bootstrap.plain_json(datetime(2026, 9, 13, 12, 0))
@@ -284,6 +377,101 @@ def test_a_non_canonical_timestamp_is_a_typed_refusal_not_an_invented_rendering(
 def test_the_menu_shares_the_one_converter() -> None:
     """The byte-identical copy in ``cli/menu.py`` is why #731 had two homes."""
 
-    from yoetz.cli import menu
+    from finishup.cli import menu
 
     assert menu._plain(NOW) == _EXPECTED_TIMESTAMP  # pyright: ignore[reportPrivateUsage]
+
+
+def _refused_network_view() -> PrivacyReceiptView:
+    """A predispatch refusal whose classification still approved a category (#1019)."""
+
+    view = network_receipt_view()
+    assert isinstance(view, NetworkEgressReceiptView)
+    receipt = replace(
+        view.receipt,
+        schema_version="1.1.0",
+        outcome=PrivacyOutcome.BLOCKED_BY_POLICY,
+        consent_source=ConsentSource.NONE,
+        counts=ReceiptCounts(4, 0, 4, 4, 0, 900, 0, None, None),
+        safe_failure_reason=PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
+        authorization_id=None,
+        dispatch_id=None,
+        dispatch_started_at=None,
+        request_commitment=None,
+    )
+    return NetworkEgressReceiptView("network_egress", receipt)
+
+
+def _terminal_streams(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
+    out_lines: list[str] = []
+    err_lines: list[str] = []
+
+    def echo(message: object = "", *, err: bool = False, **_kwargs: object) -> None:
+        (err_lines if err else out_lines).append(str(message))
+
+    monkeypatch.setattr(sys, "stdout", _TtyStdout(sys.stdout))
+    monkeypatch.setattr(typer, "echo", echo)
+    return out_lines, err_lines
+
+
+@pytest.mark.parametrize("command", ["get", "list"])
+async def test_refused_receipt_labels_classification_approvals_as_not_sent(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    view = _refused_network_view()
+    out, err = _terminal_streams(monkeypatch)
+    if command == "get":
+        _install(monkeypatch, _Client(_decoded_get(view)))
+        assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, False) == 0
+    else:
+        _install(monkeypatch, _Client(_decoded_page(view, local_receipt_view())))
+        assert await _privacy_receipts_list(50, None, False) == 0
+    assert '"approved_categories":["bounded_structural_metadata"]' in out[0]
+    assert err == [
+        f"not sent: privacy receipt {NETWORK_RECEIPT_ID} (blocked_by_policy) never reached a "
+        "provider; its approved_categories and counts.approved_items are classification "
+        "results, not data sent"
+    ]
+
+
+@pytest.mark.parametrize("command", ["get", "list"])
+async def test_a_size_refusal_names_its_capacity_in_both_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """#1129: the human ``get`` and ``list`` both say a size refusal was size, not policy."""
+
+    refused = _refused_network_view()
+    assert isinstance(refused, NetworkEgressReceiptView)
+    view = NetworkEgressReceiptView(
+        "network_egress",
+        replace(
+            refused.receipt,
+            safe_failure_reason=PrivacyReason.POLICY_DENIED,
+            capacity_exceeded=ReceiptCapacity("excerpt_total", "bytes", 131_074, 131_072),
+        ),
+    )
+    _out, err = _terminal_streams(monkeypatch)
+    if command == "get":
+        _install(monkeypatch, _Client(_decoded_get(view)))
+        assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, False) == 0
+    else:
+        _install(monkeypatch, _Client(_decoded_page(view, local_receipt_view())))
+        assert await _privacy_receipts_list(50, None, False) == 0
+    assert err[-1] == (
+        f"capacity_exceeded: privacy receipt {NETWORK_RECEIPT_ID} was refused for size, not by "
+        "a policy rule: 131074 bytes against the excerpt_total limit of 131072; nothing was sent"
+    )
+
+
+async def test_dispatched_and_json_receipts_carry_no_not_sent_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _out, err = _terminal_streams(monkeypatch)
+    _install(monkeypatch, _Client(_decoded_page(network_receipt_view())))
+    assert await _privacy_receipts_list(50, None, False) == 0
+    _install(monkeypatch, _Client(_decoded_get(_refused_network_view())))
+    _captured_json(monkeypatch)
+    assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, True) == 0
+    assert err == []

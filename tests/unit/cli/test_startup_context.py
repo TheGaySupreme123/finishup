@@ -12,7 +12,7 @@ from typing import Literal
 
 import pytest
 
-from yoetz.cli import startup_context
+from finishup.cli import startup_context
 
 
 @pytest.mark.parametrize("host", ["claude", "cursor"])
@@ -27,7 +27,7 @@ def test_cue_contains_bounded_bootstrap_and_resume_rules(host: Literal["claude",
     )
     assert len(cue) < 2_000
     for phrase in (
-        "yoetz://guidance/workflow.md",
+        "finishup://guidance/workflow.md",
         "Skip trivial",
         "tool schemas",
         "start mode=attach",
@@ -62,9 +62,9 @@ import importlib.abc
 import sys
 class NoState(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.startswith(('yoetz.adapters', 'yoetz.config', 'yoetz.service',
-                                'yoetz.application', 'yoetz.cli.observe_hooks',
-                                'yoetz.cli.app', 'typer', 'pydantic')):
+        if fullname.startswith(('finishup.adapters', 'finishup.config', 'finishup.service',
+                                'finishup.application', 'finishup.cli.observe_hooks',
+                                'finishup.cli.app', 'typer', 'pydantic')):
             raise AssertionError('startup cue accessed state or heavyweight runtime')
 class NoInput:
     @property
@@ -72,14 +72,14 @@ class NoInput:
         raise AssertionError('startup cue read host payload')
 sys.meta_path.insert(0, NoState())
 sys.stdin = NoInput()
-from yoetz.cli.entry import main
-sys.argv = ['yoetz', 'hooks', 'startup-context', '--host', sys.argv[1]]
+from finishup.cli.entry import main
+sys.argv = ['finishup', 'hooks', 'startup-context', '--host', sys.argv[1]]
 main()
 """
     isolated = tmp_path / "must-not-exist"
     completed = subprocess.run(
         [sys.executable, "-c", source, host],
-        env={**os.environ, "YOETZ_ISOLATED_ROOT": str(isolated)},
+        env={**os.environ, "FINISHUP_ISOLATED_ROOT": str(isolated)},
         capture_output=True,
         check=False,
         timeout=5,

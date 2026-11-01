@@ -6,8 +6,8 @@ from types import MappingProxyType
 
 import pytest
 
-from yoetz.mcp import server as mcp_server
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, GuidanceResource
+from finishup.mcp import server as mcp_server
+from finishup.mcp.resources import GUIDANCE_RESOURCES, GuidanceResource
 
 
 @pytest.fixture

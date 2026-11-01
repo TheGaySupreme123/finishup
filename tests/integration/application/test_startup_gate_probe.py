@@ -7,10 +7,10 @@ from typing import cast
 import pytest
 
 from builders.projection_workflow import ProjectionCase, project_case, run_projection_workflow
-from yoetz.cli.startup_gate_probe import probe
-from yoetz.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.cli.startup_gate_probe import probe
+from finishup.ports.control import ControlClientKind, ControlMethod, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     StatusCompactPageModel,
     StatusRequest,
     StatusResult,
@@ -54,7 +54,7 @@ async def test_probe_requires_live_exact_plan_route_and_readable_scope(
         assert workspace_locator.path == "/project"
         return Client()
 
-    monkeypatch.setattr("yoetz.service.client.connect_service", connect)
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
     request: dict[str, JsonValue] = {
         "route": [model.task_id, model.session_id, model.writer_id],
         "workspace": "/project",

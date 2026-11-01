@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.application.service import (
+from finishup.application.service import (
     ServiceReadyContext,
     _close_ready_context,  # pyright: ignore[reportPrivateUsage]
 )

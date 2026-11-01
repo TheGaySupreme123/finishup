@@ -13,10 +13,11 @@ from typing import TYPE_CHECKING
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.memory.objects import MemoryObjectStore
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.adapters.memory.objects import MemoryObjectStore
+from finishup.adapters.objects.check_resume import open_check_resume, stage_check_resume
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     OBJECT_COMMITMENT_DOMAINS,
     ObjectKind,
     ObjectMetadata,
@@ -24,15 +25,17 @@ from yoetz.ports.objects import (
     ObjectRootSnapshot,
     ObjectSource,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryCapability,
     SecretPurpose,
 )
-from yoetz.protocol.ids import IdKind
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import MAX_OBJECT_PLAINTEXT_BYTES
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _DIGEST = "sha256:" + "0" * 64
 _TASK_ID = "tsk_30000000-0000-4000-8000-000000000001"
@@ -175,7 +178,7 @@ async def _read(ref: ObjectRef, store: MemoryObjectStore | EncryptedFilesObjectS
 
 
 async def _source_chunks() -> AsyncIterator[bytes]:
-    yield b"\0YOETZ"
+    yield b"\0FINISHUP"
     yield b"\xff synthetic object payload\n"
 
 
@@ -186,7 +189,7 @@ async def test_stage_finalize_open_parity(tmp_path: Path) -> None:
     metadata = ObjectMetadata(
         ObjectKind.CAPTURED_CONTENT, "application/octet-stream", _TASK_ID, now
     )
-    plaintext = b"\0YOETZ\xff synthetic object payload\n"
+    plaintext = b"\0FINISHUP\xff synthetic object payload\n"
 
     results: list[tuple[str, bytes]] = []
     for store in stores:
@@ -378,6 +381,47 @@ async def test_generation_fenced_sweep_parity(tmp_path: Path) -> None:
 
 
 def test_commitment_domain_fixture_shape() -> None:
-    assert len(OBJECT_COMMITMENT_DOMAINS) == len(ObjectKind) == 18
+    assert len(OBJECT_COMMITMENT_DOMAINS) == len(ObjectKind) == 19
     assert all(value.endswith(b"\0") for value in OBJECT_COMMITMENT_DOMAINS.values())
     assert OBJECT_COMMITMENT_DOMAINS[ObjectKind.PROJECT_TEXT] == b"yoetz/object/project_text/v1\0"
+    assert (
+        OBJECT_COMMITMENT_DOMAINS[ObjectKind.CHANGE_CAPTURE] == b"yoetz/object/change_capture/v1\0"
+    )
+
+
+@pytest.mark.anyio
+async def test_paged_check_resume_uses_real_encrypted_stores_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+    data = canonical_encode({"case": "x" * (MAX_OBJECT_PLAINTEXT_BYTES + 1)})
+    metadata = ObjectMetadata(
+        ObjectKind.CHECK_RESUME, "application/vnd.yoetz.check-resume+json", _TASK_ID, now
+    )
+    for store in _stores(tmp_path, now):
+        root, pages = await stage_check_resume(store, data, metadata)
+        raw = await _read(root, store)
+        assert len(pages) == 2
+        assert root.plaintext_size < 2_048
+        assert await open_check_resume(store, root, raw) == data
+        for corruption in ("duplicate", "reorder", "missing", "size", "digest", "pointer"):
+            source = strict_json_parse(raw)
+            assert isinstance(source, dict)
+            pointers = source["pages"]
+            assert isinstance(pointers, list)
+            if corruption == "duplicate":
+                pointers[1] = pointers[0]
+            elif corruption == "reorder":
+                pointers.reverse()
+            elif corruption == "missing":
+                pointers.pop()
+            elif corruption == "size":
+                source["size"] = 2**40
+            elif corruption == "digest":
+                source["digest"] = "sha256:" + "0" * 64
+            else:
+                pointer = pointers[0]
+                assert isinstance(pointer, dict)
+                pointer["commitment"] = "hmac-sha256:" + "0" * 64
+            with pytest.raises(ValueError, match="check_resume_pages_invalid"):
+                await open_check_resume(store, root, canonical_encode(source))

@@ -6,18 +6,18 @@ import hashlib
 import json
 import stat
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import anyio
 import pytest
 
-from yoetz.application.applied_mcp_route import (
+from finishup.application.applied_mcp_route import (
     clear_applied_route,
     read_applied_route,
     record_applied_route,
 )
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.ports.harness_mcp import (
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
@@ -30,8 +30,8 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationResult,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.ports.integrations import HarnessId
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _DIGEST = "sha256:" + "a" * 64
 _OTHER_DIGEST = "sha256:" + "b" * 64
@@ -87,6 +87,37 @@ def test_record_with_unobserved_post_write_command(tmp_path: Path) -> None:
     assert record["observed_serve_command_post_write"] is None
     assert record["observation_digest"] == canonical_digest(None)
     assert read_applied_route(_state=tmp_path) == record
+
+
+@pytest.mark.parametrize("profile", ["policy", "strict"])
+@pytest.mark.parametrize("launcher", ["finishup", "yoetz", "/opt/instance/bin/finishup"])
+def test_home_project_command_roundtrips_exactly(
+    tmp_path: Path, profile: str, launcher: str
+) -> None:
+    template = MCP_STRICT_SERVE_COMMAND if profile == "strict" else MCP_SERVE_COMMAND
+    command = [launcher, "--home-project", "/workspace/home with spaces", *template[1:]]
+    record = record_applied_route(profile, command, command, _DIGEST, _state=tmp_path)
+    assert record["applied_serve_command"] == command
+    assert record["observed_serve_command_post_write"] == command
+    assert record["observation_digest"] == canonical_digest(cast(JsonValue, command))
+    assert read_applied_route(_state=tmp_path) == record
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["finishup", "--home-project", "/", *MCP_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root/../root", *MCP_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root", *MCP_STRICT_SERVE_COMMAND[1:]],
+        ["finishup", "--home-project", "/root", *MCP_SERVE_COMMAND[1:], "--extra"],
+    ],
+)
+def test_home_project_record_rejects_wrong_profile_or_command(
+    tmp_path: Path, command: list[str]
+) -> None:
+    with pytest.raises(ValueError, match="applied_mcp_route_command_invalid"):
+        record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)
+    assert read_applied_route(_state=tmp_path) is None
 
 
 def test_missing_route_reads_as_none(tmp_path: Path) -> None:
@@ -247,7 +278,9 @@ class _RoutePort:
     async def status_registration(self, binary: HarnessBinary) -> McpRegistrationState:
         del binary
         return (
-            McpRegistrationState.YOETZ_OWNED if self._already_owned else McpRegistrationState.ABSENT
+            McpRegistrationState.FINISHUP_OWNED
+            if self._already_owned
+            else McpRegistrationState.ABSENT
         )
 
     async def observe_registration(self, binary: HarnessBinary) -> McpRegistrationObservation:
@@ -255,7 +288,7 @@ class _RoutePort:
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
         return McpRegistrationObservation(
             binary.harness_id,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             self._profile,
             "ambient",
         )
@@ -282,15 +315,15 @@ class _RoutePort:
             return McpRegistrationResult(
                 binary.harness_id,
                 McpRegistrationAction.NOOP,
-                McpRegistrationState.YOETZ_OWNED,
-                McpRegistrationState.YOETZ_OWNED,
+                McpRegistrationState.FINISHUP_OWNED,
+                McpRegistrationState.FINISHUP_OWNED,
                 _DIGEST,
             )
         return McpRegistrationResult(
             binary.harness_id,
             McpRegistrationAction.REGISTER,
             McpRegistrationState.ABSENT,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             _DIGEST,
         )
 
@@ -298,7 +331,7 @@ class _RoutePort:
         return McpRegistrationPreview(
             binary.harness_id,
             McpRegistrationAction.UNREGISTER,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             (),
             _DIGEST,
             self._serve_command(),
@@ -314,7 +347,7 @@ class _RoutePort:
         return McpRegistrationResult(
             binary.harness_id,
             McpRegistrationAction.UNREGISTER,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             McpRegistrationState.ABSENT,
             _DIGEST,
         )
@@ -327,7 +360,7 @@ def _confirmation() -> McpRegistrationConfirmation:
 def test_service_register_records_the_observed_route(tmp_path: Path) -> None:
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     record = read_applied_route(_state=tmp_path)
     assert record is not None
     assert record["applied_profile"] == "policy"
@@ -397,13 +430,13 @@ def test_service_register_survives_persistence_failure(tmp_path: Path) -> None:
     blocker.write_bytes(b"unrelated")
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=blocker))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
 
 
 def test_service_register_survives_observation_failure(tmp_path: Path) -> None:
     service = HarnessMcpService(_RoutePort("policy", observe_fails=True))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
 
 
@@ -426,7 +459,7 @@ def test_service_strict_register_with_observe_failure_clears_stale_policy(
     assert read_applied_route(_state=tmp_path) is not None
     service = HarnessMcpService(_RoutePort("strict", observe_fails=True))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
 
 
@@ -439,5 +472,25 @@ def test_service_never_records_a_non_codex_route(tmp_path: Path) -> None:
     )
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(foreign, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    "launcher", ["yoetz", "/opt/runtime/bin/yoetz", "finishup", "/opt/runtime/bin/finishup"]
+)
+def test_record_written_with_either_launcher_spelling_reads_back(
+    tmp_path: Path, launcher: str
+) -> None:
+    """Stored records from before the rename name the ``yoetz`` launcher (ADR-048)."""
+
+    command = [launcher, *MCP_SERVE_COMMAND[1:]]
+    record = record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)
+    assert read_applied_route(_state=tmp_path) == record
+    assert record["applied_serve_command"] == command
+
+
+def test_record_refuses_an_unknown_bare_launcher(tmp_path: Path) -> None:
+    command = ["yoetz-server", *MCP_SERVE_COMMAND[1:]]
+    with pytest.raises(ValueError, match="applied_mcp_route_command_invalid"):
+        record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     EventSchema,
     LedgerChain,
@@ -25,7 +25,7 @@ from yoetz.domain.events import (
     obligation_meaning_field_diffs,
     public_error_for_obligation_resolution_mismatch,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -39,15 +39,15 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
-from yoetz.protocol.canonical import canonical_digest, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.reducers import empty_replay_index, extend_replay_index, reduce_event, replay
+from finishup.protocol.canonical import canonical_digest, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,
     coverage_to_json,
 )
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.protocol.errors import PublicErrorCode
 
 _OBL_ID = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _EVD_ID = evidence_id("evd_00000000-0000-4000-8000-000000000001")
@@ -270,13 +270,19 @@ def test_resolved_to_resolved_mutation_is_rejected() -> None:
     assert caught.value.differing_fields == ("status",)
 
 
-def test_resolved_to_open_is_rejected() -> None:
+def test_resolved_to_open_reopens_it() -> None:
+    """tb4n2 R2 (#1022, ADR-041): a resolution whose work no longer holds can be reopened."""
+
     open_payload = _open_payload()
     resolved = _resolved_payload()
     reopen = _open_payload()
+    record = replay(_chain(open_payload, resolved, reopen)).obligations[_OBL_ID]
+    assert record.payload is not None
+    assert record.payload.status is ObligationStatus.OPEN
+    # Meaning fields must still repeat when reopening.
     with pytest.raises(ObligationResolutionMismatch) as caught:
-        replay(_chain(open_payload, resolved, reopen))
-    assert caught.value.invariant == "open_to_resolved_only"
+        replay(_chain(open_payload, resolved, _open_payload(description="other prose")))
+    assert caught.value.invariant == "meaning_fields_must_repeat"
 
 
 def test_public_error_never_embeds_field_values() -> None:
@@ -303,3 +309,28 @@ def test_reduce_event_attaches_event_id_for_draft_attribution() -> None:
     with pytest.raises(ObligationResolutionMismatch) as caught:
         reduce_event(state, records[1], next_index)
     assert caught.value.event_id == records[1].event_id
+
+
+def test_v5_a_command_added_while_carrying_names_its_shape_and_the_supersede_path() -> None:
+    """tb4h V5 (#1118): adding a newly known command to a published obligation changes its meaning.
+
+    9 of 35 rejected calls changed a published obligation (a role, a new command, new wording);
+    the message called it a resolution and never named the way to change meaning. It now names
+    the structural shape (counts, positions, key names; never values) and the supersede path.
+    """
+
+    from finishup.domain.events import RequestedItem, RequestedItemKind
+
+    first = RequestedItem(RequestedItemKind.FILE, "secret-input-path.txt")
+    open_payload = _open_payload(requested_items=(first,))
+    changed = RequestedItem(RequestedItemKind.FILE, "other-path.txt")
+    added = RequestedItem(RequestedItemKind.COMMAND, "make secret-test")
+    edited = _open_payload(requested_items=(changed, added))
+    with pytest.raises(ObligationResolutionMismatch) as caught:
+        replay(_chain(open_payload, edited))
+    public = public_error_for_obligation_resolution_mismatch(caught.value, event_index=0)
+    assert "requested_items: recorded 1 items, sent 2; item 1 differs in value" in public.message
+    assert "superseded" in public.message and "replacement_obligation_ids" in public.message
+    assert "only its status changes" in public.message
+    for value in ("secret-input-path", "other-path", "make secret-test"):
+        assert value not in public.message

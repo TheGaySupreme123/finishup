@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,15 +30,18 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.publish_work import Application as PublishApplication
-from yoetz.application.publish_work import execute_publish_work
-from yoetz.application.service import Application, ControlProjectionBinding, VerificationPolicy
-from yoetz.application.status import Application as StatusApplication
-from yoetz.application.status import execute_status
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.check import check_internal_json
+from finishup.application.closure_basis import clear_closure_basis_memo
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.publish_work import Application as PublishApplication
+from finishup.application.publish_work import execute_publish_work
+from finishup.application.service import Application, ControlProjectionBinding, VerificationPolicy
+from finishup.application.start import StartInternalResult
+from finishup.application.status import Application as StatusApplication
+from finishup.application.status import execute_status
+from finishup.domain.events import MissingForAssessmentItem, RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -51,12 +54,13 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import (
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import (
     AppendCommand,
+    CheckCommitResult,
     CheckPhase,
     CheckSuspensionKind,
     OperationKind,
@@ -64,16 +68,17 @@ from yoetz.ports.ledger import (
     OperationState,
     SemanticDisclosureWait,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
     PublishWorkRequestModel,
+    StatusCoveragePageModel,
     StatusOperationPageModel,
     StatusRequest,
 )
@@ -187,7 +192,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -218,6 +223,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -307,7 +313,7 @@ async def _workflow_app() -> tuple[Application, _WorkflowRuntime, object]:
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )
@@ -443,6 +449,29 @@ async def test_status_view_operation_returns_stored_publish_work_detail() -> Non
     assert tuple(item.event_id for item in page.accepted_events) == tuple(
         item.event_id for item in first.accepted_events
     )
+
+
+async def test_status_coverage_is_an_advisory_read_at_the_requested_frontier() -> None:
+    app, _objects, seed, ledger = _publish_composition()
+    await ledger.append_batch(seed)
+    operation_request = _status_operation_request(
+        session_id=seed.session_id,
+        writer_id=seed.writer_id,
+        operation_request_id="req_00000000-0000-4000-8000-000000000599",
+        request_tail=1170,
+    )
+    before = await execute_status(cast(StatusApplication, app), operation_request)
+    body = operation_request.model_dump(mode="json", exclude_none=True)
+    body["view"] = "coverage"
+    body.pop("filter")
+    request = StatusRequest.model_validate(body)
+    status = await execute_status(cast(StatusApplication, app), request)
+    assert isinstance(status.page, StatusCoveragePageModel)
+    assert status.page.verification_coverage.label == "agent-declared"
+    assert status.page.verification_coverage.advisory is True
+    assert status.head_frontier == before.head_frontier
+    assert status.result_frontier == before.result_frontier
+    assert status.closure_readiness == before.closure_readiness
 
 
 async def test_status_view_operation_absent_for_unknown_request_id() -> None:
@@ -686,7 +715,7 @@ async def test_status_view_operation_recovers_missing_repository_grant_for_same_
     page = cast(StatusOperationPageModel, status.page)
     assert page.continuation is not None
     assert page.continuation.kind == "repository_privacy_setup"
-    assert page.continuation.command == ("yoetz", "--privacy")
+    assert page.continuation.command == ("finishup", "--privacy")
     assert page.continuation.replay_request_id == op_id
     continuation_wire = page.continuation.model_dump(mode="json", exclude_none=True)
     assert "pending_id" not in continuation_wire
@@ -775,7 +804,7 @@ async def test_status_view_operation_recovers_disclosure_wait_after_writer_rotat
     assert page.continuation.kind == "privacy_disclosure_decision"
     assert page.continuation.pending_id == pending_id
     assert page.continuation.command == (
-        "yoetz",
+        "finishup",
         "privacy",
         "decide-disclosure",
         pending_id,
@@ -858,7 +887,7 @@ async def test_status_view_operation_records_invalid_compact_enrichment(
     should not, so it must leave a bounded, resolvable record rather than vanish.
     """
 
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     app, runtime, _catalog = await _workflow_app()
@@ -917,7 +946,7 @@ async def test_status_view_operation_records_invalid_compact_enrichment(
         }
         origin = item["origin"]
         assert type(origin) is str
-        assert origin.startswith("yoetz.application.status:")
+        assert origin.startswith("finishup.application.status:")
     assert "traceback" not in raw
     assert "_ShapelessPage" not in raw
     assert str(tmp_path) not in raw
@@ -1047,3 +1076,270 @@ async def test_status_view_operation_survives_a_stranded_semantic_wait_check() -
     assert page.found is True
     assert page.state == "pending"
     assert page.operation_kind == "check"
+
+
+# --- W6 (issue #1107): a finished check's outcome on its operation page ----------------------------
+
+
+async def _finished_check(
+    base: int, *, refs: bool = False
+) -> tuple[Application, _WorkflowRuntime, object, str]:
+    """A real deterministic check over one open obligation; returns its request id too."""
+
+    app, runtime, _catalog = await _workflow_app()
+    started = await app.start(start_request(base, title="Operation view check outcome", refs=refs))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", base + 2)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(started.frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", base + 3),
+                        "schema": {"name": "obligation_published", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:00.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "obligation_id": protocol_id("obl_", base + 1),
+                            "description": "Publish a result for the operation-view check.",
+                            "acceptance_criteria": "A result is recorded in the task ledger.",
+                            "evidence_expectation": "A linked immutable result record.",
+                            "requested_items": (
+                                {"item_kind": "change", "value": "operation-view-result"},
+                            ),
+                            "status": "open",
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
+    check_req_id = protocol_id("req_", base + 4)
+    check = CheckRequest.model_validate(
+        {
+            **_request_base(check_req_id),
+            "session_id": started.session_id,
+            "writer_id": started.writer_id,
+            "expected_frontier": _frontier(published.result_frontier),
+            "mode": "deterministic_only",
+            "max_findings": "3",
+        }
+    )
+    await app.check(check)
+    return app, runtime, (started, check), check_req_id
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in cast(Mapping[str, object], value).items()}
+    if isinstance(value, tuple | list):
+        return [_thaw(item) for item in cast(Sequence[object], value)]
+    return value
+
+
+async def test_status_view_operation_returns_the_finished_checks_outcome() -> None:
+    """Recovery after a lost or cut check result: the page repeats what a same-id resend says."""
+
+    app, _runtime, context, check_req_id = await _finished_check(1810)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult and replay.outcome == "replayed"
+    replayed = check_internal_json(replay)
+    assert type(replayed.get("agent_next")) is str
+
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1901,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    outcome = page.check_outcome
+    assert outcome is not None
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("verdict", "agent_next", "overall_next", "semantic_status", "semantic_reason"):
+        assert _thaw(wire.get(name)) == _thaw(replayed.get(name)), name
+    assert outcome.missing_for_assessment == ()
+    assert _thaw(wire["result_frontier"]) == _thaw(replayed["result_frontier"])
+    # The page-level frontiers and events stay what a non-publish completion carries.
+    assert page.result_frontier is None and page.accepted_events == ()
+    assert outcome.agent_next == replayed["agent_next"]
+
+
+async def test_status_view_operation_outcome_survives_writer_rotation() -> None:
+    """After a same-task attach or compaction, the successor writer reads the prior writer's check."""
+
+    app, _runtime, context, check_req_id = await _finished_check(1840, refs=True)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult and replay.outcome == "replayed"
+    replayed = check_internal_json(replay)
+
+    # ``start mode=create_or_attach`` on the same task mints the successor session and writer.
+    attached = await app.start(start_request(1850, title="Operation view check outcome", refs=True))
+    assert attached.outcome == "attached" and attached.task_id == started.task_id
+    assert attached.writer_id != started.writer_id
+    status = await app.status(
+        _status_operation_request(
+            session_id=attached.session_id,
+            writer_id=attached.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1904,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    assert page.found is True and page.state == "complete"
+    outcome = page.check_outcome
+    assert outcome is not None
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("verdict", "semantic_status", "semantic_reason", "result_frontier"):
+        assert _thaw(wire.get(name)) == _thaw(replayed.get(name)), name
+    assert outcome.missing_for_assessment == () and "missing_for_assessment" not in replayed
+    # What happens today: the continuation needs the closure basis at the check's result
+    # frontier. The attach appended ``session_resumed``, so the successor's read cannot rebuild it
+    # (its memo is keyed on the reading session) and, with no agent_suppliable item stored, the
+    # page omits the lead and next action rather than derive them at a later frontier. The
+    # original writer's resend still has them from its warm memo, so the two differ here.
+    assert type(replayed.get("agent_next")) is str and "overall_next" in replayed
+    assert "agent_next" not in wire and "overall_next" not in wire
+
+
+def _with_stored_missing_item(runtime: _WorkflowRuntime, task_id: str, key: tuple[str, str]) -> str:
+    """Give the stored check one agent_suppliable verification_output item; return its target."""
+
+    target = protocol_id("res_", 1999)
+    ledger, _objects = runtime.resources[task_id]
+    stored = ledger._state.check_results[key]  # pyright: ignore[reportPrivateUsage]
+    ledger._state.check_results[key] = replace(  # pyright: ignore[reportPrivateUsage]
+        stored,
+        missing_for_assessment=(
+            MissingForAssessmentItem("verification_output", (target,), "agent_suppliable"),
+        ),
+    )
+    return target
+
+
+async def test_a_rotated_or_cold_read_still_leads_with_the_stored_supply_request() -> None:
+    """An agent_suppliable item keeps its lead and how-to from the stored rows alone (W6)."""
+
+    app, runtime, context, check_req_id = await _finished_check(1860, refs=True)
+    started, check = cast(tuple[StartInternalResult, CheckRequest], context)
+    target = _with_stored_missing_item(runtime, started.task_id, (started.writer_id, check_req_id))
+    replay = await app.check(check)
+    assert type(replay) is CheckCommitResult
+    replayed = check_internal_json(replay)
+    warm = cast(Mapping[str, object], _thaw(replayed["overall_next"]))
+    assert warm["action"] == "supply_missing_input" and "predicted_conclusion" in warm
+
+    attached = await app.start(start_request(1870, title="Operation view check outcome", refs=True))
+    assert attached.outcome == "attached" and attached.task_id == started.task_id
+    status = await app.status(
+        _status_operation_request(
+            session_id=attached.session_id,
+            writer_id=attached.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1905,
+        )
+    )
+    outcome = cast(StatusOperationPageModel, status.page).check_outcome
+    assert outcome is not None
+    # The missing rows survive rotation, and the supply continuation is rebuilt from them; only
+    # the predicted conclusion (which needs the closure basis) is left out, never guessed.
+    assert [
+        (item.kind, tuple(item.target_refs), item.availability)
+        for item in outcome.missing_for_assessment
+    ] == [("verification_output", (target,), "agent_suppliable")]
+    wire = cast(Mapping[str, object], outcome.model_dump(mode="json", exclude_none=True))
+    assert _thaw(wire["overall_next"]) == {
+        key: value for key, value in warm.items() if key != "predicted_conclusion"
+    }
+    lead = outcome.agent_next
+    assert lead is not None and lead.startswith("Next: supply_missing_input (action_required).")
+    assert f"verification_output for {target}." in lead and "How: " in lead
+
+    # A cold closure-basis memo (a service restart) after the attach's later record: the resend and
+    # the page are both rebuilt from the stored rows, so they agree byte for byte.
+    clear_closure_basis_memo()
+    resend = await app.check(check)
+    assert type(resend) is CheckCommitResult
+    resent = check_internal_json(resend)
+    clear_closure_basis_memo()
+    cold = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1906,
+        )
+    )
+    cold_outcome = cast(StatusOperationPageModel, cold.page).check_outcome
+    assert cold_outcome is not None
+    cold_wire = cast(Mapping[str, object], cold_outcome.model_dump(mode="json", exclude_none=True))
+    for name in ("agent_next", "overall_next", "missing_for_assessment"):
+        assert _thaw(cold_wire[name]) == _thaw(resent[name]), name
+    assert cold_outcome.agent_next == lead
+
+
+async def test_status_view_operation_outcome_for_a_check_recorded_by_an_older_build() -> None:
+    """A stored check without missing items or a continuation still projects (derived now)."""
+
+    app, runtime, context, check_req_id = await _finished_check(1820)
+    started = cast(tuple[StartInternalResult, CheckRequest], context)[0]
+    ledger, _objects = runtime.resources[started.task_id]
+    key = (started.writer_id, check_req_id)
+    stored = ledger._state.check_results[key]  # pyright: ignore[reportPrivateUsage]
+    ledger._state.check_results[key] = replace(  # pyright: ignore[reportPrivateUsage]
+        stored, missing_for_assessment=(), overall_next=None, finding_checklist=None
+    )
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1902,
+        )
+    )
+    outcome = cast(StatusOperationPageModel, status.page).check_outcome
+    assert outcome is not None
+    assert outcome.missing_for_assessment == ()
+    assert outcome.overall_next is not None and outcome.agent_next is not None
+
+
+async def test_status_operation_outcome_failure_never_fails_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    app, runtime, context, check_req_id = await _finished_check(1830)
+    started = cast(tuple[StartInternalResult, CheckRequest], context)[0]
+    ledger, _objects = runtime.resources[started.task_id]
+
+    async def broken(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("stored check unreadable")
+
+    ledger.load_check_result = broken  # type: ignore[method-assign]
+    status = await app.status(
+        _status_operation_request(
+            session_id=started.session_id,
+            writer_id=started.writer_id,
+            operation_request_id=check_req_id,
+            request_tail=1903,
+        )
+    )
+    page = cast(StatusOperationPageModel, status.page)
+    assert page.found is True and page.state == "complete" and page.check_outcome is None
+    raw = diagnostics.diagnostic_log_path(root=tmp_path).read_text(encoding="ascii")
+    operations = [
+        cast(Mapping[str, object], json.loads(line))["operation"]
+        for line in raw.splitlines()
+        if line
+    ]
+    assert operations == ["status_check_outcome_unavailable"]
+    assert "stored check unreadable" not in raw

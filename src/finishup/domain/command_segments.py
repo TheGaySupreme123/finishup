@@ -1,0 +1,1597 @@
+"""Bounded, quote-aware segments of one shell command for planned-verification matching.
+
+A planned verification (an obligation's requested ``command`` item) is matched against the hook's
+installation-keyed command commitments (#909, #977). The whole-command commitment alone missed
+every run an agent wrapped or composed: ``cd /app && python evaluate.py && git diff --check``,
+``bash run.sh > log 2>&1``, ``time python run.py``, ``FOO=1 make test``, ``npm test | tail``, or a
+``bash <<'EOF'`` script whose lines include the planned command. This module splits such a
+command into the simple commands it runs, so the hook can commit to each one beside the whole
+command and the kernel can match a planned command to any of them.
+
+Splitting is deliberately conservative and deterministic:
+
+* top-level (unquoted, outside ``$(...)`` and backticks) ``&&``, ``||``, ``;``, ``|``, ``&``,
+  subshell parentheses and line breaks separate segments; ``#`` comments are dropped;
+* each segment drops leading ``VAR=value`` assignments, ``time`` (``-p``), ``env`` with its
+  assignments and options, ``nohup``, ``exec``, the shell keywords that introduce a command
+  (``if``, ``then``, ``do``, ``else``, ``elif``, ``while``, ``until``, ``{``, ``!``) and every
+  redirection word (``> f``, ``>> f``, ``2>&1``, ``&> f``, ``< f``, ``<<'EOF'``);
+* the body of a here-document fed to a shell (``bash <<'EOF'``, ``sh -s <<EOF``) is split the same
+  way; any other here-document (``python3 - <<'PY'``, ``cat > f <<EOF``) is data, not commands;
+* a segment that is itself a shell wrapper (``bash -lc '...'``, ``sh -c "..."``) also contributes
+  the segments of its argument.
+
+An unterminated quote, substitution or here-document makes the command unsplittable: only the
+whole-command identity then exists, exactly as before. The result exists only to be committed by
+the caller; segment text is never stored, displayed, logged or sent.
+
+**Canonical commitments (ADR-045, tb4n3 RC-5).** A planned verification used to match only when
+its text equalled the run's text, the run's whole command, or one of the run's segments. Real
+agents wrap and reshape what they run: ``timeout 3000 python3 /app/x.py``, ``env FOO=1 pytest``,
+``/usr/bin/g++ ...`` with the source files appended to a task-quoted flag set, ``python -m pytest``
+for ``pytest``. ``canonical_words`` reduces one simple command to its canonical argv (wrappers
+``timeout``/``nice``/``ionice``/``nohup``/``stdbuf``/``env``/``setsid`` and ``VAR=`` assignments
+dropped, ``uv run``-style launchers dropped, argv[0] reduced to its basename, ``python3`` and
+``pythonX.Y`` to ``python``, ``python -m pytest`` to ``pytest``). From it ``canonical_commitments``
+derives three kinds of domain-separated keyed commitments, committed beside the segment
+commitments (never confusable with them): ``full`` (the whole canonical argv: a clean,
+normalized match), ``prefix`` (each leading run of at least two tokens: the run kept going after
+the planned command) and ``flag`` (one per argument after argv[0]: the planned program and its
+flags are all present, in any order). The planned side computes the same kinds from its own text,
+so a match carries *which* kind matched; ``full`` is clean, ``prefix`` and ``flag`` count as a run
+but are disclosed as such (``planned_verification_matched_by_prefix``), never as clean
+verification. A single-token planned command only ever matches whole.
+
+The composition says what the whole command's outcome means for one of its segments: ``single``
+(one simple command with prefixes or redirections: its outcome is the segment's), ``and_chain``
+(``&&`` only: a success means every segment succeeded, a failure names no segment) and ``masked``
+(any other composition, where the whole outcome says nothing about one segment). An ``&&`` chain
+is ``masked`` too when a segment before its last may not hand control back to the next one
+(``_returns_control``): ``exec true && pytest -q`` and ``exit 0 && pytest -q`` exit zero without
+running ``pytest -q``, and ``eval``/``source`` run text the reader cannot see (#1104). That
+reachability rule reads an observed run; a planned command's composition
+(``reachability=False``) is read from its separators alone, because a plain run's outcome is its
+own whatever the plan's earlier segments would have done.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import shlex
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Final
+
+from finishup.domain.observation import normalize_observed_command, observed_command_commitment
+
+__all__ = [
+    "CANONICAL_KINDS",
+    "COMMAND_COMPOSITIONS",
+    "MAX_CANONICAL_COMMITMENTS",
+    "MAX_COMMAND_COMMITMENTS",
+    "MAX_SEGMENT_COMMITMENTS",
+    "CommandSegments",
+    "CommandStructure",
+    "PlannedSegment",
+    "SimpleCommand",
+    "canonical_command_commitments",
+    "canonical_commitment",
+    "canonical_words",
+    "command_may_background",
+    "pattern_may_background",
+    "command_segment_commitments",
+    "segment_certification_commitment",
+    "command_segments",
+    "command_separators",
+    "exact_segment_commitments",
+    "command_structure",
+    "planned_segments",
+    "requested_command_shape",
+    "opens_files_without_a_command",
+    "segment_words_without_redirections",
+    "strip_one_wrapper",
+    "strip_wrappers",
+    "top_level_segments",
+    "wrapped_shell_argument",
+]
+
+# At most this many segment commitments travel with one observed command: the first and last
+# half of the distinct segments in command order, so a script's final verification line survives.
+MAX_SEGMENT_COMMITMENTS: Final = 32
+# Canonical commitments (ADR-045) travel beside them, in their own bounded budget; the observed
+# command carries at most ``MAX_COMMAND_COMMITMENTS`` in all (the action ``command`` text has a
+# fixed byte bound, and every commitment is 76 bytes).
+MAX_CANONICAL_COMMITMENTS: Final = 48
+MAX_COMMAND_COMMITMENTS: Final = MAX_SEGMENT_COMMITMENTS + MAX_CANONICAL_COMMITMENTS
+# The longest leading run of arguments committed as a prefix, and the most arguments committed
+# as flags, per simple command.
+_MAX_PREFIX_TOKENS: Final = 10
+_MAX_FLAG_TOKENS: Final = 24
+_MAX_TOKEN_CHARS: Final = 512
+CANONICAL_KINDS: Final = ("full", "prefix", "flag")
+_CANONICAL_DOMAIN: Final = b"yoetz/command-canonical/v1/"
+COMMAND_COMPOSITIONS: Final = frozenset({"single", "and_chain", "masked"})
+_MAX_DEPTH: Final = 3
+_MAX_TEXT_CHARS: Final = 16_384
+_SHELLS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+_SHELL_COMMAND_FLAG_RE: Final = re.compile(r"^-[a-z]*c[a-z]*$", re.ASCII)
+_ASSIGNMENT_RE: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=", re.ASCII)
+_AMBIGUOUS_WORD_RE: Final = re.compile(r"[\s'\"\\]")
+# ``env`` options that take a separate operand (``env -u NAME cmd``, ``env -C DIR cmd``).
+_ENV_OPTIONS_WITH_OPERAND: Final = frozenset(
+    {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"}
+)
+_REDIRECTION_RE: Final = re.compile(r"^(?:[0-9]+|&)?(>>|>\||>&|>|<<<|<<-|<<|<&|<>|<)(.*)$", re.S)
+_LEADING_KEYWORDS: Final = frozenset(
+    {"if", "then", "do", "else", "elif", "while", "until", "{", "!", "nohup", "exec"}
+)
+_CLOSING_WORDS: Final = frozenset({"}", "fi", "done", "esac", "then", "do", "else"})
+# A template placeholder: ``<`` not glued to a preceding word or digit (``a<b``, ``2<x`` are
+# redirections or comparisons), a name, further words that start with a letter, and a ``>``
+# followed by end of text, whitespace or a quote (``<in.txt>out.txt`` is two redirections).
+_PLACEHOLDER_RE: Final = re.compile(
+    r"(?<![A-Za-z0-9_])<[A-Za-z][A-Za-z0-9_.:-]*(?: [A-Za-z][A-Za-z0-9_.:-]*)*>(?=$|[\s'\"])",
+    re.ASCII,
+)
+_PROSE_WORD_RE: Final = re.compile(r"^[A-Za-z]+[,.:;]?$", re.ASCII)
+_MASKING_SEPARATORS: Final = frozenset({"||", ";", "|", "&", "\n", "(", ")"})
+# Builtins after which an ``&&`` chain may never reach its next command (``exit``, ``return``,
+# ``logout``, ``break``, ``continue``; ``exec`` with a command, handled apart), or may reach one
+# the text does not show (``eval``, ``source``, ``.`` run unseen text; ``alias``, ``hash``,
+# ``enable`` rebind a later command name; ``trap`` runs unseen text before a later command).
+# Signalling the shell (``kill $$``) is not here: a shell a signal ends exits with a failure,
+# which certifies nothing anyway, and the ``trap`` that could turn it into a success is refused.
+# Best-effort for builtins that evaluate text: ``mapfile -C`` is handled apart.
+_CONTROL_TRANSFER: Final = frozenset(
+    {
+        "exit",
+        "return",
+        "logout",
+        "break",
+        "continue",
+        "eval",
+        "source",
+        ".",
+        "alias",
+        "hash",
+        "enable",
+        "trap",
+    }
+)
+# A command word the reader cannot resolve to one program: a parameter or command substitution,
+# an unquoted redirection written against it (``exec>log true`` is ``exec`` with ``>log``), or a
+# brace or pathname expansion (``{exit,0}`` runs ``exit 0``). ``[`` and ``[[`` alone are the test
+# commands, not a pattern.
+_UNRESOLVED_HEAD_RE: Final = re.compile(r"[$`<>&{}*?\[]")
+_TEST_HEADS: Final = frozenset({"[", "[["})
+# ``set`` options that keep every later command running as written (errexit and nounset can only
+# end the shell with a failure, which names no segment anyway); anything else (``set -n``,
+# ``set -o noexec``, ``set -- ...``) is refused.
+_SAFE_SET_LETTERS: Final = frozenset("euxvo")
+# ``shopt`` flags; with ``-o`` it sets the same options as ``set -o`` (``shopt -os noexec``).
+_SHOPT_LETTERS: Final = frozenset("suqpo")
+_SAFE_SET_OPTIONS: Final = frozenset({"errexit", "nounset", "xtrace", "verbose", "pipefail"})
+_INTRODUCING_KEYWORDS: Final = frozenset(
+    {"if", "then", "do", "else", "elif", "while", "until", "{", "!"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CommandSegments:
+    """The distinct simple commands of one normalized command, in first-seen order."""
+
+    segments: tuple[str, ...]
+    composition: str
+
+
+@dataclass(slots=True)
+class _Split:
+    segments: list[str]
+    bodies: dict[int, list[str]]
+    separators: set[str]
+
+
+def _split_top_level(text: str) -> _Split | None:
+    """Split at top-level separators; return ``None`` on any unterminated construct."""
+
+    segments: list[str] = []
+    bodies: dict[int, list[str]] = {}
+    separators: set[str] = set()
+    current: list[str] = []
+    pending: list[tuple[str, bool, int]] = []
+    quote: str | None = None
+    substitution = 0
+    backtick = False
+    index = 0
+    length = len(text)
+
+    # Index in ``current`` of the last unescaped blank: a ``#`` starts a comment only at the start
+    # of a word, never after an escaped blank (``a\\ #b``) or a line continuation.
+    blank_at = -1
+
+    def flush() -> None:
+        nonlocal blank_at
+        segment = "".join(current).strip()
+        current.clear()
+        blank_at = -1
+        if segment:
+            segments.append(segment)
+
+    while index < length:
+        char = text[index]
+        if quote == "'":
+            current.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\" and index + 1 < length:
+            if quote is None and substitution == 0 and not backtick and text[index + 1] == "\n":
+                current.append(" ")
+            else:
+                current.append(text[index : index + 2])
+            index += 2
+            continue
+        if quote == '"':
+            current.append(char)
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == "`":
+            backtick = not backtick
+            current.append(char)
+            index += 1
+            continue
+        if char == "$" and index + 1 < length and text[index + 1] == "(":
+            substitution += 1
+            current.append("$(")
+            index += 2
+            continue
+        if substitution > 0:
+            if char == "(":
+                substitution += 1
+            elif char == ")":
+                substitution -= 1
+            current.append(char)
+            index += 1
+            continue
+        if backtick:
+            current.append(char)
+            index += 1
+            continue
+        if char == "#" and (not current or blank_at == len(current) - 1):
+            while index < length and text[index] != "\n":
+                index += 1
+            continue
+        if char == "<" and text.startswith("<<", index) and not text.startswith("<<<", index):
+            start = index
+            index += 2
+            strip_tabs = index < length and text[index] == "-"
+            if strip_tabs:
+                index += 1
+            while index < length and text[index] in " \t":
+                index += 1
+            # The delimiter is the whole word after quote removal: ``<<E"O"F`` and ``<<"E"OF``
+            # both end at a line ``EOF``.
+            pieces: list[str] = []
+            while index < length and text[index] not in " \t\n;&|<>()":
+                if text[index] in "'\"":
+                    closing = text.find(text[index], index + 1)
+                    if closing < 0:
+                        return None
+                    pieces.append(text[index + 1 : closing])
+                    index = closing + 1
+                elif text[index] == "\\":
+                    pieces.append(text[index + 1 : index + 2])
+                    index += 2
+                else:
+                    pieces.append(text[index])
+                    index += 1
+            delimiter = "".join(pieces)
+            if not delimiter:
+                return None
+            current.append(text[start:index])
+            # The segment the operator appears in owns the body: the next index to be appended.
+            pending.append((delimiter, strip_tabs, len(segments)))
+            continue
+        if char == "\n":
+            flush()
+            separators.add("\n")
+            index += 1
+            for delimiter, strip_tabs, owner in pending:
+                body: list[str] = []
+                while True:
+                    if index >= length:
+                        return None
+                    end = text.find("\n", index)
+                    line = text[index:] if end < 0 else text[index:end]
+                    index = length if end < 0 else end + 1
+                    if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                        break
+                    body.append(line)
+                bodies.setdefault(owner, []).append("\n".join(body))
+            pending.clear()
+            continue
+        two = text[index : index + 2]
+        if two in {"&&", "||", ";;", "|&"}:
+            flush()
+            separators.add({"&&": "&&", "||": "||", ";;": ";", "|&": "|"}[two])
+            index += 2
+            continue
+        if char in ";|()":
+            flush()
+            separators.add(char)
+            index += 1
+            continue
+        if char == "&":
+            # Only a bare ``>``/``<`` makes ``>&``/``<&`` a redirection; an escaped one (``\\>``) is
+            # a word character, so the ``&`` after it is a separator.
+            previous = current[-1] if current else ""
+            following = text[index + 1 : index + 2]
+            if previous in {">", "<"} or following == ">":
+                current.append(char)
+            else:
+                flush()
+                separators.add("&")
+            index += 1
+            continue
+        if char in " \t":
+            blank_at = len(current)
+        current.append(char)
+        index += 1
+    if quote is not None or substitution or backtick or pending:
+        return None
+    flush()
+    return _Split(segments, bodies, separators)
+
+
+def _words(segment: str) -> list[str] | None:
+    """Split one segment into raw word spans (quotes kept), or ``None`` when unbalanced."""
+
+    words: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in segment:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if quote is None and char in " \t\n":
+            if current:
+                words.append("".join(current))
+                current.clear()
+            continue
+        current.append(char)
+        if char == "\\" and quote != "'":
+            escaped = True
+        elif quote is None and char in "'\"":
+            quote = char
+        elif char == quote:
+            quote = None
+    if quote is not None:
+        return None
+    if current:
+        words.append("".join(current))
+    return words
+
+
+@dataclass(frozen=True, slots=True)
+class _Cleaned:
+    text: str | None
+    negated: bool
+    shell_reads_stdin: bool
+    # The segment sends its output into a file (``> f``, ``>> f``, ``>| f``), not ``/dev/null``
+    # and not a file-descriptor duplication (``2>&1``).
+    writes: bool = False
+    # Something other than an output redirection was dropped from the segment's words: a leading
+    # assignment, ``env``, ``time``, ``nohup``, ``exec``, a shell keyword or ``!``, or an input
+    # redirection (``< f``, ``<<EOF``, ``<<< s``, ``<> f``). The listed text is then not exactly
+    # the command that ran, so a success of it certifies nothing (#1104,
+    # ``segment_certification_commitment``).
+    conditioned: bool = False
+
+
+_OUTPUT_FILE_OPERATORS: Final = frozenset({">", ">>", ">|"})
+
+
+def _clean_segment(segment: str) -> _Cleaned:
+    words = _words(segment)
+    if words is None:
+        return _Cleaned(" ".join(segment.split()) or None, False, False, conditioned=True)
+    negated = False
+    conditioned = False
+    prefix_words = 0
+    kept: list[str] = []
+    skip_next = False
+    leading = True
+    after_time = False
+    in_env = False
+    skip_env_operand = False
+    writes = False
+    pending_target = False
+    for word in words:
+        if skip_next:
+            skip_next = False
+            if pending_target:
+                pending_target = False
+                writes = writes or not (word == "/dev/null" or word.startswith("&"))
+            continue
+        redirection = _REDIRECTION_RE.match(word)
+        if redirection is not None:
+            if redirection.group(1).startswith("<"):
+                conditioned = True
+            if redirection.group(1) in _OUTPUT_FILE_OPERATORS:
+                target = redirection.group(2)
+                if target:
+                    writes = writes or not (target == "/dev/null" or target.startswith("&"))
+                else:
+                    pending_target = True
+            if not redirection.group(2):
+                skip_next = True
+            continue
+        if leading:
+            # Every leading word this block drops (it ``continue``s) conditions the command that
+            # ran; the first word it keeps ends the prefix.
+            prefix_words += 1
+            if word == "!":
+                negated = True
+                continue
+            if word in _LEADING_KEYWORDS:
+                continue
+            if word == "time":
+                after_time = True
+                continue
+            if after_time and word == "-p":
+                continue
+            if word == "env":
+                in_env = True
+                continue
+            if in_env and word in _ENV_OPTIONS_WITH_OPERAND:
+                skip_env_operand = True
+                continue
+            if in_env and skip_env_operand:
+                skip_env_operand = False
+                continue
+            if in_env and (word.startswith("-") or _ASSIGNMENT_RE.match(word)):
+                continue
+            if _ASSIGNMENT_RE.match(word):
+                continue
+            leading = False
+            conditioned = conditioned or prefix_words > 1
+        kept.append(word)
+    before_closing = len(kept)
+    while kept and kept[-1] in _CLOSING_WORDS and len(kept) > 1:
+        kept.pop()
+    if len(kept) == 1 and kept[0] in _CLOSING_WORDS:
+        kept = []
+    conditioned = conditioned or len(kept) != before_closing
+    shell_reads_stdin = bool(kept) and (
+        kept[0].replace("\\", "/").rsplit("/", 1)[-1] in _SHELLS
+        and all(
+            word.startswith("-") and _SHELL_COMMAND_FLAG_RE.match(word) is None for word in kept[1:]
+        )
+    )
+    return _Cleaned(
+        " ".join(kept) or None,
+        negated,
+        shell_reads_stdin,
+        writes,
+        conditioned=conditioned or (leading and prefix_words > 0),
+    )
+
+
+def _safe_set(arguments: Sequence[str]) -> bool:
+    """Whether ``set`` with these arguments leaves every later command running as written."""
+
+    expect_name = False
+    for word in arguments:
+        if expect_name:
+            if word not in _SAFE_SET_OPTIONS:
+                return False
+            expect_name = False
+            continue
+        if len(word) < 2 or word[0] not in "-+" or not set(word[1:]) <= _SAFE_SET_LETTERS:
+            return False
+        expect_name = "o" in word[1:]
+    return not expect_name
+
+
+def _safe_shopt(arguments: Sequence[str]) -> bool:
+    """Whether ``shopt`` with these arguments leaves every later command running as written.
+
+    Without ``-o`` it changes only bash's own options, none of which skip a command; with ``-o``
+    it sets ``set -o`` options, so each named one must be one ``_safe_set`` accepts.
+    """
+
+    flags = [word for word in arguments if word.startswith("-")]
+    if not any("o" in word[1:] for word in flags):
+        return True
+    return all(len(word) > 1 and set(word[1:]) <= _SHOPT_LETTERS for word in flags) and all(
+        word in _SAFE_SET_OPTIONS for word in arguments if not word.startswith("-")
+    )
+
+
+def _returns_control(segment: str) -> bool:
+    """Whether one ``&&`` segment is known to hand control back to the shell for the next one.
+
+    ``False`` for ``exec`` with a command (it replaces the shell: ``exec true && pytest -q`` exits
+    zero without running ``pytest -q``), the builtins in ``_CONTROL_TRANSFER`` (``exit 0``,
+    ``return 0``, ``eval ...``, ``source env.sh``), ``mapfile -C`` (it evaluates its callback), a
+    ``set`` outside ``_safe_set`` or a ``shopt -o`` outside ``_safe_shopt`` (``set -n`` reads but
+    never runs the rest), a command word the reader cannot resolve (``_UNRESOLVED_HEAD_RE``:
+    ``$CMD``, ``exec>log``, ``{exit,0}``) and a segment whose words cannot be read. Wrappers that
+    run an external program (``env``, ``timeout``, ``nice``) are looked through. Conservative by
+    construction: an unrecognized ordinary program counts as returning, exactly as a separate
+    earlier call always has (ADR-025); the builtin list is best-effort for builtins that evaluate
+    text.
+    """
+
+    words = segment_words_without_redirections(segment)
+    if words is None:
+        return False
+    rest = list(words)
+    while rest:
+        head = rest[0]
+        if _ASSIGNMENT_RE.match(head) or head in _INTRODUCING_KEYWORDS:
+            rest.pop(0)
+        elif head == "time":
+            rest.pop(0)
+            if rest[:1] == ["-p"]:
+                rest.pop(0)
+        elif head in {"command", "builtin"}:
+            rest.pop(0)
+            while rest and rest[0].startswith("-"):
+                rest.pop(0)
+        else:
+            break
+    if not rest:
+        return True
+    if rest[0] == "exec":
+        # Only redirections (``exec >log``, ``exec 3>f``): the shell keeps running.
+        return len(rest) == 1
+    rest = strip_wrappers(rest, launchers=False)
+    if not rest:
+        return True
+    head = rest[0]
+    if head not in _TEST_HEADS and _UNRESOLVED_HEAD_RE.search(head):
+        return False
+    name = _basename(head)
+    if name in _CONTROL_TRANSFER:
+        return False
+    if name == "set":
+        return _safe_set(rest[1:])
+    if name == "shopt":
+        return _safe_shopt(rest[1:])
+    if name in {"mapfile", "readarray"}:
+        return not any(word.startswith("-") and "C" in word for word in rest[1:])
+    return True
+
+
+def wrapped_shell_argument(words: Sequence[str]) -> str | None:
+    """``X`` for the words of ``bash -lc X`` / ``sh -c X`` (any shell path), else ``None``."""
+
+    if len(words) != 3:
+        return None
+    shell = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if shell not in _SHELLS or _SHELL_COMMAND_FLAG_RE.fullmatch(words[1]) is None:
+        return None
+    return words[2]
+
+
+def _wrapped_argument(text: str) -> str | None:
+    """``X`` for a segment ``bash -lc X`` / ``sh -c X`` in any quoting, else ``None``."""
+
+    try:
+        words = shlex.split(text, posix=True)
+    except ValueError:
+        return None
+    if len(words) != 3:
+        return None
+    shell = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if shell not in _SHELLS or _SHELL_COMMAND_FLAG_RE.fullmatch(words[1]) is None:
+        return None
+    return words[2]
+
+
+@dataclass(frozen=True, slots=True)
+class SimpleCommand:
+    """One simple command of a composed command: its normalized text and canonical argv.
+
+    ``words`` is ``canonical_words`` of the segment (wrappers and assignments dropped, argv[0]
+    reduced to its basename, ``python3`` to ``python``), ``text`` the normalized segment text
+    exactly as ``command_segments`` lists it, and ``writes`` whether the segment sends its output
+    into a file. Exists only to be committed or classified; never stored, displayed or sent.
+    """
+
+    text: str
+    words: tuple[str, ...]
+    writes: bool = False
+    # Preserve executable/environment spelling for read-only classification. Canonical argv
+    # intentionally erases it for verification matching; that is not execution provenance.
+    sources: tuple[str, ...] = ()
+    nested: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CommandStructure:
+    """The simple commands of one normalized command, in command order, and how they compose.
+
+    ``commands`` holds every distinct simple command (a shell wrapper's argument and a shell
+    heredoc's lines contribute theirs; the wrapper itself does not). ``composition`` is
+    ``single``, ``and_chain`` or ``masked`` as for ``CommandSegments``; ``compound`` is true when
+    the command is more than one simple command or uses any shell composition.
+    """
+
+    commands: tuple[SimpleCommand, ...]
+    composition: str
+    compound: bool
+
+
+def _collect(
+    text: str,
+    depth: int,
+    out: list[str],
+    commands: list[SimpleCommand] | None = None,
+    bare: set[str] | None = None,
+    *,
+    reachability: bool = True,
+) -> tuple[bool, bool, bool]:
+    """Append ``text``'s segments to ``out``; return ``(splittable, masked, chained)``.
+
+    ``commands`` (when given) receives each simple command, not the shell wrappers around them.
+    ``bare`` (when given) receives each listed segment that some occurrence ran exactly as listed
+    (``_Cleaned.conditioned`` false), wrapper arguments included. ``reachability`` (an observed
+    run) also masks an ``&&`` chain whose earlier segment may not hand control back; a planned
+    command passes ``False``.
+    """
+
+    split = _split_top_level(text)
+    if split is None:
+        return False, False, False
+    masked = bool(split.separators & _MASKING_SEPARATORS)
+    chained = len(split.segments) > 1
+    # A success of ``A && B`` says ``B`` passed only when ``A`` handed control back to the shell.
+    if reachability:
+        masked = masked or any(not _returns_control(segment) for segment in split.segments[:-1])
+    for position, segment in enumerate(split.segments):
+        cleaned = _clean_segment(segment)
+        masked = masked or cleaned.negated
+        if cleaned.text is not None:
+            normalized = normalize_observed_command(cleaned.text) or cleaned.text
+            out.append(normalized)
+            if bare is not None and not cleaned.conditioned:
+                bare.add(normalized)
+            inner = _wrapped_argument(cleaned.text)
+            if inner is None and normalized != cleaned.text:
+                inner = normalized
+            if commands is not None and inner is None:
+                commands.append(
+                    SimpleCommand(
+                        normalized,
+                        canonical_words(_split_words(normalized)),
+                        cleaned.writes,
+                        (segment,),
+                        depth > 0,
+                    )
+                )
+            if inner is not None and depth < _MAX_DEPTH:
+                ok, inner_masked, inner_chained = _collect(
+                    inner,
+                    depth + 1,
+                    out,
+                    commands,
+                    bare if not cleaned.conditioned else None,
+                    reachability=reachability,
+                )
+                masked = masked or (ok and inner_masked)
+                chained = chained or (ok and inner_chained)
+        for body in split.bodies.get(position, ()):
+            if cleaned.shell_reads_stdin and depth < _MAX_DEPTH:
+                # A script fed to a shell: its lines are commands, and the whole outcome is the
+                # script's, which says nothing about one line.
+                masked = True
+                _collect(body, depth + 1, out, commands, None)
+    return True, masked, chained
+
+
+def _split_words(text: str) -> list[str]:
+    try:
+        return shlex.split(text, posix=True)
+    except ValueError:
+        return text.split()
+
+
+def command_segments(normalized: str, *, reachability: bool = True) -> CommandSegments | None:
+    """The simple commands of one normalized command, or ``None`` when there is nothing new.
+
+    ``normalized`` is ``normalize_observed_command``'s output. ``None`` means the command is
+    unsplittable or is already a single simple command (its whole identity is its only one).
+    ``reachability=False`` reads a planned command's composition from its separators alone.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    collected: list[str] = []
+    splittable, masked, chained = _collect(normalized, 0, collected, reachability=reachability)
+    if not splittable:
+        return None
+    distinct = tuple(dict.fromkeys(item for item in collected if item and "\x00" not in item))
+    if not distinct or distinct == (normalized,):
+        return None
+    composition = "masked" if masked else "and_chain" if chained else "single"
+    return CommandSegments(distinct, composition)
+
+
+def command_separators(normalized: str) -> frozenset[str] | None:
+    """Every shell separator the splitter saw, at every depth, or ``None`` when unsplittable.
+
+    Quote-aware like ``command_segments``: a quoted ``&`` or ``;`` is no separator. The walk
+    descends into shell-wrapper arguments (``bash -lc '...'``) and the bodies of here-documents fed
+    to a shell, bounded by the same depth. ``&`` in the result is a background job somewhere in
+    the command; ``&&`` is an and-chain. Exists only to classify; never stored or sent.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    seen: set[str] = set()
+
+    def walk(text: str, depth: int) -> bool:
+        split = _split_top_level(text)
+        if split is None:
+            return False
+        seen.update(split.separators)
+        for position, segment in enumerate(split.segments):
+            cleaned = _clean_segment(segment)
+            if cleaned.text is not None and depth < _MAX_DEPTH:
+                inner = _wrapped_argument(cleaned.text)
+                if inner is not None and not walk(inner, depth + 1):
+                    return False
+            if cleaned.shell_reads_stdin and depth < _MAX_DEPTH:
+                for body in split.bodies.get(position, ()):
+                    if not walk(body, depth + 1):
+                        return False
+        return True
+
+    return frozenset(seen) if walk(normalized, 0) else None
+
+
+def top_level_segments(normalized: str) -> tuple[tuple[str, ...], frozenset[str]] | None:
+    """The top-level simple-command segments of one command, in order, and the separators seen.
+
+    Depth 0 only (no descent into wrappers or here-document bodies), quote-aware like
+    ``command_segments``. ``None`` when the text cannot be split. Exists only to classify a
+    closed command shape (``domain.process_control``); never stored or sent.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    split = _split_top_level(normalized)
+    if split is None:
+        return None
+    return tuple(split.segments), frozenset(split.separators)
+
+
+def opens_files_without_a_command(normalized: str) -> bool:
+    """Whether a top-level segment only redirects (``exec >out.txt``, ``exec 3>f``, ``> f``) or
+    any word opens a file read-write (``<>``).
+
+    ``command_structure`` lists commands, so a segment with no command words of its own leaves no
+    trace there, although ``exec >f`` redirects every later command into ``f``. A read-only
+    recheck refuses such a command (#1104). ``True`` when the text cannot be split.
+    """
+
+    split = top_level_segments(normalized)
+    if split is None:
+        return True
+    for segment in split[0]:
+        words = _words(segment)
+        if words is None:
+            return True
+        operators = [
+            match.group(1) for word in words if (match := _REDIRECTION_RE.match(word)) is not None
+        ]
+        if "<>" in operators:
+            return True
+        kept = segment_words_without_redirections(segment)
+        if operators and (not kept or kept == ["exec"]):
+            return True
+    return False
+
+
+def segment_words_without_redirections(segment: str) -> list[str] | None:
+    """The shell words of one simple-command segment with only its redirections removed.
+
+    Unlike ``canonical_words`` this keeps assignments, wrappers and the executable's exact
+    spelling, so a read-only recheck still sees ``PATH=...`` or ``./cat``; ``2>/dev/null``,
+    ``> /dev/null`` and ``<<'EOF'`` are dropped so they no longer hide the program's own words.
+    ``None`` when the segment's quoting is unbalanced.
+    """
+
+    words = _words(segment)
+    if words is None:
+        return None
+    kept: list[str] = []
+    skip_next = False
+    for word in words:
+        if skip_next:
+            skip_next = False
+            continue
+        redirection = _REDIRECTION_RE.match(word)
+        if redirection is not None:
+            skip_next = not redirection.group(2)
+            continue
+        kept.append(word)
+    try:
+        return shlex.split(" ".join(kept), posix=True)
+    except ValueError:
+        return None
+
+
+def command_structure(normalized: str) -> CommandStructure | None:
+    """The distinct simple commands of one normalized command with their canonical argv.
+
+    ``None`` when the text is empty, over-long or unsplittable (an unterminated quote,
+    substitution or here-document): nothing is then known about its parts.
+    """
+
+    if type(normalized) is not str or not normalized or len(normalized) > _MAX_TEXT_CHARS:
+        return None
+    collected: list[str] = []
+    commands: list[SimpleCommand] = []
+    splittable, masked, chained = _collect(normalized, 0, collected, commands)
+    if not splittable:
+        return None
+    distinct: dict[str, SimpleCommand] = {}
+    for item in commands:
+        if item.text and "\x00" not in item.text:
+            previous = distinct.get(item.text)
+            distinct[item.text] = (
+                item
+                if previous is None
+                else SimpleCommand(
+                    item.text,
+                    item.words,
+                    previous.writes or item.writes,
+                    (*previous.sources, *item.sources),
+                    previous.nested or item.nested,
+                )
+            )
+    composition = "masked" if masked else "and_chain" if chained else "single"
+    compound = masked or chained or len(distinct) > 1
+    return CommandStructure(tuple(distinct.values()), composition, compound)
+
+
+# ---------------------------------------------------------------------------------------------
+# Canonical argv and its commitments (ADR-045)
+# ---------------------------------------------------------------------------------------------
+
+_PYTHON_NAME_RE: Final = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)*)?$", re.ASCII)
+_DURATION_RE: Final = re.compile(r"^[0-9]+(?:\.[0-9]+)?[smhd]?$", re.ASCII)
+_NICE_LEVEL_RE: Final = re.compile(r"^-[0-9]+$", re.ASCII)
+_PLAIN_WRAPPERS: Final = frozenset({"nohup", "command", "exec", "time", "setsid", "builtin"})
+_RUN_LAUNCHERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+_RUN_SCRIPT_OPTIONS: Final = frozenset({"--script", "-s", "--gui-script"})
+# ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
+_RUN_OPTIONS_WITH_VALUE: Final = frozenset(
+    {
+        "--with",
+        "-w",
+        "--with-editable",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--package",
+        "--index",
+        "--index-url",
+        "--default-index",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--index-strategy",
+        "--config-setting",
+        "-C",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "--link-mode",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "-e",
+        "--env",
+    }
+)
+# Python interpreter options that change nothing about what is verified. ``-O``/``-OO`` (asserts
+# disabled), ``-W``/``-X`` (warnings as errors, dev mode) and ``-E``/``-I``/``-s``/``-S`` (import
+# and environment) can change a verifier's outcome, so they stay in the canonical argv.
+_PYTHON_NEUTRAL_OPTIONS: Final = frozenset({"-u", "-B", "-q"})
+_MAX_WRAPPER_ROUNDS: Final = 8
+_SCENE_SETTING: Final = frozenset({"cd", "pushd", "export", "source", "."})
+# Shell builtins that never verify anything: no canonical commitment is spent on them.
+_NEVER_VERIFICATION: Final = frozenset(
+    {"cd", "pwd", "echo", "printf", "true", "false", "export", "set", "unset", "source", ".", ":"}
+)
+
+
+def _basename(word: str) -> str:
+    return word.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _drop_options(words: list[str], with_operand: frozenset[str], flags: frozenset[str]) -> None:
+    """Drop leading options of a wrapper in place: ``flags`` alone, ``with_operand`` plus operand."""
+
+    while words and words[0].startswith("-") and words[0] != "-":
+        option = words[0]
+        if option == "--":
+            words.pop(0)
+            return
+        name = option.partition("=")[0]
+        if name in with_operand and "=" not in option:
+            del words[:2]
+        elif name in with_operand or name in flags or option.startswith("--"):
+            words.pop(0)
+        elif len(option) > 2 and option[:2] in with_operand:
+            words.pop(0)  # attached operand: ``-s9``
+        else:
+            words.pop(0)
+
+
+def _strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
+    """Drop one leading wrapper (and its own options) from *words* in place; ``True`` if dropped.
+
+    ``launchers=False`` keeps a package-manager ``run`` launcher (``uv run``, ``poetry run`` ...)
+    in place: it syncs, and with ``--upgrade`` rewrites, the lock file and the environment before it
+    runs the command, so it is not a transparent wrapper to a caller that must not treat a wrapped
+    read as read-only (tb4n3 RC-6, ``domain.observation_selection``).
+    """
+
+    if not words:
+        return False
+    if _ASSIGNMENT_RE.match(words[0]):
+        words.pop(0)
+        return True
+    head = _basename(words[0])
+    if head in _PLAIN_WRAPPERS:
+        words.pop(0)
+        if head == "time" and words[:1] == ["-p"]:
+            words.pop(0)
+        return True
+    if head == "env":
+        words.pop(0)
+        while words and (words[0].startswith("-") or _ASSIGNMENT_RE.match(words[0])):
+            option = words.pop(0)
+            if option in _ENV_OPTIONS_WITH_OPERAND and words:
+                words.pop(0)
+        return True
+    if head == "nice":
+        words.pop(0)
+        if words[:1] in (["-n"], ["--adjustment"]) and len(words) >= 2:
+            del words[:2]
+        elif words and (_NICE_LEVEL_RE.match(words[0]) or words[0].startswith("--adjustment=")):
+            words.pop(0)
+        return True
+    if head == "ionice":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-c", "-n", "-p", "-P", "-u", "--class", "--classdata"}),
+            frozenset({"-t", "--ignore"}),
+        )
+        return True
+    if head == "stdbuf":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}),
+            frozenset(),
+        )
+        return True
+    if head == "timeout":
+        words.pop(0)
+        _drop_options(
+            words,
+            frozenset({"-k", "-s", "--kill-after", "--signal"}),
+            frozenset({"--foreground", "--preserve-status", "-v", "--verbose"}),
+        )
+        if words and _DURATION_RE.match(words[0]):
+            words.pop(0)
+        return True
+    if launchers and head in _RUN_LAUNCHERS and words[1:2] == ["run"]:
+        if any(word in _RUN_SCRIPT_OPTIONS for word in words[2:]):
+            # ``uv run --script build_model.py`` runs the agent's own script by its launcher.
+            return False
+        del words[:2]
+        while words and words[0].startswith("-"):
+            option = words.pop(0)
+            if option == "--":
+                break
+            if option in _RUN_OPTIONS_WITH_VALUE and words:
+                words.pop(0)
+        return True
+    return False
+
+
+def strip_one_wrapper(words: list[str], *, launchers: bool = True) -> bool:
+    """Remove one canonical wrapper, allowing callers to inspect each original layer first."""
+
+    return _strip_one_wrapper(words, launchers=launchers)
+
+
+def strip_wrappers(words: Sequence[str], *, launchers: bool = True) -> list[str]:
+    """*words* without the leading assignments and wrappers that do not change what is run.
+
+    The wrappers are those ``canonical_words`` lists. argv[0] keeps its path and spelling, so a
+    caller that classifies a command by its program (``domain.observation_selection``) can still
+    tell ``/usr/bin/pytest`` from the agent's own ``./pytest``. With ``launchers=False`` a
+    package-manager ``run`` launcher stays at the head, for a caller that classifies it itself.
+    """
+
+    rest = [word for word in words if type(word) is str]
+    for _ in range(_MAX_WRAPPER_ROUNDS):
+        if not _strip_one_wrapper(rest, launchers=launchers):
+            break
+    return rest
+
+
+def canonical_words(words: Sequence[str]) -> tuple[str, ...]:
+    """The canonical argv of one simple command (ADR-045); ``()`` when nothing is left.
+
+    Drops leading ``VAR=value`` assignments and the wrappers that do not change what is run
+    (``timeout``, ``nice``, ``ionice``, ``nohup``, ``stdbuf``, ``env``, ``setsid``, ``time``,
+    ``command``, ``exec`` and ``uv``/``poetry``/``pipenv``/``pdm``/``hatch``/``rye run``), reduces
+    argv[0] to its basename, ``python3`` and ``pythonX.Y`` to ``python`` (dropping interpreter
+    options that cannot change the outcome: ``-u``, ``-B``, ``-q``), ``python -m pytest`` and ``py.test`` to
+    ``pytest``. Arguments are never reordered, rewritten or dropped otherwise: two commands that
+    run different things never share a canonical form, and a missed equivalence only keeps two
+    forms apart.
+    """
+
+    rest = strip_wrappers(words)
+    if not rest:
+        return ()
+    head = _basename(rest[0]) or rest[0]
+    if _PYTHON_NAME_RE.fullmatch(head) is not None:
+        head = "python"
+        arguments = rest[1:]
+        while arguments and arguments[0] in _PYTHON_NEUTRAL_OPTIONS:
+            arguments.pop(0)
+        if arguments[:2] == ["-m", "pytest"]:
+            return ("pytest", *arguments[2:])
+        if arguments[:1] == ["-mpytest"]:
+            return ("pytest", *arguments[1:])
+        return (head, *arguments)
+    if head == "py.test":
+        head = "pytest"
+    return (head, *rest[1:])
+
+
+def canonical_commitment(key_material: bytes, kind: str, payload: str) -> str:
+    """The domain-separated keyed commitment to one canonical form (never a segment commitment)."""
+
+    if kind not in CANONICAL_KINDS or type(key_material) is not bytes:
+        raise ValueError("canonical_commitment_invalid")
+    if not 16 <= len(key_material) <= 64 or type(payload) is not str or "\x00" in payload:
+        raise ValueError("canonical_commitment_invalid")
+    digest = hmac.new(
+        key_material,
+        _CANONICAL_DOMAIN + kind.encode("ascii") + b"\x00" + payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"hmac-sha256:{digest}"
+
+
+def _joined(words: Sequence[str]) -> str:
+    return "\x1f".join(words)
+
+
+def _flag_payload(words: Sequence[str], token: str) -> str:
+    return f"{words[0]}\x1f{token}"
+
+
+def canonical_command_commitments(
+    key_material: bytes, argv: Sequence[str]
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """``(full, prefixes, flags)`` canonical commitments of one simple command's argv.
+
+    ``full`` is one commitment to the whole canonical argv; ``prefixes`` one per leading run of
+    two or more arguments shorter than the whole (up to ``_MAX_PREFIX_TOKENS``), so a planned
+    command that is the start of a longer run is recognised; ``flags`` one per distinct argument
+    after argv[0], keyed with argv[0], so the planned program with all of its planned flags is
+    recognised in any order. A command of a single argument has only ``full``.
+    """
+
+    words = canonical_words(argv)
+    if not words:
+        return (), (), ()
+    full = (canonical_commitment(key_material, "full", _joined(words)),)
+    prefixes = tuple(
+        canonical_commitment(key_material, "prefix", _joined(words[:size]))
+        for size in range(2, min(len(words) - 1, _MAX_PREFIX_TOKENS) + 1)
+    )
+    tokens = tuple(
+        dict.fromkeys(token for token in words[1:] if 0 < len(token) <= _MAX_TOKEN_CHARS)
+    )[:_MAX_FLAG_TOKENS]
+    flags = tuple(
+        canonical_commitment(key_material, "flag", _flag_payload(words, token)) for token in tokens
+    )
+    return full, prefixes, flags
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedSegment:
+    """The probes of one planned simple command, ready to test against an observed run.
+
+    ``exact`` is the segment's own keyed commitment (what ``command_segment_commitments`` has
+    always committed); ``full`` its canonical whole; ``prefix`` the prefix commitment of the
+    entire planned argv (``None`` under two arguments); ``flags`` one commitment per planned
+    argument after argv[0] (empty under two arguments).
+    """
+
+    exact: str
+    full: str | None
+    prefix: str | None
+    flags: tuple[str, ...]
+    # The command only sets the scene for the next one (``cd``, ``export``): a run of the other
+    # commands matches without it.
+    scene: bool = False
+    # The segment commitment of the canonical argv spelled as plain text: it is what a run whose
+    # own text already is its canonical form committed (such a run omits its ``full`` twin).
+    canonical_text: str | None = None
+
+
+def planned_segments(key_material: bytes, normalized: str) -> tuple[PlannedSegment, ...] | None:
+    """Probes for each simple command of a planned command, or ``None`` when unsplittable."""
+
+    structure = command_structure(normalized)
+    if structure is None:
+        return None
+    output: list[PlannedSegment] = []
+    for command in structure.commands:
+        words = command.words
+        if not words:
+            continue
+        flags: tuple[str, ...] = ()
+        prefix: str | None = None
+        if len(words) >= 2:
+            prefix = canonical_commitment(key_material, "prefix", _joined(words))
+            flags = tuple(
+                canonical_commitment(key_material, "flag", _flag_payload(words, token))
+                for token in dict.fromkeys(words[1:])
+                if 0 < len(token) <= _MAX_TOKEN_CHARS
+            )
+        output.append(
+            PlannedSegment(
+                observed_command_commitment(key_material, command.text),
+                canonical_commitment(key_material, "full", _joined(words)),
+                prefix,
+                flags,
+                bool(_SCENE_SETTING.intersection(words[:1])),
+                # Plain text only when it is unambiguous: ``pytest -k "foo bar"`` joined is
+                # ``pytest -k foo bar``, which is another command's text.
+                None
+                if any(_AMBIGUOUS_WORD_RE.search(word) for word in words)
+                else observed_command_commitment(key_material, " ".join(words)),
+            )
+        )
+    return tuple(output)
+
+
+def exact_segment_commitments(
+    key_material: bytes, normalized: str, *, reachability: bool = True
+) -> tuple[tuple[str, ...], str] | None:
+    """Sorted keyed commitments to ``normalized``'s segments, and its composition, or ``None``.
+
+    The whole-command commitment is never repeated here. Beyond ``MAX_SEGMENT_COMMITMENTS``
+    distinct segments only the first and last halves in command order are committed. These are
+    the commitments planned-verification matching has always compared, without the canonical
+    ones (``command_segment_commitments`` adds those on the observed side). A planned command
+    passes ``reachability=False``: its composition says whether its own outcome is one segment's
+    (``! X``, ``X &`` is not), read from its separators alone (``_collect``).
+    """
+
+    segments = command_segments(normalized, reachability=reachability)
+    if segments is None:
+        return None
+    whole = observed_command_commitment(key_material, normalized)
+    commitments = [
+        value
+        for value in dict.fromkeys(
+            observed_command_commitment(key_material, segment) for segment in segments.segments
+        )
+        if value != whole
+    ]
+    if not commitments:
+        return None
+    if len(commitments) > MAX_SEGMENT_COMMITMENTS:
+        half = MAX_SEGMENT_COMMITMENTS // 2
+        commitments = commitments[:half] + commitments[-half:]
+    return tuple(sorted(commitments)), segments.composition
+
+
+def command_segment_commitments(
+    key_material: bytes, normalized: str
+) -> tuple[tuple[str, ...], str] | None:
+    """What a hook commits beside the whole command: segments and canonical forms (ADR-045).
+
+    The sorted keyed commitments to ``normalized``'s segments (``exact_segment_commitments``)
+    together with the domain-separated canonical commitments of every simple command, at most
+    ``MAX_CANONICAL_COMMITMENTS`` of them: the ``full`` forms first, then prefixes, then flags, so
+    a bound only ever costs the looser matches. Also returns the composition. A command with
+    nothing to add (an unsplittable one, or a simple command whose canonical form is itself and
+    has no further arguments) returns ``None``, as it always did.
+    """
+
+    structure = command_structure(normalized)
+    if structure is None:
+        return None
+    whole = observed_command_commitment(key_material, normalized)
+    exact = exact_segment_commitments(key_material, normalized)
+    commitments = [] if exact is None else list(exact[0])
+    composition = exact[1] if exact is not None else structure.composition
+    markers = _derived_markers(key_material, normalized, whole, commitments, composition)
+    ranked: list[tuple[int, int, str]] = []
+    for order, command in enumerate(structure.commands):
+        if not command.words or command.words[0] in _NEVER_VERIFICATION:
+            continue
+        full, prefixes, flags = canonical_command_commitments(key_material, command.words)
+        if " ".join(command.words) == command.text:
+            # The segment's own commitment already identifies it; a ``full`` twin adds nothing.
+            full = ()
+        ranked.extend((0, order, value) for value in full)
+        ranked.extend((1, order, value) for value in prefixes)
+        ranked.extend((2, order, value) for value in flags)
+    taken = dict.fromkeys(value for _tier, _order, value in sorted(ranked))
+    canonical = [value for value in taken if value != whole and value not in commitments]
+    # The derived markers come out of the canonical budget, so the whole list stays within
+    # ``MAX_COMMAND_COMMITMENTS``: a bound only ever costs the looser planned matches.
+    budget = min(
+        MAX_CANONICAL_COMMITMENTS, MAX_COMMAND_COMMITMENTS - len(commitments) - len(markers)
+    )
+    merged = sorted({*commitments, *markers, *canonical[: max(budget, 0)]})
+    if not merged:
+        return None
+    return tuple(merged), composition
+
+
+_CERTIFICATION_DOMAIN: Final = b"yoetz/command-certifies/v1/"
+
+
+def segment_certification_commitment(segment_commitment: str) -> str:
+    """The marker that a listed segment ran exactly as listed (#1104), for one segment commitment.
+
+    A keyed derivative, never a commitment to text: SHA-256 over a fixed domain and the segment's
+    installation-keyed commitment, in the same ``hmac-sha256:`` form. Only the key's holder can
+    produce it for a command, any reader holding the segment commitment can recognize it, and it
+    can never equal a command, segment or canonical commitment. A success of a ``single`` or
+    ``and_chain`` command certifies a segment only when this marker sits beside it
+    (``kernel.observed_failures.certified_identities``): ``PYTEST_ADDOPTS=--co pytest -q`` lists
+    ``pytest -q`` for planned matching, but it did not run ``pytest -q``, so it carries no marker.
+    A list written before the marker existed certifies nothing.
+    """
+
+    digest = hashlib.sha256(_CERTIFICATION_DOMAIN + segment_commitment.encode("utf-8"))
+    return "hmac-sha256:" + digest.hexdigest()
+
+
+def _derived_markers(
+    key_material: bytes,
+    normalized: str,
+    whole: str,
+    commitments: Sequence[str],
+    composition: str,
+) -> list[str]:
+    """The derived markers committed beside a command's segments (#1104).
+
+    A certification marker for each listed segment some occurrence ran exactly as listed, only in
+    a ``single`` or ``and_chain`` command (a ``masked`` one certifies nothing anyway), and the
+    own-background-job stop marker (``domain.process_control.process_control_commitment``) of a
+    command that is not itself a verification run. Both travel inside the existing commitment list,
+    so no envelope, outbox or wire shape changes and an older build reads them as inert
+    commitments that match nothing.
+    """
+
+    from finishup.domain.process_control import own_job_stop_signal, process_control_commitment
+
+    markers: list[str] = []
+    if commitments and composition in {"single", "and_chain"}:
+        bare: set[str] = set()
+        if _collect(normalized, 0, [], None, bare)[0]:
+            listed = set(commitments)
+            for text in sorted(bare):
+                if "\x00" in text:
+                    continue
+                segment = observed_command_commitment(key_material, text)
+                if segment in listed:
+                    markers.append(segment_certification_commitment(segment))
+    stop = own_job_stop_signal(normalized)
+    if stop is not None:
+        # A verifier stopped by its own ``kill`` proves nothing; it keeps the ordinary duty.
+        from finishup.domain.observation_selection import command_is_verification
+
+        if not command_is_verification(normalized):
+            markers.append(process_control_commitment(stop, whole))
+    return sorted(set(markers))
+
+
+def _unquoted(value: str) -> str:
+    """``value`` with every quoted span blanked out, so only shell-visible text is inspected."""
+
+    output: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in value:
+        if escaped:
+            escaped = False
+            output.append(" ")
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            output.append(" ")
+            continue
+        if quote is None and char in "'\"":
+            quote = char
+            output.append(" ")
+            continue
+        if char == quote:
+            quote = None
+            output.append(" ")
+            continue
+        output.append(" " if quote is not None else char)
+    return "".join(output)
+
+
+def requested_command_shape(value: str) -> str:
+    """Classify a requested ``command`` item: ``command``, ``placeholder`` or ``prose``.
+
+    ``placeholder``: an unquoted ``<name>`` token (``<ciphertext_file>``, ``<output-dir>``) a
+    template left for the agent to fill; no shell would run it as written. ``prose``: three or
+    more plain words led by a capitalized one (``Broad GSEA CLI``), with no path, flag, option,
+    assignment or other shell syntax; such a description names no command a hook could observe.
+    Anything else, including every single token (``legacy-score``), is a ``command``.
+    """
+
+    if type(value) is not str:
+        return "command"
+    if _PLACEHOLDER_RE.search(_unquoted(value)) is not None:
+        return "placeholder"
+    words = value.split()
+    if (
+        len(words) >= 3
+        # Title case with at least two letters (``Broad``), so ``R CMD check pkg`` stays a command.
+        and len(words[0]) >= 2
+        and words[0][:1].isupper()
+        and words[0][1:2].islower()
+        and all(_PROSE_WORD_RE.fullmatch(word) is not None for word in words)
+    ):
+        return "prose"
+    return "command"
+
+
+# Words that start a process meant to outlive its launcher, at any wrapper layer of a segment.
+_DETACHING_WORDS: Final = frozenset({"nohup", "setsid", "disown", "daemonize", "start-stop-daemon"})
+# The conservative reading (PR #1080): a shell background operator (a lone ``&``, not ``&&``,
+# ``>&``, ``&>``, ``<&`` or ``|&``) or a detaching launcher anywhere in the raw text.
+_BACKGROUND_OPERATOR: Final = re.compile(r"(?<![&|<>])&(?![&>])")
+_DETACHING_WORD: Final = re.compile(
+    r"(?:^|[\s;|&(`])(?:nohup|setsid|disown|daemonize|start-stop-daemon)(?=$|[\s;|&)`])"
+)
+
+
+def pattern_may_background(text: str) -> bool:
+    """The conservative pattern reading of *text*: a lone ``&`` or a detaching word anywhere."""
+
+    return _BACKGROUND_OPERATOR.search(text) is not None or _DETACHING_WORD.search(text) is not None
+
+
+def _pattern_cleared_only_quoted_ampersands(text: str) -> bool:
+    """Whether every hit of the pattern in *text* is an ``&`` inside a quoted or escaped span.
+
+    The grammar's quiet answer is bounded by this, so it can never be quieter than the pattern
+    except for such an ``&`` (#1089 item 1): a detaching word anywhere, or an ``&`` the quote
+    scan leaves visible, keeps the pattern's answer whatever the splitter made of the text.
+    The quote scan knows only quotes and backslashes, but bash ignores a quote character in a
+    comment or a here-document body, and such a quote can make the scan blank a real top-level
+    ``&`` the splitter also misread (``echo x \\<newline>#'<newline>w & #'``). Text with a ``#``
+    or a ``<<`` anywhere therefore keeps the pattern too.
+    """
+
+    return (
+        "#" not in text
+        and "<<" not in text
+        and _DETACHING_WORD.search(text) is None
+        and _BACKGROUND_OPERATOR.search(_unquoted(text)) is None
+    )
+
+
+# Programs that, in the forms accepted here, never hand an argument to a shell or an interpreter,
+# nor read code from stdin: a quoted ``&`` in their arguments is data. Everything else (a shell,
+# ``eval``, ``sudo``, ``ssh``, ``xargs``, ``find``, ``awk``, ``git``, ``trap``, ``wget`` with its
+# ``-b``/``--use-askpass``/``-e``, any interpreter ...) stays undecided, so the caller keeps its
+# conservative pattern. ``sed`` is listed only for one plain ``s`` command (its ``e`` flag and
+# command run the pattern space through a shell; see ``_inert_sed``) and ``rg`` only without a
+# ``--pre`` preprocessor, which runs a command for every file searched.
+_INERT_PROGRAMS: Final = frozenset(
+    {
+        "curl",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "echo",
+        "printf",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "ls",
+        "jq",
+        "cd",
+        "pwd",
+        "true",
+        "false",
+        "sed",
+    }
+)
+# One ``s`` command: ``s<d>pattern<d>replacement<d>`` plus flags that run nothing (``e`` runs the
+# result through a shell and ``w`` writes a file, so neither is inert).
+_SED_FLAGS: Final = frozenset("gpiImM0123456789")
+_SED_SCRIPT_OPTIONS: Final = frozenset({"-e", "--expression"})
+_SED_PLAIN_OPTIONS: Final = frozenset(
+    {"-n", "-E", "-r", "-s", "-u", "-z", "--quiet", "--silent", "--regexp-extended"}
+)
+
+
+def _plain_sed_substitution(script: str) -> bool:
+    if len(script) < 4 or script[0] != "s" or script[1] in "\\\n" or script[1].isalnum():
+        return False
+    delimiter = script[1]
+    parts = 0
+    index = 2
+    while index < len(script) and parts < 2:
+        char = script[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            return False
+        if char == delimiter:
+            parts += 1
+        index += 1
+    return parts == 2 and all(flag in _SED_FLAGS for flag in script[index:])
+
+
+def _inert_sed(arguments: Sequence[str]) -> bool:
+    """One plain ``s`` command (no ``e``/``w`` flag, no script file) and files with no ``&``."""
+
+    scripts: list[str] = []
+    operands: list[str] = []
+    rest = list(arguments)
+    while rest:
+        word = rest.pop(0)
+        if word in _SED_SCRIPT_OPTIONS:
+            if not rest:
+                return False
+            scripts.append(rest.pop(0))
+        elif word in _SED_PLAIN_OPTIONS or word == "-i" or word.startswith("--in-place"):
+            continue
+        elif word.startswith("-") and word != "-":
+            return False  # ``-f script``, ``-i.bak`` spellings and anything unknown
+        else:
+            operands.append(word)
+    if not scripts and operands:
+        scripts.append(operands.pop(0))
+    return (
+        len(scripts) == 1
+        and _plain_sed_substitution(scripts[0])
+        and not any("&" in operand for operand in operands)
+    )
+
+
+def _inert_program(words: Sequence[str]) -> bool:
+    head = _basename(words[0])
+    if head not in _INERT_PROGRAMS or words[0] != head:
+        # A path (``./curl``) is the agent's own program, not the known one.
+        return False
+    if head == "rg":
+        # ``--pre``/``--pre=`` (and ``--pre-glob``) run a preprocessor command for each file.
+        return not any(word.startswith("--pre") for word in words[1:])
+    if head == "printf":
+        # ``printf -v PATH ...`` assigns a shell variable, which can change what runs next.
+        return not any(word.startswith("-v") for word in words[1:])
+    return head != "sed" or _inert_sed(words[1:])
+
+
+def _segment_may_background(segment: str, depth: int) -> bool | None:
+    if any(token in segment for token in ("$(", "`", "<(", ">(")):
+        # A command or process substitution runs its own commands inside this segment.
+        return None
+    layer = _split_words(segment)
+    wrapped = False
+    for _ in range(_MAX_WRAPPER_ROUNDS + 1):
+        if not layer:
+            break
+        if _basename(layer[0]) in _DETACHING_WORDS:
+            return True
+        if not _strip_one_wrapper(layer):
+            break
+        wrapped = True
+    if not layer:
+        return None
+    inner = wrapped_shell_argument(layer)
+    if inner is not None:
+        verdict = None if depth >= _MAX_DEPTH else command_may_background(inner, _depth=depth + 1)
+    else:
+        verdict = False if _inert_program(layer) else None
+    if verdict is False and wrapped:
+        # A stripped layer can change what runs: ``env -S`` runs its operand as the command,
+        # ``LD_PRELOAD=``/``BASH_ENV=`` load code and ``PATH=.`` swaps the program. Only a
+        # backgrounding answer survives it; a quiet one goes back to the conservative pattern.
+        return None
+    return verdict
+
+
+def command_may_background(text: str, *, _depth: int = 0) -> bool | None:
+    """Whether the shell text can leave a process running past its call, by shell grammar.
+
+    ``True`` for a top-level ``&`` separator (``&&``, ``>&``, ``&>`` and a quoted ``&`` are not
+    one), an ``&`` in a here-document body, a detaching word (``nohup``, ``setsid``, ``disown``,
+    ``daemonize``, ``start-stop-daemon``) at any wrapper layer of a segment, or a ``sh -c``
+    argument that backgrounds (read recursively). ``False`` only when none of these hold and every
+    segment runs, with no wrapper or assignment in front, a program known never to run its
+    arguments or stdin as code in the form given (``curl``, ``grep``, ``rg`` without ``--pre``,
+    ``echo``, ``jq``, one plain ``sed`` substitution ...): a quoted ``&`` there
+    (``curl 'h?a=1&b=2'``, ``sed 's/x/&/'``) backgrounds nothing. ``None`` otherwise, including
+    any command or process substitution, ANSI-C quoting (``$'...'``), a wrapper or assignment
+    (``env -S``, ``LD_PRELOAD=``, ``PATH=``) in front of such a program, a privilege wrapper
+    (``sudo``), a program that hands an argument or its stdin to a shell or interpreter, and
+    text that is not splittable, and an unquoted here-document body with a ``$`` or a backtick
+    (command substitution). The quiet answer is also bounded by construction: it is ``None``
+    whenever the conservative pattern (``pattern_may_background``) sees a detaching word anywhere
+    or an ``&`` outside a quoted or escaped span, or the text holds a ``#`` or a ``<<`` (a comment
+    or a here-document body can hold a quote bash ignores), so where the splitter misreads the
+    text the caller keeps its pattern. This answer is therefore never quieter than that pattern
+    except for a quoted ``&`` in a call made only of those known programs. The answer is about the
+    text only; it never proves that no process outlives the call.
+    """
+
+    if type(text) is not str or len(text) > _MAX_TEXT_CHARS:
+        return None
+    split = _split_top_level(text)
+    if split is None:
+        return None
+    if "&" in split.separators:
+        return True
+    bodies = [body for owned in split.bodies.values() for body in owned]
+    if any("&" in body for body in bodies):
+        return True
+    # ANSI-C quoting (``$'\''``) escapes a quote the splitter reads as closing one, so a real
+    # top-level ``&`` can look quoted: never a quiet answer for such text. An unquoted
+    # here-document body runs command substitution (``$(setsid -f w)``), so a body with a ``$``
+    # or a backtick is undecided too.
+    undecided = (
+        not split.segments or "$'" in text or any("$" in body or "`" in body for body in bodies)
+    )
+    for segment in split.segments:
+        verdict = _segment_may_background(segment, _depth)
+        if verdict is True:
+            return True
+        undecided = undecided or verdict is None
+    if undecided or not _pattern_cleared_only_quoted_ampersands(text):
+        return None
+    return False

@@ -1,6 +1,6 @@
 # Quarantine recovery runbook
 
-This runbook gives operators a safe, preserve-first procedure when Yoetz classifies a catalog,
+This runbook gives operators a safe, preserve-first procedure when FinishUP classifies a catalog,
 bundle, object, tail, or migration state as corrupt, unsafe, or quarantined. It exists to prevent
 speculative repair, direct database edits, deletion of evidence, key resets, and confusing
 projection repair with canonical-data recovery.
@@ -16,7 +16,7 @@ remain available; payload reads still require a valid key and a safe verified st
 
 Do these in order, immediately:
 
-1. **Stop retrying with new request IDs**, and stop all Yoetz CLI/MCP processes for this
+1. **Stop retrying with new request IDs**, and stop all FinishUP CLI/MCP processes for this
    installation. Do not kill unrelated processes, and let a shielded commit the current process
    reports as in-flight finish on its own.
 2. **Preserve the original bundle/catalog/quarantine records exactly where the runtime placed

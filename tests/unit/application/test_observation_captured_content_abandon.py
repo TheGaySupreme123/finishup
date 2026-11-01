@@ -11,24 +11,24 @@ from types import SimpleNamespace
 import apsw
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.application.observation_verification import ObservationVerificationJob
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.application.observation_verification import ObservationVerificationJob
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.observability.diagnostics import lookup_diagnostic_records
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.observability.diagnostics import lookup_diagnostic_records
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _COMMITMENT = "hmac-sha256:" + "c" * 64

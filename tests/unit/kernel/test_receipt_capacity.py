@@ -8,14 +8,14 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
-from yoetz.domain.events import AcceptedEvent, CheckRecordedPayload, LedgerRecord
-from yoetz.domain.receipts import semantic_coverage_gap_code
-from yoetz.kernel.deterministic_checks import healthy_storage_availability
-from yoetz.kernel.receipt_capacity import (
+from finishup.domain.events import AcceptedEvent, CheckRecordedPayload, LedgerRecord
+from finishup.domain.receipts import semantic_coverage_gap_code
+from finishup.kernel.deterministic_checks import healthy_storage_availability
+from finishup.kernel.receipt_capacity import (
     _receipt_gap_codes_validated,  # pyright: ignore[reportPrivateUsage]
     receipt_gap_codes,
 )
-from yoetz.kernel.reducers import replay, replay_with_index
+from finishup.kernel.reducers import replay, replay_with_index
 
 
 def _prefix_through_check() -> tuple[tuple[LedgerRecord, ...], CheckRecordedPayload]:

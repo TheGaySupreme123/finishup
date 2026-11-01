@@ -16,15 +16,16 @@ from typing import Any, Final, cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_awaiting_human
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckAwaitingHumanModel,
     CheckResultModel,
     CheckSuccessModel,
     StatusOperationPageModel,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _PENDING: Final = f"ppr_{uuid.uuid4()}"
 _REQUEST: Final = f"req_{uuid.uuid4()}"
@@ -56,7 +57,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
         "kind": "privacy_disclosure_decision",
         "pending_id": _PENDING,
         "expires_at": "2026-08-05T13:00:00.000Z",
-        "command": ["yoetz", "privacy", "decide-disclosure", _PENDING],
+        "command": ["finishup", "privacy", "decide-disclosure", _PENDING],
         "replay_request_id": _REQUEST,
         "instruction": _INSTRUCTION,
     }
@@ -67,7 +68,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
 def _repository_grant_continuation(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "kind": "repository_privacy_setup",
-        "command": ["yoetz", "--privacy"],
+        "command": ["finishup", "--privacy"],
         "replay_request_id": _REQUEST,
         "instruction": (
             "Use the trusted local privacy ceremony, then replay this exact request id."
@@ -112,16 +113,73 @@ def test_the_awaiting_branch_validates_and_discriminates_on_state() -> None:
     assert result.root.continuation.pending_id == _PENDING
 
 
+def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> None:
+    result = CheckResultModel.model_validate(
+        _awaiting(
+            state="awaiting_input",
+            semantic_status="awaiting_input",
+            semantic_reason="review_input_required",
+            continuation={
+                "kind": "review_input_required",
+                "command": ["finishup", "publish-work", "--input", "PATH"],
+                "replay_request_id": _REQUEST,
+                "instruction": "Supply the statement, then replay this exact request.",
+            },
+        )
+    )
+
+    assert type(result.root) is CheckAwaitingHumanModel
+    assert result.root.state == "awaiting_input"
+    assert result.root.semantic_reason == "review_input_required"
+    assert result.root.continuation.kind == "review_input_required"
+
+    rendered = render_human_awaiting_human(result.root)
+    assert "awaiting_input (review_input_required)" in rendered
+    assert "complete review input" in rendered
+    assert "finishup publish-work --input PATH" in rendered
+    assert "awaiting_human (human_approval_required)" not in rendered
+
+
 def test_the_branch_carries_the_exact_command_the_user_must_run() -> None:
     result = CheckResultModel.model_validate(_awaiting())
     assert type(result.root) is CheckAwaitingHumanModel
 
     assert result.root.continuation.command == (
-        "yoetz",
+        "finishup",
         "privacy",
         "decide-disclosure",
         _PENDING,
     )
+
+
+def test_completed_check_operation_page_carries_withheld_item_identity() -> None:
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "semantic_withheld_items": [
+                {"item_id": "excerpt-heuristic", "reason": "never_send_heuristic"}
+            ],
+        }
+    )
+    items = page.semantic_withheld_items
+    assert items is not None
+    assert items[0].item_id == "excerpt-heuristic"
+    assert items[0].reason == "never_send_heuristic"
+
+
+def test_old_completed_check_operation_page_omits_withheld_items() -> None:
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+        }
+    )
+    assert page.semantic_withheld_items is None
 
 
 def test_missing_repository_grant_carries_standing_setup_without_one_use_fields() -> None:
@@ -132,7 +190,7 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 
     continuation = result.root.continuation
     assert continuation.kind == "repository_privacy_setup"
-    assert continuation.command == ("yoetz", "--privacy")
+    assert continuation.command == ("finishup", "--privacy")
     assert continuation.pending_id is None
     assert continuation.expires_at is None
 
@@ -144,13 +202,53 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 def test_both_continuation_schema_branches_accept_only_their_exact_commands(
     continuation: dict[str, Any],
 ) -> None:
-    valid = _awaiting(continuation=continuation)
-    validate_schema_instance("check-result", "1.0.0", cast(JsonValue, valid))
+    # The released 1.0.0 contract fixes the head to the pre-rename launcher; the current version
+    # names ``finishup`` and still admits the legacy head an older service emitted (ADR-048).
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    validate_schema_instance(
+        "check-result", "1.0.0", cast(JsonValue, _awaiting(continuation=legacy))
+    )
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, _awaiting()))
+    for body in (continuation, legacy):
+        validate_schema_instance(
+            "check-result", "1.4.0", cast(JsonValue, _awaiting(continuation=body))
+        )
     invalid = _awaiting(
         continuation={**continuation, "command": ["x"] * len(continuation["command"])}
     )
-    with pytest.raises(ProtocolValueError):
-        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, invalid))
+    for version in ("1.0.0", "1.4.0"):
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("check-result", version, cast(JsonValue, invalid))
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (_continuation(), _repository_grant_continuation()),
+)
+def test_the_model_admits_the_legacy_launcher_head_and_renders_the_current_one(
+    continuation: dict[str, Any],
+) -> None:
+    from finishup.mcp.summaries import _awaiting_continuation_command
+
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    result = CheckResultModel.model_validate(_awaiting(continuation=legacy))
+    assert type(result.root) is CheckAwaitingHumanModel
+    assert result.root.continuation.command[0] == "yoetz"
+    rendered = _awaiting_continuation_command(legacy["kind"], legacy["command"])
+    assert rendered == " ".join(["finishup", *continuation["command"][1:]])
+    assert rendered == _awaiting_continuation_command(continuation["kind"], continuation["command"])
+    # The CLI rendering names the current launcher too, never the pre-rename alias.
+    current = CheckResultModel.model_validate(_awaiting(continuation=continuation))
+    assert type(current.root) is CheckAwaitingHumanModel
+    human = render_human_awaiting_human(result.root)
+    assert f"  {rendered}\n" in human
+    assert "yoetz" not in human
+    assert human == render_human_awaiting_human(current.root)
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            _awaiting(continuation={**continuation, "command": ["yoetzz", *legacy["command"][1:]]})
+        )
 
 
 @pytest.mark.parametrize("field", ("pending_id", "expires_at"))
@@ -188,7 +286,7 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
     other = f"ppr_{uuid.uuid4()}"
     body = _awaiting(
         continuation=_continuation(
-            command=["yoetz", "privacy", "decide-disclosure", other],
+            command=["finishup", "privacy", "decide-disclosure", other],
         )
     )
 
@@ -199,8 +297,8 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
 @pytest.mark.parametrize(
     "command",
     (
-        ["yoetz", "privacy", "decide-disclosure"],
-        ["yoetz", "privacy", "decide-policy", _PENDING],
+        ["finishup", "privacy", "decide-disclosure"],
+        ["finishup", "privacy", "decide-policy", _PENDING],
         ["sh", "-c", "decide-disclosure", _PENDING],
     ),
 )
@@ -232,6 +330,65 @@ def test_a_terminal_check_still_validates_and_declares_complete() -> None:
     assert result.root.state == "complete"
 
 
+_REDACTED_WIRE: Final = [
+    {
+        "disposition": "value_replaced",
+        "item_id": "excerpt-a",
+        "lines": [3, 7],
+        "source_ref": "evd_10000000-0000-4000-8000-000000000021",
+    },
+    {"disposition": "item_withheld", "item_id": "excerpt-heuristic", "lines": [2]},
+]
+
+
+def test_check_result_and_operation_page_accept_redacted_value_refs_and_lines() -> None:
+    """PL2-1 (issue #982): bounded structural entries validate on both public shapes."""
+
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    result = CheckResultModel.model_validate(
+        {**_check_result_wire(), "semantic_redacted_values": _REDACTED_WIRE}
+    )
+    assert type(result.root) is CheckSuccessModel
+    assert result.root.semantic_redacted_values[0].lines == (3, 7)
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "semantic_redacted_values": _REDACTED_WIRE,
+        }
+    )
+    assert page.semantic_redacted_values is not None
+    assert page.semantic_redacted_values[1].source_ref is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        {"disposition": "value_replaced", "item_id": "x", "lines": [3, 1]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [0]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "s3cr3t"},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "source_ref": "a/b"},
+        {"disposition": "other", "item_id": "x", "lines": [1]},
+    ),
+)
+def test_redacted_value_entries_reject_anything_but_bounded_structure(
+    entry: dict[str, Any],
+) -> None:
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            {**_check_result_wire(), "semantic_redacted_values": [entry]}
+        )
+
+
 def test_operation_status_returns_the_same_continuation_for_a_pending_check() -> None:
     page = StatusOperationPageModel.model_validate(
         {
@@ -246,6 +403,30 @@ def test_operation_status_returns_the_same_continuation_for_a_pending_check() ->
     assert page.continuation is not None
     assert page.continuation.pending_id == _PENDING
     assert page.continuation.command[3] == _PENDING
+
+
+def test_operation_status_trusted_command_names_the_current_launcher() -> None:
+    from finishup.cli.render import _continuation_command
+
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "pending",
+            "operation_kind": "check",
+            # A pre-rename service named the legacy launcher (ADR-048).
+            "continuation": {
+                **_continuation(),
+                "command": ["yoetz", *_continuation()["command"][1:]],
+            },
+        }
+    )
+
+    assert page.continuation is not None
+    assert page.continuation.command[0] == "yoetz"
+    assert (
+        _continuation_command(page.continuation) == f"finishup privacy decide-disclosure {_PENDING}"
+    )
 
 
 def test_operation_status_recovers_the_same_standing_repository_grant_handoff() -> None:
@@ -307,3 +488,85 @@ def test_a_continuation_outside_a_pending_check_is_rejected(state: str, kind: st
                 "continuation": _continuation(),
             }
         )
+
+
+def _check_outcome() -> dict[str, Any]:
+    target = f"res_{uuid.uuid4()}"
+    return {
+        "verdict": "insufficient_coverage",
+        "agent_next": "Next: supply_missing_input (action_required). Supply each item below once.",
+        "overall_next": {
+            "action": "supply_missing_input",
+            "status": "action_required",
+            "target_refs": [target],
+        },
+        "missing_for_assessment": [
+            {
+                "kind": "verification_output",
+                "target_refs": [target],
+                "availability": "agent_suppliable",
+            }
+        ],
+        "semantic_status": "succeeded",
+        "semantic_reason": "semantic_completed",
+        "semantic_conclusion": "insufficient_packet",
+        "result_frontier": {"sequence": "7", "head_digest": f"sha256:{'2' * 64}"},
+    }
+
+
+def test_a_completed_check_page_carries_its_outcome() -> None:
+    """W6 (#1107): recovery after a lost or cut result repeats the verdict and the lead."""
+
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "check_outcome": _check_outcome(),
+        }
+    )
+    assert page.check_outcome is not None
+    assert page.check_outcome.missing_for_assessment[0].kind == "verification_output"
+    # The page-level frontier rule for a non-publish completion is unchanged.
+    assert page.result_frontier is None
+
+
+@pytest.mark.parametrize(
+    ("state", "kind", "found"),
+    (
+        ("pending", "check", True),
+        ("complete", "publish_work", True),
+        ("complete", "receipt", True),
+        ("quarantined", "check", True),
+        ("absent", None, False),
+    ),
+)
+def test_check_outcome_only_on_a_completed_check_page(
+    state: str, kind: str | None, found: bool
+) -> None:
+    with pytest.raises(ValidationError, match="status_operation_page_invalid"):
+        StatusOperationPageModel.model_validate(
+            {
+                "operation_request_id": _REQUEST,
+                "found": found,
+                "state": state,
+                **({} if kind is None else {"operation_kind": kind}),
+                "check_outcome": _check_outcome(),
+            }
+        )
+
+
+def test_check_outcome_rejects_text_outside_the_closed_lead() -> None:
+    for agent_next in ("", "line one\nline two", "café", "x" * 2049):
+        outcome = {**_check_outcome(), "agent_next": agent_next}
+        with pytest.raises(ValidationError):
+            StatusOperationPageModel.model_validate(
+                {
+                    "operation_request_id": _REQUEST,
+                    "found": True,
+                    "state": "complete",
+                    "operation_kind": "check",
+                    "check_outcome": outcome,
+                }
+            )

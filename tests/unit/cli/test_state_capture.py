@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters import git_subject_state
-from yoetz.cli.app import app
+from finishup.adapters import git_subject_state
+from finishup.cli.app import app
 
 _RUNNER = CliRunner()
 

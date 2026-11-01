@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-import yoetz.cli.app as module
-import yoetz.cli.unlock as unlock_module
+import finishup.cli.app as module
+import finishup.cli.unlock as unlock_module
 
 
 class _Client:
@@ -31,6 +31,8 @@ class _Client:
 
 
 class _Store:
+    custody = "platform_store"
+
     def __init__(
         self,
         secret: bytearray | None,
@@ -76,14 +78,14 @@ class _Store:
 def test_auto_unlock_store_uses_daemon_environment_scope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.adapters.keys.os_keyring as keyring_module
-    import yoetz.config.load as config_module
-    import yoetz.config.paths as paths_module
+    import finishup.adapters.keys.os_keyring as keyring_module
+    import finishup.config.load as config_module
+    import finishup.config.paths as paths_module
 
     selected = tmp_path / "environment-selected-data"
     sentinel = object()
     seen: dict[str, object] = {}
-    monkeypatch.setenv("YOETZ_STORAGE_DATA_DIR", str(selected))
+    monkeypatch.setenv("FINISHUP_STORAGE_DATA_DIR", str(selected))
 
     def fake_load(overrides: object, env: object, config_path: object) -> SimpleNamespace:
         seen["overrides"] = overrides
@@ -128,7 +130,8 @@ async def test_auto_unlock_status_reports_service_verified_stale_without_secret(
 
     report = json.loads(capsys.readouterr().out)
     assert report == {
-        "next_command": "yoetz service auto-unlock repair",
+        "custody": "platform_store",
+        "next_command": "finishup service auto-unlock repair",
         "schema": "yoetz.auto-unlock-status/2",
         "service_state": "locked",
         "service_state_reason": "auto_unlock_stale",
@@ -162,7 +165,7 @@ async def test_auto_unlock_status_prioritizes_service_rejection(
 
     report = json.loads(capsys.readouterr().out)
     assert report["state"] == "rejected"
-    assert report["next_command"] == "yoetz service auto-unlock repair"
+    assert report["next_command"] == "finishup service auto-unlock repair"
 
 
 @pytest.mark.anyio
@@ -186,7 +189,7 @@ async def test_auto_unlock_status_reports_initialization_orphan_with_repair_path
     report = json.loads(capsys.readouterr().out)
     assert report["state"] == "initialization_orphaned"
     assert report["slots"]["staged_initialization"] == "present"
-    assert report["next_command"] == "yoetz service auto-unlock repair"
+    assert report["next_command"] == "finishup service auto-unlock repair"
 
 
 @pytest.mark.anyio
@@ -209,7 +212,7 @@ async def test_auto_unlock_status_reports_unreconciled_staged_initialization(
 
     report = json.loads(capsys.readouterr().out)
     assert report["state"] == "initialization_unreconciled"
-    assert report["next_command"] == "yoetz service restart"
+    assert report["next_command"] == "finishup service restart"
 
 
 @pytest.mark.anyio
@@ -255,7 +258,7 @@ async def test_auto_unlock_repair_discards_initialization_orphan_with_proof(
 
     report = json.loads(capsys.readouterr().out)
     assert report["outcome"] == "initialization_orphan_cleared"
-    assert report["next_command"] == "yoetz consent prepare vault_initialize"
+    assert report["next_command"] == "finishup consent prepare vault_initialize"
     assert store.discarded == 1
     assert store.guard_acquisitions == 1, "discard must happen under the exclusive guard"
     assert client.closed
@@ -323,7 +326,7 @@ async def test_auto_unlock_repair_proves_passphrase_before_saving_and_wipes_it(
 async def test_auto_unlock_repair_names_the_missing_trusted_tty_instead_of_bad_input(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No console Yoetz owns is an environment fact; 'invalid input' sent operators hunting."""
+    """No console FinishUP owns is an environment fact; 'invalid input' sent operators hunting."""
 
     client = _Client(state="locked", reason="passphrase_required")
 
@@ -372,7 +375,7 @@ def test_foreground_terminal_accepts_macos_controlling_tty_alias(
     def fake_tcgetpgrp(_fd: int) -> int:
         return 41
 
-    import yoetz.cli.trusted_console as console_module
+    import finishup.cli.trusted_console as console_module
 
     monkeypatch.setattr(console_module.os, "isatty", fake_isatty)
     monkeypatch.setattr(console_module.os, "open", fake_open)
@@ -521,3 +524,24 @@ async def test_unlock_vault_skips_stored_entry_when_service_reports_stale(
 
 async def _async_value(value: Any) -> Any:
     return value
+
+
+@pytest.mark.anyio
+async def test_a_deliberate_passphrase_vault_is_not_told_to_store_its_passphrase(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #1119 (Azure WSL run): `setup vault --passphrase` keeps no copy by choice."""
+
+    store = _Store(None, "auto_unlock_absent")
+    client = _Client(state="locked", reason="passphrase_required")
+    monkeypatch.setattr(module, "_auto_unlock_store", lambda: store)
+    monkeypatch.setattr(module, "build_service_client", lambda: _async_value(client))
+
+    assert await module._service_auto_unlock_status(True) == 20  # pyright: ignore[reportPrivateUsage]
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["state"] == "absent"
+    assert report["custody"] is None
+    assert report["next_command"] is None
+    assert "auto-unlock enable" in report["note"]
+    assert "repair" not in json.dumps(report)

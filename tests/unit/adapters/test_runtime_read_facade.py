@@ -19,9 +19,9 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters import runtime as runtime_module
-from yoetz.application import status as status_module
-from yoetz.ports.ledger import LedgerPort
+from finishup.adapters import runtime as runtime_module
+from finishup.application import status as status_module
+from finishup.ports.ledger import LedgerPort
 
 # ``execute_status`` is the read-routed entry point: it routes with ``RouteAccess.PAYLOAD_READ``
 # and therefore receives the facades below rather than the real ports. Write and import-review
@@ -85,6 +85,8 @@ def test_read_ledger_can_look_up_an_operation() -> None:
     assert callable(getattr(facade, "lookup_operation", None))
     assert callable(getattr(facade, "lookup_task_operation", None))
     assert callable(getattr(facade, "load_disclosure_wait", None))
+    # Closure readiness (#913) must see a check that holds the frontier through the read route.
+    assert callable(getattr(facade, "has_active_frozen_case", None))
 
 
 @dataclass(frozen=True)

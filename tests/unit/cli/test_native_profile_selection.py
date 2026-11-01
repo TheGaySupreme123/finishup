@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.integrations.cursor_integration import render_cursor_plugin
-from yoetz.cli.app import app
-from yoetz.cli.cursor_integration import plugin_artifact as cursor_artifact
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
+from finishup.adapters.integrations.cursor_integration import render_cursor_plugin
+from finishup.cli.app import app
+from finishup.cli.cursor_integration import plugin_artifact as cursor_artifact
+from finishup.ports.plugin_artifacts import PluginFormatProfile
 
 
 def test_claude_export_selects_ordinary_without_granting_content(tmp_path: Path) -> None:

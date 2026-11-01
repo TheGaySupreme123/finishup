@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import multi_agent_service
-from yoetz.domain.host_lineage import host_lineage_from_payload
-from yoetz.domain.observation import ObservationSource
-from yoetz.domain.values import JsonValue
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.domain.host_lineage import host_lineage_from_payload
+from finishup.domain.observation import ObservationSource
+from finishup.domain.values import JsonValue
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 _REPOSITORY = RepositoryPrivacyContext("hmac-sha256:" + "d" * 64, "git_common_root")

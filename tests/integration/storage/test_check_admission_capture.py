@@ -22,24 +22,24 @@ from conformance.adapters.test_ledger_port import (
     _observation_command,  # pyright: ignore[reportPrivateUsage]
     ledger_command,
 )
-from integration.storage.test_capture_freeze_barrier import (
-    _ticket,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
 )
-from yoetz.ports.ledger import (
+from finishup.ports.ledger import (
     AppendCommand,
     CheckAdmissionStage,
     FrozenCase,
     check_admission_stage,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from integration.storage.test_capture_freeze_barrier import (
+    _ticket,  # pyright: ignore[reportPrivateUsage]
+)
 
 _DIGEST = "sha256:" + "9" * 64
 

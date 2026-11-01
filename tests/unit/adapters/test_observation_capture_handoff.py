@@ -10,8 +10,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     CAPTURE_HANDOFF_RECONCILE_AGE_MS,
     CaptureHandoffRetirementReason,
     CaptureHandoffRetirementStage,
@@ -21,10 +21,10 @@ from yoetz.domain.observation import (
     ObservationGapCode,
     ObservationSource,
 )
-from yoetz.domain.observation_budget import LARGEST_CAPACITY
-from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp, timestamp_from_datetime
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.domain.observation_budget import LARGEST_CAPACITY
+from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp, timestamp_from_datetime
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 
 # The oldest capture receipt in the issue's native run.
 _START = datetime(2026, 9, 25, 7, 47, 6, 537_000, tzinfo=UTC)
@@ -93,8 +93,8 @@ def _reserve_known(
     )
 
 
-def test_one_retained_handoff_trips_oldest_age_with_an_empty_queue(tmp_path: Path) -> None:
-    """The issue's isolated reproduction: the age gate itself is unchanged."""
+def test_one_aged_handoff_requests_maintenance_without_refusing_new_content(tmp_path: Path) -> None:
+    """Age remains maintenance demand, not a capacity refusal."""
 
     wall = _Wall()
     store, workspace = _store(tmp_path, wall)
@@ -126,11 +126,11 @@ def test_one_retained_handoff_trips_oldest_age_with_an_empty_queue(tmp_path: Pat
     budget = cast(Mapping[str, object], stalled["effective_budget"])
     assert stalled["queue_count"] == 0
     assert stalled["oldest_pending_age_ms"] == 61_000
-    assert stalled["pressure_state"] == "hard_limit"
-    assert stalled["effective_mode"] == "focused"
-    assert budget["limiting_dimension"] == "oldest_age"
-    assert stalled["admission_allowed"] is False
-    assert stalled["content_allowed"] is False
+    assert stalled["pressure_state"] == "healthy"
+    assert stalled["effective_mode"] == "detailed"
+    assert budget["limiting_dimension"] == "capture_backlog"
+    assert stalled["admission_allowed"] is True
+    assert stalled["content_allowed"] is True
     # The same aged reservation is durable maintenance demand, independent of
     # the admission booleans above and of an empty outbox.
     assert store.capture_handoff_candidates(workspace) == (_TASK,)

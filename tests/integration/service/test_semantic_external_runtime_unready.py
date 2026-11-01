@@ -12,9 +12,15 @@ from typing import cast
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics_module
-import yoetz.service.ready_composition as ready_composition_module
+import finishup.observability.diagnostics as diagnostics_module
+import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import FixedClock
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.domain.privacy import ProviderBinding
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.models import SemanticReason, SemanticStatus
 from integration.service.test_semantic_non_dispatch import (
     _INSTALLATION,  # pyright: ignore[reportPrivateUsage]
     _REQUEST,  # pyright: ignore[reportPrivateUsage]
@@ -24,12 +30,6 @@ from integration.service.test_semantic_non_dispatch import (
     _records,  # pyright: ignore[reportPrivateUsage]
     _route,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.domain.privacy import ProviderBinding
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.models import SemanticReason, SemanticStatus
 
 pytestmark = pytest.mark.anyio
 

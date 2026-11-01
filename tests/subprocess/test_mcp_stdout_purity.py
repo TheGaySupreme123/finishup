@@ -12,7 +12,7 @@ def test_python_stdout_is_redirected_while_transport_owns_fd_one() -> None:
     child = r"""
 import anyio
 import sys
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     async with bounded_stdio_server(512) as (read_stream, write_stream):

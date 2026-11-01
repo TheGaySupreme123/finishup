@@ -6,16 +6,16 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     canonical_logical_identity,
     materialize_observation_envelope,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _TASK = "tsk_00000000-0000-4000-8000-000000000001"
 _SESSION = "hmac-sha256:" + ("ab" * 32)

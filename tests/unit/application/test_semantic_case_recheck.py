@@ -25,14 +25,14 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.semantic_case import build_semantic_case
-from yoetz.domain.events import (
+from finishup.application.semantic_case import build_semantic_case
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -41,16 +41,16 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import EvidenceId, FindingId, finding_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.findings import Finding
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import EvidenceId, FindingId, finding_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.ids import IdKind, new_id
 
-_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _PROFILES = (
     ReviewContextProfile.STRUCTURAL,
     ReviewContextProfile.GOAL_AWARE,
@@ -186,3 +186,95 @@ def test_recheck_keeps_prior_findings_it_does_not_rederive_in_frontier() -> None
 
     assert str(retired.finding_id) in semantic.frontier_refs
     assert str(retired.finding_id) not in semantic.local_check_refs
+
+
+@pytest.mark.parametrize("through_result", (False, True))
+@pytest.mark.parametrize("profile", (ReviewContextProfile.ASSISTED, ReviewContextProfile.EXPANDED))
+def test_repair_response_evidence_wins_excerpt_cap(
+    through_result: bool,
+    profile: ReviewContextProfile,
+) -> None:
+    from builders.policy_cases import act, res
+    from finishup.domain.events import ResponseRecordedPayload, ResultOutcome, ResultRecordedPayload
+    from finishup.domain.findings import ResponseDisposition
+
+    base = _case()
+    finding = _derived_findings(base)[0]
+    repair = evidence_record(
+        EvidenceRecordedPayload(
+            evd(2),
+            EvidenceKind.ARTIFACT,
+            EvidenceImmutability.METADATA_ONLY,
+            timestamp_from_string("2026-07-01T00:00:00.000Z"),
+            description="REPAIR_MARKER: tested corrected line wrapping",
+        ),
+        8,
+    )
+    result = record(
+        ResultRecordedPayload(res(1), act(1), ResultOutcome.SUCCESS, evidence_refs=(evd(2),)), 9
+    )
+    response = record(
+        ResponseRecordedPayload(
+            finding.finding_id,
+            base.frontier,
+            ResponseDisposition.ACKNOWLEDGED,
+            evidence_refs=(res(1),) if through_result else (evd(2),),
+        ),
+        10,
+    )
+    case = make_case(
+        plans=base.projection.plans,
+        obligations=base.projection.obligations,
+        claims=base.projection.claims,
+        evidence={**base.projection.evidence, evd(2): repair},
+        findings={finding.finding_id: finding_record(finding, 6)},
+        responses={finding.finding_id: response},
+        results={res(1): result} if through_result else {},
+    )
+    selection = replace(ReviewSelectionPolicy.for_profile(profile), max_excerpts=1)
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000884",
+        frozen_case=case,
+        dependency_digest="sha256:" + "a" * 64,
+        findings=(),
+        review_context_profile=profile,
+        review_selection=selection,
+        policy_id="research-evidence",
+        policy_version="0.1.0",
+    )
+    assert semantic.packet.targeted_excerpts[0].excerpt_item_id == f"excerpt-{evd(2)}"
+    assert any(
+        b"REPAIR_MARKER" in item.content for item in semantic.items if item.section == "excerpt"
+    )
+
+    from finishup.application.semantic_case import repair_evidence_refs
+
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    assert repair_evidence_refs(case.projection, allowed) == frozenset({str(evd(2))})
+    for excluded in (finding.finding_id, response.source_event_id, evd(2)):
+        assert repair_evidence_refs(case.projection, allowed - {str(excluded)}) == frozenset()
+    if through_result:
+        assert repair_evidence_refs(case.projection, allowed - {str(res(1))}) == frozenset()
+        hidden_result = replace(
+            case.projection, results={res(1): replace(result, payload=None, redacted=True)}
+        )
+        assert repair_evidence_refs(hidden_result, allowed) == frozenset()
+    hidden_response = replace(
+        case.projection,
+        responses={finding.finding_id: replace(response, payload=None, redacted=True)},
+    )
+    assert repair_evidence_refs(hidden_response, allowed) == frozenset()
+    hidden_evidence = replace(
+        case.projection, evidence={evd(2): replace(repair, payload=None, redacted=True)}
+    )
+    assert repair_evidence_refs(hidden_evidence, allowed) == frozenset()
+    closed = replace(
+        case.projection,
+        findings={
+            finding.finding_id: replace(
+                case.projection.findings[finding.finding_id],
+                resolved_by_check_event_id=response.source_event_id,
+            )
+        },
+    )
+    assert repair_evidence_refs(closed, allowed) == frozenset()

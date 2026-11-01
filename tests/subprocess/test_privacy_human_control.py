@@ -40,13 +40,13 @@ _POLICY_TIGHTENING_MARKER = (
 
 _TTY_PROBE = r"""
 import asyncio, json, os, sys, time
-from yoetz.cli import privacy_control
-from yoetz.cli import trusted_console
-from yoetz.cli import unlock as unlock_helper
-from yoetz.domain.privacy import PrivacyPolicyChange as Change
-from yoetz.domain.privacy import PrivacyPolicyChangeValue as Value
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.service.confidential_protocol import (
+from finishup.cli import privacy_control
+from finishup.cli import trusted_console
+from finishup.cli import unlock as unlock_helper
+from finishup.domain.privacy import PrivacyPolicyChange as Change
+from finishup.domain.privacy import PrivacyPolicyChangeValue as Value
+from finishup.protocol.canonical import canonical_digest
+from finishup.service.confidential_protocol import (
     AuthorizationRequiredPhase, DecisionAction, DecisionRequiredPhase,
     HumanCeremonyBinding, HumanCeremonyKind, PrivacyDecisionResult,
     PrivacyDisclosureDecisionPreview, PrivacyPendingTarget,
@@ -192,7 +192,7 @@ asyncio.run(main())
 
 _NO_TTY_PROBE = r"""
 import asyncio, json
-from yoetz.cli import privacy_control
+from finishup.cli import privacy_control
 
 opened = False
 class Client:

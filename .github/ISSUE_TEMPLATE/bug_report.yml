@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve Yoetz. Please search existing issues and PRs before filing.
+        Thanks for helping improve FinishUP. Please search existing issues and PRs before filing.
         **Do not** report security vulnerabilities here — use `SECURITY.md` / private
         vulnerability reporting.
   - type: checkboxes
@@ -59,7 +59,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Prefer `yoetz version --json` when available; otherwise commit SHA or package version.
+      description: Prefer `finishup version --json` when available; otherwise commit SHA or package version.
     validations:
       required: true
   - type: textarea

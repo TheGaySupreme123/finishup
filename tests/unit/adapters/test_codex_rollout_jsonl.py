@@ -16,9 +16,8 @@ from builders.codex_rollout import (
     response_item,
     session_meta,
 )
-from fixture_loader import FixtureLoader, build_fixture_loader
-from yoetz.adapters.importers.codex_jsonl import profile_for_codex_version
-from yoetz.adapters.importers.codex_rollout_jsonl import (
+from finishup.adapters.importers.codex_jsonl import profile_for_codex_version
+from finishup.adapters.importers.codex_rollout_jsonl import (
     CODEX_ROLLOUT_COMPATIBLE_PROFILE_ID,
     COMPATIBLE_ROLLOUT_PROFILE,
     SUPPORTED_ROLLOUT_PROFILES,
@@ -29,7 +28,7 @@ from yoetz.adapters.importers.codex_rollout_jsonl import (
     profile_for_rollout_version,
     rollout_admission_provenance,
 )
-from yoetz.adapters.integrations.codex_capability_cells import (
+from finishup.adapters.integrations.codex_capability_cells import (
     CODEX_ROLLOUT_CLI_VERSION,
     CODEX_ROLLOUT_COMPATIBLE_EVIDENCE_CASE_IDS,
     CODEX_ROLLOUT_EVIDENCE_CASE_IDS,
@@ -39,9 +38,10 @@ from yoetz.adapters.integrations.codex_capability_cells import (
     codex_version_manifest_profiles,
     rollout_parser_proof,
 )
-from yoetz.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
-from yoetz.ports.importer import ImportLineStatus
-from yoetz.protocol.canonical import JsonValue
+from finishup.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
+from finishup.ports.importer import ImportLineStatus
+from finishup.protocol.canonical import JsonValue
+from fixture_loader import FixtureLoader, build_fixture_loader
 
 _CANARY_SECRET = "sk-proj-CANARYLEGACYTOKEN0001"
 # Every 0.150.1 fixture value carries this prefix; none of it may survive into records.
@@ -158,11 +158,11 @@ def test_redaction_canary_is_stripped_from_records() -> None:
             }
         ),
         function_call(
-            name="mcp__yoetz__status",
-            call_id="call_yoetz_1",
+            name="mcp__finishup__status",
+            call_id="call_finishup_1",
             arguments='{"request_id":"req_canary"}',
         ),
-        function_call_output(call_id="call_yoetz_1", output="ok"),
+        function_call_output(call_id="call_finishup_1", output="ok"),
     )
     parsed = parse_codex_rollout_jsonl(source, profile, require_admission=True)
     assert all(status is not ImportLineStatus.UNKNOWN for status in parsed.statuses)
@@ -193,6 +193,24 @@ def test_secret_assignment_in_valid_output_preserves_json_structure() -> None:
     dumped = json.dumps(dict(output.value), default=str)
     assert _CANARY_SECRET not in dumped
     assert "[REDACTED]" in dumped
+
+
+def test_heuristic_only_assignment_in_output_is_kept() -> None:
+    """Issue #982: only high-confidence shapes are redacted at import; egress redacts the rest."""
+
+    profile = profile_for_rollout_version("0.148.0")
+    output_text = 'self.bot_token = "<tool_call>"\napi_token = "a8F3kL9qZ2xV7mN4"'
+    source = encode_lines(
+        session_meta(),
+        function_call(name="shell", call_id="call_heuristic_output"),
+        function_call_output(call_id="call_heuristic_output", output=output_text),
+    )
+
+    parsed = parse_codex_rollout_jsonl(source, profile, require_admission=True)
+
+    output = next(record for record in parsed.records if record.item_type == "function_call_output")
+    payload = cast(dict[str, JsonValue], output.value["payload"])
+    assert payload["output"] == output_text
 
 
 def test_wrong_cli_version_is_unsupported_format() -> None:
@@ -376,6 +394,7 @@ def test_0_150_1_fixture_secret_canary_is_redacted_from_records() -> None:
     assert "[REDACTED]" in dumped
     # Structural identity survives redaction so pairing and dedup still work.
     tool_call = next(record for record in parsed.records if record.item_type == "function_call")
+    # Frozen legacy identifier (ADR-048): the recorded 0.150.1 fixture predates the rename.
     assert cast(dict[str, object], tool_call.value["payload"])["call_id"] == "call_yoetz_1"
 
 
@@ -463,10 +482,11 @@ def test_compatible_profile_is_the_union_and_not_a_certified_version() -> None:
     # The compatibility vocabulary is the union plus the families admitted as structurally
     # ignored from a real transcript (issue #754). Neither addition reaches an exact profile.
     assert set(COMPATIBLE_ROLLOUT_PROFILE.wrapper_types) == union_wrappers | {"token_usage_record"}
-    assert set(COMPATIBLE_ROLLOUT_PROFILE.item_types) == union_items
+    assert set(COMPATIBLE_ROLLOUT_PROFILE.item_types) == union_items | {"HookPrompt"}
     assert all(
         "token_usage_record" not in p.wrapper_types for p in SUPPORTED_ROLLOUT_PROFILES.values()
     )
+    assert all("HookPrompt" not in p.item_types for p in SUPPORTED_ROLLOUT_PROFILES.values())
     # Certification surfaces never grow because the compatibility profile exists.
     assert "compatible" not in SUPPORTED_ROLLOUT_PROFILES
     assert rollout_parser_proof("compatible") is None
@@ -732,3 +752,67 @@ def test_compatible_token_usage_telemetry_is_known_without_promoting_an_exact_ce
     assert all(
         "token_usage_record" not in p.wrapper_types for p in SUPPORTED_ROLLOUT_PROFILES.values()
     )
+
+
+def _hook_prompt(ordinal: int) -> dict[str, object]:
+    """The item a Codex 0.159.3 rollout writes when a Stop hook continues the turn (#1041)."""
+
+    return item_completed(
+        {
+            "fragments": [{"hook_run_id": "stop-1", "text": "CANARY_HOOK_PROMPT_TEXT"}],
+            "id": "item_hook_prompt_1",
+            "type": "HookPrompt",
+        },
+        ordinal=ordinal,
+    )
+
+
+def test_compatible_hook_prompt_is_bookkeeping_without_promoting_an_exact_cell() -> None:
+    """FinishUP's own Stop-gate prompt row maps on the compatibility profile only (#1041)."""
+
+    compatible = parse_codex_rollout_jsonl(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated", ordinal=1),
+            _hook_prompt(2),
+        ),
+        None,
+        require_admission=True,
+    )
+    assert compatible.profile is COMPATIBLE_ROLLOUT_PROFILE
+    assert compatible.statuses == (ImportLineStatus.MAPPED, ImportLineStatus.MAPPED)
+    assert [record.item_type for record in compatible.records] == [None, "HookPrompt"]
+    exact = parse_codex_rollout_jsonl(
+        encode_lines(
+            session_meta(cli_version="0.150.1", history_mode="paginated", ordinal=1),
+            _hook_prompt(2),
+        ),
+        None,
+        require_admission=True,
+    )
+    assert exact.statuses[1] is ImportLineStatus.UNKNOWN
+    assert exact.reason_codes[1] == "unknown_item_type"
+
+
+def test_native_stream_parser_does_not_load_ledger_mapping_or_public_request_models() -> None:
+    import subprocess
+    import sys
+
+    probe = r"""
+import sys
+import pickle
+from finishup.adapters.importers.codex_jsonl import CodexCapabilityProfile
+from finishup.adapters.importers.codex_rollout_jsonl import parse_codex_rollout_jsonl, profile_for_rollout_version
+from finishup.adapters.integrations.codex_session_stream import should_trigger_stream_reconcile
+from finishup.ports.importer import ImportLineStatus
+assert pickle.loads(b'cfinishup.adapters.importers.codex_jsonl\nCodexCapabilityProfile\n.') is CodexCapabilityProfile
+assert pickle.loads(b'cfinishup.ports.importer\nImportLineStatus\n.') is ImportLineStatus
+assert parse_codex_rollout_jsonl(b'not-json\n', profile_for_rollout_version('0.148.0'), require_admission=False).statuses == (ImportLineStatus.MALFORMED,)
+assert should_trigger_stream_reconcile('PostToolUse', last_reconcile_mono=None)
+assert 'finishup.domain.events' not in sys.modules
+assert 'finishup.ports.ledger' not in sys.modules
+assert 'finishup.protocol.models' not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", probe], capture_output=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr.decode()

@@ -7,19 +7,19 @@ from typing import cast
 
 import pytest
 
-from unit.domain.test_findings import _provenance  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     SemanticFallbackOrigin,
     SemanticProvenance,
     semantic_fallback_origin_to_json,
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import SemanticReason
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.domain.values import JsonObject
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import SemanticReason
+from finishup.protocol.schemas import validate_schema_instance
+from unit.domain.test_findings import _provenance  # pyright: ignore[reportPrivateUsage]
 
 
 def _origin(**overrides: object) -> SemanticFallbackOrigin:

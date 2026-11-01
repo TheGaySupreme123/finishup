@@ -19,14 +19,28 @@ was disposed. With `DOGFOOD_FIREWORKS_API_KEY` present it additionally means the
 stored and the check reached a real AI-powered review attempt (any attempted status counts,
 including a provider that rejects the model; only a pre-dispatch refusal such as
 `not_configured` or `blocked_by_policy` is red). With the agent credential for that host present
-it also means the native session finished and left no service or storage failure in the hook
-diagnostics. Without those secrets the corresponding steps are recorded as skipped and the lane
-is an install-and-mechanics smoke, not the full path.
+the native session is attempted and any service or storage failure in the hook diagnostics
+is fatal. Native completion is required only with `strict_agent`. Without those secrets the
+corresponding steps are recorded as skipped and the lane is an install-and-mechanics smoke, not
+the full path.
 
-It does **not** mean Yoetz is correct or useful. A native model that ignores the Yoetz tools,
+It does **not** mean FinishUP is correct or useful. A native model that ignores the FinishUP tools,
 times out, or exits nonzero is recorded in the lane report (`agent_ok: false`) and the lane stays
 green unless the `strict_agent` input is set, because model compliance with a one-paragraph prompt
-is not what this lane certifies. Read `lane-report.json` before quoting any cell.
+is not what this lane certifies. `agent_ok: true` requires zero exit, an observation mapping,
+and confirmed completion. For Codex, the native JSONL must record successful FinishUP MCP `start`
+with the exact full probe statement, an accepted/projected plan publication, a terminal check,
+and a receipt for the same task/session/writer, followed
+by a completed turn. Model text cannot replace those calls; later hook disclosures do not undo
+them. `native_mcp_completed` records this proof separately from the informational `done_marker`.
+Claude and Cursor return a `FINISHUP_NATIVE_BINDING` locator in their successful final response.
+The lane uses it to read the original native session through the public status API, verifies its
+frontier, and exhausts pinned history pages. Completion requires an ordered MCP plan publication,
+engine-recorded check with the exact provider-bound statement, and engine-recorded receipt.
+The locator and `DONE` marker alone prove none of these steps. A scoped observation binding may
+supply the locator when it names this native run. The verifier never attaches again after the run,
+because attach creates a new session. None of these checks establishes semantic usefulness. Read
+`lane-report.json` and the native transcript before quoting any cell.
 
 ## Matrix and connection modes
 
@@ -57,7 +71,7 @@ Anthropic-compatible Messages endpoint (`ANTHROPIC_BASE_URL`); Cursor's CLI cann
 provider, so it uses the Cursor account behind `DOGFOOD_CURSOR_API_KEY` with the `cursor_model`
 input (default `gpt-5.6-luna-low`, the lowest reasoning tier the CLI lists for that model).
 The Codex and Claude sessions use the `agent_model` input (default
-`accounts/fireworks/models/glm-5p3-flash`). AI-powered review inside Yoetz uses the reviewed
+`accounts/fireworks/models/glm-5p3-flash`). AI-powered review inside FinishUP uses the reviewed
 `fireworks-responses` profile with the `semantic_model` input (default
 `accounts/fireworks/models/minimax-m3`, a catalog-suggested model; `glm-5p3-flash` reached
 Fireworks but its answers were rejected as `response_content_invalid` on every cell, and
@@ -77,12 +91,20 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    `provider status` until a restart (a lock/unlock does not refresh it either); then
    `privacy setup` (recipe 3, Assisted review, when a credential exists; Private otherwise),
    `provider status`, `setup status`.
-2. **connect** — the host connection per the table, then `observe grant --workspace <project>`
-   and `observe status`.
+2. **connect** — the host connection per the table. In a Codex cell with the reviewed Fireworks
+   credential, the lane then uses the product-owned admission preview→grant flow for the
+   disposable project's trusted `.codex/config.toml`, accepting the exact preview digest and
+   re-reading admission status. The generated rule is only
+   `[mcp_servers.finishup.tools.check] approval_mode = "approve"`; no server-wide default or
+   approval/sandbox bypass is used. A fresh `codex exec -C <project>` is still required by the
+   native phase, so project trust and the active per-tool policy are exercised by the host itself.
+   Credential-free lanes keep the private recipe and skip this external-review admission. The
+   lane then runs `observe grant --workspace <project>` and `observe status`.
 3. **ledger** — the host's session-start carrier first (`hooks observe`,
    `hooks claude-observe`, or `hooks cursor-observe`), whose auto-attach creates the
    workspace's task and names the session to attach to, exactly as a native host does; then
-   `start` (attach to that session), `publish-work` (dry run, then real: one plan and one
+   `start` (attach to that session with the full bounded probe specification as
+   `task_statement`), `publish-work` (dry run, then real: one plan and one
    obligation), `status`, `check` (`semantic_required` with a credential),
    `service diagnostics --request-id <check>` plus every correlation id in the instance's
    diagnostics ring, `privacy receipts list`, `receipt` (markdown), the host's post-event
@@ -91,10 +113,19 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    `create_or_attach` refuse with `workspace_task_exists`, which is the product's rule against
    accidental sibling tasks, not a lane defect.
 4. **native** — one headless agent session in the probe project (`codex exec`, `claude -p`,
-   `cursor-agent -p`) asked to call `start`, `publish_work`, and `receipt` and answer `DONE`;
-   then `observe status`, `observe drain`, `observe status`, `service status`. A
+   `cursor-agent -p`) asked to call `start`, `publish_work`, `check`, and `receipt` and answer `DONE`;
+   the prompt identifies the MCP namespace separately from its function names, requires the
+   operation's packaged guidance, and asks the host to copy the full probe request into
+   `start.task_statement`. A prompt instruction alone does not prove reviewer delivery; inspect
+   the recorded check's input manifest before claiming that coverage. Host discovery
+   and execution wrappers are allowed solely to reach deferred FinishUP tools; empty resource lists
+   do not prove tool absence. Every native child receives the disposable pinned runtime first
+   on `PATH`, so packaged hooks and recovery commands resolve that instance. Then
+   `observe status`, `observe drain`, `observe status`, `service status`. A
    `service_unavailable`, `storage_*`, or `vault_locked` hook diagnostic after the agent is
-   catastrophic; a non-zero agent exit is not.
+   catastrophic; a non-zero agent exit is not. Drain verification follows `retry_pending` or
+   `pass_limit` continuations for at most 60 seconds and requires an observed `drained` result
+   with zero pending rows. Every attempt is retained; errors and deadline exhaustion stay red.
 5. **lifecycle** — `service restart`, `service unlock` (headless runners have no keyring, so the
    restarted service comes back `locked`), one more `semantic_required` check on the probe
    session (informational, recorded as `semantic.after_restart`), `observe status` again.
@@ -178,7 +209,7 @@ symlinked path) or at a base inside a repository.
   A self-hosted macOS runner with an unlocked session could close this; not planned.
 - Codex hooks in `codex exec` run only with `--dangerously-bypass-hook-trust`; interactive hook
   trust is a per-user Codex decision that a runner cannot make, so the lane passes that flag and
-  records it. Hook evidence from the Codex cell therefore proves the Yoetz ingress, not Codex's
+  records it. Hook evidence from the Codex cell therefore proves the FinishUP ingress, not Codex's
   trust flow.
 - The Cursor CLI has no supported custom-provider option, so its cell costs Cursor credits.
 - WSL 2 is exercised here for the first time in CI; the certified cells (ADR-007) are unchanged,
@@ -196,3 +227,27 @@ symlinked path) or at a base inside a repository.
 - [AI-powered review dogfood](semantic-dogfood.md) — profiles and the provenance gate this lane
   reports against.
 - [Influence dogfood](influence-dogfood.md) — what this lane deliberately does not measure.
+
+
+A service that exits before readiness with `release_runtime_unavailable` has not exercised a native
+agent or semantic review. Retained-runtime OS failures report only a closed category (for example,
+`file_missing` or `permission_denied`), never the exception's path or free-form message. Keep that
+startup failure separate from host compliance and provider outcomes. Do not bypass runtime
+retention to make an installation smoke pass; use the lane's bounded service log to diagnose it.
+
+
+Retained-runtime publication keeps its staging root owner-writable through the same-parent rename
+because hosted macOS can refuse renaming an already read-only directory. The manager lock remains
+held, payloads are sealed before rename, and the root is sealed before any runtime is returned or
+leased. A failed root seal removes only the newly created generation, allowing a later retry;
+existing generations, live application state and vault contents are never that cleanup target.
+
+
+Tracker #961 adds a specification admission assertion to the configured ledger probe. Its check
+must return a `review_input_manifest` in `provider_bound` phase with the exact UTF-8 digest and
+byte length of the supplied statement, a current revision, and a complete selected specification.
+A composed manifest, start-call argument, or model prompt alone does not satisfy this assertion.
+The Codex native workflow collector and the Claude/Cursor public-history verifier apply the same
+assertion to the full probe request before counting a check/receipt sequence as complete.
+This establishes bounded input delivery; useful
+findings and successful repairs still require separate defect-focused evidence.

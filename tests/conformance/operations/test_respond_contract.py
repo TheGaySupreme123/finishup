@@ -2,6 +2,8 @@
 consistent error mapping.
 """
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -17,17 +19,17 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.application.start import StartInternalResult
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -40,17 +42,18 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.semantic import ReviewerChallenge
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
@@ -62,7 +65,7 @@ pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "7" * 64
 _WORKSPACE = "hmac-sha256:" + "8" * 64
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 
 
 class _IdleImporter:
@@ -155,7 +158,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -186,6 +189,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -355,7 +359,7 @@ async def test_respond_request_result_parity(disposition: str) -> None:
     facts = await app.projection_binding_facts(ControlMethod.RESPOND, response_wire, responded)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -405,7 +409,7 @@ async def test_waiver_scope_and_expiry_parity() -> None:
 
     facts = await app.projection_binding_facts(ControlMethod.RESPOND, waive_wire, waived)
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -483,3 +487,66 @@ async def test_response_error_parity() -> None:
             await denied_app.respond(RespondRequest.model_validate(stale_wire))
         stale_codes.append(stale_failure.value.code)
     assert stale_codes == [PublicErrorCode.INVALID_REQUEST, PublicErrorCode.INVALID_REQUEST]
+
+
+async def test_kept_choice_advisory_answer_parity() -> None:
+    """#1240 D3: "checked, kept my choice" on a reviewer note is accepted, replays idempotently,
+    and reads the same on the CLI and MCP-bridge projections; it settles the note like an answer."""
+
+    import integration.application.test_respond_status_receipt as h
+    from finishup.kernel.correctness_advisories import correctness_advisories
+
+    def round_one(_frozen: object) -> tuple[ReviewerChallenge, ...]:
+        return (
+            h._routine_note("Footprints ignore the receptacle frame.", protocol_id("res_", 605)),
+        )
+
+    app, runtime, projection = h._build_app(
+        semantic="required", semantic_evaluator=h._scripted_reviewer([round_one])
+    )
+    started, checked, _refs = await h._routine_advisory_task(app, seed=600)
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([record async for record in ledger.load_events(started.session_id)])
+    (note,) = correctness_advisories(records)
+    wire: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 610)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "expected_frontier": _frontier(checked.result_frontier),
+        "finding_id": note.advisory_id,
+        "finding_frontier": _frontier(checked.result_frontier),
+        "disposition": "kept_choice",
+        "reason": "Receptacles are never rotated in this task; the upright case covers it.",
+    }
+    answered = await app.respond(RespondRequest.model_validate(wire))
+    replayed = await app.respond(RespondRequest.model_validate(wire))
+    assert answered.result_frontier == replayed.result_frontier
+    assert answered.response.disposition == "kept_choice"
+
+    facts = await app.projection_binding_facts(ControlMethod.RESPOND, wire, answered)
+    cli_projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
+        _cli_binding(611, facts),
+        answered,
+    )
+    mcp_projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        _cli_binding(613, facts),
+        answered,
+    )
+    assert isinstance(cli_projected, RespondResultModel)
+    assert isinstance(mcp_projected, RespondResultModel)
+    assert cli_projected.root.ok is True and mcp_projected.root.ok is True
+    cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
+    mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
+    assert cli_body == mcp_body
+    assert cli_projected.root.response.disposition == "kept_choice"
+    assert len(projection.candidates) == 2
+
+    records = tuple([record async for record in ledger.load_events(started.session_id)])
+    (settled,) = correctness_advisories(records)
+    assert settled.answered and settled.disposition == "kept_choice"

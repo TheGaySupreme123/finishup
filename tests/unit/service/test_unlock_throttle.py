@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.service.unlock import (
+from finishup.service.unlock import (
     UnlockError,
     UnlockThrottleRecord,
     UnlockThrottleStore,

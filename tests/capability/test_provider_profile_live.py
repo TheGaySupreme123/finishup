@@ -23,16 +23,16 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.providers.factory import external_factory_builders_from_config
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.factory import external_factory_builders_from_config
+from finishup.adapters.providers.openai_responses import (
     OPENAI_MAX_OUTPUT_TOKENS,
     OPENAI_MAX_RESPONSE_BODY_BYTES,
     OpenAIProfile,
 )
-from yoetz.config.models import ProviderProfileConfig
-from yoetz.config.write import provider_preset
-from yoetz.domain.privacy import ProviderDataUseProfile
-from yoetz.protocol.canonical import canonical_digest
+from finishup.config.models import ProviderProfileConfig
+from finishup.config.write import provider_preset
+from finishup.domain.privacy import ProviderDataUseProfile
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _DIGEST = "sha256:" + "e" * 64
@@ -105,7 +105,7 @@ def test_live_provider_profile_requires_authorized_ready_service(tmp_path: Path)
     assert profile.data_use_profile.recommendation_eligible(_NOW)
 
     # Spec: credential never enters/is consumed by this process. The cell only accepts an opaque
-    # ready-service ceremony (see YOETZ_LIVE_SERVICE_READY / YOETZ_LIVE_PROVIDER_PROFILE_ID).
+    # ready-service ceremony (see FINISHUP_LIVE_SERVICE_READY / FINISHUP_LIVE_PROVIDER_PROFILE_ID).
 
     context = runtime_capability_context(
         fixture_digest=bytes_digest(b"provider-profile-live-e007"),
@@ -141,8 +141,8 @@ def test_live_provider_profile_requires_authorized_ready_service(tmp_path: Path)
 
     # Ready isolated service + opaque configured profile are operator-provisioned outside this
     # process. Until that ceremony is present, the cell remains unsupported rather than bypassed.
-    service_ready = os.environ.get("YOETZ_LIVE_SERVICE_READY") == "1"
-    configured_profile = os.environ.get("YOETZ_LIVE_PROVIDER_PROFILE_ID", "").strip()
+    service_ready = os.environ.get("FINISHUP_LIVE_SERVICE_READY") == "1"
+    configured_profile = os.environ.get("FINISHUP_LIVE_PROVIDER_PROFILE_ID", "").strip()
     if not service_ready or not configured_profile:
         evidence = record_and_write(
             _CASE_LIVE,

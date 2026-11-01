@@ -17,17 +17,23 @@ from typing import cast
 import pytest
 
 from builders import ids as id_builders
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin, rank_key
-from yoetz.domain.values import (
+from finishup.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    rank_key,
+)
+from finishup.domain.values import (
     Frontier,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     finding_id as domain_finding_id,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     obligation_id as domain_obligation_id,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ARTIFACT_OBSERVATION_ORDER,
     AUTHORSHIP_ASSURANCE_ORDER,
     COVERAGE_DEFAULTS_BY_CHANNEL,
@@ -46,7 +52,7 @@ from yoetz.protocol.coverage import (
 _DIGEST = "sha256:" + "5" * 64
 
 # Mirrors the closed work-integrity/research-evidence partition owned by
-# ``yoetz.domain.findings`` (private there); duplicated here only to route valid
+# ``finishup.domain.findings`` (private there); duplicated here only to route valid
 # ``policy_id``/``policy_version`` pairs into constructed probe findings.
 _WORK_INTEGRITY_KINDS = frozenset(
     {

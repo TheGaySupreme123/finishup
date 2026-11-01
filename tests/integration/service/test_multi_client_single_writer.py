@@ -9,13 +9,13 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.runtime import RuntimeAdapterFactories, open_local_bundle_runtime
-from yoetz.ports.diagnostics import RuntimeCapability, StartupCheckResult
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.runtime import (
+from finishup.adapters.runtime import RuntimeAdapterFactories, open_local_bundle_runtime
+from finishup.ports.diagnostics import RuntimeCapability, StartupCheckResult
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import BundleKeys
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.runtime import (
     OwnershipFence,
     RouteAccess,
     RouteCommand,
@@ -24,9 +24,9 @@ from yoetz.ports.runtime import (
     StartMilestoneExpectation,
     TaskRuntime,
 )
-from yoetz.ports.start_catalog import SessionBinding, TaskRoute, TaskRouteState
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.ports.start_catalog import SessionBinding, TaskRoute, TaskRouteState
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 def _id(kind: IdKind, value: int) -> str:

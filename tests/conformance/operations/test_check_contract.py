@@ -5,10 +5,10 @@ from dataclasses import fields
 import pytest
 
 from builders.policy_cases import clm, make_case, record
-from yoetz.application.check import CheckScope, run_deterministic_policies
-from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.models import (
+from finishup.application.check import CheckScope, run_deterministic_policies
+from finishup.domain.events import ClaimKind, ClaimRecordedPayload
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.models import (
     VALID_SEMANTIC_REASONS,
     SemanticReason,
     SemanticStatus,
@@ -23,12 +23,12 @@ def test_policy_execution_accounting_is_stable_and_application_owned() -> None:
     left = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     right = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert left == right

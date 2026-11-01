@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryArtifact,
     InstallationRecoveryArtifactError,
     InstallationRecoveryMode,
@@ -17,9 +17,9 @@ from yoetz.adapters.keys.installation_recovery import (
     unlock_installation_recovery_artifact,
     validate_generated_recovery_code,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 _SNAPSHOT_DIGEST = "sha256:" + "7" * 64
 

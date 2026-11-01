@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-import yoetz.application.check as check
-from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
+import finishup.application.check as check
+from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
 
 _PROJECT = "prj_00000000-0000-4000-8000-000000000001"
 _REQUESTER = "tsk_00000000-0000-4000-8000-000000000001"

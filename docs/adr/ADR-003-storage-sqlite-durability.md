@@ -2,8 +2,8 @@
 
 **Status:** Working decision for spec drafting (2026-07-13). Ratification requires the full
 fault/contention matrix on both advertised platforms.
-**Implemented by:** `docs/INTERFACES.md`, `src/yoetz/adapters/sqlite/`,
-`src/yoetz/ports/ledger.py`, `src/yoetz/ports/runtime.py`, root and packaged
+**Implemented by:** `docs/INTERFACES.md`, `src/finishup/adapters/sqlite/`,
+`src/finishup/ports/ledger.py`, `src/finishup/ports/runtime.py`, root and packaged
 `migrations/`, and the storage suites under `tests/integration/storage/` and `tests/subprocess/`.
 
 ## Decisions
@@ -28,14 +28,14 @@ fault/contention matrix on both advertised platforms.
 3. **Transactions:** `BEGIN IMMEDIATE` for every write path; the append transaction contains only
    bounded indexed reads/writes. All hashing, validation, encryption, object
    fsync, and network work happens outside. Acknowledge only after COMMIT returns.
-4. **Layout:** platform app-data `…/yoetz/` with `catalog.sqlite3` + `tasks/<task-id>/` bundles.
+4. **Layout:** platform app-data `…/finishup/` with `catalog.sqlite3` + `tasks/<task-id>/` bundles.
    One task per bundle database. Owner-only permissions; symlink/hardlink/
    traversal rejection; repo, cloud-synced, network, and world-readable paths unsupported and
    detected where practical (`STORAGE_UNSAFE`). "Network" includes the VM-boundary transports
-   `9p`, `drvfs`, and `virtiofs` (issue #723). Yoetz has not certified locking and crash durability
+   `9p`, `drvfs`, and `virtiofs` (issue #723). FinishUP has not certified locking and crash durability
    across these host/guest shares, so state inside WSL must live on the distribution's own disk,
    never under `/mnt/<letter>`. This is a conservative support boundary: virtiofs implementations
-   can support POSIX locks, but that alone is not Yoetz durability evidence.
+   can support POSIX locks, but that alone is not FinishUP durability evidence.
 5. **Schema:** migration `0001` is the canonical initial schema for both
    catalog and bundle (STRICT tables, WITHOUT ROWID where keyed by text, CHECK-enforced state
    machines). Structural columns never contain user plaintext.
@@ -88,7 +88,7 @@ writable ledger.
    and records a ticket containing only commitments, encrypted object IDs, source/session/cursor
    identity, the original source and content-authority generations, profile when applicable, and
    expected content groups/parts. For Codex, the ticket is fenced to the exact active consent
-   authority/generation, task, workspace commitment, Yoetz and host session, `codex_hook` source
+   authority/generation, task, workspace commitment, FinishUP and host session, `codex_hook` source
    identity and commitment, source generation, tool-call correlation, expected multipart
    groups/parts, object kinds, and object/content digests. No Codex content profile is inferred or
    accepted. The
@@ -204,9 +204,46 @@ layout check now receives the real pending migration set rather than only the la
 entry. Preservation comparison ignores a migration-created table only while it is empty, so an
 upgrade cannot hide a populated table that the source did not have.
 
+### Amendment — review-input suspension marker and the v16 target (2026-10-03, issue #951)
+
+Bundle migration `0016` widens the existing `operations.suspension_kind` check to admit the
+`review_input` marker. It rebuilds only `operations`, preserving every operation row, result and
+object binding, then restores the reviewed foreign-key and legacy-alter settings. The automatic
+READY-boundary upgrade now targets schema `16` from sources `12`, `13`, `14`, and `15`, with
+migration IDs `0013`–`0016` in its plan digest. A v15 bundle applies only `0016`; a fresh v16
+bundle is accepted at startup. Unknown source versions and schemas newer than the binary still
+fail closed before the migration journal or DDL is reached.
+
+### Amendment — reviewer-loop steps and the v17 target (2026-10-19, issue #1118)
+
+Bundle migration `0017` adds `semantic_review_steps`: one row per reviewer-loop step of a semantic
+job (`turn` 1–5, `repair` 1, `read` 1–3, enforced by `CHECK`). A step is reserved before it runs and
+its result captured after; neither is refunded. Rows hold only keyed commitments (the object store's
+commitment key over a step-specific domain), the captured byte count and closed values: never a
+path, argument, prompt, model text or read result. Writes are owner-fenced and succeed only while the
+durable job and operation rows, read in the same write transaction, still hold an unexpired lease for
+the writing attempt, lease generation, lease owner and owner generation. The expiry is the ledger's,
+so a renewal counts and an expired lease writes nothing even before another worker reclaims it. A job that already holds steps is not
+resumed in v1; its review ends incomplete. The READY-boundary upgrade now targets `17` from sources
+`12`–`16`, with migration IDs `0013`–`0017` in its plan digest; a v16 bundle applies only `0017`.
+
+### Amendment — bounded reviewer corrections and the v18 target (2026-10-21, #1173)
+
+Bundle migration `0018` rebuilds only `semantic_review_steps` to permit `turn` 1–7 and `read`
+1–5; `repair` remains 1. It copies every existing row unchanged, including reservations without
+captures, and retains the same primary key, job foreign key, strict shape and commitment-only
+columns. Migration `0017` stays byte-identical. No read, model turn or byte budget is refilled.
+A prior job with steps still ends incomplete rather than being replayed.
+
+The READY-boundary upgrade targets `18` from supported sources `12`–`17`, binding migration IDs
+`0013`–`0018` in its plan digest; a v17 bundle applies only `0018`. Existing backup, owner/lease
+fences, replay verification and preservation comparison remain in force. Fresh bundles use v18;
+older binaries refuse the newer write schema. This migration creates no payload or selector
+columns: selector-only read diagnostics remain in encrypted semantic response objects (ADR-006).
+
 ## Consequences
 
-Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; Yoetz owns security
+Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; FinishUP owns security
 patching for the shipped SQLite; every dependency bump reruns the storage matrix.
 
 ## 0.3 projection query execution (#747)

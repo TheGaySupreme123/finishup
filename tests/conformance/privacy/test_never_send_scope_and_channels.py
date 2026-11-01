@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from yoetz.domain.privacy import NEVER_SEND_KINDS, EgressChannel, ForbiddenDataKind
+from finishup.domain.privacy import NEVER_SEND_KINDS, EgressChannel, ForbiddenDataKind
 
 _ROOT = Path(__file__).resolve().parents[3]
 

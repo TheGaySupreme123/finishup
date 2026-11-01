@@ -16,13 +16,13 @@ from typing import Any, cast
 import pytest
 
 from builders.privacy_policies import local_only_policy
-from yoetz.cli.app import (
+from finishup.cli.app import (
     support_methods_carrying_schema_version,
     with_body_schema_version,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.domain.values import JsonObject
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _REPO = Path(__file__).resolve().parents[3]
 _FROZEN_REQUEST_SCHEMA = _REPO / "schemas" / "service" / "control-request-1.0.0.schema.json"
@@ -89,7 +89,7 @@ def test_cli_fills_the_const_schema_version_and_never_overwrites_one() -> None:
 def test_propose_body_without_schema_version_fails_frame_validation() -> None:
     """Pins the failure mode, so the fix above is testing something real."""
 
-    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
 
     policy = encode_privacy_policy_json(local_only_policy())
     policy["schema_version"] = "1.0.0"
@@ -115,8 +115,8 @@ async def test_privacy_setup_propose_sends_a_body_the_frozen_schema_accepts(
 ) -> None:
     """The interactive setup flow builds its own body; it must satisfy the same schema."""
 
-    import yoetz.cli.app as app_module
-    from yoetz.cli.privacy_setup import _propose  # pyright: ignore[reportPrivateUsage]
+    import finishup.cli.app as app_module
+    from finishup.cli.privacy_setup import _propose  # pyright: ignore[reportPrivateUsage]
 
     sent: list[JsonObject] = []
 
@@ -152,7 +152,7 @@ async def test_privacy_setup_propose_sends_a_body_the_frozen_schema_accepts(
 
 @pytest.mark.parametrize("policy_version", ["1.0.0", "1.1.0"])
 def test_current_control_accepts_saved_and_current_policy_versions(policy_version: str) -> None:
-    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
 
     policy = encode_privacy_policy_json(local_only_policy())
     policy["schema_version"] = policy_version

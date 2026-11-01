@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 
 from builders.ledger_adapters import append_command, memory_adapter, sqlite_adapter
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -22,7 +22,7 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     action_id,
@@ -33,11 +33,11 @@ from yoetz.domain.values import (
     result_id,
     timestamp_from_string,
 )
-from yoetz.ports.ledger import AppendCommand, AppendEntry, LedgerPort, OperationKind
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.ledger import AppendCommand, AppendEntry, LedgerPort, OperationKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 pytestmark = pytest.mark.anyio
 
@@ -175,9 +175,13 @@ async def test_claim_revision_mismatch_is_identical_on_durable_adapters() -> Non
         # ADR-030: the invariant is carried structurally, not only inside the message, so both
         # adapters must agree on the typed detail as well as the prose.
         assert error.safe_details == {
+            "count": 1,
             "invariant": "limitation_refs_complete",
             "reason_code": "claim_revision_mismatch",
             "field": "/event_drafts/0/payload/limitation_refs",
         }
         assert "limitation_refs_complete" in error.message
+        # The rejection names the exact live result the claim still owes (benchmark full3: agents
+        # could not see hook-observed failures and over- or under-listed them across retries).
+        assert f"Missing 1: {_RESULT}." in error.message
     assert failures[0].message == failures[1].message

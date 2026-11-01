@@ -9,16 +9,16 @@ from datetime import UTC, datetime
 import pytest
 
 from builders.policy_cases import clm, make_case, record
-from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
-from yoetz.domain.privacy import ProviderBinding
-from yoetz.kernel.projections import empty_projection_state
-from yoetz.ports.semantic_budget import (
+from finishup.domain.events import ClaimKind, ClaimRecordedPayload
+from finishup.domain.privacy import ProviderBinding
+from finishup.kernel.projections import empty_projection_state
+from finishup.ports.semantic_budget import (
     current_semantic_budget_profile,
     parse_semantic_budget_profile,
     select_semantic_budget_profile,
     semantic_budget_profile_scope,
 )
-from yoetz.service import ready_composition
+from finishup.service import ready_composition
 
 
 def _claim(kind: ClaimKind, number: int) -> ClaimRecordedPayload:
@@ -94,3 +94,22 @@ def test_execution_snapshot_freezes_the_budget_profile_and_reads_legacy_snapshot
     legacy["budget_profile"] = "checkpoint"
     with pytest.raises(ValueError, match="semantic_execution_invalid"):
         from_json(legacy)
+
+
+def test_a_closing_review_request_selects_final_without_a_completion_claim() -> None:
+    """TB4 tb4f1 (issue #976): an agent that never claims completion still gets the final phase.
+
+    atrx-vep-crispr ran two routine reviews ("this review does not assess completion") while the
+    requested report was never written, because only a completion claim selected ``final``.
+    """
+
+    empty = empty_projection_state()
+    assert select_semantic_budget_profile(empty, final_review=True) == "final"
+    material = make_case(claims={clm(1): record(_claim(ClaimKind.MATERIAL, 1), 1)})
+    assert select_semantic_budget_profile(material.projection, final_review=True) == "final"
+    # With a claim the request changes nothing; without either it stays routine.
+    claimed = make_case(claims={clm(2): record(_claim(ClaimKind.COMPLETION, 2), 2)})
+    assert select_semantic_budget_profile(claimed.projection, final_review=True) == "final"
+    assert select_semantic_budget_profile(material.projection, final_review=False) == "routine"
+    with pytest.raises(TypeError):
+        select_semantic_budget_profile(empty, final_review=1)  # type: ignore[arg-type]

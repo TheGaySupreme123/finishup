@@ -12,11 +12,11 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import initialize_catalog
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.domain.values import Frontier
-from yoetz.ports.runtime import StartCompletionEvidence, StartMilestone
-from yoetz.ports.start_catalog import (
+from finishup.adapters.sqlite.migrations import initialize_catalog
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.domain.values import Frontier
+from finishup.ports.runtime import StartCompletionEvidence, StartMilestone
+from finishup.ports.start_catalog import (
     EncryptedResultRef,
     SafeReason,
     StartAllocation,
@@ -25,9 +25,9 @@ from yoetz.ports.start_catalog import (
     StartMode,
     StartPhase,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 @pytest.fixture

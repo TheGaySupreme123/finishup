@@ -7,26 +7,31 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import INSTALLATION_ID, MultiAgentService, multi_agent_service
-from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
-from yoetz.application.coordination import CoordinationParticipant
-from yoetz.application.projects import ProjectCommandError
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.coordination import (
+from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+from finishup.application.coordination import CoordinationParticipant
+from finishup.application.projects import ProjectCommandError
+from finishup.application.start import StartInternalResult
+from finishup.domain.coordination import (
     CoordinationDetection,
     CoordinationErrorCode,
     OverlapKind,
     canonical_resource_identity,
 )
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind, DataCategory, DataClass
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.privacy import (
+from finishup.domain.privacy import (
+    AuthorizationScope,
+    AuthorizationScopeKind,
+    DataCategory,
+    DataClass,
+)
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.privacy import (
     HumanPolicyDecision,
     PolicyTransitionMember,
     PolicyTransitionProposal,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -178,7 +183,7 @@ async def test_ready_project_admission_maps_catalog_source_to_local_consent(
         assert second_source is not None and second_source.workspace_ref_commitment is not None
         assert project is not None
 
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         local = LocalObservationStore(_state=service.root / "state")
         local.grant_consent(local.workspace_commitment(str(workspace_a)))
@@ -207,7 +212,7 @@ async def test_ready_coordination_uses_persisted_source_task_policy_and_reopens_
     workspace_a.mkdir()
     workspace_b.mkdir()
     async with multi_agent_service(tmp_path / "state") as service:
-        from yoetz.adapters.integrations.observation_local import LocalObservationStore
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
 
         local = LocalObservationStore(_state=service.root / "state")
         local.grant_consent(local.workspace_commitment(str(workspace_a)))

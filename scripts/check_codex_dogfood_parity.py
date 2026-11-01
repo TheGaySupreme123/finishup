@@ -97,11 +97,11 @@ _NEXT_ACTIONS: Final = frozenset(
     {
         "none",
         "do_not_launch",
-        "provision_isolated_yoetz_root",
+        "provision_isolated_finishup_root",
         "reregister_isolated_mcp",
         "recapture_isolated_mcp_child",
-        "yoetz_observe_grant_exact_worktree",
-        "yoetz_recommend_list_exact_target",
+        "finishup_observe_grant_exact_worktree",
+        "finishup_recommend_list_exact_target",
         "manual_activation_review",
         "complete_postflight",
     }
@@ -126,7 +126,7 @@ class DogfoodScope(TypedDict):
     influence_required: bool
 
 
-class DogfoodYoetzIsolation(TypedDict):
+class DogfoodFinishUpIsolation(TypedDict):
     """Path-identity digests only: equal digests mean a shared target, not unchanged bytes."""
 
     mode: Literal["isolated", "ambient", "unknown"]
@@ -168,12 +168,12 @@ class DogfoodIdentity(TypedDict):
     launcher_digest: str
     route_profile: Literal["strict", "policy"]
     worktree_digest: str
-    yoetz_isolation: DogfoodYoetzIsolation
+    finishup_isolation: DogfoodFinishUpIsolation
 
 
 class DogfoodObserved(TypedDict):
     activation_state: str
-    yoetz_isolation_state: str
+    finishup_isolation_state: str
     mcp_registration_state: str
     mcp_isolation_binding: str
     mcp_child_state: str
@@ -216,9 +216,9 @@ def _require_bool(value: object, reason: str) -> bool:
     return value
 
 
-def _parse_yoetz_isolation(value: object) -> DogfoodYoetzIsolation:
+def _parse_finishup_isolation(value: object) -> DogfoodFinishUpIsolation:
     if type(value) is not dict:
-        raise _error("yoetz_isolation_invalid")
+        raise _error("finishup_isolation_invalid")
     row = cast(dict[str, object], value)
     digest_fields = (
         "state_path_digest",
@@ -233,17 +233,18 @@ def _parse_yoetz_isolation(value: object) -> DogfoodYoetzIsolation:
         "normal_executable_path_digest",
     )
     if set(row) != {"mode", "normal_mode", *digest_fields}:
-        raise _error("yoetz_isolation_fields_invalid")
+        raise _error("finishup_isolation_fields_invalid")
     mode = row["mode"]
     normal_mode = row["normal_mode"]
     if mode not in {"isolated", "ambient", "unknown"}:
-        raise _error("yoetz_isolation_mode_invalid")
+        raise _error("finishup_isolation_mode_invalid")
     if normal_mode not in {"isolated", "ambient", "unknown"}:
-        raise _error("yoetz_isolation_normal_mode_invalid")
+        raise _error("finishup_isolation_normal_mode_invalid")
     digests = {
-        name: _require_digest(row[name], "yoetz_isolation_digest_invalid") for name in digest_fields
+        name: _require_digest(row[name], "finishup_isolation_digest_invalid")
+        for name in digest_fields
     }
-    return DogfoodYoetzIsolation(
+    return DogfoodFinishUpIsolation(
         mode=cast(Literal["isolated", "ambient", "unknown"], mode),
         normal_mode=cast(Literal["isolated", "ambient", "unknown"], normal_mode),
         state_path_digest=digests["state_path_digest"],
@@ -385,7 +386,7 @@ def _parse_identity(value: object) -> DogfoodIdentity:
         "launcher_digest",
         "route_profile",
         "worktree_digest",
-        "yoetz_isolation",
+        "finishup_isolation",
     }
     if set(row) != expected:
         raise _error("identity_fields_invalid")
@@ -409,7 +410,7 @@ def _parse_identity(value: object) -> DogfoodIdentity:
         launcher_digest=_require_digest(row["launcher_digest"], "launcher_digest_invalid"),
         route_profile=cast(Literal["strict", "policy"], route),
         worktree_digest=_require_digest(row["worktree_digest"], "worktree_digest_invalid"),
-        yoetz_isolation=_parse_yoetz_isolation(row["yoetz_isolation"]),
+        finishup_isolation=_parse_finishup_isolation(row["finishup_isolation"]),
     )
 
 
@@ -441,7 +442,7 @@ def _parse_observed(value: object) -> DogfoodObserved:
     row = cast(dict[str, object], value)
     expected = {
         "activation_state",
-        "yoetz_isolation_state",
+        "finishup_isolation_state",
         "mcp_registration_state",
         "mcp_isolation_binding",
         "mcp_child_state",
@@ -458,7 +459,7 @@ def _parse_observed(value: object) -> DogfoodObserved:
     if set(row) != expected:
         raise _error("observed_fields_invalid")
     activation = row["activation_state"]
-    isolation_state = row["yoetz_isolation_state"]
+    isolation_state = row["finishup_isolation_state"]
     mcp_registration_state = row["mcp_registration_state"]
     mcp_isolation_binding = row["mcp_isolation_binding"]
     mcp_child_state = row["mcp_child_state"]
@@ -473,7 +474,7 @@ def _parse_observed(value: object) -> DogfoodObserved:
     }:
         raise _error("activation_state_invalid")
     if isolation_state not in {"isolated", "shared", "ambient", "unknown"}:
-        raise _error("yoetz_isolation_state_invalid")
+        raise _error("finishup_isolation_state_invalid")
     if mcp_registration_state not in {"yoetz_owned", "absent", "foreign_present", "unknown"}:
         raise _error("mcp_registration_state_invalid")
     if mcp_isolation_binding not in {
@@ -497,7 +498,7 @@ def _parse_observed(value: object) -> DogfoodObserved:
             raise _error(f"{name}_invalid")
     return DogfoodObserved(
         activation_state=cast(str, activation),
-        yoetz_isolation_state=cast(str, isolation_state),
+        finishup_isolation_state=cast(str, isolation_state),
         mcp_registration_state=cast(str, mcp_registration_state),
         mcp_isolation_binding=cast(str, mcp_isolation_binding),
         mcp_child_state=cast(str, mcp_child_state),
@@ -658,9 +659,9 @@ def classify_codex_dogfood_report(document: object) -> DogfoodGateResult:
         observed["activation_state"] == "active"
     ):
         raise _error("activation_state_mismatch")
-    isolation = identity["yoetz_isolation"]
+    isolation = identity["finishup_isolation"]
     if (facets["service_isolation"]["status"] == "pass") != (
-        observed["yoetz_isolation_state"] == "isolated"
+        observed["finishup_isolation_state"] == "isolated"
     ):
         raise _error("service_isolation_state_mismatch")
     if facets["service_isolation"]["status"] == "pass":
@@ -702,12 +703,12 @@ def classify_codex_dogfood_report(document: object) -> DogfoodGateResult:
 
     consent = facets["observation_consent"]
     if consent["status"] != "pass" and consent["next_action"] != (
-        "yoetz_observe_grant_exact_worktree"
+        "finishup_observe_grant_exact_worktree"
     ):
         raise _error("observation_consent_continuation_missing")
     isolation_row = facets["service_isolation"]
     if isolation_row["status"] != "pass" and isolation_row["next_action"] != (
-        "provision_isolated_yoetz_root"
+        "provision_isolated_finishup_root"
     ):
         raise _error("service_isolation_continuation_missing")
     mcp_child = facets["mcp_child_isolation"]
@@ -726,7 +727,7 @@ def classify_codex_dogfood_report(document: object) -> DogfoodGateResult:
             raise _error("mcp_child_isolation_continuation_missing")
     activation = facets["plugin_activation"]
     if activation["reason"] == "installed_not_activated" and activation["next_action"] != (
-        "yoetz_recommend_list_exact_target"
+        "finishup_recommend_list_exact_target"
     ):
         raise _error("activation_recovery_continuation_missing")
     if (
@@ -786,11 +787,11 @@ def _load(path: Path) -> object:
 def observe_normal_target(paths: list[Path]) -> list[dict[str, object]]:
     """Digest-only content observations for ``normal_target`` before/after rows.
 
-    Reuses the product's bounded observer so the report and ``yoetz service isolation
+    Reuses the product's bounded observer so the report and ``finishup service isolation
     --content-digests`` share one shape. Paths are hashed into ``path_digest``, never echoed.
     """
 
-    from yoetz.cli.isolation_status import observe_file_content
+    from finishup.cli.isolation_status import observe_file_content
 
     return [dict(observe_file_content(path)) for path in paths]
 

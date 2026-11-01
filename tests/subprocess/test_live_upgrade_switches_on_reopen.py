@@ -1,6 +1,6 @@
 """An in-place upgrade switches services on the next session and never moves backwards (#820).
 
-``yoetz upgrade --accept`` no longer asks for hosts and the service to be stopped. Sessions that
+``finishup upgrade --accept`` no longer asks for hosts and the service to be stopped. Sessions that
 were open keep the running service; the MCP bridge of the next session retires it when its
 package is older, even when the wire contract is unchanged. A client from before the upgrade
 must never replace a newer service. These tests run the real production daemon under a patched
@@ -25,7 +25,7 @@ from test_process_owner_fencing import (
     terminate_service,
 )
 
-from yoetz import __version__
+from finishup import __version__
 
 _OLDER_VERSION = "0.0.1"
 _NEWER_VERSION = "99.0.0"
@@ -37,8 +37,8 @@ def _daemon_probe(version: str, *, foreign_digest: bool) -> str:
 
     digest = (
         rf"""
-import yoetz.protocol.schemas as schemas
-import yoetz.service.control_protocol as control_protocol
+import finishup.protocol.schemas as schemas
+import finishup.service.control_protocol as control_protocol
 schemas.schema_manifest_digest = lambda: "{_FOREIGN_DIGEST}"
 control_protocol._manifest_digest = lambda: "{_FOREIGN_DIGEST}"
 """
@@ -46,10 +46,10 @@ control_protocol._manifest_digest = lambda: "{_FOREIGN_DIGEST}"
         else ""
     )
     return rf"""
-import yoetz
-yoetz.__version__ = "{version}"
+import finishup
+finishup.__version__ = "{version}"
 {digest}
-from yoetz.service.daemon import main
+from finishup.service.daemon import main
 main()
 """
 
@@ -57,10 +57,10 @@ main()
 def _on_demand_probe(kind: str) -> str:
     return rf"""
 import anyio, json
-from yoetz.config.paths import state_dir
-from yoetz.ports.control import ControlClientKind, ControlError
-from yoetz.service.client import connect_service_on_demand
-from yoetz.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
+from finishup.config.paths import state_dir
+from finishup.ports.control import ControlClientKind, ControlError
+from finishup.service.client import connect_service_on_demand
+from finishup.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
 
 async def run():
     outcome, reason, version = "connected", None, None
@@ -120,8 +120,8 @@ def _run_probe(environment: dict[str, str], probe: str, *, timeout: float) -> di
 def _holder_version(environment: dict[str, str]) -> str | None:
     probe = r"""
 import json
-from yoetz.config.paths import state_dir
-from yoetz.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
+from finishup.config.paths import state_dir
+from finishup.service.lifecycle import SINGLETON_LOCK_NAME, probe_singleton_holder_identity
 holder = probe_singleton_holder_identity(state_dir() / SINGLETON_LOCK_NAME)
 print(json.dumps(None if holder is None else holder.service_version))
 """

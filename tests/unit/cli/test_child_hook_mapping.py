@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     acquire_session_lock,
     load_mapping,
@@ -16,8 +16,8 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
-from yoetz.protocol.canonical import JsonValue
+from finishup.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
+from finishup.protocol.canonical import JsonValue
 
 PARENT_TASK = "tsk_00000000-0000-4000-8000-000000000001"
 PARENT_SESSION = "ses_00000000-0000-4000-8000-000000000002"
@@ -43,9 +43,9 @@ def _mapping(
 ) -> LifecycleMapping:
     return mapping_from_start_ids(
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=session_id,
+        finishup_writer_id=writer_id,
         last_frontier=frontier,
     )
 
@@ -61,7 +61,7 @@ def _child_start_payload(
 ) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,
@@ -111,7 +111,7 @@ def test_queued_parent_survives_shared_session_child_attach(tmp_path: Path) -> N
     )
     mapping = load_mapping(host_lane, _state=tmp_path)
     assert mapping is not None
-    assert (mapping.yoetz_task_id, mapping.yoetz_session_id, mapping.yoetz_writer_id) == (
+    assert (mapping.finishup_task_id, mapping.finishup_session_id, mapping.finishup_writer_id) == (
         CHILD_TASK,
         CHILD_SESSION,
         CHILD_WRITER,
@@ -258,9 +258,9 @@ def test_locked_child_lane_keeps_a_replayable_binding(tmp_path: Path) -> None:
     child_mapping = load_mapping(host_lane, _state=tmp_path)
     assert child_mapping is not None
     assert (
-        child_mapping.yoetz_task_id,
-        child_mapping.yoetz_session_id,
-        child_mapping.yoetz_writer_id,
+        child_mapping.finishup_task_id,
+        child_mapping.finishup_session_id,
+        child_mapping.finishup_writer_id,
     ) == (CHILD_TASK, CHILD_SESSION, CHILD_WRITER)
     assert load_mapping(host_session, _state=tmp_path) == parent
 

@@ -1,10 +1,10 @@
 # Importing bounded Codex JSONL
 
-`yoetz import` is a local support command for a retained `codex exec --json` stream. It is not a
+`finishup import` is a local support command for a retained `codex exec --json` stream. It is not a
 seventh MCP operation, does not read Codex rollout files, and does not authorize AI-powered review
 or any other network disclosure.
 
-The request names an already-open Yoetz session/writer, the exact supported Codex profile, and at
+The request names an already-open FinishUP session/writer, the exact supported Codex profile, and at
 most 4 MiB of base64-encoded JSONL. Stderr is excluded in this version:
 
 ```json
@@ -26,9 +26,9 @@ most 4 MiB of base64-encoded JSONL. Stderr is excluded in this version:
 }
 ```
 
-Run `yoetz import --input request.json --json`. The first call stores the encrypted source and
+Run `finishup import --input request.json --json`. The first call stores the encrypted source and
 exact publication plan but publishes nothing. It returns `PRIVACY_AUTHORITY_REQUIRED`; inspect
-`yoetz consent status --json`. The pending item shows bounded danger text and a structural preview
+`finishup consent status --json`. The pending item shows bounded danger text and a structural preview
 with source/manifest/plan/target digests, the exact task/session/profile, counts, and enforced
 limits. It never includes transcript lines or excerpts, and it explicitly reports reasoning and
 reviewer-egress inclusion as false.
@@ -38,7 +38,7 @@ an explicit current-chat decision for that exact pending item after it shows you
 chat relay is agent-attested, not host-verified proof. Denial publishes nothing.
 
 After approval, replay the identical import request. The owner-only authorization is not a token
-you copy into the request: Yoetz matches it internally, resumes the stored plan, publishes bounded
+you copy into the request: FinishUP matches it internally, resumes the stored plan, publishes bounded
 batches plus one import-report evidence event, and consumes the authorization at terminal
 completion. A changed source, manifest, request target, session, profile/version, mapping version,
 plan, or limit contract needs a new preview and decision.

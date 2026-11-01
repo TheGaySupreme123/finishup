@@ -1,8 +1,8 @@
 # ADR-027 — Task lineage and project scope identity
 
 **Status:** Accepted design (2026-09-05), tracked by
-[issue #494](https://github.com/TheGaySupreme123/yoetz/issues/494). The recorded foundation
-[PR #591](https://github.com/TheGaySupreme123/yoetz/pull/591) is merged; the 0.3 candidate now
+[issue #494](https://github.com/TheGaySupreme123/finishup/issues/494). The recorded foundation
+[PR #591](https://github.com/TheGaySupreme123/finishup/pull/591) is merged; the 0.3 candidate now
 implements the Increment-A lineage/project primitives and Increment-B admission, rollup,
 coordination-grant, and host-mapping surfaces described here. This ADR records durable design and
 implementation scope; native capability evidence and limits are maintained in the host integration
@@ -21,7 +21,7 @@ decision bounds.
 
 ## Context
 
-Before the 0.3 implementation, Yoetz had no identity for work that was part of a larger effort.
+Before the 0.3 implementation, FinishUP had no identity for work that was part of a larger effort.
 Subagent work was invisible for some hosts or retained only as metadata, automatic attachment
 historically refused a second task in one workspace, and a receipt spoke for one task ledger. A
 2026-08-31 maintainer design session, recorded and amended on 2026-09-05 in issue #494, chose the
@@ -270,6 +270,87 @@ than implementation notes.
    awaiting its user, and a host without subagent lifecycle hooks. Raising
    `lineage.contact_lost_recovery_seconds` is the supported mitigation.
 
+   **Silence abandons only awaited work (2026-10-29, #1239).** The 300-second window abandoned
+   about one in five benchmark attempts that were still working: one long model turn, a long
+   process polled with `write_stdin`, or a user who walked away was enough, no parent was waiting,
+   and the agent's own close was then refused. This amends §2 and the clarifications above:
+
+   - **The window follows whether a parent waits.** A child whose parent's work is open, whose
+     parent session has not ended, and that the parent has not rejected keeps
+     `lineage.contact_lost_recovery_seconds` (default 300), so a parent still never waits long on a
+     dead child (#495, #499). Every other task, top-level or orphaned, gets
+     `lineage.top_level_contact_lost_horizon_seconds` (default 86,400, at least the recovery
+     window, at most 604,800). Meanwhile it reports `contact_lost`. The recovery sweep judges the
+     window at sweep time from one listing of the catalog, so a child whose parent stops waiting
+     moves to the long horizon.
+   - **A delivered `SessionEnd` ends the session.** The observation coordinator routes it to the
+     lineage owner after it re-validates the session binding and confirms no lease outlived the
+     event's own time plus one lease. Open work is then abandoned with reason `session_ended`
+     after the recovery window, unless the session resumes first. Closed work takes no deadline.
+   - **A `contact_lost` abandonment is reversible, once, by its own close.** Silence was never
+     evidence the agent stopped. A later `work_closed` from the same active session supersedes the
+     service's `work_abandoned`. Both events stay in the ledger. Cancel and write-off stay refused.
+     Abandonment for `session_ended` or `attach_handle_expired` stays final. The catalog keeps the
+     abandonment reason as history (`abandonment_reason`, catalog migration 6). A row abandoned
+     before that migration learns its reason from its own `work_abandoned` event on the next
+     reconcile sweep, so a `contact_lost` abandonment from before the upgrade is reversible
+     too. Replay of `[work_abandoned, work_closed]` reaches `closed`. When the reversed task is a
+     child, its parent's dependency manifest is swept again, so the parent sees the close.
+   - **Refusals and readers say what happened.** A refused transition on terminal work keeps
+     `lineage_work_transition`. Its message names the terminal state, the abandonment reason and
+     time, and what still works. Status reports the task's own `task_lifecycle` (work state,
+     session health, contact-loss and abandonment times, the reason, and whether an abandonment
+     was reversed) in every view. The brief body omits it only for open work in contact. A
+     receipt's limitations section says when the service abandoned the task's work, when the
+     same session's close reversed it, and when the work was cancelled or written off. It reads
+     this from the task's own ledger events, never from live catalog state.
+   - **A task may declare an expected quiet period.** Its own active session publishes
+     `contact_expectation_declared` (`expected_quiet_seconds` 1 to 86,400, an optional reason
+     token) through `publish_work`; any other session is refused as
+     `lineage_session_not_active`. The effective period is the smaller of the request and
+     `lineage.max_declared_quiet_seconds` (default 3,600, range 0 to 86,400; 0 records the event
+     without effect), running from the declaration's acceptance time to `quiet_until`. At every
+     deadline site the abandonment deadline of open work becomes
+     `max(contact_lost_at, quiet_until) + window`. A later declaration replaces the earlier one,
+     shorter or longer. Contact does not clear it, because a hook at the start of the long step
+     would otherwise cancel it; it simply passes. The family is a non-material lineage no-op in
+     the reducer and never supersedes a check. The catalog keeps `quiet_until`
+     (`lineage_task_meta`, catalog migration 7). Reconcile replays the latest declaration from
+     the ledger, so a rebuilt catalog agrees. Status `task_lifecycle.quiet_until` shows it while
+     the work is open and the period has not passed. Bundle migration 19 rebuilds the `events`
+     table so its `summary_code` CHECK admits the family.
+   - **A tool call the host announced is an implied quiet period (2026-10-30, owner decision).**
+     A pre-tool hook (`PreToolUse`-class) that the observation route bound to the task's own
+     active session, and whose host adapter read the call's own timeout from the hook payload,
+     implies that session expects no contact until the call can end: the hook's receipt time
+     plus the timeout, clamped by the same `lineage.max_declared_quiet_seconds` (0 implies
+     nothing). The adapter carries the timeout as the bounded structural fact `tool_timeout_ms`
+     (1 to 86,400,000; control-request 2.9.0, unreleased, edited in place), and the service
+     rounds it up to whole seconds. It is offered only after the same hook was offered as
+     contact, under the same binding and active-session fences, so another session's hook, an
+     ended session, or terminal work implies nothing; the rule that only the task's own active
+     session declares does not weaken. A payload without a timeout implies nothing, and a long
+     model turn with no tool call stays uncovered. The finishing hook does not clear it; like a
+     declaration it simply passes. It is kept apart from the declared period
+     (`lineage_task_meta.implied_quiet_until`, also catalog migration 7): overlapping calls keep
+     the latest end, a declaration never shortens it, and it never revives a replaced
+     declaration. Every deadline site uses the later end of the two in the same formula, and
+     status `task_lifecycle.quiet_until` names that later end. The implied period is catalog
+     state, like a session lease: the ledger never records the timeout, so reconcile, which
+     replays only the latest declaration into `quiet_until`, leaves it alone, and a service
+     restart keeps it. Only a lost catalog loses it, and the ordinary window then applies. Host
+     decisions: Claude Code supports it on the ordinary observation profile for the session's
+     own `Bash` calls (`tool_input.timeout`, milliseconds). Its native subagents' calls reach
+     the parent's lane, not the child's, so they imply nothing. Codex and Cursor are not
+     supported here, because neither pre-tool payload carries a timeout. Each host runbook
+     records why.
+
+   A long native tool call, a turn awaiting its user, and a host without subagent hooks are
+   therefore no longer a capability gap for a top-level task under a day. They remain one for a
+   child whose parent waits; declaring a quiet period before the step, or raising
+   `lineage.contact_lost_recovery_seconds`, is the mitigation there. Where the host announces a
+   call with its own timeout on the child's own session, the running call covers itself.
+
 4. **Parent rollup is one level and severity-dependent.** A parent receipt projects only direct
    children from the frozen manifest. Current actionable findings on accepted children block
    clean-completion wording; the receipt is still produced and names the child and finding.
@@ -278,6 +359,15 @@ than implementation notes.
    and does not block parent clean-completion wording or parent coverage. The same read gap
    on an accepted child remains unavailable and does block. A rejected snapshot that still
    carries actionable findings is an impossible acceptance transition and stays blocking.
+   A child finding the child agent self-verified (ADR-034, `self_verified` on the snapshot row)
+   is not parent work and never blocks; on an accepted child it reads "self-verified by the
+   child agent; FinishUP could not prove it" and holds the parent at best at
+   `insufficient_coverage`.
+   Status agrees: the `view=lineage` child row carries `self_verified_finding_count` (present
+   only when positive), and parent status readiness lists the standing code
+   `finding_self_verified` while an accepted child holds one. The snapshot row's `resolved` reads
+   the same to-do predicate as the child's receipt, and a `duplicate_of` pair the child's
+   readiness counts once is one row (ADR-034 amendment 1).
    An accepted live child is an open gap and an accepted abandoned child is an incomplete gap.
    Lifecycle state is evaluated before informational annotation, so an informational finding
    cannot hide an open or incomplete child. The only informational kind,
@@ -285,7 +375,7 @@ than implementation notes.
    that carries it also carries that coverage blocker, and the no-gap precedence is locked by
    the kernel evaluator.
    Grandchildren are visible only through their direct parent. The clean-parent
-   wording remains coverage-bounded and never says that Yoetz verified every child.
+   wording remains coverage-bounded and never says that FinishUP verified every child.
 
 5. **A project is a grouping object, not an egress scope.** `IdKind.project` uses server-generated
    `prj_` identifiers under the same lowercase UUIDv4 rule as the other server kinds. The project

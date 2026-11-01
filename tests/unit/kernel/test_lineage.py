@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.events import ChildDependencySnapshot as DomainChildDependencySnapshot
-from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-from yoetz.domain.values import (
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.events import ChildDependencySnapshot as DomainChildDependencySnapshot
+from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+from finishup.domain.values import (
     Actor,
     ActorType,
     EventId,
@@ -21,7 +24,7 @@ from yoetz.domain.values import (
     receipt_id,
     task_id,
 )
-from yoetz.kernel.lineage import (
+from finishup.kernel.lineage import (
     ChildDependencySnapshot,
     ChildFindingSnapshot,
     LineageManifest,
@@ -30,7 +33,7 @@ from yoetz.kernel.lineage import (
     evaluate_recorded_lineage,
     lineage_manifest_from_records,
 )
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
 
 _DIGEST = "sha256:" + "1" * 64
 _CHILD = task_id("tsk_00000000-0000-4000-8000-000000000001")
@@ -465,3 +468,211 @@ def test_rejected_child_with_actionable_finding_and_read_gap_stays_blocking() ->
     assert evaluation.blocks_clean_completion is True
     assert "lineage_invalid_acceptance_transition" in evaluation.coverage.known_gaps
     assert "lineage_child_unavailable" in evaluation.coverage.known_gaps
+
+
+# -- Issue #984 (ADR-034): a child's self_verified finding rolls up as "self-verified by the child
+# agent; FinishUP could not prove it" -- never clean, never parent work, parent at best
+# insufficient_coverage. The tb4n1 children met exactly this: a repair left unproven by
+# ``command_attempt_uncorroborated`` that the child agent verified itself.
+
+_OTHER_FINDING = finding_id("fnd_00000000-0000-4000-8000-000000000002")
+
+
+def _self_verified(number: str = _FINDING) -> ChildFindingSnapshot:
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+    return ChildFindingSnapshot(
+        finding_id=finding_id(number),
+        kind=kind,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=FINDING_KIND_TRAITS[kind][0],
+        resolved=False,
+        actionable=True,
+        self_verified=True,
+    )
+
+
+def test_child_self_verified_finding_is_not_parent_work_and_never_clean() -> None:
+    from finishup.kernel.closure_readiness import (
+        FINDING_SELF_VERIFIED_GAP,
+        GAP_CLASSIFICATION,
+        GapClass,
+    )
+    from finishup.kernel.lineage import CHILD_SELF_VERIFIED_GAP
+
+    evaluation = evaluate_lineage(LineageManifest((_child(findings=(_self_verified(),)),)))
+    (rollup,) = evaluation.children
+    assert rollup.state is LineageRollupState.ANNOTATION
+    assert rollup.finding_ids == ()
+    assert rollup.blockers == ()
+    assert rollup.self_verified_finding_ids == (_FINDING,)
+    assert rollup.blocks_clean_completion is True
+    assert evaluation.actionable_finding_ids == ()
+    assert evaluation.self_verified_finding_ids == (_FINDING,)
+    assert evaluation.blocks_clean_completion is True
+    # The parent names the child's own standing code, so parent and child receipts agree.
+    assert CHILD_SELF_VERIFIED_GAP == FINDING_SELF_VERIFIED_GAP
+    assert GAP_CLASSIFICATION[CHILD_SELF_VERIFIED_GAP] is GapClass.STANDING_LIMITATION
+    assert [(gap.code, gap.finding_ids) for gap in evaluation.gaps] == [
+        (CHILD_SELF_VERIFIED_GAP, (_FINDING,))
+    ]
+    assert CHILD_SELF_VERIFIED_GAP in evaluation.coverage.known_gaps
+
+
+def test_child_self_verified_finding_beside_open_work_keeps_only_the_open_work_actionable() -> None:
+    open_work = replace(
+        _finding(FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS), finding_id=_OTHER_FINDING
+    )
+    evaluation = evaluate_lineage(
+        LineageManifest((_child(findings=(_self_verified(), open_work)),))
+    )
+    (rollup,) = evaluation.children
+    assert rollup.state is LineageRollupState.BLOCKED
+    assert evaluation.actionable_finding_ids == (_OTHER_FINDING,)
+    assert rollup.self_verified_finding_ids == (_FINDING,)
+
+
+def test_pending_child_self_verified_finding_stays_an_annotation() -> None:
+    evaluation = evaluate_lineage(
+        LineageManifest(
+            (_child(acceptance=LineageAcceptance.PENDING, findings=(_self_verified(),)),)
+        )
+    )
+    (rollup,) = evaluation.children
+    assert rollup.state is LineageRollupState.ANNOTATION
+    assert rollup.self_verified_finding_ids == ()
+    assert evaluation.blocks_clean_completion is False
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"resolved": True, "resolution_event_id": _CHECK},
+        {
+            "kind": FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+            "priority": FINDING_KIND_TRAITS[FindingKind.LEDGER_STALE_OR_INCOMPLETE][0],
+            "actionable": False,
+        },
+    ),
+)
+def test_self_verified_child_finding_is_unresolved_and_actionable_by_kind(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        replace(_self_verified(), **changes)
+
+
+def test_self_verified_child_finding_keeps_older_manifest_digests() -> None:
+    plain = LineageManifest(
+        (_child(findings=(_finding(FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS),)),)
+    )
+    flagged = LineageManifest((_child(findings=(_self_verified(),)),))
+    (plain_child,) = plain.children
+    (plain_row,) = cast(list[dict[str, Any]], plain_child.canonical_json()["findings"])
+    (flagged_row,) = cast(list[dict[str, Any]], flagged.children[0].canonical_json()["findings"])
+    assert "self_verified" not in plain_row
+    assert flagged_row["self_verified"] is True
+    assert plain.digest != flagged.digest
+
+
+def test_self_verified_child_finding_round_trips_the_recorded_event_and_schema() -> None:
+    from finishup.domain.events import (
+        ChildDependenciesRecordedPayload,
+        EventSchema,
+        decode_payload,
+        encode_payload,
+    )
+    from finishup.domain.events import ChildFindingSnapshot as DomainChildFindingSnapshot
+    from finishup.domain.values import JsonValue as DomainJsonValue
+    from finishup.protocol.canonical import JsonValue, canonical_encode
+    from finishup.protocol.errors import ProtocolValueError
+    from finishup.protocol.models import ChildFindingSnapshotModel
+    from finishup.protocol.schemas import validate_schema_instance
+
+    kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
+
+    def row(**changes: object) -> DomainChildFindingSnapshot:
+        values: dict[str, object] = {
+            "finding_id": _FINDING,
+            "kind": kind,
+            "origin": FindingOrigin.DETERMINISTIC,
+            "priority": FINDING_KIND_TRAITS[kind][0],
+            "resolved": False,
+            "actionable": True,
+        }
+        values.update(changes)
+        return DomainChildFindingSnapshot(**values)  # type: ignore[arg-type]
+
+    def payload(finding: DomainChildFindingSnapshot) -> ChildDependenciesRecordedPayload:
+        return ChildDependenciesRecordedPayload(
+            (
+                DomainChildDependencySnapshot(
+                    child_task_id=_CHILD,
+                    origin=LineageOrigin.PARENT_MINTED,
+                    acceptance=LineageAcceptance.ACCEPTED,
+                    work_state=WorkState.CLOSED,
+                    session_health=SessionHealth.ENDED,
+                    child_frontier=_FRONTIER,
+                    child_check_id=_CHECK,
+                    child_check_subject_frontier=_FRONTIER,
+                    child_receipt_id=_RECEIPT,
+                    coverage=coverage_for_channel(PublicationChannel.ENGINE_DERIVED),
+                    findings=(finding,),
+                    lineage_authority_revision=1,
+                ),
+            )
+        )
+
+    schema = EventSchema("child_dependencies_recorded", "1.0.0")
+
+    def plain(value: object) -> dict[str, Any]:
+        return cast(dict[str, Any], json.loads(canonical_encode(cast(JsonValue, value))))
+
+    plain_wire = plain(encode_payload(payload(row())))
+    assert "self_verified" not in plain_wire["children"][0]["findings"][0]
+    recorded = payload(row(self_verified=True))
+    wire = plain(encode_payload(recorded))
+    assert wire["children"][0]["findings"][0]["self_verified"] is True
+    validate_schema_instance("child-dependencies-recorded", "1.0.0", cast(JsonValue, wire))
+    assert decode_payload(schema, cast(DomainJsonValue, wire)) == recorded
+    ChildFindingSnapshotModel.model_validate(wire["children"][0]["findings"][0])
+
+    # The kernel adapter carries the flag from the recorded domain value.
+    (kernel_child,) = lineage_manifest_from_records(
+        (_record(_MANIFEST_1, 4, recorded.children),)
+    ).children
+    assert kernel_child.findings[0].self_verified is True
+
+    # An explicit false is not a recorded spelling, and self-verified never means resolved.
+    for bad in (False, "true"):
+        wrong = deepcopy(wire)
+        wrong["children"][0]["findings"][0]["self_verified"] = bad
+        with pytest.raises(Exception):
+            validate_schema_instance("child-dependencies-recorded", "1.0.0", cast(JsonValue, wrong))
+        with pytest.raises(ProtocolValueError):
+            decode_payload(schema, cast(DomainJsonValue, wrong))
+    resolved = deepcopy(wire)
+    resolved["children"][0]["findings"][0].update(resolved=True, resolution_event_id=_CHECK)
+    with pytest.raises(Exception):
+        validate_schema_instance("child-dependencies-recorded", "1.0.0", cast(JsonValue, resolved))
+    with pytest.raises(ProtocolValueError):
+        row(resolved=True, resolution_event_id=_CHECK, self_verified=True)
+    with pytest.raises(ValueError):
+        ChildFindingSnapshotModel.model_validate(resolved["children"][0]["findings"][0])
+
+
+def test_a_process_note_cannot_be_stamped_self_verified() -> None:
+    """#1243: a child snapshot refuses ``self_verified`` on a non-actionable kind.
+
+    So a self-verified process note in a child never reaches the parent's self-verified ids, and
+    the lineage rollup needs no kind filter of its own.
+    """
+
+    with pytest.raises(ValueError):
+        ChildFindingSnapshot(
+            finding_id=_FINDING,
+            kind=FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+            origin=FindingOrigin.DETERMINISTIC,
+            priority=FINDING_KIND_TRAITS[FindingKind.LEDGER_STALE_OR_INCOMPLETE][0],
+            resolved=False,
+            self_verified=True,
+        )

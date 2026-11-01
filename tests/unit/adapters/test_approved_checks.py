@@ -14,8 +14,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters import approved_checks
-from yoetz.adapters.approved_checks import (
+from finishup.adapters import approved_checks
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckOutcome,
@@ -26,8 +26,8 @@ from yoetz.adapters.approved_checks import (
     _taskkill_tree,  # pyright: ignore[reportPrivateUsage]
     approval_commitment,
 )
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
 
 _TRUE = shutil.which("true") or "/usr/bin/true"
 

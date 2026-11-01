@@ -1,11 +1,11 @@
 """Codex-subscription lifecycle and resolver checks against a real installed artifact.
 
 Regression slice for issue #520: a valid ``config.toml`` whose ``storage.data_dir`` is the
-ordinary TOML string form crashed every ``yoetz provider codex-subscription`` command with a
+ordinary TOML string form crashed every ``finishup provider codex-subscription`` command with a
 masked ``internal_error`` exit 70 before any command logic ran, because the subscription CLI
 strict-validated raw TOML instead of loading through the canonical configuration loader.
 
-Each case installs the built wheel into an isolated root, points ``YOETZ_CONFIG`` at a real
+Each case installs the built wheel into an isolated root, points ``FINISHUP_CONFIG`` at a real
 hand-written TOML file whose ``storage.data_dir`` names an isolated data directory, spawns the
 real console script, and requires a bounded, non-internal, path-free diagnostic or a successful
 result. Issue #525 additionally exercises the installed wheel's exact npm-layout resolver against
@@ -97,7 +97,7 @@ def _tool_install(dist_dir: Path, root: Path, home: Path) -> tuple[Path, dict[st
     if result.returncode != 0:
         result = _install(offline=False)
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    return bin_dir / "yoetz", env
+    return bin_dir / "finishup", env
 
 
 def _data_dir_config(root: Path) -> tuple[Path, Path]:
@@ -118,13 +118,13 @@ def _codex_package_layout(
 ) -> tuple[Path, Path]:
     if platform_name == "linux":
         native_package_directory = "codex-linux-x64"
-        native_package_version = "0.150.1-linux-x64"
+        native_package_version = "0.162.1-linux-x64"
         native_relative = Path("vendor/x86_64-unknown-linux-musl/bin/codex")
         native_os = "linux"
         native_cpu = "x64"
     else:
         native_package_directory = "codex-darwin-arm64"
-        native_package_version = "0.150.1-darwin-arm64"
+        native_package_version = "0.162.1-darwin-arm64"
         native_relative = Path("vendor/aarch64-apple-darwin/bin/codex")
         native_os = "darwin"
         native_cpu = "arm64"
@@ -136,7 +136,7 @@ def _codex_package_layout(
         json.dumps(
             {
                 "name": "@openai/codex",
-                "version": "0.150.1",
+                "version": "0.162.1",
                 "bin": {"codex": "bin/codex.js"},
                 "optionalDependencies": {
                     f"@openai/{native_package_directory}": f"npm:@openai/codex@{native_package_version}"
@@ -154,6 +154,9 @@ def _codex_package_layout(
     native.parent.mkdir(parents=True)
     native.write_bytes(b"packaged-layout-probe")
     native.chmod(0o700)
+    host = native.parent / "codex-code-mode-host"
+    host.write_bytes(b"packaged-layout-host-probe")
+    host.chmod(0o700)
     (native_root / "package.json").write_text(
         json.dumps(
             {
@@ -169,20 +172,10 @@ def _codex_package_layout(
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "machine", "executable_sha256", "source_identity"),
+    ("platform_name", "machine", "source_identity"),
     [
-        (
-            "darwin",
-            "arm64",
-            "sha256:a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
-            "openai-codex-npm-darwin-arm64-0.150.1",
-        ),
-        (
-            "linux",
-            "x86_64",
-            "sha256:abf1bb1643a79f73aa78ee627e111e02d4f8c98f25813a0cf6ce277709664386",
-            "openai-codex-npm-linux-x64-0.150.1",
-        ),
+        ("darwin", "arm64", "openai-codex-npm-darwin-arm64-0.162.1"),
+        ("linux", "x86_64", "openai-codex-npm-linux-x64-0.162.1"),
     ],
 )
 def test_installed_wheel_resolves_nested_and_npm_prefix_codex_layouts(
@@ -190,23 +183,23 @@ def test_installed_wheel_resolves_nested_and_npm_prefix_codex_layouts(
     tmp_path: Path,
     platform_name: str,
     machine: str,
-    executable_sha256: str,
     source_identity: str,
 ) -> None:
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    _yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    _finishup_exe, env = _tool_install(built_dist.directory, root, home)
     env.pop("PYTHONPATH", None)
     env["PYTHONNOUSERSITE"] = "1"
-    installed_python = root / "tool" / "yoetz" / "bin" / "python"
+    installed_python = root / "tool" / "finishup" / "bin" / "python"
+    # Any release at or above the floor resolves; admission is the later capability check.
     probe = (
-        "import sys; from pathlib import Path; "
-        "import yoetz.cli.codex_subscription as m; "
-        f"sys.platform={platform_name!r}; m.platform.machine=lambda: {machine!r}; "
-        f"m._sha256_file=lambda _path: {executable_sha256!r}; "
+        "import platform, sys; from pathlib import Path; "
+        "import finishup.cli.codex_subscription as m; "
+        f"sys.platform={platform_name!r}; platform.machine=lambda: {machine!r}; "
         "print(Path(m.__file__).resolve()); "
-        "print(*m.resolve_supported_codex_executable(Path(sys.argv[1])), sep='\\n')"
+        "r = m.resolve_codex_executable(Path(sys.argv[1])); "
+        "print(r.native, r.version, r.source_identity, sep='\\n')"
     )
 
     for nested in (True, False):
@@ -227,12 +220,8 @@ def test_installed_wheel_resolves_nested_and_npm_prefix_codex_layouts(
         assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
         lines = result.stdout.decode("utf-8").splitlines()
         assert len(lines) == 4
-        assert Path(lines[0]).is_relative_to(root / "tool" / "yoetz")
-        assert lines[1:] == [
-            str(native),
-            executable_sha256,
-            source_identity,
-        ]
+        assert Path(lines[0]).is_relative_to(root / "tool" / "finishup")
+        assert lines[1:] == [str(native), "0.162.1", source_identity]
         assert str(_REPO_ROOT).encode("utf-8") not in result.stdout
 
 
@@ -273,13 +262,13 @@ def _bound_runtime_config(root: Path) -> tuple[Path, Path]:
 
 
 def _run(
-    yoetz_exe: Path, env: dict[str, str], config: Path, *argv: str
+    finishup_exe: Path, env: dict[str, str], config: Path, *argv: str
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        [str(yoetz_exe), *argv],
+        [str(finishup_exe), *argv],
         capture_output=True,
         timeout=30,
-        env={**env, "YOETZ_CONFIG": str(config)},
+        env={**env, "FINISHUP_CONFIG": str(config)},
         check=False,
     )
 
@@ -297,12 +286,12 @@ def test_status_with_valid_data_dir_config_is_bounded_not_internal_error(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
     cfg_root = tmp_path / "cfg"
     cfg_root.mkdir(mode=0o700)
     config, _data_dir = _data_dir_config(cfg_root)
 
-    result = _run(yoetz_exe, env, config, "provider", "codex-subscription", "status", "--json")
+    result = _run(finishup_exe, env, config, "provider", "codex-subscription", "status", "--json")
 
     assert result.returncode == 20, (result.returncode, result.stderr)
     assert b"codex_subscription: codex_subscription_not_configured" in result.stderr
@@ -315,12 +304,12 @@ def test_status_with_bound_runtime_and_data_dir_probes_the_runtime_not_the_loade
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
     cfg_root = tmp_path / "cfg"
     cfg_root.mkdir(mode=0o700)
     config, _data_dir = _bound_runtime_config(cfg_root)
 
-    result = _run(yoetz_exe, env, config, "provider", "codex-subscription", "status", "--json")
+    result = _run(finishup_exe, env, config, "provider", "codex-subscription", "status", "--json")
 
     # The valid file loads; the failure, if any, is the absent runtime — one closed token,
     # never a masked internal_error and never a config-loader crash.
@@ -336,12 +325,12 @@ def test_rollback_preserves_data_dir_while_removing_only_the_binding(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
     cfg_root = tmp_path / "cfg"
     cfg_root.mkdir(mode=0o700)
     config, data_dir = _bound_runtime_config(cfg_root)
 
-    result = _run(yoetz_exe, env, config, "provider", "codex-subscription", "rollback", "--json")
+    result = _run(finishup_exe, env, config, "provider", "codex-subscription", "rollback", "--json")
 
     assert result.returncode == 0, (result.returncode, result.stderr)
     payload = json.loads(result.stdout)
@@ -360,13 +349,13 @@ def test_invalid_config_is_a_bounded_actionable_diagnostic(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
     cfg_root = tmp_path / "cfg"
     cfg_root.mkdir(mode=0o700)
     config = cfg_root / "config.toml"
     config.write_text("[storage]\ndata_dir = 5\n", encoding="utf-8")
 
-    result = _run(yoetz_exe, env, config, "provider", "codex-subscription", "status", "--json")
+    result = _run(finishup_exe, env, config, "provider", "codex-subscription", "status", "--json")
 
     assert result.returncode == 20, (result.returncode, result.stderr)
     assert b"codex_subscription: config_value_invalid" in result.stderr

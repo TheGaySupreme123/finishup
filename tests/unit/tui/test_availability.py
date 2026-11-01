@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from yoetz.tui import tui_available, tui_supported
+from finishup.tui import tui_available, tui_supported
 
 
 class _Stream:
@@ -86,11 +86,29 @@ def test_a_dumb_or_absent_term_is_treated_as_automation(
     assert tui_available({}) is False
 
 
+@pytest.mark.parametrize(
+    ("variables", "available"),
+    [
+        ({"YOETZ_TUI": "0"}, False),
+        ({"YOETZ_TUI": "1"}, True),
+        ({"FINISHUP_TUI": "0", "YOETZ_TUI": "0"}, False),
+        ({"FINISHUP_TUI": "1", "YOETZ_TUI": "1"}, True),
+        # Two spellings that disagree keep the prompt loop rather than choosing (ADR-048).
+        ({"FINISHUP_TUI": "1", "YOETZ_TUI": "0"}, False),
+    ],
+)
+def test_the_legacy_opt_out_spelling_is_honoured(
+    monkeypatch: pytest.MonkeyPatch, variables: Mapping[str, str], available: bool
+) -> None:
+    terminal(monkeypatch)
+    assert tui_available({**TTY, **variables}) is available
+
+
 def test_the_environment_opt_out_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     terminal(monkeypatch)
-    assert tui_available({**TTY, "YOETZ_TUI": "0"}) is False
+    assert tui_available({**TTY, "FINISHUP_TUI": "0"}) is False
     # Any other value is not an opt-out.
-    assert tui_available({**TTY, "YOETZ_TUI": "1"}) is True
+    assert tui_available({**TTY, "FINISHUP_TUI": "1"}) is True
 
 
 def test_an_unreadable_stream_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

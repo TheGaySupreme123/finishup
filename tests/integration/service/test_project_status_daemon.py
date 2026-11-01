@@ -17,34 +17,34 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.application.status as status_module
+import finishup.application.status as status_module
 from builders.multi_agent import INSTANCE_ID, MultiAgentService, multi_agent_service
 from conformance.observation.test_project_status_faults import (
     _REPOSITORY,  # pyright: ignore[reportPrivateUsage]
     _two_roots_with_receipts,  # pyright: ignore[reportPrivateUsage]
     _workspace,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.service import ClientProjectionContext
-from yoetz.application.start import StartInternalResult
-from yoetz.cli.render import render_human_status
-from yoetz.mcp.summaries import summary_for_public_error, summary_for_status
-from yoetz.observability.diagnostics import lookup_diagnostic_records
-from yoetz.ports.control import (
+from finishup.application.service import ClientProjectionContext
+from finishup.application.start import StartInternalResult
+from finishup.cli.render import render_human_status
+from finishup.mcp.summaries import summary_for_public_error, summary_for_status
+from finishup.observability.diagnostics import lookup_diagnostic_records
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlMethod,
     ProjectionRenderMode,
 )
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     StatusProjectPageModel,
     StatusRequest,
     StatusResult,
     StatusSuccessModel,
 )
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
 
 pytestmark = pytest.mark.anyio
 
@@ -236,7 +236,7 @@ async def test_daemon_returns_the_application_correlation_for_a_classified_fault
         assert record["reason"] == "exception_value_error"
         assert record["request_id"] == request_id
         origin = record["origin"]
-        assert type(origin) is str and origin.startswith("yoetz.application.status:")
+        assert type(origin) is str and origin.startswith("finishup.application.status:")
         # One failure, one id: the daemon reused the classified id instead of minting a
         # class-free ``status_public_error`` record beside it.
         joined = lookup_diagnostic_records(request_id=request_id)

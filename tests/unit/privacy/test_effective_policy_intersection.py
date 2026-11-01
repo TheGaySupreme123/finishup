@@ -10,10 +10,10 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
-from yoetz.adapters.privacy.catalog import CatalogPrivacyPolicyStore
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.domain.privacy import (
+from finishup.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
+from finishup.adapters.privacy.catalog import CatalogPrivacyPolicyStore
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -26,8 +26,8 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 8, 3, tzinfo=UTC)
 _INSTALLATION = "ins_30000000-0000-4000-8000-000000000001"

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.config.load import load_config, parse_minimal_safe_config
-from yoetz.config.models import ConfigError
+from finishup.config.load import load_config, parse_minimal_safe_config
+from finishup.config.models import ConfigError
 
 
 class _NoValueReads(Mapping[str, str]):
@@ -49,9 +49,9 @@ payloads = false
             "logging.level": "debug",
         },
         {
-            "YOETZ_VERIFICATION_MAX_FINDINGS": "5",
-            "YOETZ_LOG_LEVEL": "error",
-            "YOETZ_STORAGE_DATA_DIR": "/env/data",
+            "FINISHUP_VERIFICATION_MAX_FINDINGS": "5",
+            "FINISHUP_LOG_LEVEL": "error",
+            "FINISHUP_STORAGE_DATA_DIR": "/env/data",
         },
         config_path,
     )
@@ -74,31 +74,109 @@ max_fanout = 12
     )
     config = load_config(
         {"lineage.max_depth": "6"},
-        {"YOETZ_LINEAGE_MAX_FANOUT": "16"},
+        {"FINISHUP_LINEAGE_MAX_FANOUT": "16"},
         config_path,
     )
     assert config.lineage.max_depth == 6
     assert config.lineage.max_fanout == 16
 
 
+def test_the_contact_loss_horizon_loads_and_never_undercuts_the_recovery_window(
+    tmp_path: Path,
+) -> None:
+    """#1239: the top-level horizon is a bounded leaf like the recovery window it may not undercut."""
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[lineage]
+contact_lost_recovery_seconds = 600
+top_level_contact_lost_horizon_seconds = 7200
+"""
+    )
+    config = load_config({}, {}, config_path)
+    assert config.lineage.top_level_contact_lost_horizon_seconds == 7_200
+    overridden = load_config(
+        {}, {"FINISHUP_LINEAGE_TOP_LEVEL_CONTACT_LOST_HORIZON_SECONDS": "604800"}, config_path
+    )
+    assert overridden.lineage.top_level_contact_lost_horizon_seconds == 604_800
+    assert load_config({}, {}, None).lineage.top_level_contact_lost_horizon_seconds == 86_400
+    for value in ("599", "604801", "0"):
+        with pytest.raises(ConfigError):
+            load_config({"lineage.top_level_contact_lost_horizon_seconds": value}, {}, config_path)
+
+
+def test_rendered_config_writes_the_horizon_only_when_the_owner_chose_one(tmp_path: Path) -> None:
+    from finishup.config.write import render_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n')
+    assert "top_level_contact_lost_horizon_seconds" not in render_config_toml(
+        load_config({}, {}, config_path)
+    )
+    chosen = load_config(
+        {"lineage.top_level_contact_lost_horizon_seconds": "172800"}, {}, config_path
+    )
+    rendered = render_config_toml(chosen)
+    assert "top_level_contact_lost_horizon_seconds = 172800" in rendered
+    config_path.write_text(rendered)
+    assert (
+        load_config({}, {}, config_path).lineage.top_level_contact_lost_horizon_seconds == 172_800
+    )
+
+
+def test_the_declared_quiet_cap_loads_within_a_day_and_zero_disables_it(tmp_path: Path) -> None:
+    """#1239: the quiet-period cap is a bounded leaf; 0 is allowed and means no effect."""
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[lineage]\nmax_declared_quiet_seconds = 900\n")
+    assert load_config({}, {}, config_path).lineage.max_declared_quiet_seconds == 900
+    overridden = load_config(
+        {}, {"FINISHUP_LINEAGE_MAX_DECLARED_QUIET_SECONDS": "86400"}, config_path
+    )
+    assert overridden.lineage.max_declared_quiet_seconds == 86_400
+    disabled = load_config({"lineage.max_declared_quiet_seconds": "0"}, {}, config_path)
+    assert disabled.lineage.max_declared_quiet_seconds == 0
+    assert load_config({}, {}, None).lineage.max_declared_quiet_seconds == 3_600
+    for value in ("-1", "86401"):
+        with pytest.raises(ConfigError):
+            load_config({"lineage.max_declared_quiet_seconds": value}, {}, config_path)
+
+
+def test_rendered_config_writes_the_quiet_cap_only_when_the_owner_chose_one(
+    tmp_path: Path,
+) -> None:
+    from finishup.config.write import render_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n')
+    assert "max_declared_quiet_seconds" not in render_config_toml(load_config({}, {}, config_path))
+    rendered = render_config_toml(
+        load_config({"lineage.max_declared_quiet_seconds": "0"}, {}, config_path)
+    )
+    assert "max_declared_quiet_seconds = 0" in rendered
+    config_path.write_text(rendered)
+    assert load_config({}, {}, config_path).lineage.max_declared_quiet_seconds == 0
+
+
 def test_shadowed_lower_precedence_scalar_is_not_parsed(tmp_path: Path) -> None:
     config = load_config(
         {"verification.max_findings": "7"},
-        {"YOETZ_VERIFICATION_MAX_FINDINGS": "not-an-integer"},
+        {"FINISHUP_VERIFICATION_MAX_FINDINGS": "not-an-integer"},
         tmp_path / "missing.toml",
     )
     assert config.verification.max_findings == 7
 
 
 def test_secret_name_precedes_unknown_without_value_reads() -> None:
-    env = _NoValueReads(("YOETZ_Z_UNKNOWN", "YOETZ_PROVIDER_API_KEY"))
+    env = _NoValueReads(("FINISHUP_Z_UNKNOWN", "FINISHUP_PROVIDER_API_KEY"))
     with pytest.raises(ConfigError) as caught:
         load_config({}, env, None)
     assert caught.value.reason_code == "secret_env_forbidden"
-    assert caught.value.safe_name == "YOETZ_PROVIDER_API_KEY"
+    assert caught.value.safe_name == "FINISHUP_PROVIDER_API_KEY"
     assert env.reads == 0
 
-    unknown = _NoValueReads(("YOETZ_Z_UNKNOWN",))
+    unknown = _NoValueReads(("FINISHUP_Z_UNKNOWN",))
     with pytest.raises(ConfigError) as caught_unknown:
         load_config({}, unknown, None)
     assert caught_unknown.value.reason_code == "unknown_config_env_var"
@@ -117,14 +195,34 @@ def test_unknown_and_secret_service_override_names_fail_closed() -> None:
 
 def test_observation_has_no_environment_or_service_override_surface() -> None:
     with pytest.raises(ConfigError) as environment:
-        load_config({}, {"YOETZ_OBSERVATION_ENABLED": "false"}, None)
+        load_config({}, {"FINISHUP_OBSERVATION_ENABLED": "false"}, None)
     assert environment.value.reason_code == "unknown_config_env_var"
-    assert environment.value.safe_name == "YOETZ_OBSERVATION_ENABLED"
+    assert environment.value.safe_name == "FINISHUP_OBSERVATION_ENABLED"
 
     with pytest.raises(ConfigError) as service_override:
         load_config({"observation.enabled": "false"}, {}, None)
     assert service_override.value.reason_code == "unknown_config_override"
     assert service_override.value.safe_name == "observation.enabled"
+
+
+@pytest.mark.parametrize(
+    ("text", "position"),
+    [
+        # End of document: 3.12/3.13 say only "(at end of document)" (issue #1119).
+        ("profile = [", (1, 12)),
+        # A quoted key repeating the position words must not spoof the reported position.
+        ('[a]\n["(at line 999, column 777)"]\n["(at line 999, column 777)"]\n', (3, 29)),
+    ],
+)
+def test_toml_error_positions_match_on_every_supported_python(
+    tmp_path: Path, text: str, position: tuple[int, int]
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(text)
+    with pytest.raises(ConfigError) as invalid:
+        load_config({}, {}, config)
+    assert invalid.value.reason_code == "config_toml_invalid"
+    assert (invalid.value.line, invalid.value.column) == position
 
 
 def test_toml_parser_size_and_release_probe_rules(tmp_path: Path) -> None:
@@ -144,31 +242,31 @@ def test_toml_parser_size_and_release_probe_rules(tmp_path: Path) -> None:
     probe = tmp_path / "probe.toml"
     probe.write_text('profile="release-probe"\n')
     with pytest.raises(ConfigError) as release_probe:
-        load_config({}, {"YOETZ_PROFILE": "strict-local"}, probe)
+        load_config({}, {"FINISHUP_PROFILE": "strict-local"}, probe)
     assert release_probe.value.reason_code == "release_probe_not_a_user_profile"
 
 
 def test_missing_file_uses_defaults_and_empty_env_is_unset(tmp_path: Path) -> None:
-    config = load_config({}, {"YOETZ_LOG_LEVEL": ""}, tmp_path / "missing.toml")
+    config = load_config({}, {"FINISHUP_LOG_LEVEL": ""}, tmp_path / "missing.toml")
     assert config.profile == "strict-local"
     assert config.logging.level == "info"
 
 
 def test_tui_opt_out_is_known_process_control_not_a_config_override(tmp_path: Path) -> None:
-    config = load_config({}, {"YOETZ_TUI": "0"}, tmp_path / "missing.toml")
+    config = load_config({}, {"FINISHUP_TUI": "0"}, tmp_path / "missing.toml")
 
     assert config.profile == "strict-local"
 
 
 def test_isolated_root_is_known_paths_control_not_a_config_override(tmp_path: Path) -> None:
-    """The isolation root (issue #518) belongs to yoetz.config.paths, not to config leaves.
+    """The isolation root (issue #518) belongs to finishup.config.paths, not to config leaves.
 
     Strict loading must recognize it (an isolated service start would otherwise refuse with
     ``unknown_config_env_var``) while leaving every configuration value untouched.
     """
 
     config = load_config(
-        {}, {"YOETZ_ISOLATED_ROOT": str(tmp_path / "iso")}, tmp_path / "missing.toml"
+        {}, {"FINISHUP_ISOLATED_ROOT": str(tmp_path / "iso")}, tmp_path / "missing.toml"
     )
 
     assert config.profile == "strict-local"
@@ -228,3 +326,50 @@ def test_new_defaults_preserve_omitted_existing_leaves_and_explicit_migration(
     assert (explicit.verification.semantic, explicit.verification.max_findings) == ("required", 10)
     assert path.read_bytes() == original
     assert explicit.privacy == old.privacy == fresh.privacy
+
+
+def test_finding_attempt_budget_is_owner_configurable_and_written_only_when_chosen(
+    tmp_path: Path,
+) -> None:
+    """Issue #905: default 5, set by file, environment or override, and bounded 1..50."""
+
+    from finishup.config.models import DEFAULT_FINDING_ATTEMPT_BUDGET
+    from finishup.kernel.finding_todo import (
+        DEFAULT_FINDING_ATTEMPT_BUDGET as KERNEL_DEFAULT,
+    )
+    from finishup.kernel.finding_todo import MAX_FINDING_ATTEMPT_BUDGET as KERNEL_MAX
+
+    assert (DEFAULT_FINDING_ATTEMPT_BUDGET, KERNEL_DEFAULT, KERNEL_MAX) == (5, 5, 50)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n[verification]\nfinding_attempt_budget = 3\n')
+    assert load_config({}, {}, config_path).verification.finding_attempt_budget == 3
+    assert (
+        load_config(
+            {}, {"FINISHUP_VERIFICATION_FINDING_ATTEMPT_BUDGET": "7"}, config_path
+        ).verification.finding_attempt_budget
+        == 7
+    )
+    assert (
+        load_config(
+            {"verification.finding_attempt_budget": "9"}, {}, config_path
+        ).verification.finding_attempt_budget
+        == 9
+    )
+    config_path.write_text('profile = "test-fake"\n')
+    assert load_config({}, {}, config_path).verification.finding_attempt_budget == 5
+    with pytest.raises(ConfigError):
+        load_config({"verification.finding_attempt_budget": "0"}, {}, config_path)
+
+
+def test_rendered_config_writes_the_budget_only_when_the_owner_chose_one(tmp_path: Path) -> None:
+    from finishup.config.write import render_config_toml
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('profile = "test-fake"\n')
+    default = load_config({}, {}, config_path)
+    assert "finding_attempt_budget" not in render_config_toml(default)
+    chosen = load_config({"verification.finding_attempt_budget": "8"}, {}, config_path)
+    rendered = render_config_toml(chosen)
+    assert "finding_attempt_budget = 8" in rendered
+    config_path.write_text(rendered)
+    assert load_config({}, {}, config_path).verification.finding_attempt_budget == 8

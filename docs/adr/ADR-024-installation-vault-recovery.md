@@ -15,7 +15,7 @@ platform auto-unlock/keyring entry are lost. Initializing a new IVK over that st
 not recovery. Bundle-level `portable_recovery` unwraps one BMK and does not restore installation
 authority, provider credentials, catalog lookup keys, privacy-audit keys, or other bundles.
 
-Yoetz can recover an installation only when the ready vault previously provisioned valid
+FinishUP can recover an installation only when the ready vault previously provisioned valid
 installation recovery material. Without that material and its matching human-held secret, the old
 encrypted installation is permanently unrecoverable. Recovery never brute-forces, resets, merges,
 or labels a new empty history as restored.
@@ -27,7 +27,7 @@ claim otherwise.
 
 ## Selected recovery products
 
-Yoetz supports both product shapes. One active recovery generation selects exactly one shape;
+FinishUP supports both product shapes. One active recovery generation selects exactly one shape;
 rotation may switch shapes, and previously exported shapes remain historical rather than being
 advertised as current:
 

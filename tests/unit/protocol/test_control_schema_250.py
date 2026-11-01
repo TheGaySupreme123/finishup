@@ -7,10 +7,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.control_protocol import decode_control_frame, encode_control_frame
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.control_protocol import decode_control_frame, encode_control_frame
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _RPC_ID = "rpc_00000000-0000-4000-8000-000000000002"

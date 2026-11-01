@@ -11,18 +11,18 @@ from typing import Any, cast
 
 import pytest
 
-from fixture_loader import FixtureLoader
-from yoetz.domain.observation import observation_status_from_json
-from yoetz.domain.values import freeze_json
-from yoetz.protocol.canonical import (
+from finishup.domain.observation import observation_status_from_json
+from finishup.domain.values import freeze_json
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.control_protocol import decode_control_frame, encode_control_frame
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.control_protocol import decode_control_frame, encode_control_frame
+from fixture_loader import FixtureLoader
 
 _FIXTURE = "canonical/control-observation-status-2.6.case.json"
 _FIXTURE_29 = "canonical/control-observation-status-2.9.case.json"

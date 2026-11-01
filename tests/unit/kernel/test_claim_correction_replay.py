@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -34,7 +34,7 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     ClaimId,
@@ -54,10 +54,10 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.claims import effective_claim_ids
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.claims import effective_claim_ids
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,
@@ -101,6 +101,10 @@ def _logical_key(schema: EventSchema, payload: EventPayload) -> str | None:
         return str(payload.result_id)  # type: ignore[attr-defined]
     if schema.name == "claim_recorded":
         return str(payload.claim_id)  # type: ignore[attr-defined]
+    if schema.name == "obligation_published":
+        return str(payload.obligation_id)  # type: ignore[attr-defined]
+    if schema.name in {"plan_published", "plan_revised"}:
+        return str(payload.plan_version)  # type: ignore[attr-defined]
     return None
 
 
@@ -535,3 +539,183 @@ def test_empty_scope_repair_preserves_limitation_and_noop_checks() -> None:
         replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, replace(corrected, obligation_refs=()))))
 
     assert noop.value.invariant == "replacement_must_change_effective_claim"
+
+
+def test_a_plan_supersession_carries_the_claim_scope_to_its_replacement() -> None:
+    """tb4n5 react-lead-form (ADR-033 amendment): a conditional output declared as a ``file`` is
+    corrected by superseding its obligation with one that models it as a ``change`` item. When the
+    claim named only the superseded obligation, its honest replacement names only the replacement,
+    which shares no id with it; the recorded plan supersession is the overlap. Without that
+    supersession a disjoint replacement is still refused."""
+
+    from finishup.domain.events import (
+        ObligationChange,
+        ObligationChangeKind,
+        ObligationPublishedPayload,
+        ObligationStatus,
+        PlanPublishedPayload,
+        PlanRevisedPayload,
+    )
+
+    replacement = obligation_id("obl_00000000-0000-4000-8000-000000000002")
+    obligation_schema = EventSchema("obligation_published", "1.0.0")
+
+    def published(obligation: ObligationId) -> ObligationPublishedPayload:
+        return ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Quarantine malformed ledgers.",
+            evidence_expectation="The regression suite.",
+            status=ObligationStatus.OPEN,
+        )
+
+    prefix = _chain(
+        (obligation_schema, published(_OBLIGATION)),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", (_OBLIGATION,))),
+        (_CLAIM_V1_1_SCHEMA, _completion(0)),
+        (obligation_schema, published(replacement)),
+    )
+    correction = replace(
+        _completion(1, supersedes=(_clm(0),), statement="Conditional output re-modelled."),
+        obligation_refs=(replacement,),
+    )
+    with pytest.raises(ClaimRevisionMismatch) as disjoint:
+        replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, correction)))
+    assert disjoint.value.invariant == "scope_overlap_required"
+
+    revised = _extend(
+        prefix,
+        (
+            EventSchema("plan_revised", "1.0.0"),
+            PlanRevisedPayload(
+                plan_version=2,
+                supersedes_plan_version=1,
+                reason="The quarantine log is conditional runtime output.",
+                summary="Model it as a change item.",
+                obligation_changes=(
+                    ObligationChange(
+                        _OBLIGATION,
+                        ObligationChangeKind.SUPERSEDED,
+                        "Conditional runtime output.",
+                        (replacement,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    state = replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, correction)))
+    assert effective_claim_ids(state) == frozenset({_clm(1)})
+    assert state.claims[_clm(0)].superseded_by_claim_id == _clm(1)
+    # The supersession carries the scope to the replacement only, never to an unrelated id.
+    unrelated = replace(
+        correction, obligation_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000003"),)
+    )
+    with pytest.raises(ClaimRevisionMismatch) as still_disjoint:
+        replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, unrelated)))
+    assert still_disjoint.value.invariant == "scope_overlap_required"
+
+
+def _published(obligation: ObligationId) -> tuple[EventSchema, EventPayload]:
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
+
+    return (
+        EventSchema("obligation_published", "1.0.0"),
+        ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Quarantine malformed ledgers.",
+            evidence_expectation="The regression suite.",
+            status=ObligationStatus.OPEN,
+        ),
+    )
+
+
+def _superseded(
+    version: int, old: ObligationId, new: ObligationId
+) -> tuple[EventSchema, EventPayload]:
+    from finishup.domain.events import ObligationChange, ObligationChangeKind, PlanRevisedPayload
+
+    return (
+        EventSchema("plan_revised", "1.0.0"),
+        PlanRevisedPayload(
+            plan_version=version,
+            supersedes_plan_version=version - 1,
+            reason="Conditional runtime output re-modelled as a change item.",
+            summary="Correction",
+            obligation_changes=(
+                ObligationChange(
+                    old, ObligationChangeKind.SUPERSEDED, "Conditional output.", (new,)
+                ),
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("outcome", [ResultOutcome.FAILURE, ResultOutcome.PARTIAL])
+@pytest.mark.parametrize("depth", [1, 2])
+def test_a_plan_supersession_never_drops_a_required_failure_disclosure(
+    outcome: ResultOutcome, depth: int
+) -> None:
+    """Checker reproduction (#2): a failure on O1, claimed with it in ``limitation_refs``; O1
+    superseded by O2 (or O2 by O3); the replacement claim scoped to the replacement must still
+    disclose the failure, and naming it there must be admissible. Relevance follows the
+    supersession ancestry, transitively, in both the required and the authorable calculation."""
+
+    from finishup.domain.events import PlanPublishedPayload
+
+    chain = tuple(obligation_id(f"obl_00000000-0000-4000-8000-00000000010{n}") for n in range(3))
+    obligations = chain[: depth + 1]
+    newest = obligations[-1]
+    prefix = _chain(
+        _published(obligations[0]),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", obligations[:1])),
+        (_ACTION_SCHEMA, _action(1, (obligations[0],))),
+        (_RESULT_SCHEMA, _result(1, outcome)),
+        (
+            _CLAIM_V1_1_SCHEMA,
+            replace(_completion(0, limitations=(_res(1),)), obligation_refs=(obligations[0],)),
+        ),
+    )
+    revised = _extend(
+        prefix,
+        *(_published(obligation) for obligation in obligations[1:]),
+        *(
+            _superseded(version, old, new)
+            for version, (old, new) in enumerate(zip(obligations, obligations[1:], strict=False), 2)
+        ),
+    )
+    silent = replace(
+        _completion(1, supersedes=(_clm(0),), statement="Re-modelled."),
+        obligation_refs=(newest,),
+    )
+    with pytest.raises(ClaimRevisionMismatch) as dropped:
+        replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, silent)))
+    assert dropped.value.invariant == "limitation_refs_complete"
+    disclosed = replace(silent, limitation_refs=(_res(1),))
+    state = replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, disclosed)))
+    assert effective_claim_ids(state) == frozenset({_clm(1)})
+    assert state.claims[_clm(1)].payload == disclosed
+
+
+def test_a_fresh_claim_over_a_replacement_still_replays_and_its_relevance_follows_ancestry() -> (
+    None
+):
+    """Replay compatibility: a fresh (non-replacing) claim over O2 that omits a failure recorded
+    on the superseded O1 was admitted before this change, so replay keeps admitting it. The
+    omission is not lost: check-time relevance (``kernel.claims.result_is_relevant_to_claim``,
+    which the work-integrity failed-work rule reads) follows the same supersession ancestry."""
+
+    from finishup.domain.events import PlanPublishedPayload
+    from finishup.kernel.claims import result_is_relevant_to_claim
+
+    old, new = (obligation_id(f"obl_00000000-0000-4000-8000-00000000020{n}") for n in range(2))
+    prefix = _chain(
+        _published(old),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", (old,))),
+        (_ACTION_SCHEMA, _action(1, (old,))),
+        (_RESULT_SCHEMA, _result(1, ResultOutcome.FAILURE)),
+        _published(new),
+        _superseded(2, old, new),
+    )
+    fresh = replace(_completion(0), obligation_refs=(new,))
+    state = replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, fresh)))
+    assert state.claims[_clm(0)].payload == fresh
+    assert result_is_relevant_to_claim(state, state.claims[_clm(0)], _res(1)) is True

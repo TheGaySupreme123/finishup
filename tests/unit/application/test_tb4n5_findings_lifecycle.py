@@ -1,0 +1,327 @@
+"""tb4n5 follow-up of #1042 through the check's reviewer fence: the local rule owns the relation.
+
+In 3 of 9 S tasks (vigenere, live-db, medical) the reviewer raised "action has no linked result"
+beside the local finding about the same agent-published action; the local twin resolved once the
+agent linked the result while the AI twin latched ``disputed_after_rebuttal``. The AI copy of
+``action_without_result`` or ``result_without_action`` is now counted and disclosed
+(``local_rule_owned``), never minted; every other kind about the same action is still reviewed.
+The #1046 follow-up (``fixed`` rulings citing ``evt_`` ids) is covered through the real ruling
+admission in ``test_semantic_post_validation`` and end to end in
+``integration/application/test_review_dialogue_workflow``.
+
+The cases replay agent-published ledgers through the production case builder and the real check
+fence (``validate_semantic_judgment``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from builders.observed_runs import ObservedLedger
+from finishup.application.check import (
+    SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
+    SemanticJudgmentReview,
+    validate_semantic_judgment,
+)
+from finishup.domain.events import (
+    ActionKind,
+    ActionRecordedPayload,
+    ClaimKind,
+    ClaimRecordedPayload,
+    EventSchema,
+    EvidenceKind,
+    EvidenceRecordedPayload,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    ResultOutcome,
+    ResultRecordedPayload,
+)
+from finishup.domain.findings import FindingKind
+from finishup.domain.receipts import SEMANTIC_PROCESS_STATE_FILTERED_GAP
+from finishup.domain.values import (
+    EventId,
+    action_id,
+    claim_id,
+    evidence_id,
+    obligation_id,
+    result_id,
+    timestamp_from_string,
+)
+from finishup.kernel.deterministic_checks import (
+    CaseAvailabilityFacts,
+    DeterministicCase,
+    build_deterministic_case,
+    run_deterministic_policies,
+)
+from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
+from finishup.kernel.reducers import replay
+from finishup.ports.semantic import ReviewerChallenge, SemanticJudgment
+from finishup.protocol.coverage import EvidenceImmutability
+from unit.application import test_tb4n4_review_frame as tb4n4
+
+_ENGINE = obligation_id("obl_00000000-0000-4000-8000-000000000501")
+_SEED = obligation_id("obl_00000000-0000-4000-8000-000000000502")
+_OTHER = obligation_id("obl_00000000-0000-4000-8000-000000000503")
+_FIRST = "req_00000000-0000-4000-8000-000000000501"
+_LATER = "req_00000000-0000-4000-8000-000000000502"
+
+
+def _review(case: DeterministicCase, *challenges: ReviewerChallenge) -> SemanticJudgmentReview:
+    return validate_semantic_judgment(
+        case,
+        (),
+        SemanticJudgment("challenges_returned", challenges),
+        tb4n4._provenance(),  # pyright: ignore[reportPrivateUsage]
+        expected_frontier=case.frontier,
+        review_phase="routine",
+    )
+
+
+def _awr(*refs: str, summary: str) -> ReviewerChallenge:
+    return tb4n4._challenge(  # pyright: ignore[reportPrivateUsage]
+        FindingKind.ACTION_WITHOUT_RESULT, *refs, summary=summary
+    )
+
+
+def _ledger() -> tuple[ObservedLedger, dict[str, EventId]]:
+    """medical S L95 / vigenere S L88: an edit and a command published in one batch, with
+    evidence but no result for the edit; unrelated work in a later batch."""
+
+    ledger = ObservedLedger()
+    for obligation in (_ENGINE, _SEED, _OTHER):
+        ledger.append(
+            EventSchema("obligation_published", "1.0.0"),
+            ObligationPublishedPayload(
+                obligation_id=obligation,
+                description="Synthetic obligation",
+                evidence_expectation="A recorded result",
+                status=ObligationStatus.OPEN,
+            ),
+            observed=False,
+            operation=_FIRST,
+        )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_ENGINE, _SEED, _OTHER)),
+        observed=False,
+        operation=_FIRST,
+    )
+    events: dict[str, EventId] = {}
+    events["edit"] = ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000511"),
+            ActionKind.EDIT,
+            "Rewrote the triage scoring engine",
+            obligation_refs=(_ENGINE,),
+        ),
+        observed=False,
+        operation=_FIRST,
+    )
+    events["command"] = ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000512"),
+            ActionKind.COMMAND,
+            "Reinstalled and reseeded the database",
+            command="python reseed.py",
+            obligation_refs=(_SEED,),
+        ),
+        observed=False,
+        operation=_FIRST,
+    )
+    events["evidence"] = ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id=evidence_id("evd_00000000-0000-4000-8000-000000000513"),
+            evidence_kind=EvidenceKind.COMMAND_OUTPUT,
+            strength=EvidenceImmutability.METADATA_ONLY,
+            observed_at=timestamp_from_string("2026-10-12T21:40:00.000Z"),
+            description="The engine passes its scoring table",
+        ),
+        observed=False,
+        operation=_FIRST,
+    )
+    events["later"] = ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-000000000514"),
+            ActionKind.RESEARCH,
+            "Read the triage protocol notes",
+            obligation_refs=(_OTHER,),
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    return ledger, events
+
+
+def _case(ledger: ObservedLedger) -> DeterministicCase:
+    prefix = ledger.prefix
+    return build_deterministic_case(replay(prefix), prefix, CaseAvailabilityFacts())
+
+
+def _local_action_findings(case: DeterministicCase) -> list[tuple[str, ...]]:
+    return [
+        tuple(str(ref) for ref in item.candidate.subject_refs)
+        for item in run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK).assessments
+        if item.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+    ]
+
+
+def _fence_gaps(review: SemanticJudgmentReview) -> frozenset[str]:
+    from finishup.application.check import (
+        _review_fence_gaps,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return _review_fence_gaps(review)
+
+
+# --- #1042 follow-up: the local rule owns the action/result relation ---------------------------
+
+
+def test_the_three_tb4n5_shapes_mint_no_ai_bookkeeping_finding() -> None:
+    ledger, events = _ledger()
+    case = _case(ledger)
+    # The local rule keeps its own findings: both unpaired actions of the first batch, raised by the
+    # later batch's unrelated work, never by each other.
+    assert _local_action_findings(case) == [(str(events["edit"]),), (str(events["command"]),)]
+    shapes = {
+        # vigenere S fnd_e5e6fd62: the local subject plus an evidence event (a superset).
+        "vigenere": _awr(
+            str(events["edit"]), str(events["evidence"]), summary="The run has no linked result"
+        ),
+        # live-db S fnd_1c46b392: the identical subject.
+        "live-db": _awr(str(events["edit"]), summary="The edit has no linked result"),
+        # medical S fnd_97f805aa: "the engine edit has no linked result" citing the sibling command.
+        "medical": _awr(str(events["command"]), summary="The engine edit has no linked result"),
+    }
+    for name, challenge in shapes.items():
+        review = _review(case, challenge)
+        assert review.candidates == (), name
+        assert review.rejected_by_reason == ((SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 1),), name
+        # Disclosed, never bounding: the review saw everything it needed.
+        assert _fence_gaps(review) == frozenset({SEMANTIC_PROCESS_STATE_FILTERED_GAP}), name
+    # The same label on a record that is not an orphan result is not the rule's relation.
+    mislabelled = replace(shapes["live-db"], finding_kind=FindingKind.RESULT_WITHOUT_ACTION)
+    assert [c.kind for c in _review(case, mislabelled).candidates] == [
+        FindingKind.RESULT_WITHOUT_ACTION
+    ]
+
+
+def test_a_result_without_action_copy_of_an_orphan_result_is_the_local_rules() -> None:
+    ledger, _events = _ledger()
+    orphan = ledger.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-000000000599"),
+            action_id("act_00000000-0000-4000-8000-000000000599"),
+            ResultOutcome.SUCCESS,
+            summary="Reseed done",
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    case = _case(ledger)
+    challenge = replace(
+        _awr(str(orphan), summary="A result names no recorded action"),
+        finding_kind=FindingKind.RESULT_WITHOUT_ACTION,
+    )
+    review = _review(case, challenge)
+    assert review.candidates == ()
+    assert review.rejected_by_reason == ((SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 1),)
+
+
+def _paired_and_claimed() -> tuple[DeterministicCase, dict[str, EventId]]:
+    """Codex check of fix/n5-findings: every action has its result, and a completion claim says
+    all tests passed while the command's result says it only inspected documentation."""
+
+    ledger, events = _ledger()
+    for number, outcome, summary in (
+        (511, ResultOutcome.SUCCESS, "The engine edit is in place"),
+        (
+            512,
+            ResultOutcome.SUCCESS,
+            "Inspected the documentation only; the required verification was not executed",
+        ),
+        (514, ResultOutcome.SUCCESS, "Read the notes"),
+    ):
+        events[f"result-{number}"] = ledger.append(
+            EventSchema("result_recorded", "1.0.0"),
+            ResultRecordedPayload(
+                result_id(f"res_00000000-0000-4000-8000-000000000{number}"),
+                action_id(f"act_00000000-0000-4000-8000-000000000{number}"),
+                outcome,
+                summary=summary,
+            ),
+            observed=False,
+            operation=_LATER,
+        )
+    events["claim"] = ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000000516"),
+            ClaimKind.COMPLETION,
+            "All tests passed",
+            (),
+            obligation_refs=(_ENGINE, _SEED, _OTHER),
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    return _case(ledger), events
+
+
+def test_a_substantive_concern_filed_under_the_pairing_label_is_kept() -> None:
+    """Codex check P2: the label is never proof. An ``action_without_result`` challenge that
+    cites a paired action, a completion claim or an obligation carries a false-completion or
+    unrun-verification concern, and is minted as the reviewer gave it."""
+
+    case, events = _paired_and_claimed()
+    assert _local_action_findings(case) == []
+    for refs in (
+        (str(events["command"]), str(events["claim"])),  # the reproduced scenario
+        (str(events["command"]),),  # a paired action: the concern is not the missing link
+        (str(events["claim"]),),
+        (str(events["command"]), str(events["result-512"])),
+    ):
+        review = _review(
+            case, _awr(*refs, summary="The reported inspection does not verify the claim")
+        )
+        assert [c.kind for c in review.candidates] == [FindingKind.ACTION_WITHOUT_RESULT], refs
+        assert review.rejected_by_reason == (), refs
+
+
+def test_an_unpaired_action_cited_with_a_requirement_or_a_failure_is_kept() -> None:
+    ledger, events = _ledger()
+    failed = ledger.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-000000000598"),
+            action_id("act_00000000-0000-4000-8000-000000000514"),
+            ResultOutcome.FAILURE,
+            summary="The verification run failed",
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000000517"),
+            ClaimKind.MATERIAL,
+            "The engine passes its scoring table",
+            (evidence_id("evd_00000000-0000-4000-8000-000000000513"),),
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    case = _case(ledger)
+    for refs in (
+        (str(events["edit"]), str(_ENGINE)),  # a requirement or planned-verification concern
+        (str(events["edit"]), str(events["evidence"])),  # output a claim stands on
+        (str(events["edit"]), str(failed)),  # a run that did not succeed
+    ):
+        review = _review(case, _awr(*refs, summary="The engine edit has no linked result"))
+        assert [c.kind for c in review.candidates] == [FindingKind.ACTION_WITHOUT_RESULT], refs

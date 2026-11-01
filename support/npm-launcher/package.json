@@ -1,26 +1,26 @@
 {
-  "name": "yoetz",
+  "name": "finishup",
   "version": "0.3.0",
-  "description": "Delegation launcher for the Python yoetz distribution via uv. Installs nothing itself.",
+  "description": "Delegation launcher for the Python finishup distribution via uv. Installs nothing itself. FinishUP was previously called Yoetz.",
   "private": false,
   "license": "Apache-2.0",
   "author": "Shay Ben Shabtay",
-  "homepage": "https://yoetz.dev",
+  "homepage": "https://finishup.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TheGaySupreme123/yoetz.git"
+    "url": "git+https://github.com/TheGaySupreme123/finishup.git"
   },
   "bugs": {
-    "url": "https://github.com/TheGaySupreme123/yoetz/issues"
+    "url": "https://github.com/TheGaySupreme123/finishup/issues"
   },
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "yoetz": "./bin/yoetz.js"
+    "finishup": "./bin/finishup.js"
   },
   "files": [
-    "bin/yoetz.js",
+    "bin/finishup.js",
     "README.md"
   ],
   "engines": {

@@ -15,12 +15,12 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.integrations.codex_capability_harness import (
+from finishup.adapters.integrations.codex_capability_harness import (
     CODEX_ARTIFACT_UNAVAILABLE,
     CODEX_CONDUIT_DRIVER_UNAVAILABLE,
     evaluate_codex_conduit_availability,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 

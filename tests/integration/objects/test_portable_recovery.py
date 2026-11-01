@@ -9,12 +9,12 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.keys.passphrase as passphrase_adapter
+import finishup.adapters.keys.passphrase as passphrase_adapter
+from finishup.adapters.keys.passphrase import unlock_recovery_artifact, wrap_recovery_artifact
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.keys import RecoveryArtifact, RecoveryKeyMaterialHandle, RecoverySecret
+from finishup.ports.secret_memory import SecretPurpose
 from fixture_loader import FixtureLoader, JsonValue
-from yoetz.adapters.keys.passphrase import unlock_recovery_artifact, wrap_recovery_artifact
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.keys import RecoveryArtifact, RecoveryKeyMaterialHandle, RecoverySecret
-from yoetz.ports.secret_memory import SecretPurpose
 
 
 class _FixedKeyMaterial:

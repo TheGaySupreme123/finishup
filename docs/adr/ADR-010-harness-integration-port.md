@@ -5,11 +5,11 @@ first-party Codex observation amendment 2026-07-22). Ratification requires the p
 byte-parity run plus a capability run proving an unprofiled MCP host completes the workflow from an
 installed artifact, and — for first-party Codex cells that advertise observation — installed-artifact
 evidence that observation ingest earns `hook_observed` only from real observation evidence.
-**Implemented by:** `guidance/`, `src/yoetz/ports/integrations.py`,
-`src/yoetz/ports/observation.py`, `src/yoetz/domain/observation.py`,
-`src/yoetz/application/integrations.py`,
-`src/yoetz/adapters/integrations/codex_skill.py`, `src/yoetz/mcp/descriptors.py`,
-`src/yoetz/mcp/resources.py`, `src/yoetz/mcp/server.py`,
+**Implemented by:** `guidance/`, `src/finishup/ports/integrations.py`,
+`src/finishup/ports/observation.py`, `src/finishup/domain/observation.py`,
+`src/finishup/application/integrations.py`,
+`src/finishup/adapters/integrations/codex_skill.py`, `src/finishup/mcp/descriptors.py`,
+`src/finishup/mcp/resources.py`, `src/finishup/mcp/server.py`,
 `schemas/common/client-info-1.0.0.schema.json`.
 **Relates to:** ADR-002 (canonical protocol), ADR-005 (Codex capability identity), ADR-007
 (packaging/release), ADR-009 (egress/privacy).
@@ -28,7 +28,7 @@ authority (ADR-018). New prompts and resumed scopes require fresh effective plan
 host timeout failures bound enforcement. See [required startup](../runbooks/required-startup.md)
 for controls and native acceptance limits. Maintainer acknowledgement is recorded on #692.
 
-Yoetz is intended to work with any agent through MCP, with Codex as the first harness targeted by a
+FinishUP is intended to work with any agent through MCP, with Codex as the first harness targeted by a
 first-party integration. Codex remains untested rather than supported until an exact capability
 cell satisfies E-002 and E-013. The drafted v0.1 tree did not express that split, and drifted toward
 Codex being the only harness that could work well:
@@ -39,7 +39,7 @@ Codex being the only harness that could work well:
    `ObjectStorePort`, `OutboundGatewayPort`) with adapters underneath. Adding a harness meant
    editing the shared registry, so a fork could not add one without touching the core.
 2. All agent guidance — the ten-step workflow, the publication policy, the coverage rules — lived
-   under `skills/codex/yoetz/`, physically inside the Codex-specific tree, in both the spec tree and
+   under `skills/codex/finishup/`, physically inside the Codex-specific tree, in both the spec tree and
    the packaged resources. None of that content was Codex-specific. A second harness would have had
    to duplicate it and drift, or reach into another harness's directory.
 3. `ClientInfoModel.kind` was the closed set `codex_cli|yoetz_cli|test_client|importer`. An
@@ -56,7 +56,7 @@ The through-line is that "Codex is first" had been encoded as "Codex is the only
 1. **The guidance core is owned once, harness-neutrally, under `guidance/`.** It owns
    `agent-instructions.md`, `workflow.md`, `publication-policy.md`, `coverage-and-receipts.md`, and
    `request-templates.md`,
-   packaged byte-identically under `src/yoetz/resources/guidance/`. Exactly one packaged copy exists
+   packaged byte-identically under `src/finishup/resources/guidance/`. Exactly one packaged copy exists
    regardless of how many harnesses ship, which makes drift structurally impossible rather than
    merely tested. A harness adapter may choose layout, filename, and header; it may not vary a byte.
 
@@ -82,7 +82,7 @@ The through-line is that "Codex is first" had been encoded as "Codex is the only
    `instructions` string, and it carries `guidance/agent-instructions.md` verbatim — the safety
    floor, including the catalog paragraph that names every other document and the
    `resources/read` → `read_guidance` → installed-copy recovery chain. That string reaches every
-   host unconditionally. Tier 1 exposes the five documents as `yoetz://guidance/<name>` MCP
+   host unconditionally. Tier 1 exposes the five documents as `finishup://guidance/<name>` MCP
    resources for hosts that return the resource text. Tier 2 installs them on disk for a first-party
    harness. Because tier 0 is the only tier guaranteed to arrive, it must carry every rule whose
    absence would cause harm, rather than summarizing and deferring — but "carry the rule" is
@@ -94,17 +94,18 @@ The through-line is that "Codex is first" had been encoded as "Codex is the only
 5. **MCP declares tools and resources only.** No prompts, sampling, roots, completions, or resource
    subscribe/listChanged. Resources are static reviewed product documents: they reach no service,
    carry no user content, and are therefore served while the service is absent, locked, or draining —
-   exactly when an agent most needs to know Yoetz is unavailable rather than invent a session. A
+   exactly when an agent most needs to know FinishUP is unavailable rather than invent a session. A
    resource URI is a key into a frozen table, never a path.
 
 6. **`mcp/descriptors.py` owns every agent-read string** — the six workflow tool names, the
-   read-only `read_guidance` tool, descriptions, and annotations, plus `instructions` — loaded from
-   verified packaged resources, never composed at runtime, and bound by the same honesty lint as
-   the guidance ("verified", "proved", "authenticated", "complete" rejected unless the sentence
-   states the exact sufficient coverage). `status` and `read_guidance` carry `readOnlyHint=true`;
+   read-only `read_guidance` and `closure_prepare` support tools, descriptions, and annotations,
+   plus `instructions` — loaded from verified packaged resources, never composed at runtime, and
+   bound by the same honesty lint as the guidance ("verified", "proved", "authenticated", "complete"
+   rejected unless the sentence states the exact sufficient coverage). `status`, `read_guidance`,
+   and `closure_prepare` carry `readOnlyHint=true`;
    `receipt` carries `readOnlyHint=false` because it stages a receipt object and appends a
    `receipt_recorded` event. Every tool carries an explicit `idempotentHint=true`. Nothing carries
-   `destructiveHint`, because no Yoetz operation deletes recorded evidence. `read_guidance` is
+   `destructiveHint`, because no FinishUP operation deletes recorded evidence. `read_guidance` is
    guidance transport only: it is not a ledger operation and does not use the service client.
    Observation does **not** add a workflow tool: live observation is local CLI/service control
    through `ObservationPort` (ingest/status/pause/resume/revoke), and advice surfaces through
@@ -191,10 +192,10 @@ observation coverage; only consented accepted `cursor_hook` envelopes can do so.
 **Amendment (2026-08-28, issue #426): installed Cursor plugin status binds live MCP runtime
 process evidence when a bounded scan is available.** File `mcp.json` and marker route are not the process
 that answers model calls. After plugin replace, Cursor can keep a shared `mcp-process` helper
-whose child still has `yoetz mcp serve --semantic off` while the extension host already launched
+whose child still has `finishup mcp serve --semantic off` while the extension host already launched
 `--host cursor`. Status therefore classifies exact known serve suffixes and Cursor-helper parents
 into `mcp.runtime` (`unobserved|matched|full_restart_required`) without retaining argv. Only an exact
-`yoetz` launcher token followed by a known serve suffix is classified; an unavailable or truncated
+`finishup` launcher token followed by a known serve suffix is classified; an unavailable or truncated
 scan remains `unobserved`. A
 policy-installed tree with a contradictory helper child reports `full_restart_required` and must
 not be described as activated. Reload Window is not sufficient; a full application quit is the
@@ -205,13 +206,13 @@ terminal ceiling. Recovery never authorizes egress or changes privacy settings.
 
 **Amendment (2026-08-29, issue #468): the plugin-owned Cursor `mcp.json` binds the exact launcher
 the hooks bind, and status verifies executable, package identity, control schema, and route
-separately.** A bare `command: "yoetz"` let Cursor's sanitized desktop PATH resolve an older ambient
+separately.** A bare `command: "finishup"` let Cursor's sanitized desktop PATH resolve an older ambient
 runtime (control schema 2.1.0) behind a marker-valid then-current plugin (2.3.0); the model's
 `start` then reached an incompatible bridge and no task, evidence, or receipt could exist. Cursor's
 MCP reference admits a full path in `command`, so the native entry is now `launcher[0]` plus
 `[*launcher[1:], "mcp", "serve", "--host", "cursor", …]` from the same `/3` marker launcher the
 hooks use; the entry is a managed member, so carrier bytes bind it. Route recognition accepts a bare
-`yoetz` or a known launcher (this artifact's or the installed marker's) with the exact serve
+`finishup` or a known launcher (this artifact's or the installed marker's) with the exact serve
 arguments. `CursorPluginStatus.launcher` reports executable state (`matched|drifted|missing|
 unbound|unobserved`), the installed entry's `mcp_binding` (`exact_launcher|ambient_path|…`), and a
 bounded identity probed by running the installed launcher's read-only `version --json`; the live
@@ -245,7 +246,7 @@ result, or a roots-list-changed notification, retires the slot and
 its service client; the host must create a fresh MCP session to bind again, preventing one process
 from crossing repository authorities. Generic MCP bridges keep their existing process
 CWD behavior. The server still advertises only tools/resources: roots are a standard client-to-
-server handshake input, not a Yoetz tool or new server capability.
+server handshake input, not a FinishUP tool or new server capability.
 
 **Amendment (2026-09-07, issue #616): Cursor root compatibility and explicit project selection.**
 The reviewed Cursor implementation emits absolute local filesystem paths in `roots/list.uri`,
@@ -311,6 +312,54 @@ bounded the adjacent surface since #128. Per-item budgets cannot catch this clas
 item can sit inside its own bound while the total doubles. Anyone inlining a document here again
 will fail CI rather than a live session.
 
+**Amendment (2026-10-03, issue #951): same-session specification recovery.** MCP advertises
+`plan_published/1.1.0` and `plan_revised/1.1.0`, including `task_statement`, so a caller can supply
+missing review input without superseding the session and writer that own its parked check. The
+older plan variants remain available and reject that field. These two variants add two branches,
+two payload definitions, and 3,000 bytes to the advertised schema. The measured publication schema
+is 51,432 bytes and the strict generic-host aggregate is 252,168 bytes. Their reviewed ceilings are
+52,000 and 253,000 bytes respectively; the compact native-host instruction ceilings are unchanged.
+
+**Amendment (2026-09-30, issue #918; also records #789): tier 0 is host-profiled.** The bridge's
+declared `--host` selects the tier-0 body. `generic` keeps `agent-instructions.md` verbatim.
+`claude` receives a compact body sized for Claude Code's observed 2,048-character cap (#789).
+`codex` and `cursor` receive one host-neutral compact body with a 2,048-byte cap, because Codex
+code mode charges tier 0 once per advertised tool and the full document cost 19.8 KB per copy.
+Each compact body still carries the rules whose absence would cause harm before the first read:
+when to call `start`, never to claim FinishUP is active before it returns, never to fabricate state,
+the consent, disclosure and coverage-wording boundaries, and all five URIs with `read_guidance`
+and an instruction to read `agent-instructions.md` before the first `start`. That is the same
+"name a reachable path" rule as the 2026-08-17 amendment, applied to the safety floor itself. The
+route tail and destination disclosure are composed identically for every body. Separately, on
+`codex` only, a `read_guidance` result's text `content` points at `structuredContent.text`
+instead of repeating the document; tier 1 and tier 2 bytes and the output schema are unchanged.
+
+**Amendment (2026-10-03, issue #950; residual #918): bounded guidance delivery.** The additive
+`read_guidance` 1.1.0 request/result schemas retain URI-only full-document responses up to 64 KiB
+and automatically select page zero for larger documents. The document/offset bound is 1 MiB;
+individual response-body bounds remain unchanged. The UTF-8-safe page route binds a document URI,
+source-byte revision/digest, offsets, byte counts,
+page count, completion, and an exact continuation. Codex keeps its bounded pointer and reads the
+page body from `structuredContent`; generic, Claude Code, and Cursor page text carries explicit
+begin/end markers. A final `complete` flag records service emission only. The supported consumer
+assembler rejects clipped markers, missing or duplicate pages, stale identity, offset/length
+mismatches, and a final digest mismatch before exposing guidance. The frozen 1.0.0 schemas remain
+available for compatibility, and generated resource/skill mirrors continue to come from the
+resource ripple.
+
+**Amendment (2026-10-13, tb4n5): page zero names the sections.** tb4n5 agents read the 80 KB
+request templates whole 34 times in 15 of 18 attempts; page zero held no request body, so they
+paged, ran `sed` ranges or guessed anchors. Page zero of a paged read now carries an optional
+`sections` list (`{uri, byte_count}` per catalogued heading topic inside the resource, in document
+order, at most 128) in the still-unreleased `read_guidance` 1.1.0 result, edited in place like the
+2026-10-03 bound change. It is generated from the closed topic catalog and the packaged bytes, so
+it cannot drift from the anchors `read_guidance` admits, and the hand-written maps at the top of the
+paged documents shrink to the rows a name does not make obvious. Generic, Claude Code and Cursor
+text appends the list after page zero's end marker (`FINISHUP_GUIDANCE_SECTIONS ...`); the assembler
+accepts it only there and still verifies exactly the bytes between the markers. The Codex pointer
+names the anchors beside `structuredContent.sections`. Later pages, unpaged reads and focused
+topics carry no list.
+
 **Amendment (ADR-023, 2026-08-21, issue #149): tier 2 gains a portable carrier; artifact and
 activation are sibling ports.** Tier 2 on-disk delivery may now be carried either by a host-native
 projection (the existing Codex layout) or by a portable Agent Plugins 1.0.0 artifact, both
@@ -341,7 +390,7 @@ the same six operations; this artifact slice still creates no host activation or
 **Amendment (2026-08-14, issue #222):** Codex hook stdout is event-specific. `SessionStart`,
 `PostToolUse`, and `UserPromptSubmit` keep `hookSpecificOutput.additionalContext`. `Stop` and
 `SubagentStop` have no such field: JSON that includes `hookSpecificOutput` is marked Failed with
-`hook returned invalid stop hook JSON output`. When Stop has advice, Yoetz emits
+`hook returned invalid stop hook JSON output`. When Stop has advice, FinishUP emits
 `decision: block` plus `reason` so the text reaches the model as a continuation, and it does not
 block again when the host sets `stop_hook_active`. `SessionEnd` has no output schema and the host
 discards stdout, so it is not advice-safe and never consumes a pending delivery.
@@ -358,7 +407,7 @@ native profile does not advertise those events; widening that profile remains se
 Workspace-binding outcomes are diagnosed host-agnostically
 in the shared ingress (`workspace_unresolvable`, `workspace_unconsented`, `paused`), the two storage
 outcomes of a status read carry distinct retryability advisories and the same lowercase diagnostic
-tokens, and `yoetz observe` verbs report pre-store conditions as typed public outcomes instead of
+tokens, and `finishup observe` verbs report pre-store conditions as typed public outcomes instead of
 `internal_error`. Cursor's reference states `session_id` is "the same as `conversation_id`"; the
 alias persisted at `sessionStart` is therefore a defensive bound, not a required join.
 
@@ -371,14 +420,28 @@ Code, or Cursor to connect, sign in, or repair one. When intent is recorded and 
 structurally unusable, `connect_provider` is still produced, including when the fact has no factory
 id. Delivery stays on the standing session-boundary channels: Codex and Claude Code `SessionStart`
 and `Stop`, and Cursor `sessionStart`. `PostToolUse` does not carry it. Cursor `stop` still does
-not emit `followup_message`. No privacy widening, provider connection, or credential action is implied.
+not emit `followup_message` for advice. No privacy widening, provider connection, or credential action is implied.
+The one later exception is the Stop-time closure gate (ADR-033, #977): Codex `decision: block`,
+Claude Code `additionalContext`, and Cursor `followup_message`, once per ledger frontier.
+
+**Amendment (2026-10-22, issue #1162):** "Common output fields" above includes `systemMessage`.
+Codex's hooks reference, re-read on 2026-10-22, lists `continue`, `stopReason`, `systemMessage`
+and `suppressOutput` as the common fields Stop and SubagentStop support, `systemMessage` being
+surfaced as a warning in the UI or event stream; the #222 failure was `hookSpecificOutput`, which
+is not a common field. Claude Code's reference lists the same fields for every event and names the
+events that discard `systemMessage` (Stop is not one of them); it is shown to the user. The
+non-blocking correctness-advisory notice (ADR-006) therefore uses `systemMessage` on both hosts,
+alone or beside the closure gate's own Stop payload, and never rides `decision`/`reason` or Stop
+`additionalContext`, which continue the agent. Cursor's `stop` stdout has only the continuing
+`followup_message`, so that notice goes to bounded stderr. Live host display of the notice is not
+established by the hook-contract tests.
 
 **Amendment (2026-08-14):** Hook advice delivery no longer falls back to the workspace-wide
 `advice_snapshot` for task-scoped conditions. Before a Codex session is mapped, task-scoped
 advice is selected only from that Codex session's retained envelopes. After mapping, delivery
-uses the mapped Yoetz session snapshot when present, otherwise the current Codex session's
+uses the mapped FinishUP session snapshot when present, otherwise the current Codex session's
 envelopes. Workspace-standing machine conditions (`connect_provider`) remain readable from the
-workspace snapshot at the documented session-boundary cadence. Suppression is keyed by Yoetz
+workspace snapshot at the documented session-boundary cadence. Suppression is keyed by FinishUP
 session when mapped and by Codex session commitment when unmapped, so one task cannot silence
 or re-enable another. No new durable field or observation-authority change.
 
@@ -389,7 +452,7 @@ Existing v0.1 ledger/object data remains readable. Bundle migration `0002` owns 
 dedup, structural envelopes, and the current advice snapshot. Migration `0003` owns authenticated
 encrypted workspace-locator/content references, canonical logical identity claims, exact-digest
 check-policy trust, generation-fenced verification jobs/results, and advice history/delivery state.
-Migration `0004` owns inspection snapshots, workspace→Yoetz-session routing, and session-scoped
+Migration `0004` owns inspection snapshots, workspace→FinishUP-session routing, and session-scoped
 current advice without rewriting `0003`. Migration `0009` rebuilds the `0002` cursor and envelope
 tables so their source CHECK admits `claude_hook` and `cursor_hook` beside the Codex sources: the
 domain enum is the closed set and the DDL follows it, never the reverse (issue #576). Repositories own those tables; coordinators do not issue
@@ -399,7 +462,7 @@ records a private workspace commitment, structural outbox/quarantine evidence, a
 identities—never raw task content or a raw path in logs/status/SQLite.
 AI-powered review composition keeps this observation workspace commitment separate from the
 `TaskRoute.repository_privacy_commitment`: it derives the observation key only through the durable
-workspace-to-Yoetz-session route, verifies the route is for the exact runtime task, and repeats that
+workspace-to-FinishUP-session route, verifies the route is for the exact runtime task, and repeats that
 check before disclosure. Missing or contradictory route membership is an explicit content gap; the
 privacy commitment is never used as an observation-workspace fallback.
 Hook ingress and every consent/control lifecycle entry point derive that commitment from one shared
@@ -439,25 +502,36 @@ Approved checks never execute inside the hook RPC budget. A generation-fenced
 one job runs per workspace through the enforcing sandbox, newer pending state coalesces older
 pending work, abandoned generation leases recover after restart, and a result becomes current only
 if post-run state still matches. Sandbox absence is an explicit unavailable result, never a pass.
-Bundle migration `0004` owns durable inspection snapshots, workspace→Yoetz-session routes, and
+Bundle migration `0004` owns durable inspection snapshots, workspace→FinishUP-session routes, and
 session-scoped current advice; migration `0003` is immutable. Local advice consumes this
 evidence offline and materializes through existing `finding_recorded`; ordinary
-`status(view="advice")` loads only the advice for the routed workspace and Yoetz session, and safe
+`status(view="advice")` loads only the advice for the routed workspace and FinishUP session, and safe
 hook context surfaces the same bounded finding/evidence identities. The MCP registry remains the
-six workflow tools plus read-only `read_guidance`. Observation is not a seventh workflow tool.
+six workflow tools plus read-only `read_guidance` and `closure_prepare` support tools. Observation
+is not a workflow tool.
 
-A fork can make Yoetz first-party on another harness by writing one adapter and one profile. It
+A fork can make FinishUP first-party on another harness by writing one adapter and one profile. It
 edits no port, no registry, no guidance, and no schema. That is the property this ADR exists to
 guarantee, and it follows from the ports/adapters pattern the rest of the tree already uses.
 
 Any MCP host works on day one with no integration, no skill, and no configuration: six workflow
-tools, `read_guidance`, the tier-0 instructions, and five fetchable guidance documents. The
+tools, `read_guidance`, the read-only `closure_prepare` support route, the tier-0 instructions,
+and five fetchable guidance documents. The
 request-template resource keeps
 all six requests and all nine ordinary publication families authorable when a host drops schema
 metadata; the catalog schema remains admission authority. The host earns `cooperative_mcp` with
 `self_asserted` authorship and `published_only` artifact observation — the weakest honest coverage,
 which the coverage vector already expresses precisely. That is not a degraded mode needing a warning
 label; it is an accurate one.
+
+**Amendment (2026-10-03, issue #953): bounded closure preparation is an MCP support route.**
+`closure_prepare/1.0.0` exposes the existing mechanical closure composer through the same
+cooperative identities and explicit selections as the CLI. It reads one pinned, privacy-projected
+inventory and prepares at most one request; it never appends, judges work, or claims completion.
+The bridge refuses a result after the complete host projection and JSON-RPC serialization would
+exceed the stdio frame bound, including Cursor's structured-content plus canonical-text copies,
+and directs larger inventories to the CLI `--output` fallback. This adds a read-only support tool,
+not a workflow operation or a new authority boundary.
 
 First-party Codex integration therefore buys ergonomics and, when the observation arm is
 capability-proven and consented, stronger coverage via `hook_observed`. It never buys a different
@@ -482,7 +556,7 @@ no single owner is exactly the drift the one-owner-per-file method exists to pre
 force every fork to fork the content.
 
 **Grow `ClientInfoModel.kind` per harness (`claude_code`, `cursor`, …).** Rejected: every new host
-would need a Yoetz release and a frozen-schema change, and an unrecognized host would still have
+would need a FinishUP release and a frozen-schema change, and an unrecognized host would still have
 nothing honest to send. The generic value costs nothing because `kind` carries no authority.
 
 **Ship `instructions` only, without resources.** Rejected: it leaves the deep material Codex-only and
@@ -490,7 +564,7 @@ gives an agent no follow-up channel, which was the original defect. The bounded,
 reference documents were already designed for on-demand retrieval.
 
 **Leave the MCP surface bare and document the limitation.** Rejected: the omitted rules are not
-polish. An unguided agent publishing transcripts is a privacy failure, and one claiming Yoetz
+polish. An unguided agent publishing transcripts is a privacy failure, and one claiming FinishUP
 verified work is the exact dishonesty the product exists to prevent.
 
 ### Claude Code native amendment (2026-08-27, issue #154)
@@ -503,12 +577,12 @@ cells do not inherit this result. Claude Code remains absent from the Agent Plug
 roster, so the adapter projects from `PortablePluginPlan` and canonical skill bytes rather than
 claiming portable-format consumption.
 
-The exact hook arm is `claude-code-hooks-2.1.241-v1` with `SessionStart`, scoped-Yoetz
-`PostToolUse`, scoped-Yoetz `PostToolUseFailure`, `Stop`, and `SessionEnd`. It is advisory,
+The exact hook arm is `claude-code-hooks-2.1.241-v1` with `SessionStart`, scoped-FinishUP
+`PostToolUse`, scoped-FinishUP `PostToolUseFailure`, `Stop`, and `SessionEnd`. It is advisory,
 single-flight/coalesced/best-effort under the existing `HarnessHookProfile` contract. Only accepted
 consented `claude_hook` envelopes can earn observation coverage; installing, enabling, listing, or
-starting a session cannot. The host's plugin namespace is `/yoetz:yoetz`; its MCP server/tool names
-are `plugin:yoetz:yoetz` and `mcp__plugin_yoetz_yoetz__<operation>`. Namespacing changes no Yoetz
+starting a session cannot. The host's plugin namespace is `/finishup:finishup`; its MCP server/tool names
+are `plugin:finishup:finishup` and `mcp__plugin_finishup_finishup__<operation>`. Namespacing changes no FinishUP
 operation schema and adds no MCP tool. An exact successful scoped `start` `PostToolUse` binds the
 Claude host session to that cooperative task by transiently extracting and validating only the
 start result's structural task/session/writer identifiers and frontier. Raw result content is not
@@ -519,7 +593,9 @@ retained or admitted into observation evidence.
 
 Tier 0 remains the intake cue and safety floor. The skill routes through the existing five
 registered guidance resources: workflow before start, publication policy before publish, and
-coverage/receipts before check. Setup, consent, credential/vault and import procedures live in
+coverage/receipts before check. (Amended by ADR-047, 2026-10-12: the core is the operating card;
+those pages are read on demand, when a result, error or continuation names one, not before each
+operation.) Setup, consent, credential/vault and import procedures live in
 request templates and load only for those operations; recovery details load on a corresponding
 error or continuation. They remain available through MCP and installed reference copies.
 
@@ -527,7 +603,7 @@ This changes instruction placement and authoring guidance, not runtime authority
 Required AI-powered review follows an explicit user requirement, effective verification policy,
 or a named acceptance criterion requiring independent AI-powered judgment. Qualitative work alone
 does not turn an optional review into a requirement. A required review cannot be silently
-replaced with local-check coverage, and every host and Yoetz approval boundary still applies.
+replaced with local-check coverage, and every host and FinishUP approval boundary still applies.
 
 ## Compatible host upgrade amendment (2026-09-08, issue #656)
 
@@ -550,4 +626,4 @@ Decision 3 is clarified: "support is never inferred across neighboring host vers
 - **Codex** session-stream admission follows the ADR-005 structural admission amendment.
 
 Exact evidence remains required before a version, cell, or arm is promoted; this amendment only
-stops a routine compatible host release from disabling capabilities Yoetz already understands.
+stops a routine compatible host release from disabling capabilities FinishUP already understands.

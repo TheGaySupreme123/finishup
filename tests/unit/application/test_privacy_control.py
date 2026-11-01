@@ -21,27 +21,27 @@ from builders.privacy_policies import (
     machine_scope,
     minimal_external_policy,
 )
-from yoetz.application.privacy_control import (
+from finishup.application.privacy_control import (
     _encode_decision_required,  # pyright: ignore[reportPrivateUsage]
     encode_effective_privacy_policy,
     encode_privacy_policy_result,
 )
-from yoetz.application.privacy_policy import (
+from finishup.application.privacy_policy import (
     PolicyDecisionRequired,
     PrivacyPolicyResult,
     privacy_policy_changes,
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlMethod, ControlResult
-from yoetz.ports.privacy import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlMethod, ControlResult
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     PolicyTransitionProposal,
     PreparedPolicyTransition,
     ProviderReconciliation,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import DataCategory
-from yoetz.service.control_protocol import ControlProtocolError, validate_result
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import DataCategory
+from finishup.service.control_protocol import ControlProtocolError, validate_result
 
 _NOW = datetime(2026, 7, 25, tzinfo=UTC)
 _RPC_ID = "rpc_40000000-0000-4000-8000-000000000001"

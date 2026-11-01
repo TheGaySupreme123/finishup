@@ -8,13 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from integration.application.test_native_capture_pipeline import (
-    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
-    _pending_structural_request,  # pyright: ignore[reportPrivateUsage]
-    _pipeline,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.domain.observation import (
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
@@ -23,7 +18,12 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_capture_part_descriptors,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from integration.application.test_native_capture_pipeline import (
+    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
+    _pending_structural_request,  # pyright: ignore[reportPrivateUsage]
+    _pipeline,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 @pytest.mark.anyio
@@ -104,7 +104,7 @@ async def test_interrupted_handoff_cannot_finalize_missing_content_group(tmp_pat
         ticket = ObservationCaptureTicket(
             workspace_commitment=workspace,
             task_id=runtime.task_id,
-            yoetz_session_id=runtime.session_id,
+            finishup_session_id=runtime.session_id,
             session_commitment=session_commitment,
             source=ObservationSource.CLAUDE_HOOK,
             source_identity=request.envelope.source_identity,

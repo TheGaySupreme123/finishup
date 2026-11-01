@@ -1,8 +1,8 @@
-# Yoetz documentation
+# FinishUP documentation
 
 ## Start here
 
-- [Using Yoetz](usage/) — install, first run, the six operations, privacy, providers, receipts.
+- [Using FinishUP](usage/) — install, first run, the six operations, privacy, providers, receipts.
 - [Architecture](architecture.md) — how the system is put together and why.
 
 ## Authority
@@ -28,7 +28,8 @@ golden vectors under [`fixtures/`](../fixtures/) win over any prose, including t
   rollback, quarantine recovery, Codex integration, Claude Code integration, Cursor integration,
   the Codex subscription AI-powered evaluator, portable plugin authoring/lifecycle, AI-powered
   review dogfood,
-  exact-worktree Codex dogfood parity, influence dogfood, and Linux/WSL host facts.
+  exact-worktree Codex dogfood parity, influence dogfood, Linux/WSL host facts, and the
+  transitional `yoetz` distribution release.
 - [`docs/public-claims.json`](public-claims.json) — every public claim bound to its requirements,
   surfaces, tests, and honest release status. Enforced by `tests/conformance/claims/`.
 - [`docs/releases/`](releases/) — curated release notes, one file per tag; the release workflow

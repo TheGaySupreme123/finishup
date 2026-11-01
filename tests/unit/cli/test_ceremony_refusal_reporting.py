@@ -16,11 +16,11 @@ from pathlib import Path
 import pytest
 import typer
 
-from yoetz.cli.app import _trusted_exception_failure
-from yoetz.cli.exits import ceremony_refusal_message, exit_code_for, remediation_message
-from yoetz.cli.unlock import HumanCeremonyCliError
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.confidential_client import ConfidentialClientError
+from finishup.cli.app import _trusted_exception_failure
+from finishup.cli.exits import ceremony_refusal_message, exit_code_for, remediation_message
+from finishup.cli.unlock import HumanCeremonyCliError
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.confidential_client import ConfidentialClientError
 
 _REFUSALS = (
     "ceremony_unsupported",
@@ -57,7 +57,7 @@ def test_state_forbidden_names_the_unlock_command() -> None:
     message = ceremony_refusal_message("state_forbidden")
 
     assert message is not None
-    assert "yoetz service unlock" in message
+    assert "finishup service unlock" in message
 
 
 def test_pending_unavailable_does_not_confirm_whether_the_id_existed() -> None:
@@ -99,8 +99,8 @@ def test_trusted_console_required_is_not_reported_as_bad_command_input(
     captured = capsys.readouterr().err
     assert "trusted_console_required" in captured
     assert "invalid_request: the command input is invalid" not in captured
-    assert "yoetz consent prepare" in captured
-    assert "yoetz consent authorize" in captured
+    assert "finishup consent prepare" in captured
+    assert "finishup consent authorize" in captured
     assert code == exit_code_for(PublicErrorCode.INVALID_REQUEST)
 
 
@@ -121,8 +121,8 @@ def test_genuine_input_errors_still_report_invalid_request(
 
 
 def test_rotation_stage_failures_are_not_input_invalid() -> None:
-    from yoetz.adapters.keys.os_keyring import OSKeyringError
-    from yoetz.cli.unlock import _raise_for_rotation_stage_error
+    from finishup.adapters.keys.os_keyring import OSKeyringError
+    from finishup.cli.unlock import _raise_for_rotation_stage_error
 
     _raise_for_rotation_stage_error(OSKeyringError("missing"))
     _raise_for_rotation_stage_error(OSKeyringError("unsupported"))
@@ -147,13 +147,13 @@ def test_result_invalid_is_internal_not_malformed_input(
     [
         ("chat_user_attestation_invalid", "--client-kind"),
         ("chat_user_reauthentication_unavailable", "local terminal"),
-        ("chat_user_target_mismatch", "yoetz consent prepare"),
-        ("pending_already_active", "yoetz consent authorize"),
-        ("pending_expired", "yoetz consent prepare"),
+        ("chat_user_target_mismatch", "finishup consent prepare"),
+        ("pending_already_active", "finishup consent authorize"),
+        ("pending_expired", "finishup consent prepare"),
         ("provider_credential_invalid", "8192"),
-        ("provider_not_configured", "yoetz --set"),
-        ("repository_privacy_scope_unavailable", "yoetz --privacy"),
-        ("trusted_console_required", "yoetz consent prepare"),
+        ("provider_not_configured", "finishup --set"),
+        ("repository_privacy_scope_unavailable", "finishup --privacy"),
+        ("trusted_console_required", "finishup consent prepare"),
     ],
 )
 def test_bare_tokens_carry_the_exact_next_command(reason: str, expected: str) -> None:
@@ -211,7 +211,7 @@ def test_vault_result_family_names_the_failed_approval_and_the_retry() -> None:
         message = remediation_message(reason)
         assert message is not None, reason
         assert "recorded as failed" in message, reason
-        assert "yoetz consent prepare" in message, reason
+        assert "finishup consent prepare" in message, reason
     assert remediation_message("vault_result") is None
     assert remediation_message("result_invalid") is not None
 
@@ -222,7 +222,7 @@ def test_grant_unconfirmed_remediation_points_at_status_not_a_blind_retry() -> N
     message = remediation_message("repository_privacy_grant_unconfirmed")
 
     assert message is not None
-    assert "yoetz provider status" in message
+    assert "finishup provider status" in message
     assert "may already be effective" in message
 
 
@@ -257,7 +257,7 @@ def test_secret_rejected_names_the_credential_and_the_retry() -> None:
 
     assert message is not None
     assert "not accepted" in message
-    assert "yoetz provider credential set" in message
+    assert "finishup provider credential set" in message
 
 
 class TestEveryHumanCliErrorCarriesADirective:
@@ -265,7 +265,7 @@ class TestEveryHumanCliErrorCarriesADirective:
 
     #743 gave `render_human_error` and one lifecycle helper their directive lines. These are the
     remaining human-rendered CLI surfaces: the trusted-ceremony mapper, the interactive menu, the
-    instance/path refusal line, the observe verbs, and `yoetz version`. A remedy an agent only
+    instance/path refusal line, the observe verbs, and `finishup version`. A remedy an agent only
     sees on one of five surfaces is the defect this class exists to catch.
     """
 
@@ -277,7 +277,7 @@ class TestEveryHumanCliErrorCarriesADirective:
         captured = capsys.readouterr().err
         assert "kind_forbidden: that ceremony is not permitted" in captured
         assert "Continuation: ceremony_refusal_terminal" in captured
-        assert "Guidance: yoetz://guidance/request-templates.md#setup-and-consent" in captured
+        assert "Guidance: finishup://guidance/request-templates.md#setup-and-consent" in captured
         assert code == exit_code_for(PublicErrorCode.INVALID_REQUEST)
 
     def test_a_console_refusal_names_its_continuation(
@@ -296,8 +296,8 @@ class TestEveryHumanCliErrorCarriesADirective:
         only answer lives in the registry would have fallen through to a generic input complaint.
         """
 
-        from yoetz.cli.exits import remediation_message
-        from yoetz.cli.render import bounded_failure_line
+        from finishup.cli.exits import remediation_message
+        from finishup.cli.render import bounded_failure_line
 
         assert remediation_message("vault_locked") is None
         line = bounded_failure_line("vault_locked")
@@ -306,14 +306,14 @@ class TestEveryHumanCliErrorCarriesADirective:
         assert "Continuation: vault_unlock_required" in line
 
     def test_a_reason_with_neither_is_returned_bare_so_a_caller_can_tell(self) -> None:
-        from yoetz.cli.render import bounded_failure_line
+        from finishup.cli.render import bounded_failure_line
 
         assert bounded_failure_line("confirmation_mismatch") == "confirmation_mismatch"
 
     def test_the_menu_renders_the_same_refusal_as_the_command_tree(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from yoetz.cli import menu
+        from finishup.cli import menu
 
         async def refuse() -> object:
             raise ConfidentialClientError("pending_unavailable")
@@ -327,7 +327,7 @@ class TestEveryHumanCliErrorCarriesADirective:
     def test_the_menu_renders_a_bounded_setup_token_with_its_directive(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from yoetz.cli import menu
+        from finishup.cli import menu
 
         async def refuse() -> object:
             raise ValueError("provider_not_configured")
@@ -336,13 +336,13 @@ class TestEveryHumanCliErrorCarriesADirective:
 
         captured = capsys.readouterr().err
         assert captured.startswith("provider_not_configured: ")
-        assert "yoetz --set" in captured
+        assert "finishup --set" in captured
         assert "Continuation: provider_setup_required" in captured
 
     def test_the_menu_still_falls_back_for_a_token_nothing_is_known_about(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from yoetz.cli import menu
+        from finishup.cli import menu
 
         async def refuse() -> object:
             raise ValueError("confirmation_mismatch")
@@ -352,19 +352,19 @@ class TestEveryHumanCliErrorCarriesADirective:
         assert capsys.readouterr().err.strip() == "invalid_request: the ceremony input is invalid"
 
     def test_an_instance_refusal_names_its_continuation(self) -> None:
-        from yoetz.cli.instance import instance_failure_line
-        from yoetz.config.paths import PathSafetyError
+        from finishup.cli.instance import instance_failure_line
+        from finishup.config.paths import PathSafetyError
 
         line = instance_failure_line(PathSafetyError("path_on_network_filesystem"))
 
         assert line.startswith("path_on_network_filesystem: ")
         assert "Continuation: local_state_repair" in line
-        assert "Next: Yoetz could not safely open local state" in line
+        assert "Next: FinishUP could not safely open local state" in line
 
     def test_an_observe_refusal_names_its_continuation(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        from yoetz.cli import observe as observe_cli
+        from finishup.cli import observe as observe_cli
 
         code = observe_cli.observe_status(workspace="", json_output=False, _state=tmp_path)
 
@@ -382,8 +382,8 @@ class TestEveryHumanCliErrorCarriesADirective:
         ``recovery`` object and the human ``Continuation:``/``Next:`` lines cannot disagree.
         """
 
-        from yoetz.cli import observe as observe_cli
-        from yoetz.cli.render import local_recovery_json, render_local_recovery_lines
+        from finishup.cli import observe as observe_cli
+        from finishup.cli.render import local_recovery_json, render_local_recovery_lines
 
         observe_cli.observe_status(workspace="", json_output=True, _state=tmp_path)
 
@@ -399,14 +399,14 @@ class TestEveryHumanCliErrorCarriesADirective:
     def test_a_resource_integrity_version_failure_names_its_continuation(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import yoetz
-        from yoetz.cli.app import version_command
-        from yoetz.version import ResourceIntegrityError
+        import finishup
+        from finishup.cli.app import version_command
+        from finishup.version import ResourceIntegrityError
 
         def refuse() -> object:
             raise ResourceIntegrityError("resource_missing")
 
-        monkeypatch.setattr(yoetz, "get_version_manifest", refuse)
+        monkeypatch.setattr(finishup, "get_version_manifest", refuse)
         with pytest.raises(typer.Exit):
             version_command(json_output=True)
 
@@ -419,6 +419,6 @@ class TestEveryHumanCliErrorCarriesADirective:
 def test_reauthentication_recovery_includes_repository_privacy_and_rotation() -> None:
     message = remediation_message("chat_user_reauthentication_unavailable")
     assert message is not None
-    assert "yoetz --privacy" in message
-    assert "yoetz service rotate-passphrase" in message
-    assert "yoetz provider credential set" in message
+    assert "finishup --privacy" in message
+    assert "finishup service rotate-passphrase" in message
+    assert "finishup provider credential set" in message

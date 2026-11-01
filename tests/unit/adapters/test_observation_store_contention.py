@@ -18,8 +18,8 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local
-from yoetz.adapters.integrations.observation_local import (
+import finishup.adapters.integrations.observation_local as local
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
     ObservationStoreLockEvent,
@@ -27,7 +27,7 @@ from yoetz.adapters.integrations.observation_local import (
     observation_store_lock_deadline,
     observation_store_lock_scope,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -35,15 +35,15 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_envelope_to_json,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_encode
 
 pytestmark = pytest.mark.skipif(local.fcntl is None, reason="POSIX flock is unavailable")
 
 _HOLDER = """
 import sys
 from pathlib import Path
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     set_observation_store_lock_role,
 )
@@ -522,8 +522,8 @@ def test_member_validation_rejects_exactly_what_whole_validation_rejects(
 
     import json
 
-    from yoetz.protocol.canonical import ensure_canonical_value, strict_json_parse
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.protocol.canonical import ensure_canonical_value, strict_json_parse
+    from finishup.protocol.errors import ProtocolValueError
 
     store, workspace, path, document = _document(tmp_path)
     # Warm the process's envelope memo with the valid document first.
@@ -544,7 +544,7 @@ def test_member_validation_rejects_exactly_what_whole_validation_rejects(
 def test_member_validation_accepts_the_valid_document_and_reuses_envelopes(
     tmp_path: Path,
 ) -> None:
-    from yoetz.protocol.canonical import strict_json_parse
+    from finishup.protocol.canonical import strict_json_parse
 
     store, workspace, path, _document_value = _document(tmp_path)
     # Decoded from the committed file (the writer's own cache holds its original objects).

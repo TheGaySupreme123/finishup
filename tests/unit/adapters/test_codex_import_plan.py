@@ -11,36 +11,36 @@ import pytest
 
 from builders import ids
 from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-from yoetz.adapters.importers.codex_jsonl import CODEX_JSONL_MAPPING_VERSION
-from yoetz.adapters.importers.codex_plan import CodexImportPlans
-from yoetz.adapters.memory.importer import (
+from finishup.adapters.importers.codex_jsonl import CODEX_JSONL_MAPPING_VERSION
+from finishup.adapters.importers.codex_plan import CodexImportPlans
+from finishup.adapters.memory.importer import (
     MemoryImporter,
     MemoryImportState,
     event_draft_bytes,
 )
-from yoetz.domain.values import Timestamp, request_id, session_id, task_id, writer_id
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import (
+from finishup.domain.values import Timestamp, request_id, session_id, task_id, writer_id
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import (
     ImportAllocationOutcome,
     ImportByteSource,
     ImportCaptureInput,
     ImportCommand,
     ImportSourceIdentity,
 )
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.protocol.canonical import canonical_digest, strict_json_parse
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import PublishWorkRequestModel
-from yoetz.service.elevated_bootstrap import (
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.protocol.canonical import canonical_digest, strict_json_parse
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import PublishWorkRequestModel
+from finishup.service.elevated_bootstrap import (
     claim_pending_for_review,
     complete_review,
     load_import_publication_authorization,
     load_pending,
     record_import_publication_authorization,
 )
-from yoetz.service.import_publication_authority import ImportPublicationAuthority
+from finishup.service.import_publication_authority import ImportPublicationAuthority
 
 
 class _Bytes:

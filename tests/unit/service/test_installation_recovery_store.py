@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     create_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.service.installation_recovery import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.service.installation_recovery import (
     InstallationRecoverySetStore,
     InstallationRecoveryState,
 )
@@ -70,7 +70,7 @@ def test_stage_is_not_advertised_until_matching_metadata_activates(tmp_path: Pat
     assert after.state is InstallationRecoveryState.RECOVERY_MATERIAL_REQUIRED
     assert after.active_generation == 1
     assert after.available_modes == ("compact",)
-    assert after.next_command == "yoetz service recovery restore"
+    assert after.next_command == "finishup service recovery restore"
 
 
 def test_recovery_continuation_is_opaque_restart_state(tmp_path: Path) -> None:
@@ -328,6 +328,43 @@ def test_snapshot_rejects_unknown_plaintext_member_instead_of_exporting_it(
     )
 
 
+def test_snapshot_skips_auto_unlock_custody_and_never_exports_it(tmp_path: Path) -> None:
+    """Issue #1119: owner-file custody beside the vault is neither refused nor copied."""
+
+    memory = LocalSecretMemory()
+    store = _store(tmp_path)
+    bundle = tmp_path / "bundle"
+    marker = bundle / "installation-state.json"
+    marker.write_bytes(b"private structural marker\n")
+    marker.chmod(0o600)
+    custody = bundle / "auto-unlock"
+    custody.mkdir(mode=0o700)
+    secret = b"auto-unlock-canary-must-never-enter-recovery-export"
+    entry = custody / ("bundle-" + "a" * 64)
+    entry.write_bytes(secret)
+    entry.chmod(0o600)
+    lock = bundle / "auto-unlock-init.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+
+    snapshot = store.prepare_snapshot(1)
+    artifact = _artifact(
+        memory,
+        mode=InstallationRecoveryMode.SELF_CONTAINED,
+        snapshot_digest=snapshot.manifest_digest,
+    )
+    store.activate(store.stage(artifact, snapshot))
+    archive = tmp_path / "recovery.yirs"
+    store.export_generation(1, archive)
+
+    recovery_root = bundle / "installation-recovery"
+    assert not any(
+        secret in path.read_bytes() for path in recovery_root.rglob("*") if path.is_file()
+    )
+    assert secret not in archive.read_bytes()
+    assert not list(recovery_root.rglob("auto-unlock*"))
+
+
 def test_orphaned_stage_does_not_wedge_the_identical_retry(tmp_path: Path) -> None:
     """A crash between staging and commit must not make the same generation unusable forever.
 
@@ -411,7 +448,7 @@ def test_import_stages_pending_and_never_activates_on_its_own(tmp_path: Path) ->
     assert locked.state is InstallationRecoveryState.RECOVERY_MATERIAL_REQUIRED
     assert locked.reason == "imported_set_pending_restore"
     assert locked.active_generation == 9
-    assert locked.next_command == "yoetz service recovery restore"
+    assert locked.next_command == "finishup service recovery restore"
 
     # A restore that does not authenticate leaves the good generation reactivatable.
     continuation = target.begin_recovery(9)

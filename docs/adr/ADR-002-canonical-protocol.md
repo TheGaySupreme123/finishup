@@ -2,15 +2,15 @@
 
 **Status:** Working decision for spec drafting (2026-07-13). Ratification requires the golden
 vectors plus an independent-implementation parity run.
-**Implemented by:** `docs/INTERFACES.md`, `src/yoetz/protocol/`,
+**Implemented by:** `docs/INTERFACES.md`, `src/finishup/protocol/`,
 `schemas/`, and `fixtures/canonical/`.
 
 ## Decisions
 
-1. **Canonical bytes:** RFC 8785 JCS restricted to the Yoetz value profile.
+1. **Canonical bytes:** RFC 8785 JCS restricted to the FinishUP value profile.
    Because the profile forbids floats entirely, ECMAScript number rendering degenerates to
    base-10 integers in ±(2^53−1); larger values are canonical integer strings. We therefore
-   implement a **Yoetz-owned canonicalizer** (`protocol/canonical.py`) for the narrow profile
+   implement a **FinishUP-owned canonicalizer** (`protocol/canonical.py`) for the narrow profile
    rather than adopting a third-party full-JCS package. Guardrails: all RFC 8785 vectors
    applicable to the profile, the negative-zero erratum, UTF-16 code-unit property ordering
    (including Hebrew/emoji/combining-mark cases), fuzzing, and a CI-only second-language oracle

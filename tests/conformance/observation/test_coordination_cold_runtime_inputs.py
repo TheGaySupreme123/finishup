@@ -27,25 +27,25 @@ from builders.multi_agent import (
     multi_agent_service,
     relock_and_reopen_multi_agent_service,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application import coordination as coordination_module
-from yoetz.application import service as service_module
-from yoetz.application.coordination import CoordinationRuntime
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.events import AcceptedEvent, ObligationPublishedPayload
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand, TaskRuntime
-from yoetz.ports.start_catalog import TaskRoute
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import CheckRequest, PublishWorkRequest, StartRequest, StatusRequest
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application import coordination as coordination_module
+from finishup.application import service as service_module
+from finishup.application.coordination import CoordinationRuntime
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.events import AcceptedEvent, ObligationPublishedPayload
+from finishup.domain.findings import FindingKind
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.keys import BundleKeys
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand, TaskRuntime
+from finishup.ports.start_catalog import TaskRoute
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import CheckRequest, PublishWorkRequest, StartRequest, StatusRequest
 
 pytestmark = pytest.mark.anyio
 

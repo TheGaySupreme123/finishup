@@ -1,15 +1,15 @@
 # ADR-021 — Recommended-defaults advisories and update-check surfacing
 
 **Status:** Accepted (2026-08-12), acknowledged in
-[issue #204](https://github.com/TheGaySupreme123/yoetz/issues/204) and
-[issue #205](https://github.com/TheGaySupreme123/yoetz/issues/205).
-**Implemented by:** `src/yoetz/application/recommendations.py`,
-`src/yoetz/cli/recommend.py`, `src/yoetz/application/package_update.py`,
-`src/yoetz/adapters/privacy/update_checks.py`,
-`src/yoetz/adapters/integrations/codex_marketplace.py`,
-`src/yoetz/cli/observe_hooks.py`, `src/yoetz/cli/setup.py`,
-`src/yoetz/service/ready_composition.py`, `src/yoetz/config/models.py`, and
-`src/yoetz/config/write.py`.
+[issue #204](https://github.com/TheGaySupreme123/finishup/issues/204) and
+[issue #205](https://github.com/TheGaySupreme123/finishup/issues/205).
+**Implemented by:** `src/finishup/application/recommendations.py`,
+`src/finishup/cli/recommend.py`, `src/finishup/application/package_update.py`,
+`src/finishup/adapters/privacy/update_checks.py`,
+`src/finishup/adapters/integrations/codex_marketplace.py`,
+`src/finishup/cli/observe_hooks.py`, `src/finishup/cli/setup.py`,
+`src/finishup/service/ready_composition.py`, `src/finishup/config/models.py`, and
+`src/finishup/config/write.py`.
 **Relates to:** ADR-009 (data egress and privacy), ADR-010 (harness integration port), ADR-012
 (first-run setup wizard), ADR-014 (TOML settings), ADR-016 (human review for non-default actions),
 and ADR-022 (observation writer identity and observation-tolerant concurrency).
@@ -40,9 +40,9 @@ not become a bundled consent switch.
    agent cannot inject a new recommendation. A materially different recommendation uses a new id
    rather than recycling a declined one.
 
-2. **Evaluation is cached and deliberately infrequent.** Yoetz evaluates recommendations at heavy
+2. **Evaluation is cached and deliberately infrequent.** FinishUP evaluates recommendations at heavy
    control points: the end of setup, successful service READY activation, hourly while that READY generation remains active, and
-   `yoetz recommend list`. It recomputes after the installed package version changes or while
+   `finishup recommend list`. It recomputes after the installed package version changes or while
    pending recommendations need refresh. An already-resolved context is always reconciled, including
    a newer release while the installed version is unchanged and the pending set is empty. The
    hourly maintenance is bounded, cancellation follows READY retirement, and the transport retains
@@ -79,7 +79,7 @@ not become a bundled consent switch.
    observation advice that shares this delivery channel; a recommendation never becomes an
    observation-authored claim.
 
-5. **Only `yoetz recommend` applies or records a decision.** `list` re-evaluates and reports the
+5. **Only `finishup recommend` applies or records a decision.** `list` re-evaluates and reports the
    current bounded set. `decline <id>` records the refusal without applying the recommendation.
    `accept <id>` re-evaluates current state before acting and shows the exact change. Exact Codex
    evaluations run even when a same-version historical decision left no global pending item: a
@@ -105,8 +105,8 @@ not become a bundled consent switch.
    `update_checks` egress channel remains the sole update-check flag under ADR-009; a recommendation
    cannot enable it, widen the global ceiling, or bypass policy.
 
-7. **The update advisory remains PyPI-only and non-upgrading.** Yoetz is distributed on PyPI; the
-   repository's `package.json` is development tooling, not a shipped Yoetz package, so no npm
+7. **The update advisory remains PyPI-only and non-upgrading.** FinishUP is distributed on PyPI; the
+   repository's `package.json` is development tooling, not a shipped FinishUP package, so no npm
    update check exists. When the durable `update_checks` policy permits it, the existing bounded
    resolver may use its 24-hour cache or the allowlisted PyPI package-identity request. A fresh,
    unconfigured installation has no continuing policy before first-run setup commits one, and its
@@ -160,7 +160,7 @@ exact activation previews, staleness checks, and durable decline memory.
 `update_checks` channel already owns that decision. A duplicate leaf could disagree with policy and
 make actual network authority unclear.
 
-**Check npm as well as PyPI.** Rejected: Yoetz ships as a Python distribution only. Repository npm
+**Check npm as well as PyPI.** Rejected: FinishUP ships as a Python distribution only. Repository npm
 metadata belongs to development tooling and is not a user-install update source.
 
 ## Release-discovery correction (issue #699)
@@ -176,7 +176,7 @@ schemas still fail closed.
 
 ## Guided upgrade entrypoint (issue #699)
 
-`yoetz upgrade` is a connection-free human-readable plan for the package, existing host targets,
+`finishup upgrade` is a connection-free human-readable plan for the package, existing host targets,
 data migration, activation and verification. It emits only inspection/preview commands for host
 steps, requiring explicit existing roots and configuration rather than inferring ambient defaults.
 `--accept` invokes the ADR-007 pin-aware uv install/upgrade action after checking that this is the
@@ -203,7 +203,7 @@ The maintainer requested this scoped change. At SessionStart the cached recommen
 appended after existing task or observation advice when both fit the bounded context, instead of
 being withheld whenever other advice is present; task advice still comes first and is never
 truncated for it. A package-update notice additionally asks the agent to tell the user now, offer
-a subagent that follows `yoetz upgrade` once the user agrees, and state that the new version takes
+a subagent that follows `finishup upgrade` once the user agrees, and state that the new version takes
 effect for a fresh session after the host reloads its bridge; a full host restart is needed only
 when its activation status requires it. Accept/decline commands,
 release scoping, the PyPI-only source (no npm check), and the rule that the hook performs no

@@ -9,23 +9,25 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.domain.events import (
+from finishup.domain.decision_status import find_status_line
+from finishup.domain.events import (
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
     encode_payload,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptConclusion,
     ReceiptDocument,
+    ReceiptPackageName,
     ReceiptVersionSlice,
     SchemaVersionEntry,
     receipt_document_to_json,
     receipt_weakest_coverage,
     render_receipt_compact,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     event_id,
     freeze_json,
@@ -35,16 +37,16 @@ from yoetz.domain.values import (
     task_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
-from yoetz.kernel.projections import (
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
+from finishup.kernel.projections import (
     ObligationProjectionRecord,
     PlanProjectionRecord,
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.kernel.receipt_builder import ReceiptBuildContext, build_receipt
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.kernel.receipt_builder import ReceiptBuildContext, build_receipt
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -53,7 +55,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import ReceiptInclude, ReceiptRedactionProfile
+from finishup.protocol.models import ReceiptInclude, ReceiptRedactionProfile
 
 _HEAD = "sha256:" + "4" * 64
 _FRONTIER = Frontier(2, _HEAD)
@@ -106,9 +108,11 @@ def _projection(summary: str) -> ProjectionState:
     )
 
 
-def _versions(receipt_schema_version: str = "1.0.0") -> ReceiptVersionSlice:
+def _versions(
+    receipt_schema_version: str = "1.0.0", package_name: ReceiptPackageName = "finishup"
+) -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name=package_name,
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -143,6 +147,7 @@ def _build(
     include: ReceiptInclude,
     *,
     receipt_schema_version: str = "1.0.0",
+    package_name: ReceiptPackageName = "finishup",
 ) -> ReceiptDocument:
     return build_receipt(
         context,
@@ -150,7 +155,7 @@ def _build(
         task_id("tsk_00000000-0000-4000-8000-000000000001"),
         session_id("ses_00000000-0000-4000-8000-000000000001"),
         timestamp_from_string("2026-07-19T00:00:00.000Z"),
-        _versions(receipt_schema_version),
+        _versions(receipt_schema_version, package_name),
         profile,
         include,
     )
@@ -161,8 +166,10 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
 
     The digest is the independently recorded output of this fixed context from pre-lineage
     commit ``95aa2065`` using the frozen child-free receipt-document 1.1 artifact.  The current
-    writer is allowed exactly two changes for the additive artifact: its schema-version entry and
-    an empty ``children`` object.
+    writer is allowed exactly these changes for the additive artifact: its schema-version entry, an
+    empty ``children`` object and, from ADR-046, the ``conclusion_basis`` object that names the rules
+    behind the conclusion, each gap's ``effect`` and a Summary that continues the frozen first
+    sentence with the counters and one "Why <conclusion>" sentence.
     """
 
     context = _context()
@@ -172,6 +179,8 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
             ReceiptRedactionProfile.FULL_LOCAL,
             ReceiptInclude.FULL,
             receipt_schema_version="1.1.0",
+            # Frozen legacy identifier (ADR-048): the recorded pre-rename package name.
+            package_name="yoetz",
         )
     )
     assert canonical_digest(freeze_json(historical)) == (
@@ -190,6 +199,30 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
 
     compatible = dict(current)
     del compatible["children"]
+    assert "conclusion_basis" in compatible
+    del compatible["conclusion_basis"]
+    compatible["gaps"] = [
+        {key: value for key, value in dict(cast(dict[str, object], gap)).items() if key != "effect"}
+        for gap in cast(list[object], compatible["gaps"])
+    ]
+    sections = [
+        dict(cast(dict[str, object], item)) for item in cast(list[object], compatible["sections"])
+    ]
+    frozen_sections = cast(list[dict[str, object]], historical["sections"])
+    assert str(sections[0]["body"]).startswith(str(frozen_sections[0]["body"]))
+    assert "Why " in str(sections[0]["body"])
+    sections[0]["body"] = frozen_sections[0]["body"]
+    # #1205/#1139: the 1.3 evidence section also appends the decision-point ledger line
+    # (``kernel.evidence_basis.decision_status_line``, short receipt form). Strip exactly that one
+    # appended line; the frozen 1.1 sentence before it must stay byte-identical.
+    for section in sections:
+        if section.get("key") != "evidence_and_claim_basis":
+            continue
+        body = str(section["body"])
+        line = find_status_line(body)
+        assert line and body.endswith(" " + line)
+        section["body"] = body.removesuffix(" " + line)
+    compatible["sections"] = sections
     versions = dict(cast(dict[str, object], compatible["versions"]))
     schema_versions = [
         dict(cast(dict[str, object], item))
@@ -199,6 +232,9 @@ def test_no_child_receipt_matches_frozen_pre_lineage_bytes() -> None:
         if item["schema_id"] == "receipts/receipt-document":
             item["schema_version"] = "1.1.0"
     versions["schema_versions"] = schema_versions
+    # The writer now names the renamed distribution (ADR-048); the frozen bytes predate it.
+    assert versions["package_name"] == "finishup"
+    versions["package_name"] = "yoetz"
     compatible["versions"] = versions
     assert canonical_encode(freeze_json(compatible)) == canonical_encode(freeze_json(historical))
 

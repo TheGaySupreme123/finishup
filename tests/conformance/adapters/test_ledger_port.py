@@ -15,19 +15,22 @@ import apsw
 import pytest
 
 from builders.replay import replay_records
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.events import (
-    SEMANTIC_EVENT_SCHEMA_VERSION,
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.events import (
+    REVIEW_CHECK_EVENT_SCHEMA_VERSION,
+    CheckChangePartialFile,
+    CheckChangeShownFiles,
     CheckRecordedPayload,
     EventDraft,
     EventPayload,
     EventSchema,
+    MissingForAssessmentItem,
     UnknownEvent,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -39,7 +42,7 @@ from yoetz.domain.findings import (
     SemanticFailureClass,
     SemanticProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
@@ -50,9 +53,18 @@ from yoetz.domain.values import (
     obligation_id,
     parse_rfc3339_millis,
 )
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.ports.ledger import (
+from finishup.kernel.deterministic_checks import (
+    deterministic_case_from_json,
+    deterministic_case_to_json,
+)
+from finishup.kernel.projections import ProjectionState, projection_snapshot
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.ports.change_capture import (
+    TASK_CHANGE_BASE_MEDIA_TYPE,
+    TaskChangeBase,
+    encode_task_change_base,
+)
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     AppendResult,
@@ -71,7 +83,7 @@ from yoetz.ports.ledger import (
     SemanticJobRecord,
     SemanticProgressRecord,
 )
-from yoetz.ports.objects import (
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
@@ -79,19 +91,19 @@ from yoetz.ports.objects import (
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.runtime import OwnershipFence
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.runtime import OwnershipFence
+from finishup.ports.semantic import ReviewStepRefused, SamplingParams
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     LedgerFreshness,
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
 
 
 @pytest.fixture
@@ -880,6 +892,7 @@ async def _object_ref(
     semantic_case_primary_expires_at: str = "2026-07-19T12:04:00.000Z",
     semantic_case_expires_at: str = "2026-07-19T12:05:00.000Z",
     semantic_case_with_fallback: bool = False,
+    semantic_case_follow_up: tuple[str, int] | None = None,
 ) -> ObjectRef:
     objects = adapter._objects  # pyright: ignore[reportPrivateUsage]
     assert objects is not None
@@ -920,18 +933,20 @@ async def _object_ref(
                 "fallback_max_retries": 0,
                 "primary_predispatch_reason": None,
             }
-        payload = canonical_encode(
-            cast(
-                JsonValue,
-                {
-                    "schema": "yoetz.semantic-case/2",
-                    "case_id": "case_ledger_test",
-                    "case_digest": semantic_case_digest,
-                    "dependency_digest": "sha256:" + "1" * 64,
-                    "execution": execution,
-                },
-            )
-        )
+        body: dict[str, object] = {
+            "schema": "yoetz.semantic-case/2",
+            "case_id": "case_ledger_test",
+            "case_digest": semantic_case_digest,
+            "dependency_digest": "sha256:" + "1" * 64,
+            "execution": execution,
+        }
+        if semantic_case_follow_up is not None:
+            # An in-check follow-up round's case names the check's own review job (#1047).
+            body["follow_up"] = {
+                "base_case_digest": semantic_case_follow_up[0],
+                "round": semantic_case_follow_up[1],
+            }
+        payload = canonical_encode(cast(JsonValue, body))
     staged = await objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
         ObjectMetadata(
@@ -1320,7 +1335,15 @@ async def test_commit_check_if_current_contract() -> None:
             async for row in adapter.load_events(command.session_id)
             if row.schema.name == "check_recorded"
         ]
-        assert committed == [EventSchema("check_recorded", SEMANTIC_EVENT_SCHEMA_VERSION)]
+        # Every newly completed check carries frozen-work totals, so it commits as 1.4.0.
+        assert committed == [EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)]
+        stored_check = [
+            row.payload
+            async for row in adapter.load_events(command.session_id)
+            if row.schema.name == "check_recorded"
+        ]
+        assert isinstance(stored_check[0], CheckRecordedPayload)
+        assert stored_check[0].totals is not None
     assert results[0] == results[1]
 
 
@@ -1572,6 +1595,281 @@ async def test_sqlite_reopen_replays_ranked_order_after_canonical_set_commit() -
     assert replayed.findings[0].provenance is not None
     assert replayed.semantic_status is SemanticStatus.SUCCEEDED
     assert replayed.semantic_provenance is not None
+
+
+@pytest.mark.anyio
+async def test_named_missing_items_commit_as_check_recorded_1_4_and_replay_after_restart() -> None:
+    """Issue #907: both ledgers record the structural items and a restart replays them."""
+
+    items = (
+        MissingForAssessmentItem("command_identity", (), "structurally_unavailable_on_this_host"),
+    )
+    for adapter_factory in (memory_ledger, sqlite_ledger):
+        command = ledger_command()
+        adapter = adapter_factory(command)
+        await adapter.append_batch(command)
+        frozen = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-00000000004d",
+            "sha256:" + "d" * 64,
+        )
+        provenance = _descending_rank_findings(
+            frozen.case.frontier, command.entries[0].coverage, semantic_lead=True
+        )[0].provenance
+        committed = await adapter.commit_check_if_current(
+            frozen,
+            RankedFindings((), 0, CheckVerdict.INSUFFICIENT_COVERAGE, command.entries[0].coverage),
+            (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),),
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            frozen.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+            missing_for_assessment=items,
+        )
+        assert committed.missing_for_assessment == items
+        events = [row async for row in adapter.load_events(command.session_id)]
+        # Totals now accompany every completed check, so the conclusion rides on 1.4.0.
+        assert [row.schema.version for row in events if row.schema.name == "check_recorded"] == [
+            "1.4.0"
+        ]
+        stored = await adapter.load_projection(
+            command.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        assert stored is not None and type(stored.state) is ProjectionState
+        pending = stored.state.pending_missing_for_assessment
+        assert pending is not None and pending.items == items
+    assert type(adapter) is SqliteLedger
+    restarted = SqliteLedger(
+        db=adapter._db,  # pyright: ignore[reportPrivateUsage]
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=adapter._clock,  # pyright: ignore[reportPrivateUsage]
+        ids=adapter._ids,  # pyright: ignore[reportPrivateUsage]
+        objects=adapter._objects,  # pyright: ignore[reportPrivateUsage]
+    )
+    replayed = await restarted.freeze_case(
+        command.session_id,
+        command.writer_id,
+        1,
+        frozen.lease.operation_id,
+        "sha256:" + "d" * 64,
+    )
+    assert type(replayed) is CheckCommitResult
+    assert replayed.outcome == "replayed"
+    assert replayed.missing_for_assessment == items
+
+
+@pytest.mark.anyio
+async def test_frozen_case_names_hook_events_recorded_after_a_missing_item_request() -> None:
+    """Issue #907: hook capture after an ``insufficient_packet`` request is never the answer.
+
+    Authorship is a service-stamped envelope fact the projection does not keep, so the frozen
+    case carries the observation-authored events recorded after the pending request, in both
+    ledgers and through the persisted case JSON.
+    """
+
+    items = (MissingForAssessmentItem("verification_output", (), "agent_suppliable"),)
+    for adapter_factory in (memory_ledger, sqlite_ledger):
+        # The unknown-family vector freezes cleanly after a hook ingest in both test adapters.
+        command = ledger_command(unknown=True)
+        adapter = adapter_factory(command)
+        await adapter.append_batch(command)
+        frozen = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-00000000004e",
+            "sha256:" + "e" * 64,
+        )
+        assert frozen.case.observation_event_ids == frozenset()
+        provenance = _descending_rank_findings(
+            frozen.case.frontier, command.entries[0].coverage, semantic_lead=True
+        )[0].provenance
+        committed = await adapter.commit_check_if_current(
+            frozen,
+            RankedFindings((), 0, CheckVerdict.INSUFFICIENT_COVERAGE, command.entries[0].coverage),
+            (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),),
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            frozen.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+            missing_for_assessment=items,
+        )
+        hook = _observation_command(
+            request_suffix="5", expected_frontier=committed.result_frontier.sequence, seed="c"
+        )
+        drained = await adapter.append_batch(hook)
+        refrozen = await adapter.freeze_case(
+            command.session_id,
+            command.writer_id,
+            drained.result_frontier.sequence,
+            "req_00000000-0000-4000-8000-00000000004f",
+            "sha256:" + "f" * 64,
+        )
+        assert isinstance(refrozen, FrozenCase)
+        pending = refrozen.case.projection.pending_missing_for_assessment
+        assert pending is not None and pending.items == items
+        assert refrozen.case.observation_event_ids == frozenset({hook.entries[0].draft.event_id})
+        encoded = deterministic_case_to_json(refrozen.case)
+        assert encoded["observation_event_ids"] == [str(hook.entries[0].draft.event_id)]
+        assert deterministic_case_from_json(encoded) == refrozen.case
+
+
+@pytest.mark.anyio
+async def test_an_itemless_insufficient_packet_keeps_the_pending_request_on_both_ledgers() -> None:
+    """Greptile P1 on #940: a later insufficient_packet that recorded no item (a reply that named
+    nothing) assessed nothing, so both ledgers keep the earlier request, and SQLite replays it."""
+
+    items = (MissingForAssessmentItem("verification_output", (), "agent_suppliable"),)
+    pending_by_adapter: list[object] = []
+    for adapter_factory in (memory_ledger, sqlite_ledger):
+        command = ledger_command()
+        adapter = adapter_factory(command)
+        await adapter.append_batch(command)
+        coverage = command.entries[0].coverage
+        ranked = RankedFindings((), 0, CheckVerdict.INSUFFICIENT_COVERAGE, coverage)
+        executions = (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),)
+        first = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-000000000051",
+            "sha256:" + "5" * 64,
+        )
+        provenance = _descending_rank_findings(first.case.frontier, coverage, semantic_lead=True)[
+            0
+        ].provenance
+        requested = await adapter.commit_check_if_current(
+            first,
+            ranked,
+            executions,
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            first.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+            missing_for_assessment=items,
+        )
+        again = await adapter.freeze_case(
+            command.session_id,
+            command.writer_id,
+            requested.result_frontier.sequence,
+            "req_00000000-0000-4000-8000-000000000052",
+            "sha256:" + "6" * 64,
+        )
+        assert type(again) is FrozenCase
+        lease = await adapter.advance_check_phase(
+            again.lease,
+            CheckPhase.RESERVED,
+            CheckPhase.LOCAL_READY,
+            await _local_result_ref(adapter, command),
+        )
+        lease = await adapter.advance_check_phase(
+            lease, CheckPhase.LOCAL_READY, CheckPhase.READY_TO_FINALIZE
+        )
+        await adapter.commit_check_if_current(
+            FrozenCase(again.case, lease),
+            ranked,
+            executions,
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            again.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+        )
+        stored = await adapter.load_projection(
+            command.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        assert stored is not None and type(stored.state) is ProjectionState
+        pending = stored.state.pending_missing_for_assessment
+        assert pending is not None and pending.items == items
+        assert pending.source_frontier == requested.result_frontier.sequence
+        pending_by_adapter.append(pending)
+    assert pending_by_adapter[0] == pending_by_adapter[1]
+    assert type(adapter) is SqliteLedger
+    restarted = SqliteLedger(
+        db=adapter._db,  # pyright: ignore[reportPrivateUsage]
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=adapter._clock,  # pyright: ignore[reportPrivateUsage]
+        ids=adapter._ids,  # pyright: ignore[reportPrivateUsage]
+        objects=adapter._objects,  # pyright: ignore[reportPrivateUsage]
+    )
+    replayed = await restarted.load_projection(
+        command.session_id, ProjectionView.CANDIDATE_FINDINGS
+    )
+    assert replayed is not None and type(replayed.state) is ProjectionState
+    assert replayed.state.pending_missing_for_assessment == pending_by_adapter[1]
+
+
+@pytest.mark.anyio
+async def test_check_change_shown_files_replay_to_the_same_raise_facts_in_both_ledgers() -> None:
+    """ADR-031: the raising check's shown files reach the finding row identically on replay."""
+
+    files = CheckChangeShownFiles(
+        ("hmac-sha256:" + "1" * 64, "hmac-sha256:" + "2" * 64),
+        (CheckChangePartialFile("hmac-sha256:" + "3" * 64, 2_048, 1, True, 67),),
+        complete=True,
+    )
+    command = ledger_command()
+    snapshots: list[JsonValue] = []
+    memory = memory_ledger(command)
+    sqlite = sqlite_ledger(command)
+    for adapter in (memory, sqlite):
+        await adapter.append_batch(command)
+        frozen = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-00000000004d",
+            "sha256:" + "d" * 64,
+        )
+        selected = _descending_rank_findings(
+            frozen.case.frontier, command.entries[0].coverage, semantic_lead=True
+        )
+        await adapter.commit_check_if_current(
+            frozen,
+            RankedFindings(selected, 0, CheckVerdict.ACTION_REQUIRED, command.entries[0].coverage),
+            (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),),
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            selected[0].provenance,
+            frozen.lease.operation_id,
+            semantic_conclusion="challenges_returned",
+            check_change_files=files,
+        )
+        checks = [
+            row
+            async for row in adapter.load_events(command.session_id)
+            if row.schema.name == "check_recorded"
+        ]
+        assert [row.schema.version for row in checks] == ["1.4.0"]
+        payload = checks[0].payload
+        assert isinstance(payload, CheckRecordedPayload) and payload.check_change_files == files
+        stored = await adapter.load_projection(
+            command.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        assert stored is not None and type(stored.state) is ProjectionState
+        raised = stored.state.findings[selected[0].finding_id]
+        assert raised.check_change_raising_check_event_ids == (checks[0].event_id,)
+        assert raised.check_change_raised_files == files
+        assert stored.state.findings[selected[1].finding_id].check_change_raised_files is None
+        snapshots.append(projection_snapshot(stored.state))
+
+    restarted = SqliteLedger(
+        db=sqlite._db,  # pyright: ignore[reportPrivateUsage]
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=sqlite._clock,  # pyright: ignore[reportPrivateUsage]
+        ids=sqlite._ids,  # pyright: ignore[reportPrivateUsage]
+        objects=sqlite._objects,  # pyright: ignore[reportPrivateUsage]
+    )
+    replayed = await restarted.load_projection(
+        command.session_id, ProjectionView.CANDIDATE_FINDINGS
+    )
+    assert replayed is not None and type(replayed.state) is ProjectionState
+    snapshots.append(projection_snapshot(replayed.state))
+    assert snapshots[0] == snapshots[1] == snapshots[2]
 
 
 @pytest.mark.anyio
@@ -2277,8 +2575,8 @@ async def test_short_semantic_execution_does_not_get_a_sixty_second_floor() -> N
 async def test_real_attempt_loop_crosses_old_lease_without_duplicate_dispatch(budget: int) -> None:
     """The shipped attempt loop dispatches once beyond 60s under the frozen AI-powered review cap."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     @dataclass(frozen=True, slots=True)
     class _Eval:
@@ -2548,11 +2846,11 @@ async def test_raising_dispatch_strands_nothing_in_either_real_ledger() -> None:
     both shipped adapters.
     """
 
-    from yoetz.application.semantic_attempts import (
+    from finishup.application.semantic_attempts import (
         SemanticAttemptAccounting,
         run_durable_semantic_attempts,
     )
-    from yoetz.ports.semantic import Deadline
+    from finishup.ports.semantic import Deadline
 
     @dataclass(frozen=True, slots=True)
     class _Eval:
@@ -2631,8 +2929,8 @@ async def test_raising_dispatch_strands_nothing_in_either_real_ledger() -> None:
 async def test_expired_started_attempt_gets_local_cleanup_without_provider_dispatch() -> None:
     """A reclaimed operation can close stale local state after the provider deadline only."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     class _AdvancingClock:
         def __init__(self) -> None:
@@ -2722,8 +3020,8 @@ async def test_expired_started_attempt_gets_local_cleanup_without_provider_dispa
 async def test_response_durable_replay_selects_existing_response_without_new_dispatch() -> None:
     """A crash after response publication reuses and selects that exact response object."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     class _AdvancingClock:
         def __init__(self) -> None:
@@ -3039,3 +3337,471 @@ async def test_semantic_progress_selected_attempt_terminates_as_succeeded() -> N
         assert progress.phase is SemanticProgressPhase.TERMINAL
         assert progress.terminal_outcome == "succeeded"
         assert progress.terminal_reason is SemanticReason.SEMANTIC_COMPLETED
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("base_retried", "round_fails", "round_id_sorts_first"),
+    (
+        # The base review needed a transient retry; the round failed on its first attempt.
+        (True, True, False),
+        # Equal attempt counts, and the round's random job id sorts before the base job's.
+        (False, False, True),
+    ),
+    ids=("base-retried-round-failed", "round-id-sorts-first"),
+)
+async def test_semantic_progress_after_a_follow_up_round_reports_the_latest_round(
+    base_retried: bool, round_fails: bool, round_id_sorts_first: bool
+) -> None:
+    """Issue #1047: once every job is terminal, progress is the latest round's, as recorded.
+
+    Neither attempt counts nor random job id order may put the check's own review ahead of the
+    follow-up round the check records.
+    """
+
+    command = ledger_command(request_suffix="f")
+    operation_id = "req_00000000-0000-4000-8000-0000000000ff"
+    queued_at = datetime(2026, 7, 19, 11, 59, tzinfo=UTC)
+    deadline_at = queued_at + timedelta(minutes=15)
+    base_digest = "sha256:" + "a" * 64
+    round_digest = "sha256:" + "b" * 64
+    observed: list[tuple[object, ...]] = []
+    for adapter in (memory_ledger(command), sqlite_ledger(command)):
+        ids = cast(_Ids, adapter._ids)  # pyright: ignore[reportPrivateUsage]
+        await adapter.append_batch(command)
+        lease = await _semantic_wait_lease(adapter, command, operation_id)
+        if round_id_sorts_first:
+            ids._next = 900  # pyright: ignore[reportPrivateUsage]
+        base_ref = await _object_ref(
+            adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest=base_digest
+        )
+        base = await adapter.enqueue_semantic_job(lease, base_digest, base_ref)
+        await adapter.begin_semantic_progress(base.job_id, queued_at, deadline_at)
+        handle = await adapter.claim_semantic_job(lease, base.job_id)
+        if base_retried:
+            await adapter.record_attempt_outcome(
+                handle, AttemptOutcome.EXPIRED, terminal_code=SemanticReason.TRANSPORT_UNAVAILABLE
+            )
+            handle = await adapter.claim_semantic_job(lease, base.job_id)
+        response_ref = await _object_ref(adapter, command, ObjectKind.SEMANTIC_RESPONSE)
+        await adapter.record_attempt_outcome(handle, AttemptOutcome.RESPONSE_DURABLE, response_ref)
+        await adapter.select_attempt(lease, handle, response_ref)
+
+        if round_id_sorts_first:
+            ids._next = 500  # pyright: ignore[reportPrivateUsage]
+        round_ref = await _object_ref(
+            adapter,
+            command,
+            ObjectKind.SEMANTIC_CASE,
+            semantic_case_digest=round_digest,
+            semantic_case_follow_up=(base_digest, 1),
+        )
+        round_job = await adapter.enqueue_semantic_job(lease, round_digest, round_ref)
+        assert (round_job.job_id < base.job_id) is round_id_sorts_first
+        round_queued_at = queued_at + timedelta(minutes=1)
+        await adapter.begin_semantic_progress(
+            round_job.job_id, round_queued_at, round_queued_at + timedelta(minutes=15)
+        )
+        live = await adapter.load_semantic_progress(command.writer_id, operation_id)
+        assert live is not None and live.job_id == round_job.job_id
+        round_handle = await adapter.claim_semantic_job(lease, round_job.job_id)
+        if round_fails:
+            await adapter.record_attempt_outcome(
+                round_handle, AttemptOutcome.FAILED, terminal_code=SemanticReason.PROVIDER_TIMEOUT
+            )
+        else:
+            round_response = await _object_ref(adapter, command, ObjectKind.SEMANTIC_RESPONSE)
+            await adapter.record_attempt_outcome(
+                round_handle, AttemptOutcome.RESPONSE_DURABLE, round_response
+            )
+            await adapter.select_attempt(lease, round_handle, round_response)
+
+        progress = await adapter.load_semantic_progress(command.writer_id, operation_id)
+        assert progress is not None
+        assert progress.job_id == round_job.job_id
+        assert progress.phase is SemanticProgressPhase.TERMINAL
+        assert progress.queued_at == round_queued_at
+        assert progress.attempt_ordinal == 0
+        assert (progress.terminal_outcome, progress.terminal_reason) == (
+            ("failed", SemanticReason.PROVIDER_TIMEOUT)
+            if round_fails
+            else ("succeeded", SemanticReason.SEMANTIC_COMPLETED)
+        )
+        await adapter.fail_check_if_current(
+            lease,
+            PublicOperationError(PublicErrorCode.INTERNAL_ERROR, "The check failed.", False),
+        )
+        assert await adapter.load_semantic_progress(command.writer_id, operation_id) == progress
+        if isinstance(adapter, SqliteLedger):
+            # A completed operation's jobs are read from the durable rows after restart.
+            restarted = _restarted_sqlite(adapter, command)
+            assert await restarted.load_semantic_progress(command.writer_id, operation_id) == (
+                progress
+            )
+        observed.append(
+            (
+                progress.attempt_ordinal,
+                progress.phase,
+                progress.queued_at,
+                progress.terminal_outcome,
+                progress.terminal_reason,
+            )
+        )
+    assert observed[0] == observed[1]
+
+
+async def _task_change_base_ref(
+    adapter: MemoryLedgerAdapter | SqliteLedger, command: AppendCommand, commit: str
+) -> ObjectRef:
+    objects = adapter._objects  # pyright: ignore[reportPrivateUsage]
+    assert objects is not None
+    payload = encode_task_change_base(TaskChangeBase("sha1", commit))
+    staged = await objects.stage(
+        ObjectSource(data=payload, declared_size=len(payload)),
+        ObjectMetadata(
+            ObjectKind.CHANGE_CAPTURE,
+            TASK_CHANGE_BASE_MEDIA_TYPE,
+            command.task_id,
+            datetime(2026, 7, 19, 12, 0, tzinfo=UTC),
+        ),
+    )
+    return await objects.finalize(staged)
+
+
+@pytest.mark.anyio
+async def test_task_change_base_is_kept_once_with_adapter_parity(tmp_path: Path) -> None:
+    """ADR-031: the task-start base is one durable, inventoried root that a later call never moves."""
+
+    command = ledger_command(request_suffix="9")
+    database = tmp_path / "task-change-base.sqlite3"
+    db = apsw.Connection(str(database))
+    initialize_bundle(
+        db,
+        {
+            "task_id": command.task_id,
+            "owner_generation": "1",
+            "owner_nonce": "ledger-test-nonce",
+        },
+    )
+    sqlite_ids = _Ids()
+    sqlite_objects = _Objects(sqlite_ids)
+    sqlite = SqliteLedger(
+        db=db,
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=_Clock(),
+        ids=sqlite_ids,
+        objects=sqlite_objects,
+    )
+    for adapter in (memory_ledger(command), sqlite):
+        await adapter.append_batch(command)
+        assert await adapter.load_task_change_base() is None
+        first = await _task_change_base_ref(adapter, command, "a" * 40)
+        later = await _task_change_base_ref(adapter, command, "b" * 40)
+        assert await adapter.record_task_change_base(first) is True
+        assert await adapter.record_task_change_base(later) is False
+        assert await adapter.load_task_change_base() == first
+        wrong_kind = replace(
+            later, metadata=replace(later.metadata, kind=ObjectKind.CAPTURED_CONTENT)
+        )
+        with pytest.raises(ValueError, match="task_change_base_invalid"):
+            await adapter.record_task_change_base(wrong_kind)
+
+    kept = await sqlite.load_task_change_base()
+    assert kept is not None
+    inventory = db.execute(
+        "SELECT kind, state FROM objects WHERE object_id=?", (kept.object_id,)
+    ).fetchall()
+    assert inventory == [("change_capture", "present")]
+    db.close()
+    restarted = SqliteLedger(
+        db=apsw.Connection(str(database)),
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=_Clock(),
+        ids=sqlite_ids,
+        objects=sqlite_objects,
+    )
+    assert await restarted.load_task_change_base() == kept
+
+
+@pytest.mark.anyio
+async def test_load_check_result_reads_a_stored_insufficient_packet_check_after_restart() -> None:
+    """W6 (#1107): the operation page's recovery read returns what a same-id replay rebuilds."""
+
+    items = (
+        MissingForAssessmentItem(
+            "verification_output", ("res_00000000-0000-4000-8000-000000000071",), "agent_suppliable"
+        ),
+    )
+    for adapter_factory in (memory_ledger, sqlite_ledger):
+        command = ledger_command()
+        adapter = adapter_factory(command)
+        await adapter.append_batch(command)
+        frozen = await _ready_case(
+            adapter,
+            command,
+            "req_00000000-0000-4000-8000-000000000071",
+            "sha256:" + "7" * 64,
+        )
+        provenance = _descending_rank_findings(
+            frozen.case.frontier, command.entries[0].coverage, semantic_lead=True
+        )[0].provenance
+        committed = await adapter.commit_check_if_current(
+            frozen,
+            RankedFindings((), 0, CheckVerdict.INSUFFICIENT_COVERAGE, command.entries[0].coverage),
+            (CheckPolicyExecution("work-integrity", "0.1.0", "run", "completed"),),
+            SemanticStatus.SUCCEEDED,
+            SemanticReason.SEMANTIC_COMPLETED,
+            provenance,
+            frozen.lease.operation_id,
+            semantic_conclusion="insufficient_packet",
+            missing_for_assessment=items,
+        )
+        loaded = await adapter.load_check_result(command.writer_id, frozen.lease.operation_id)
+        assert loaded is not None
+        assert loaded.missing_for_assessment == items == committed.missing_for_assessment
+        assert loaded.semantic_conclusion == "insufficient_packet"
+        assert loaded.result_frontier == committed.result_frontier
+        assert (
+            await adapter.load_check_result(
+                command.writer_id, "req_00000000-0000-4000-8000-000000000072"
+            )
+            is None
+        )
+    assert type(adapter) is SqliteLedger
+    restarted = SqliteLedger(
+        db=adapter._db,  # pyright: ignore[reportPrivateUsage]
+        task_id=command.task_id,
+        ownership_fence=_fence(),
+        clock=adapter._clock,  # pyright: ignore[reportPrivateUsage]
+        ids=adapter._ids,  # pyright: ignore[reportPrivateUsage]
+        objects=adapter._objects,  # pyright: ignore[reportPrivateUsage]
+    )
+    recovered = await restarted.load_check_result(command.writer_id, frozen.lease.operation_id)
+    assert recovered is not None
+    assert recovered.missing_for_assessment == items
+    assert recovered.semantic_conclusion == "insufficient_packet"
+    assert recovered.verdict is CheckVerdict.INSUFFICIENT_COVERAGE
+    replayed = await restarted.freeze_case(
+        command.session_id,
+        command.writer_id,
+        1,
+        frozen.lease.operation_id,
+        "sha256:" + "7" * 64,
+    )
+    assert type(replayed) is CheckCommitResult and replayed.outcome == "replayed"
+    assert replayed.missing_for_assessment == recovered.missing_for_assessment
+    assert replayed.result_frontier == recovered.result_frontier
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_are_lease_guarded_keyed_and_durable() -> None:
+    """#1118 M4: reviewer-loop steps survive restart, keep no plaintext, and need the lease."""
+
+    command = ledger_command(request_suffix="e")
+    operation_id = "req_00000000-0000-4000-8000-0000000000de"
+    adapter = sqlite_ledger(command)
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, operation_id)
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    first = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(first)
+    assert await steps.usage() == (0, 0)
+    selector = b'{"path":"private/spec.md"}'
+    await steps.reserve("turn", 1, b"turn")
+    await steps.capture("turn", 1, b'{"reply":{}}')
+    await steps.reserve("read", 1, selector)
+    assert await steps.usage() == (2, 1)
+    with pytest.raises(ReviewStepRefused):  # a step is reserved once, never replayed
+        await steps.reserve("read", 1, selector)
+    with pytest.raises(ReviewStepRefused):  # captured once
+        await steps.capture("turn", 1, b"again")
+    rows = adapter._db.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT kind,ordinal,selector_commitment,capture_commitment,capture_bytes "
+        "FROM semantic_review_steps ORDER BY kind,ordinal"
+    ).fetchall()
+    assert [(r[0], r[1], r[4]) for r in rows] == [("read", 1, None), ("turn", 1, 12)]
+    assert all(b"private" not in str(r).encode() for r in rows)
+    # Keyed: not the unkeyed digest of the selector (review_r1 probe).
+    selector_commitment = str(rows[0][2])
+    assert selector_commitment != hashlib.sha256(selector).hexdigest()
+    assert not selector_commitment.startswith("sha256:")
+    restarted = _restarted_sqlite(adapter, command)
+    assert await restarted.review_steps(first).usage() == (2, 1)
+    await adapter.record_attempt_outcome(
+        first, AttemptOutcome.EXPIRED, terminal_code=SemanticReason.TRANSPORT_UNAVAILABLE
+    )
+    with pytest.raises(ReviewStepRefused):  # a superseded attempt can no longer write
+        await steps.capture("read", 1, b"{}")
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_need_the_live_durable_lease() -> None:
+    """#1118 R2-1: expiry, not only takeover, stops a step; renewal is read from the ledger."""
+
+    class _AdvancingClock:
+        def __init__(self) -> None:
+            self.now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+        def now_utc(self) -> datetime:
+            return self.now
+
+        def monotonic_seconds(self) -> float:
+            return 1.0
+
+    command = ledger_command(request_suffix="f")
+    adapter = sqlite_ledger(command)
+    clock = _AdvancingClock()
+    adapter._clock = clock  # pyright: ignore[reportPrivateUsage]
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000df")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "f" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "f" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(handle)
+    await steps.reserve("turn", 1, b"turn")
+    # A handle whose generation or owner generation is not the durable one writes nothing.
+    for stale in (
+        replace(handle, lease_generation=handle.lease_generation + 1),
+        replace(handle, owner_generation="0"),
+        replace(handle, lease_owner_id="svc_other"),
+    ):
+        with pytest.raises(ReviewStepRefused):
+            await adapter.review_steps(stale).capture("turn", 1, b"{}")
+    # Renewed before expiry: the stale handle's own expiry does not stop the write.
+    clock.now = handle.lease_expires_at - timedelta(seconds=1)
+    renewed = await adapter.renew_leases(lease)
+    assert renewed.lease_expires_at > handle.lease_expires_at
+    clock.now = handle.lease_expires_at + timedelta(seconds=1)
+    await steps.capture("turn", 1, b"{}")
+    await steps.reserve("read", 1, b"{}")
+    # Expired with no other worker claiming the job: neither reserve nor capture is recorded.
+    clock.now = renewed.lease_expires_at
+    with pytest.raises(ReviewStepRefused):
+        await steps.reserve("turn", 2, b"turn")
+    with pytest.raises(ReviewStepRefused):
+        await steps.capture("read", 1, b"{}")
+    assert await steps.usage() == (2, 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("capture", [False, True])
+async def test_reviewer_step_lease_time_is_read_after_the_writer_wait(
+    tmp_path: Path, capture: bool
+) -> None:
+    """#1118 R3-1: a lease that expires while the step waits for the SQLite writer lock is
+    refused; the comparison time is read after ``BEGIN IMMEDIATE``, not before it."""
+
+    class _Clock:
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
+
+        def now_utc(self) -> datetime:
+            return self.now
+
+        def monotonic_seconds(self) -> float:
+            return 1.0
+
+    command = ledger_command(request_suffix="e")
+    adapter = sqlite_ledger(command)
+    clock = _Clock()
+    adapter._clock = clock  # pyright: ignore[reportPrivateUsage]
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000de")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    steps = adapter.review_steps(handle)
+    if capture:
+        await steps.reserve("turn", 1, b"turn")
+    # A file-backed copy so a second connection can hold the writer lock.
+    target = apsw.Connection(str(tmp_path / "isolated.sqlite3"))
+    with target.backup("main", adapter._db, "main") as backup:  # pyright: ignore[reportPrivateUsage]
+        backup.step()
+    adapter._db = target  # pyright: ignore[reportPrivateUsage]
+    blocker = apsw.Connection(str(tmp_path / "isolated.sqlite3"))
+    blocker.execute("BEGIN IMMEDIATE")
+    clock.now = handle.lease_expires_at - timedelta(milliseconds=1)
+    waits: list[int] = []
+
+    def expire_then_release(count: int) -> bool:
+        waits.append(count)
+        clock.now = handle.lease_expires_at + timedelta(seconds=1)
+        blocker.execute("ROLLBACK")
+        return True
+
+    target.set_busy_handler(expire_then_release)
+    try:
+        with pytest.raises(ReviewStepRefused):
+            if capture:
+                await steps.capture("turn", 1, b"{}")
+            else:
+                await steps.reserve("turn", 1, b"turn")
+        assert waits == [0]
+        assert await steps.usage() == ((1, 1) if capture else (0, 0))
+    finally:
+        blocker.close()
+        target.close()
+
+
+@pytest.mark.anyio
+async def test_reviewer_steps_upgrade_preserves_reservations_and_admits_bounded_corrections() -> (
+    None
+):
+    """#1173: the v17->v18 rebuild retains real leased-job commitments and their spent state."""
+    import apsw
+
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+
+    command = ledger_command(request_suffix="e")
+    adapter = sqlite_ledger(command)
+    await adapter.append_batch(command)
+    lease = await _semantic_wait_lease(adapter, command, "req_00000000-0000-4000-8000-0000000000de")
+    case_ref = await _object_ref(
+        adapter, command, ObjectKind.SEMANTIC_CASE, semantic_case_digest="sha256:" + "e" * 64
+    )
+    job = await adapter.enqueue_semantic_job(lease, "sha256:" + "e" * 64, case_ref)
+    handle = await adapter.claim_semantic_job(lease, job.job_id)
+    db = adapter._db  # pyright: ignore[reportPrivateUsage]
+    # Build the prior, empty step table inside this in-memory fixture, then write through the
+    # real lease-fenced store. Nothing touches an installed service or a user ledger.
+    db.execute("DROP TABLE semantic_review_steps")
+    db.execute(BUNDLE_MIGRATIONS[16].ddl.decode())
+    db.execute("UPDATE bundle_meta SET value='17' WHERE key='storage_schema_version'")
+    steps = adapter.review_steps(handle)
+    await steps.reserve("turn", 1, b"turn")
+    await steps.capture("turn", 1, b"captured")
+    await steps.reserve("read", 1, b"private/path.py")
+    await steps.reserve("repair", 1, b"action_invalid")
+    await steps.capture("repair", 1, b"format_error")
+    before = db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall()
+    report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)
+    # 0019 (#1239) then rebuilds events only; the step rows below are untouched by it.
+    assert report.applied_versions == ("0018", "0019") and report.to_version == 19
+    assert (
+        db.execute("SELECT * FROM semantic_review_steps ORDER BY kind,ordinal").fetchall() == before
+    )
+    assert await steps.usage() == (3, 1)
+    for kind in ("read", "repair"):
+        with pytest.raises(ReviewStepRefused):  # a spent step is never refunded
+            await steps.reserve(kind, 1, b"same spent step")
+    await steps.reserve("read", 4, b"corrected/path.py")
+    await steps.reserve("read", 5, b"last attempt")
+    await steps.reserve("turn", 6, b"final judgment")
+    await steps.reserve("turn", 7, b"last completion")
+    for kind, ordinal in (("read", 6), ("turn", 8), ("repair", 2)):
+        with pytest.raises(apsw.ConstraintError):
+            db.execute(
+                "INSERT INTO semantic_review_steps(job_id,kind,ordinal,selector_commitment) "
+                "VALUES(?,?,?,?)",
+                (job.job_id, kind, ordinal, "commitment"),
+            )
+    assert run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None).applied_versions == ()
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []

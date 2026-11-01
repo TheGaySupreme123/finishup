@@ -6,8 +6,8 @@ from typing import Final, cast
 import apsw
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
-from yoetz.adapters.sqlite.connection import (
+import finishup.adapters.sqlite.connection as connection_module
+from finishup.adapters.sqlite.connection import (
     REQUIRED_APSW_VERSION,
     REQUIRED_SQLITE_SOURCE_ID,
     REQUIRED_SQLITE_VERSION,
@@ -16,8 +16,8 @@ from yoetz.adapters.sqlite.connection import (
     open_read_only,
     open_writer,
 )
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, current_schema_version
-from yoetz.ports.runtime import OwnershipFence
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, current_schema_version
+from finishup.ports.runtime import OwnershipFence
 
 # Tracks the migration registry so a new bundle migration does not silently turn this
 # fixture into a "migration_required" database that open_writer refuses.

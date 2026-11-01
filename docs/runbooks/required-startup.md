@@ -1,6 +1,6 @@
 # Required startup for native Claude Code and Cursor
 
-Issue [#692](https://github.com/TheGaySupreme123/yoetz/issues/692) adds an owner-selected tool gate.
+Issue [#692](https://github.com/TheGaySupreme123/finishup/issues/692) adds an owner-selected tool gate.
 Optional cooperative startup remains the default for new installations. This is a workflow
 constraint, not a security sandbox or evidence that a plan is correct.
 
@@ -37,8 +37,8 @@ fresh plan revision or exact next-version restatement. Resume/compaction also re
 Empty plans do not admit tools. Text-only trivial answers need no bootstrap; even a small edit
 uses tools and needs a plan in required mode. Optional mode keeps its usual trivial-work exception.
 
-Tool/schema discovery, the Yoetz skill, registered guidance, clarification and Yoetz workflow calls
-remain possible. Direct commands through the current runtime's exact Yoetz launcher for service
+Tool/schema discovery, the FinishUP skill, registered guidance, clarification and FinishUP workflow calls
+remain possible. Direct commands through the current runtime's exact FinishUP launcher for service
 status/diagnostics/restart, consent catalog/prepare/status/review/authorize and vault unlock reach
 normal host admission. Pipelines, substitutions, compound commands and other launchers do not
 qualify. This grants no repair, consent, credential or disclosure authority: the typed continuation,
@@ -60,10 +60,12 @@ Required mode may therefore add native approval prompts; ADR-018's admission bou
 
 A private per-host-session/workspace sidecar retains generated scope epochs, protocol ids, effective
 plan/obligation ids and bounded pending request identities. It stores no prompt, tool or plan prose,
-transcript, credential, or model-authored readiness flag. Before start/publication, the gate records
-the request identity. Only matching accepted output can nominate a route and plan. Newly accepted
-obligations must be in that plan. Failed/dry-run writes, old accepted timestamps, wrong routes and
-earlier-scope responses cannot create current readiness. Hook auto-mapping alone is insufficient.
+transcript, credential, or model-authored readiness flag. Before a `start` or `publish_work` that
+carries a `request_id`, the gate records that identity; an id-less `publish_work` is tracked only
+from its result (see the limits below). Only matching accepted output can nominate a route and
+plan. Newly accepted obligations must be in that plan. Failed/dry-run writes, old accepted
+timestamps, wrong routes and earlier-scope responses cannot create current readiness. Hook
+auto-mapping alone is insufficient.
 
 Before every substantive call, a deadline-limited child reads live `status view=compact` through
 the normal repository-bound service connection. It validates the exact task/session/writer,
@@ -89,10 +91,21 @@ have a 3 s host timeout. Controlled failures at a block-capable boundary deny su
 Bootstrap still reaches normal host admission even when gate state is unreadable. Errors expose only
 closed reasons, never payloads.
 
-Tracked bootstrap `start` and `publish_work` calls are admitted only after their request identity is
-persisted under the sidecar lock. Lock contention or a state-write failure therefore denies that
-tracked call; read-only workflow/status recovery remains available and no unrecorded write is
-treated as admitted.
+Tracked bootstrap `start` and `publish_work` calls that carry a `request_id` are admitted only after
+that identity is persisted under the sidecar lock. Lock contention or a state-write failure
+therefore denies that tracked call; read-only workflow/status recovery remains available.
+
+An id-less `publish_work` is the exception. The pre-call hook never learns the id the MCP bridge (or
+`finishup publish-work`) mints, so the call is admitted with no pre-call ticket; lock contention or
+an invalidated sidecar still denies it. Its ticket opens only at a post-call event that carries the
+structured result naming the minted id; from there a success settles it and an unknown outcome holds
+substantive tools as for any tracked write. Claude Code delivers MCP error results to hooks as text
+only (or as `PostToolUseFailure` with no `tool_response`), so there an id-less publish that errors
+or loses its reply holds no ticket and substantive tools are not held for it; whether Cursor's
+`afterMCPExecution` carries an error's structured result is not verified. While an id-less
+publish is in flight, a concurrent delegate's tool can pass; each tool is still live-probed against
+the current accepted plan. The agent retries by the minted id the error names, which takes a ticket
+again. Owners who need fail-closed tracking of every write have agents send their own `request_id`.
 
 A user-prompt reset writes a new scope before clearing the prior invalidation marker. If that write
 fails, the marker makes ordinary readers fail closed; the next reset reads the old sidecar only while

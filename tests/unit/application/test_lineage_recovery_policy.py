@@ -9,17 +9,17 @@ import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds
 from builders.multi_agent import ScenarioClock
-from yoetz.application.lineage import (
+from finishup.application.lineage import (
     DelegationRequest,
     LineageConfig,
     LineageCoordinator,
     LineageSnapshot,
     MemoryLineageStore,
 )
-from yoetz.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
-from yoetz.domain.values import Timestamp, timestamp_from_datetime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
+from finishup.domain.values import Timestamp, timestamp_from_datetime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
 
 pytestmark = pytest.mark.anyio
 
@@ -28,7 +28,14 @@ async def test_retryable_abandonment_failure_does_not_starve_other_tasks() -> No
     store = MemoryLineageStore()
     clock = FixedClock()
     ids = FixedIds()
-    coordinator = LineageCoordinator(store=store, clock=clock, ids=ids, handle_key=b"k" * 32)
+    # #1239: top-level roots get the long horizon by default; pin it to the window here.
+    coordinator = LineageCoordinator(
+        store=store,
+        clock=clock,
+        ids=ids,
+        handle_key=b"k" * 32,
+        config=LineageConfig(top_level_contact_lost_horizon_seconds=300),
+    )
     tasks: list[str] = []
     for _ in range(2):
         task = ids.new(IdKind.TASK)
@@ -89,7 +96,9 @@ async def test_native_activity_renews_contact_but_never_revives_ended_session_or
     assert renewed is not None
     assert renewed.work_state is WorkState.ABANDONED
     assert renewed.session_health is SessionHealth.ACTIVE
-    assert renewed.contact_lost_at is None and renewed.abandonment_deadline is None
+    # #1239: terminal work keeps when it was abandoned; only a pending deadline is cleared.
+    assert renewed.contact_lost_at is None
+    assert renewed.abandonment_deadline == clock.now_utc() - timedelta(seconds=1)
     await coordinator.end_session(session_id=session)
     assert not await coordinator.renew_observed_activity(
         task_id=task, session_id=session, renew_lease=renew
@@ -171,10 +180,11 @@ async def test_expired_evidence_postpones_recorded_loss_but_never_revives_contac
     )
     moved = await store.get_task(task)
     assert moved is not None
-    # Contact provably held until +160, so loss starts there and the window restarts from it.
+    # Contact provably held until +160, so loss starts there and the window restarts from it:
+    # a root no parent waits on gets the long horizon (#1239).
     assert moved.session_health is SessionHealth.CONTACT_LOST
     assert moved.contact_lost_at == start + timedelta(seconds=160)
-    assert moved.abandonment_deadline == start + timedelta(seconds=460)
+    assert moved.abandonment_deadline == start + timedelta(seconds=160 + 86_400)
     # A duplicate delivery, older evidence, or a future receipt time changes nothing.
     for observed in (
         evidence,
@@ -303,7 +313,7 @@ async def test_hold_without_a_host_lineage_registry_holds_nothing() -> None:
 
 
 async def test_in_flight_hold_requires_the_current_host_session_binding() -> None:
-    """An unstopped predecessor operation cannot renew a reattached Yoetz session."""
+    """An unstopped predecessor operation cannot renew a reattached FinishUP session."""
 
     store = MemoryLineageStore()
     clock = ScenarioClock()

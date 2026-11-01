@@ -13,6 +13,20 @@ from typing import cast
 
 import pytest
 
+from finishup.application.semantic_attempts import (
+    SemanticAttemptAccounting,
+    SemanticAttemptDispatch,
+    SemanticAttemptUsage,
+    SemanticEndpointPlan,
+    SemanticFallbackPlan,
+    attempt_accounting_to_json,
+    endpoint_role_for_ordinal,
+    run_durable_semantic_attempts,
+)
+from finishup.domain.findings import SemanticFailureClass
+from finishup.ports.ledger import AttemptOutcome, SemanticAttemptHandle, SemanticAttemptRecord
+from finishup.ports.semantic import Deadline
+from finishup.protocol.models import SemanticReason, SemanticStatus
 from unit.application.test_semantic_attempts import (
     _ATT1,  # pyright: ignore[reportPrivateUsage]
     _ATT2,  # pyright: ignore[reportPrivateUsage]
@@ -29,20 +43,6 @@ from unit.application.test_semantic_attempts import (
     _queued_job,  # pyright: ignore[reportPrivateUsage]
     _run,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.semantic_attempts import (
-    SemanticAttemptAccounting,
-    SemanticAttemptDispatch,
-    SemanticAttemptUsage,
-    SemanticEndpointPlan,
-    SemanticFallbackPlan,
-    attempt_accounting_to_json,
-    endpoint_role_for_ordinal,
-    run_durable_semantic_attempts,
-)
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.ports.ledger import AttemptOutcome, SemanticAttemptHandle, SemanticAttemptRecord
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.models import SemanticReason, SemanticStatus
 
 _ATT4 = "att_40000000-0000-4000-8000-000000000004"
 _ATT5 = "att_40000000-0000-4000-8000-000000000005"

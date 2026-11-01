@@ -12,7 +12,7 @@ import random
 
 import pytest
 
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     MAX_JSON_DEPTH,
     CanonicalFragment,
     JsonValue,
@@ -21,7 +21,7 @@ from yoetz.protocol.canonical import (
     canonical_fragment,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 _VALUES: tuple[JsonValue, ...] = (
     None,

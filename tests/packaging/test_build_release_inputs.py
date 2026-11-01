@@ -33,8 +33,8 @@ def _inputs(tmp_path: Path, *, prefixed_checksums: bool = False) -> tuple[Path, 
     root = tmp_path / "inputs"
     artifacts = root / "candidate-0.1.0"
     artifacts.mkdir(parents=True)
-    (artifacts / "yoetz-0.1.0.whl").write_bytes(b"wheel")
-    (artifacts / "yoetz-0.1.0.tar.gz").write_bytes(b"sdist")
+    (artifacts / "finishup-0.1.0.whl").write_bytes(b"wheel")
+    (artifacts / "finishup-0.1.0.tar.gz").write_bytes(b"sdist")
     checksum_lines: list[str] = []
     for path in sorted(artifacts.iterdir(), key=lambda item: item.name.encode("utf-8")):
         artifact_digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -52,7 +52,7 @@ def _inputs(tmp_path: Path, *, prefixed_checksums: bool = False) -> tuple[Path, 
                 "cells": [
                     {
                         "capability_family": "mcp",
-                        "external_version": "1.28.1",
+                        "external_version": "1.30.0",
                         "platform": "linux_x86_64",
                         "requirement_id": "initialize",
                         "status": "supported",
@@ -132,7 +132,7 @@ def test_builder_output_drives_the_real_evidence_generator(tmp_path: Path) -> No
     document = json.loads(manifest.read_text(encoding="utf-8"))
     assert set(document["gates"]) == set(_GATES)
     assert document["support_matrix_cells"] == [
-        {"label": "mcp:1.28.1:linux_x86_64:initialize", "status": "supported"}
+        {"label": "mcp:1.30.0:linux_x86_64:initialize", "status": "supported"}
     ]
 
     generated = subprocess.run(
@@ -211,7 +211,7 @@ def test_builder_rejects_unbound_gate_and_substituted_candidate_artifact(tmp_pat
     assert "gate_record_digest_invalid" in unbound.stderr
 
     artifact_root, matrix, limitations, digest = _inputs(tmp_path / "substituted")
-    (artifact_root / "yoetz-0.1.0.whl").write_bytes(b"substituted-wheel")
+    (artifact_root / "finishup-0.1.0.whl").write_bytes(b"substituted-wheel")
     output = tmp_path / "substituted" / "release-inputs.json"
     command = [
         sys.executable,

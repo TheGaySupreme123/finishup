@@ -1,77 +1,470 @@
 # Codex subscription AI-powered evaluator
 
-This runbook owns the exact `codex-chatgpt-subscription@1` cell. It is an external AI-powered
-evaluator behind the ordinary Yoetz privacy gateway, not the Codex host integration and not an
+This runbook owns the `codex-chatgpt-subscription@1` endpoint profile. It is an external AI-powered
+evaluator behind the ordinary FinishUP privacy gateway, not the Codex host integration and not an
 OpenAI Platform API profile.
 
-## Exact v2 cells
+## Capability admission (2026-10-13)
 
-The evaluator has one cell per proven native runtime. The macOS binding remains byte-compatible;
-the Linux cell is a separate identity even though Codex 0.150.1 exposes the same app-server
-schema and Yoetz-owned configuration. WSL2 is eligible for the Linux userspace cell when the
-distribution is x86_64, but WSL-specific smoke evidence is still pending. This does not advertise
-a native Windows host cell.
+The evaluator uses the newest installed Codex that passes FinishUP's capability check; it no longer
+pins one Codex build per platform (ADR-006, *Capability-checked evaluator admission*). Updating
+Codex is enough: the next `setup` or `repair` adopts the newer release without a FinishUP release.
 
-### macOS arm64
-
-| Fact | Required value |
+| Fact | Value |
 |---|---|
-| Distribution | OpenAI Codex npm `0.150.1` |
-| Platform | macOS arm64 |
-| Native executable SHA-256 | `a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b` |
-| App-server schema SHA-256 | `8cdccfc35582696d7141e7f916e0d5a664ab5b5e90b732f104284d2507f369f8` |
-| Isolated config SHA-256 | `c11ecc6c60e5618ca1b988760ef643250527757a34ef2cbb9d393306236593da` |
-| Capability-cell SHA-256 | `c04d2dd111c85d323c3f96c7041bb598f047fff9f73b84f916d38b5321d32cfa` |
-| Capability profile | `codex-evaluator/0.150.1/v2` |
-| Capability evidence expires | `2026-11-30T00:00:00Z` |
+| Eligible releases | stable OpenAI Codex npm `X.Y.Z` at or above the floor `0.157.1`; prereleases are never eligible |
+| Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
+| Capability profile | `codex-evaluator/capability/v4` (earlier bindings move through `repair`) |
+| Isolated config SHA-256 | `bd8fffe5abd02d085c13213ab2f5aaefe362c85e8a354f4fd79a58938ce9740c` (`support/codex-evaluator/config.toml`) |
+| Reviewer-loop releases | `0.162.1` and `0.164.0` (#1228). Every check review is a reviewer conversation since #1118, so on another admitted release a check's review ends unavailable (`capability_evidence_stale`); only background advice still uses one-shot sessions there |
+| Evidence expires | `2026-11-30T00:00:00Z` (this FinishUP release's reviewed subset and probe) |
 | Transport | app-server v2, stdio JSONL |
 | Credential authority | `external_runtime_oauth` |
 | Upstream-body observability | `unavailable` |
 
-No other platform, Codex version/build, binary digest, app-server schema, config, model, or
-reasoning setting inherits this cell. The exact identity digest covers the compatibility-critical
-cell fields and its review/expiry dates; stale evidence fails before child launch. The cell is
-also rechecked against the host at launch: a persisted binding whose cell does not match the
-running interpreter's platform (for example a macOS arm64 binding under an x86_64 Python) fails
-with `codex_runtime_platform_unsupported`, and structural readiness reports the route as not
-ready. The release support matrix remains authoritative about which cells have completed
-packaged live evidence.
+### Reviewer-loop isolation (#1118 unit 3)
 
-### Linux x86_64 (WSL2 Linux userspace follows this cell)
+Profile v3 adds three restrictions to every session, one-shot or loop: `initialize` sets
+`experimentalApi: true` only so `thread/start` can send `environments: []`, which leaves no
+environment for shell, patch or file tools; the isolated config and launch overrides disable the
+`update_plan` and `experimental_request_user_input` utilities. On 0.162.1 and 0.164.0 the launch also sets
+`agents.enabled=false`, `features.goals=false`, `features.sleep_tool=false` and
+`skills.include_instructions=false`: the gpt-6.1-sol catalog entry (`multi_agent_version: v2`,
+`experimental_supported_tools: [send_user_message_async, clock]`) otherwise registers the
+collaboration, goal and `sleep` tools even with `features.multi_agent=false` and no environment.
+Older releases do not get these four keys, because `--strict-config` refuses a key a release does
+not define.
+
+Three more tool families are forced by the bundled gpt-6.1-sol catalog entry itself and no ordinary
+key turns them off: code-mode `exec`/`wait` (`tool_mode: code_mode_only` overrides every
+`features.code_mode*` key), `request_user_input_async` (`experimental_supported_tools` entry
+`send_user_message_async`) and `clock.curr_time` (entry `clock`; under code mode it is a nested
+`clock__curr_time` inside `exec`). For those, the reviewer gets its own model catalog through Codex's
+supported `model_catalog_json` key, which replaces the whole catalog for that process: Codex then
+serves only that file and never fetches `/models` (`core/src/config/mod.rs` `load_catalog_json`,
+`model-provider/src/provider.rs` `StaticModelsManager`). See *Reviewer model catalog* below.
+A reviewer-loop session reuses one
+ephemeral thread across `turn/start` calls: the first turn sends the packet and the read catalog,
+each later turn only the new admitted input, and every turn supplies the reply `outputSchema`. Any plan or compaction event, server request, native warning,
+reroute or tool item ends the turn and cleans up the process. The thread lives only in the review's
+own session, and the review closes it on every exit, including a deadline, a revoked admission or a
+second malformed answer; a close waits for the turn in flight. It is never resumed. A turn that
+completes after the review's deadline is not used (`deadline_expired`). The deadline also bounds
+launch and every stdin write and stdout read, so a runtime that stops reading cannot hold the
+review or its close; cleanup runs after the deadline. A cancelled or timed-out turn is cleaned up,
+never kept for the next exchange. Not established yet: an authorized native cell proving `environments: []` persists
+across turns and that no non-environment utility runs internally. Until that cell passes for a
+release, only `0.162.1` and `0.164.0` (source-reviewed) run the loop, and other releases refuse reviewer
+exchanges with `capability_evidence_stale` instead of falling back to another route.
+
+### Reviewer model catalog (#1118)
+
+FinishUP ships `support/codex-evaluator/reviewer-model-catalog-0.162.1.json`, generated by
+`scripts/generate_codex_reviewer_catalog.py` from what Codex 0.162.1 exposes as its bundled catalog
+(`codex debug models --bundled`; the binary embeds the tag `rust-v0.162.1`
+`codex-rs/models-manager/models.json`, SHA-256 `943ca7fe…2c52b`). It is a one-model catalog holding
+the `gpt-6.1-sol` entry with exactly two edits: `tool_mode` (`code_mode_only`) is removed, and
+`experimental_supported_tools` (`[send_user_message_async, clock]`) becomes `[]`. Every other field
+is the bundled value (context window 272000, efforts `low` to `ultra`, truncation `tokens`/10000,
+instructions template, model messages). With `tool_mode` absent, Codex falls back to the
+`features.code_mode*` keys, which default off, so tools are registered directly.
+
+Codex 0.164.0 (#1228, checked 2026-10-26 from npm `@openai/codex@0.164.0-darwin-arm64`, executable
+SHA-256 `d8990e3e…9cf`) exposes a byte-identical bundled `gpt-6.1-sol` entry (same source digest),
+and deriving from it reproduces the committed file byte for byte, so the one file is pinned for both
+releases; its name keeps the release it was first generated from. `gpt-6.1-terra` is not in
+0.164.0's bundled catalog (only an account's live `/models` serves it), so it has no pin: a terra
+launch keeps the unchanged argv (`model_not_pinned`), its forced tools stay registered and refused
+on the wire, and its reviews keep the unsized exchange bound. Pinning terra needs a different
+source than the launched bytes and is a separate decision.
+
+| Pin | Value |
+|---|---|
+| Runtime releases / model | `0.162.1`, `0.164.0` / `gpt-6.1-sol` |
+| Source entry SHA-256 (FinishUP canonical JSON of the bundled entry) | `2723b11fc3c0791615cb5a14f6c1abade723228bd7b3d269f5eebeb7264d2cb6` |
+| Derived file SHA-256 (exact bytes) | `f2d4fd66291e1a62ed51d29555407804a3d67a4eb4791841e0b620708a58aadb` |
+
+`--check` (and the unit tests) prove the committed file against both pins without Codex: undoing
+exactly the two edits reproduces the source digest. `--write --codex <pinned-release executable>`
+regenerates it; run the resource ripple afterwards.
+
+Every launch applies it only when all of these hold; otherwise the launch is unchanged (the forced
+tools stay registered and are refused on the wire if called) and the closed reason is written once
+per process to the owner-only diagnostics (component `codex_app_server`, operation
+`codex_reviewer_model_catalog`):
+
+| Condition | Fallback reason |
+|---|---|
+| The bound release is `0.162.1` or `0.164.0` | `runtime_release_not_pinned` |
+| The bound model is `gpt-6.1-sol` (the catalog lists only it, so another model would vanish from `model/list`) | `model_not_pinned` |
+| After the launch fence re-hashed the executable, `codex debug models --bundled` on those exact bytes (scratch home under the dedicated home's `runtime/`, no login, no network) printed a parsable catalog | `bundled_entry_unavailable` |
+| Its `gpt-6.1-sol` entry has the pinned source digest | `bundled_entry_changed` |
+| The packaged derived file is installed as a regular file | `derived_catalog_unavailable` |
+| Its bytes have the pinned derived digest | `derived_catalog_changed` |
+
+When it applies, the launch adds `-c model_catalog_json="<packaged path>"` after the release-bound
+keys; `--strict-config` accepts it. Every launch of the pinned release and model re-measures the
+entry (about 20 ms) and keys the result by executable SHA-256. The change is visible in each attempt's
+`runtime_evidence.launcher_sha256`, which commits to the exact argv. A launch builds its argv once
+from its own measurement and the process keeps that digest, so the evidence of every turn it runs,
+including a retained reviewer thread, names what that process ran even when a concurrent launch
+of the same executable measured the other way (#1118 V3). The capability record, its
+checks, the isolated config and the profile (`codex-evaluator/capability/v4`) are unchanged:
+admission does not depend on the catalog, only the launch argv does, like the four release-bound keys.
+
+Tool surface the model receives on 0.162.1 and 0.164.0 with gpt-6.1-sol (`environments: []`, isolated config):
+
+| Tool family | Forced by | Removed by |
+|---|---|---|
+| Shell, `apply_patch`, file and view-image tools | environment tools | `environments: []`, `features.shell_tool=false`, `features.view_image=false`; 0.164.0 still advertises the catalog's `apply_patch` without an environment, but the handler fails without one and `read-only` with `approval_policy=never` refuses the patch |
+| `update_plan`, `request_user_input` | default utilities | `tools.update_plan.enabled=false`, `tools.experimental_request_user_input.enabled=false` |
+| Collaboration (`spawn_agent` and friends) | catalog `multi_agent_version: v2` | `agents.enabled=false` (0.162.1, 0.164.0) |
+| Goals (`get_goal`, `create_goal`, `update_goal`) | default-on feature | `features.goals=false` (0.162.1, 0.164.0) |
+| `sleep` | default-on feature with catalog `clock` | `features.sleep_tool=false` (0.162.1, 0.164.0) |
+| Code-mode `exec`/`wait` | catalog `tool_mode: code_mode_only` | reviewer model catalog |
+| `request_user_input_async` | catalog `send_user_message_async` | reviewer model catalog |
+| `clock.curr_time` (`clock__curr_time` inside `exec`) | catalog `clock` | reviewer model catalog |
+
+Real-Codex proof (2026-10-19, macOS arm64, npm `@openai/codex@0.162.1`, executable SHA-256
+`74c6a6d2…bdfc0`, a ChatGPT subscription login copied into a scratch home, FinishUP's exact argv,
+`initialize`/`thread/start`/`turn/start` parameters and reviewer instruction and reply schemas;
+tool lists read from the inference requests Codex's own `CODEX_ROLLOUT_TRACE_ROOT` trace bundle
+recorded; gpt-6.1-sol on Responses-lite sends tools as an `additional_tools` input item):
+
+- without the catalog, one turn: `additional_tools = functions[exec, wait,
+  request_user_input_async]`, with `clock__curr_time` declared inside `exec`; `model/list` listed
+  eight models;
+- with the catalog, a two-turn review (a `read_file` action, then a `final_judgment` after the
+  continuation): neither request carries any tool or `additional_tools` item; `model/list` listed
+  only `gpt-6.1-sol` with `low` to `ultra`; both turns completed with only `userMessage`,
+  `reasoning` and `agentMessage` items and no warning.
+
+Drift to know about: on a ChatGPT login, Codex without this key uses the account's live `/models`
+entry, not the bundled one. On 2026-10-19 the live `gpt-6.1-sol` entry differed from the bundled
+0.162.1 entry in `context_window` (500000 live, 272000 bundled), `available_access_programs`
+(`{cyber: [standard]}` live, absent bundled) and the `collaboration_modes` and
+`confirmation_policies` model messages; the instructions template and every tool field were
+identical. With the derived catalog the reviewer therefore runs with the bundled 272000-token window
+and is pinned to the release rather than following server-side catalog updates. The thread's
+`baseInstructions` replaces the model instructions either way.
+
+### The check
+
+`setup`, `repair` and `runtime install` first retain the candidate in FinishUP's owner-private store,
+then check those retained bytes. A failure is one closed token, and no case, sign-in or model
+request is involved:
+
+1. **Release floor.** For an npm wrapper the release comes from its manifests; for a native path,
+   from `codex --version` under a throwaway scratch home. Below `0.157.1`, or a prerelease:
+   `codex_runtime_version_unsupported`.
+2. **Code-mode host.** `codex-code-mode-host` must sit beside the native executable:
+   `codex_runtime_code_mode_host_missing`.
+3. **Reviewed protocol subset.** The binary writes its app-server v2 schema with
+   `codex app-server generate-json-schema --experimental --out <scratch>` (v3: the experimental
+   `thread/start.environments` field must be present). FinishUP checks structurally that every
+   request it sends (`initialize`, `account/read`, `model/list`, `account/login/*`,
+   `account/logout`, `thread/start`, `turn/start`, `turn/interrupt`) and every response,
+   notification field, JSON type and value it reads is still there. Additive methods,
+   notifications and fields pass. A closed value the evaluator interprets (agent-message phases)
+   must not gain an unreviewed member. A request must not require a field FinishUP does not send,
+   and each closed value FinishUP sends (`approvalPolicy` `never`, `sandbox` `read-only`,
+   `personality` `none`, `summary` `none`) must still be admitted by its field; both enter the
+   subset digest. Failure: `codex_runtime_protocol_incompatible`; a binary
+   that cannot write the schema is `codex_runtime_protocol_unavailable`.
+4. **Zero-inference probe.** One app-server session runs under a scratch home holding only the
+   isolated config, with FinishUP's exact argv, `--strict-config`, overrides and environment
+   allowlist:
+   - `initialize` must name exactly the release being checked and the home
+     (`codex_runtime_version_mismatch`);
+   - `account/read` must answer;
+   - `thread/start` must return an ephemeral, read-only, network-off thread in the new empty cwd
+     with no instruction sources (`codex_thread_isolation_unproven`);
+   - a barrier `account/read` then reads past everything Codex already wrote (stdout is in
+     order), so an event buffered right behind the `thread/start` reply is still inspected;
+   - every notification seen must be in the reviewed pre-disclosure allowlist
+     (`codex_app_server_predisclosure_event_forbidden`,
+     `codex_app_server_remote_control_not_disabled`, `codex_app_server_tool_request_forbidden`).
+
+   No `turn/start` is sent. The scratch directory is deleted afterwards. On Linux, Codex 0.162.1
+   writes one of two sandbox warnings before any content, and both are admitted (ADR-006,
+   2026-10-14), because the evaluator has no command-running or file-writing tool for the
+   sandbox to confine:
+   - no system `bwrap` on the fixed `PATH` (`/usr/bin:/bin`), for example an official task
+     container without the `bubblewrap` package: "Codex could not find bubblewrap on PATH. …
+     Codex will use the bundled bubblewrap in the meantime." Reported as
+     `codex_sandbox_unavailable_reason: bubblewrap_missing`; the evaluator then runs without
+     Codex's verified Linux sandbox, and the terminal interface says so;
+   - a system `bwrap` that cannot create user namespaces: gVisor (Modal), Docker's default
+     seccomp, or kernels with unprivileged user namespaces disabled. Reported as
+     `user_namespaces_unavailable`.
+
+   The check passes. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true` and
+   `codex_sandbox_unavailable_reason`, and the terminal interface notes it. Any other warning text,
+   including the WSL1 one, still fails closed.
+
+   The admission holds only for source-reviewed releases (today `0.162.1` and `0.164.0`). Another release
+   sending either warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and setup
+   or repair falls back to an older reviewed release if one is installed. To proceed, install a
+   reviewed release, or install bubblewrap and enable unprivileged user namespaces.
+5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`, then the
+   same barrier and allowlist check) must list the configured model with every configured
+   effort; a release that warns only under the signed-in home is passed over. A home Codex reports signed in whose model
+   no admitted release lists fails with `codex_model_unavailable`, without opening a sign-in.
+   Update Codex, choose another `--model`, or pass `--switch-account`.
+
+A passed check commits `capability.json` (`yoetz.codex-evaluator-capability/1`) beside the
+retained copy. It holds the profile, floor, release, source identity, platform, executable and
+code-mode-host SHA-256, the checked-subset digest, the isolated-config digest and the checks. The
+binding commits to its digest (`capability_cell_sha256`). Receipts record the release, executable
+SHA-256, profile and record digest in `runtime_evidence` as provenance. The launch fence re-hashes
+both files against the record before every child, and every attempt re-proves the release, login,
+model, thread posture and pre-disclosure events before the case crosses stdin.
+
+### Newest first, falling back to the previous good release
+
+Candidates are FinishUP's retained releases, the binding's own host installation, and every
+discovered everyday Codex install, or the one `--executable` given. FinishUP keeps one per release
+(its retained copy first) and tries them newest first. A candidate that fails the check, or whose
+catalog lacks the model for a signed-in home, is passed over. `runtimes_passed_over` in the result
+lists those tokens. When no candidate passes, the first candidate's token is the refusal and
+nothing is written. Earlier retained releases stay available as fallbacks until
+`runtime remove`.
+
+Every check subprocess (`codex --version`, schema generation, the probe and the readiness probe)
+runs as the leader of its own process group. Whether it exits, times out or fails, FinishUP kills
+that whole group, so a descendant the candidate started is killed too, and then confirms no
+member remains. When that cannot be confirmed, the result is
+`codex_capability_probe_cleanup_unconfirmed`, even if the check had already failed for another
+reason (that reason is kept as its cause). This token is not a fallback: selection and discovery
+stop there, no further candidate is launched, and nothing is written. Inspect running processes,
+stop any leftover Codex check you own, then retry.
+
+Updating the everyday Codex (`npm install -g @openai/codex@latest`) never changes a working
+binding by itself. The retained copy and its record keep serving until the owner runs `repair`
+(or `setup`), which adopts the newer release when it passes.
+
+### Tradeoff
+
+There is no exact binary identity anymore. The record proves which bytes were checked and
+launched, not that a new release is benign; a release can change behaviour that its schema and a
+zero-inference probe cannot show. Every attempt still keeps:
+- the dedicated home and environment allowlist;
+- `--strict-config` with the critical deny overrides;
+- the proven read-only, network-off thread;
+- fail-closed tool, item, phase and event allowlists.
+
+An unreviewed event that appears only after `turn/start` still fails closed: the review ends
+`unavailable`, and nothing beyond the approved case was sent.
+
+### Protocol review and evidence (2026-10-13)
+
+Release-to-release changes in the reviewed subset:
+
+- **0.157.1 to 0.159.0.** `PlanType` adds `promax`. `CodexErrorInfo` adds `flexUnavailable`
+  (classified `provider_outage`) and `tooManyDenials` (transport). Methods and notifications are
+  unchanged.
+- **0.159.0 to 0.162.1.**
+  - `MessagePhase` adds `partial_answer`, discarded like `commentary`, so only `final_answer` is a
+    judgment;
+  - the `thread/prediction/updated` notification is new and stays outside every allowlist;
+  - `TurnStartParams` and `Turn` add the optional `parentTurnId` and `rootTurnId`;
+  - `CodexErrorInfo` gains a catch-all variant.
+- **0.162.1 to 0.164.0** (#1228, 2026-10-26). The reviewed-subset digest is unchanged
+  (`sha256:fa8f2def…7bf2` for both). New: the `thread/readState/changed` notification (published
+  only for non-ephemeral threads, so never for the reviewer's) and five client requests FinishUP
+  never sends. Both bubblewrap warning texts and the four release-bound launch keys are unchanged.
+  Without an environment, 0.164.0 advertises the catalog's `apply_patch` (0.162.1 hid environment
+  tools); it cannot run without one.
+- **Every release.** Rate-limit `planType` is now accepted as any bounded identifier and
+  discarded, so a new plan cannot fail pre-disclosure validation.
+
+Unauthenticated, zero-inference evidence on macOS arm64:
+
+- The real check admitted npm `0.157.1`, `0.159.0` and `0.162.1`, and the global `0.162.1` install
+  (same bytes as the npm package). A `0.153.4` install was refused by the floor.
+- Each release passed the real probe the same way: `remoteControl/status/changed` with `disabled`,
+  then `account/read` with no account, then a read-only, network-off ephemeral `thread/start`.
+- The bundled (signed-out) catalog of 0.162.1 lists `gpt-6.1-sol` with efforts `low` to `ultra`;
+  the 0.159.0 bundled catalog does not. The signed-in 0.159.0 catalog was reported to list it, but
+  that was not reproduced here.
+- Pending: authenticated FinishUP review through any capability-admitted release, Linux, WSL2, and a
+  packaged installed wheel.
+
+### Superseded pinned cells
+
+The tables below are the historical pinned cells. A binding written under them reports
+`codex_runtime_profile_outdated`; run `finishup provider codex-subscription repair`, which re-checks
+and rebinds while keeping the sign-in, model, efforts, budgets and dedicated home.
+
+#### macOS arm64 (pinned until 2026-10-13)
 
 | Fact | Required value |
 |---|---|
-| Distribution | OpenAI Codex npm `0.150.1-linux-x64` (`@openai/codex-linux-x64`) |
+| Distribution | OpenAI Codex npm `0.157.1-darwin-arm64` (`@openai/codex-darwin-arm64`) |
+| Platform | macOS arm64 |
+| Native executable | `vendor/aarch64-apple-darwin/bin/codex` |
+| Native executable SHA-256 | `27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d` |
+| Code-mode host | `vendor/aarch64-apple-darwin/bin/codex-code-mode-host` |
+| Code-mode host SHA-256 | `80fdf166c3da068282d5692f67a852715a327ae7dc1913abb93b8c3d3030103f` |
+| App-server schema SHA-256 | `2719fccd25a97a7ce355497ca5e9123a63f6dce7f9f83724a5b73fd927811f59` |
+| Isolated config SHA-256 | `c11ecc6c60e5618ca1b988760ef643250527757a34ef2cbb9d393306236593da` |
+| Capability-cell SHA-256 | `af37da789fd12c401870768845bd73ac99c7fbffb2c5ae81c6a0ecd3c27dfd1f` |
+| Capability profile | `codex-evaluator/0.157.1/v2` |
+
+#### Linux x86_64 (pinned until 2026-10-13)
+
+| Fact | Required value |
+|---|---|
+| Distribution | OpenAI Codex npm `0.157.1-linux-x64` (`@openai/codex-linux-x64`) |
 | Platform | Linux x86_64; WSL2 uses this cell only inside its Linux userspace (WSL smoke pending) |
 | Native executable | `vendor/x86_64-unknown-linux-musl/bin/codex` |
-| Native executable SHA-256 | `abf1bb1643a79f73aa78ee627e111e02d4f8c98f25813a0cf6ce277709664386` |
-| App-server schema SHA-256 | `8cdccfc35582696d7141e7f916e0d5a664ab5b5e90b732f104284d2507f369f8` |
+| Native executable SHA-256 | `3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970` |
+| Code-mode host | `vendor/x86_64-unknown-linux-musl/bin/codex-code-mode-host` |
+| Code-mode host SHA-256 | `67b86142bac5cead11b8420cf32d3a2bf88c8868d71733f351ed7c5d95a953e0` |
+| App-server schema SHA-256 | `2719fccd25a97a7ce355497ca5e9123a63f6dce7f9f83724a5b73fd927811f59` |
 | Isolated config SHA-256 | `c11ecc6c60e5618ca1b988760ef643250527757a34ef2cbb9d393306236593da` |
-| Capability-cell SHA-256 | `3fac9e18eca7395b14166114ebf49eaaae5fe3061e86c0d5b76eb17b54488cab` |
-| Capability profile | `codex-evaluator/0.150.1/v2` |
-| Capability evidence reviewed | `2026-09-13T00:00:00Z` |
-| Capability evidence expires | `2026-11-30T00:00:00Z` |
-| Transport | app-server v2, stdio JSONL |
-| Credential authority | `external_runtime_oauth` |
-| Upstream-body observability | `unavailable` |
+| Capability-cell SHA-256 | `fa6a65e47fb7c7f647a31ae47625a3e99e80247cd412e4fdfe1922975f2fafa3` |
+| Capability profile | `codex-evaluator/0.157.1/v2` |
 
-The Linux evidence covers the published npm metadata, the native executable bytes, the generated
-app-server v2 schema, and a plain Codex device-login/Luna-high execution in an isolated Modal Linux
-x86_64 runtime. A fresh installed Yoetz wheel was then exercised in an independent Modal Linux
-x86_64 test instance: the exact wrapper resolved to the pinned native digest, preview and
-`verify_local_binding` accepted the Linux cell, and unauthenticated `account/read` and logout
-probes completed with `cleanup: terminated` while reporting `runtime_ready: true`, no auth mode,
-and no model availability. The authenticated smoke evidence is bounded to the separate Linux
-acceptance note below; WSL-specific execution has not been tested.
-The separate identity digest prevents a Linux executable or source identity from being paired with
-the macOS cell.
+#### Codex 0.157.1 admission (2026-09-27, issue #871, superseded)
 
-The September 7 v2 correction uses the schema generated by the exact npm `0.150.1` CLI; its
-SHA-256 still matches the pinned schema above. Synthetic fixtures cover sparse rate-limit
+Codex 0.150.1's ChatGPT model catalog does not list `gpt-6-luna`, the new-binding default since
+#870. On a ChatGPT account, `codex exec --model gpt-6-luna` returns HTTP 400 there. Codex 0.157.1
+lists `gpt-6-astra`, `gpt-6-sol` and `gpt-6-luna`, and it ran `gpt-6-luna`/high and
+`gpt-6-sol`/medium (plain Codex, operator Modal Linux x86_64 runs, 2026-09-27). This release
+therefore admits the exact 0.157.1 cells above in place of 0.150.1. ADR-006 still admits one
+reviewed executable per platform.
+
+Evidence recorded for this admission:
+
+- **npm metadata.** `npm pack` tarball integrity for `@openai/codex@0.157.1-darwin-arm64` and
+  `@openai/codex@0.157.1-linux-x64`, and the native executable digests in the tables.
+- **App-server schema.** The pinned digest is the SHA-256 of
+  `codex_app_server_protocol.v2.schemas.json` written by
+  `codex app-server generate-json-schema --out <dir>` (no `--experimental`). The darwin binary
+  (locally) and the Linux binary (disposable Modal sandbox) wrote identical bytes. The same recipe
+  reproduces the pinned 0.150.1 digests.
+- **Unauthenticated probe.** Run with FinishUP's exact argv, `--strict-config` and isolated config.
+  - The unchanged config is accepted.
+  - `initialize` reports 0.157.1 and is followed by `remoteControl/status/changed` with
+    `status: disabled`.
+  - `account/read` returns no account, plus a new `workspaceRouting` key that FinishUP does not read.
+  - The bundled `model/list` includes `gpt-6-luna` (`high`, `medium`) and the earlier `gpt-5.6-*`
+    models.
+  - On macOS, FinishUP's own adapter ran wrapper resolution, retention, `verify_local_binding`,
+    `account/read` and a logout probe, each with `cleanup: terminated`.
+
+No authenticated FinishUP AI-powered review has run through either 0.157.1 cell yet. The packaged
+Linux smoke is pending, no macOS authenticated run is claimed, and release evidence stays
+`pending`.
+
+Schema review, 0.150.1 to 0.157.1 v2, limited to what the evaluator reads:
+
+- **Unchanged.** `initialize`, `account/read`, `model/list`, login/logout, `turn/interrupt`, token
+  usage, warning/error, remote-control and `configWarning` shapes, and the server-request set.
+- **Accepted, not retained.** `RateLimitSnapshot.normalModelSlug` (nullable string) is accepted as
+  bounded bookkeeping of at most 128 characters and discarded. Without this, the pre-disclosure
+  validator would have rejected it.
+- **Classified.** `CodexErrorInfo.rateLimitExceeded` maps to `provider_rate_limited`, like HTTP
+  429.
+- **Not read.** Additive `ThreadStartResponse`, `Thread`, `TurnError`, `Model` and `agentMessage`
+  fields.
+- **Still fail closed.** The new `modelProvider/authRecoveryStarted|Completed`,
+  `account/gatewayOAuth/changed` and `thread/attachment/updated` notifications, and the new
+  `functionCallOutput` item, stay outside every allowlist. If a live run shows one of them during
+  an ordinary review, file it against this cell; do not widen the allowlist locally.
+
+**Moving an existing binding.** A binding written under 0.150.1 reports
+`codex_runtime_capability_unsupported`, with continuation `repair`.
+
+- With an everyday Codex 0.157.1 installed, `repair` discovers it. Otherwise run
+  `runtime install --download` first.
+- `repair` retains FinishUP's own copy at
+  `external-runtimes/codex-evaluator/openai-codex-npm-<platform>-0.157.1/codex`.
+- It keeps the sign-in, model, efforts, budgets and dedicated home when Codex's own probe reports
+  the home signed in with the exact model. 0.157.1 still lists `gpt-5.6-luna` and `gpt-5.6-sol`,
+  so those bindings keep their model. Pass `--model <id>` to setup to move to a different
+  model that the runtime lists.
+- The superseded copy under `openai-codex-npm-<platform>-0.150.1/` is no longer used, and nothing
+  removes it automatically: `runtime remove` addressed only the admitted cell (since 2026-10-13 it
+  deletes every retained release the binding does not use). That follow-up is
+  tracked in #871.
+- The default dedicated home directory, `external-runtimes/codex-0.150.1`, is a stable sign-in
+  location, not the runtime version, and does not change.
+
+On Linux, Codex 0.157.1 emits a pre-disclosure `configWarning` when no system `bwrap` is on the
+evaluator's fixed `PATH` (`/usr/bin:/bin`). The guard still fails closed before disclosure for
+that release, which is outside the reviewed set; 0.162.1's exact missing-bubblewrap warning is
+admitted and disclosed (see the capability check above).
+
+#### Retained code-mode host (2026-09-27, issue #874)
+
+Codex 0.157.1 starts a sibling helper, `codex-code-mode-host`, from beside its own executable at
+`turn/start`. When the helper is missing it emits the `warning` notification: "Code Mode is
+unavailable because failed to spawn code-mode host …". The evaluator correctly fails closed on
+that warning.
+
+The `v1` cell retained only `codex`. Its packaged Linux smoke therefore acknowledged the turn and
+stopped at `runtime_warning` (`gpt-6-luna`, `case_disclosed=true`, `process_cleanup=terminated`).
+A plain npm install, where the helper sits beside `codex`, emitted no Code Mode warning.
+
+Profile `codex-evaluator/0.157.1/v2` makes the helper part of the cell:
+
+- **Cell identity.** Each cell pins the helper's SHA-256, and the capability-cell digest covers
+  it. The native executable, schema and isolated config digests are unchanged, so existing
+  dedicated homes and sign-ins keep working.
+- **Resolution.** Every supported selection must have the admitted helper beside the resolved
+  native executable: nested npm wrapper, hoisted npm prefix, or the native path itself. A missing
+  helper fails as `codex_runtime_code_mode_host_missing`; other bytes fail as
+  `codex_runtime_capability_unsupported`.
+- **Retention.** Setup, repair and `runtime install` copy both files into the retained store, and
+  `runtime remove` deletes both. Every launch re-verifies both.
+- **No config-only fix.** Disabling the helper instead (`features.code_mode_host = false`) is not
+  a substitute. On macOS 0.157.1 it only changes the warning to "code-mode host is disabled",
+  which still fails closed.
+
+Local macOS arm64 evidence for v2, unauthenticated: FinishUP resolved the npm-prefix wrapper and
+retained both files (`0500` in a `0700` store). An app-server turn from that retained pair, with
+the unchanged isolated config, emitted no Code Mode warning. Authenticated FinishUP evidence for v2
+is pending on both platforms.
+
+**Moving a v1 binding.** A v1 binding's store holds `codex` only. It reports
+`codex_runtime_executable_missing`, with a `code_mode_host` diagnosis of `missing` and capability
+`profile_outdated`; `runtime status` shows the store as `incomplete`. Run
+`finishup provider codex-subscription repair`:
+
+- It needs an admitted source with the helper beside it: a discovered everyday Codex 0.157.1 npm
+  install, `--executable <bin/codex.js>`, or a prior `runtime install --download`.
+- It adds the helper to the existing store without rewriting `codex`.
+- It rebinds to v2 and keeps the sign-in and every choice.
+
+Follow-up on #874: Codex's bundled `codex-resources/bwrap` is still not retained. On Linux a
+reviewed release runs without a system bubblewrap and discloses it as
+`codex_sandbox_unavailable_reason: bubblewrap_missing` (see the `configWarning` note above).
+
+#### Historical 0.150.1 evidence
+
+This evidence was recorded on the superseded 0.150.1 cells and does not transfer to 0.157.1.
+
+The 0.150.1 Linux cell was admitted on npm metadata, native executable bytes, the generated
+app-server v2 schema, and a plain Codex device-login/Luna-high run in an isolated Modal Linux
+x86_64 runtime. A fresh installed FinishUP wheel then ran in an independent Modal Linux x86_64 test
+instance:
+
+- the exact wrapper resolved to the pinned native digest;
+- preview and `verify_local_binding` accepted the Linux cell;
+- unauthenticated `account/read` and logout probes completed with `cleanup: terminated`, reporting
+  `runtime_ready: true`, no auth mode, and no model availability.
+
+The authenticated smoke evidence is limited to the Linux acceptance note below. WSL-specific
+execution was not tested.
+
+The September 7 v2 correction used the schema generated by the exact npm `0.150.1` CLI, whose
+SHA-256 matched that cell's pinned schema. Synthetic fixtures cover sparse rate-limit
 notifications, quota/429 errors, final answers, and terminal isolation violations. This does not
 refresh the binary/platform evidence or claim new live acceptance. The expiry is unchanged and
 release evidence remains pending. Existing v1 bindings fail the capability check with
-`codex_runtime_profile_outdated`; review and run `yoetz provider codex-subscription repair` (or the
+`codex_runtime_profile_outdated`; review and run `finishup provider codex-subscription repair` (or the
 explicit setup flow) to bind v2 before attempting review. Repair reuses the existing login and
 keeps every choice (see *Evaluator runtime retention and repair* below).
 
@@ -80,11 +473,28 @@ and any bounded string bucket ID are accepted with the pinned schema's types; no
 After turn acknowledgement an unrecognized bookkeeping shape records only the closed
 `rate_limits_invalid` diagnostic and reading continues under the same event/byte/deadline caps.
 A later native error supplies the terminal stage and failure class. Login and pre-disclosure
-validation still reject malformed shapes. No method or tool allowlist has changed.
+validation still reject malformed shapes. The 0.157.1 `normalModelSlug` field is handled the same
+way. No method or tool allowlist has changed.
 
-New Codex-subscription setups recommend and preselect `gpt-5.6-luna`. The final-review reasoning
-effort stays independently `high`, and routine checkpoint reviews default to `medium` (see *Routine
-and final review budgets* below). When an existing binding is targeted, omitting `--model` preserves its
+New Codex-subscription setups suggest `gpt-6.1-sol` with final-review reasoning effort `medium`;
+routine checkpoint reviews also default to `medium` (see *Routine and final review budgets*
+below). Before any sign-in, setup asks the adopted runtime's own `model/list` (no `account/read`,
+no task content) whether it offers the suggested model with the selected efforts. Codex `0.162.1`
+lists `gpt-6.1-sol` at `medium` (unauthenticated `model/list` on a fresh dedicated home, macOS
+arm64 and Linux x86_64, 2026-10-14), so setup binds it directly there. The catalog of the
+`0.157.1` floor does not list it; when that is the newest runtime that passes the capability
+check, setup binds `gpt-6-luna` with the same efforts, prints that it did, and reports
+`model_fallback_from: gpt-6.1-sol`. A dedicated home Codex already reports signed in is covered
+too: when no admitted runtime lists the suggestion for that account, adoption is retried once for
+`gpt-6-luna` and the sign-in is reused. If the fallback is not listed either, nothing is
+substituted and sign-in admission refuses (`codex_model_unavailable` or
+`codex_subscription_readiness_unproven`). Only setup's own suggestion for a new binding can fall back. An explicit
+`--model` and an existing binding are never substituted. Sign-in and every review still re-prove
+the exact model and efforts against Codex's catalog.
+
+Released 0.2.x setups preselected `gpt-5.6-luna` with final effort `high` (unreleased 0.3 builds
+briefly `gpt-6-luna` at `high`); those bindings keep both on
+upgrade. When an existing binding is targeted, omitting `--model` preserves its
 exact model, including during `--switch-account`; an explicit `--model` (including `gpt-5.6-sol`
 when the app-server lists it) is required to change it. OpenAI API-key and other provider-preset
 catalogs stay Sol-first. Historical packaged live evidence that names `gpt-5.6-sol` remains Sol
@@ -92,14 +502,14 @@ proof; it is not Luna acceptance and does not migrate.
 
 ## Luna acceptance boundary (2026-09-05)
 
-[Issue #513](https://github.com/TheGaySupreme123/yoetz/issues/513) records two fresh packaged
+[Issue #513](https://github.com/TheGaySupreme123/finishup/issues/513) records two fresh packaged
 `semantic_required` attempts on the exact macOS arm64 Codex `0.150.1` cell using Luna/high.
 Both returned schema-valid judgments, distinct one-use authorizations and terminal privacy
 receipts, finalized runtime provenance, and verified process cleanup. Their check results also
 validate against the policy and strict MCP output descriptors. This is evaluator acceptance on
 bounded cooperatively published records, not fresh Cursor activation or source-correctness proof.
 A `harness_controlled_model_catalog_unavailable` negative used the same native runtime and
-filtered only the Luna entry from its `model/list` response in memory. Yoetz returned
+filtered only the Luna entry from its `model/list` response in memory. FinishUP returned
 `model_unavailable` before `thread/start` or `turn/start`, with no case disclosure or provider
 request and terminated cleanup. This proves the refusal boundary under the controlled catalog;
 it does not claim that the upstream account lacks Luna. Historical Sol evidence stays unchanged;
@@ -108,38 +518,38 @@ its full negative-control checklist.
 
 ### Linux authenticated smoke evidence (2026-09-13)
 
-One installed Linux VM run used Yoetz wheel
-`sha256:252ca337e2f002450fc5ae0649de2dbec29b70c12f1a0a6f768024e7acb4d68d`, the exact Linux x86_64
-Codex cell above, and a fresh dedicated ChatGPT home. The VM had working user namespaces and
-bubblewrap. At `2026-09-13 17:22 UTC`, one approved synthetic `Luna/high` `semantic_required` check
-completed through the Yoetz privacy gateway with `case_disclosed=true`, `turn_acknowledged=true`,
-and `process_cleanup=terminated`; a final task receipt was present. The receipt conclusion was
-`insufficient_coverage`, with `completion_scope_declared_none`, `evidence_content_digest_only`, and
-`semantic_challenges_rejected` recorded as coverage limits. The check recorded a privacy-receipt
-identifier, but the receipt get/list service handlers were unavailable (`method_forbidden`), so this
-evidence does not include a retrieved privacy receipt. This is one authenticated AI-powered review
-smoke check, not two-check evaluator acceptance; no live token accounting was captured in this run.
-The default gVisor sandbox failed closed on the pre-disclosure `configWarning` because user
-namespaces were unavailable; do not bypass that guard. WSL-specific smoke and the full negative and
-release-acceptance matrix remain pending. After the probe, the supported tightening operation
-disabled external AI-powered review; disconnect confirmed logout and removed the dedicated binding,
-and rollback was idempotent. Both test sandboxes were then terminated.
+One installed Linux VM run used FinishUP wheel
+`sha256:252ca337e2f002450fc5ae0649de2dbec29b70c12f1a0a6f768024e7acb4d68d`, the superseded exact
+Linux x86_64 Codex 0.150.1 cell, and a fresh dedicated ChatGPT home. The VM had working user
+namespaces and bubblewrap. At `2026-09-13 17:22 UTC`, one approved synthetic `Luna/high`
+`semantic_required` check completed through the FinishUP privacy gateway with `case_disclosed=true`,
+`turn_acknowledged=true`, and `process_cleanup=terminated`; a final task receipt was present. The
+receipt conclusion was `insufficient_coverage`, with `completion_scope_declared_none`,
+`evidence_content_digest_only`, and `semantic_challenges_rejected` recorded as coverage limits. The
+check recorded a privacy-receipt identifier, but the receipt get/list service handlers were
+unavailable (`method_forbidden`), so this evidence does not include a retrieved privacy receipt.
+This is one authenticated AI-powered review smoke check, not two-check evaluator acceptance; no live
+token accounting was captured in this run. The default gVisor sandbox failed closed on the
+pre-disclosure `configWarning` because user namespaces were unavailable; do not bypass that guard.
+WSL-specific smoke and the full negative and release-acceptance matrix remain pending. After the
+probe, the supported tightening operation disabled external AI-powered review; disconnect confirmed
+logout and removed the dedicated binding, and rollback was idempotent. Both test sandboxes were then
+terminated.
 
 ## Setup and reverse operations
 
 Use a dedicated home; never point this route at a normal Codex home or copy authentication from
-one.
+one. Omit `--model` to take the suggested model and its listed fallback; an explicit `--model` is
+bound exactly or refused.
 
 ```text
-yoetz provider codex-subscription setup \
-  --executable /absolute/path/to/codex \
-  --model gpt-5.6-luna \
-  --reasoning-effort high \
+finishup provider codex-subscription setup \
+  --reasoning-effort medium \
   --routine-reasoning-effort medium
 
-yoetz provider codex-subscription status --json
-yoetz provider codex-subscription disconnect --accept
-yoetz provider codex-subscription rollback
+finishup provider codex-subscription status --json
+finishup provider codex-subscription disconnect --accept
+finishup provider codex-subscription rollback
 ```
 
 ### Login lives once per dedicated home
@@ -159,7 +569,7 @@ probe that cannot complete at all — an unreachable or unanswering app-server, 
 capability cell — fails with its own bounded token rather than silently opening a login.
 `--switch-account` (the prompt-loop "switch ChatGPT account" confirmation and the `/provider`
 "Switch Codex ChatGPT account" choice) is the explicit override: it skips the probe, logs the home
-out through Codex, and signs in again. Yoetz never reads, copies, or moves `auth.json`; readiness
+out through Codex, and signs in again. FinishUP never reads, copies, or moves `auth.json`; readiness
 is only what Codex answers.
 
 The dedicated evaluator home may be reused across runs, including isolated dogfood runs, by
@@ -181,7 +591,9 @@ completes the browser or device-code sign-in. Nothing probes the login outside a
 
 ## Selected executable resolution
 
-Pass one absolute selected path. The supported npm layouts are:
+With no `--executable`, setup and repair choose among the eligible installations as described in
+*Newest first* above. To pin one installation, pass one absolute selected path. The supported npm
+layouts are:
 
 1. the npm wrapper whose exact platform package is nested below that wrapper's package root:
    `@openai/codex-darwin-arm64` for macOS arm64 or `@openai/codex-linux-x64` for Linux x86_64
@@ -189,22 +601,23 @@ Pass one absolute selected path. The supported npm layouts are:
 2. an npm-prefix wrapper whose matching platform package is hoisted beside `@openai/codex`
    under the same selected prefix.
 
-The third supported form is the exact native `codex` executable. Resolution follows only the
-selected wrapper's package root and, for a prefix install, that same prefix. It never searches
-arbitrary PATH entries, unrelated prefixes, or unbounded parent directories. All forms retain the
-platform, package-version, native-executable, and exact-digest checks; an executable that runs but
-is not the closed capability cell returns a bounded failure token.
+The third supported form is the native `codex` executable itself, whose release FinishUP reads with
+`codex --version` under a scratch home. Resolution follows only the selected wrapper's package
+root and, for a prefix install, that same prefix. It never searches arbitrary PATH entries,
+unrelated prefixes, or unbounded parent directories. Every form keeps the platform,
+package-manifest and release-floor checks; the capability check then decides admission.
 
-Setup resolves the selected wrapper to its exact native binary and refuses every unknown digest.
-Before Codex login it shows the runtime, destination, model/reasoning selection, dedicated home,
+Before Codex login, setup shows the runtime, its release, destination, model/reasoning selection,
+dedicated home,
 unknown plan-specific data-use posture, privacy implication, and reverse commands. Browser and
 device-code login are the only accepted methods. The browser window is 600 seconds; the device-code
 window is 900 seconds. Cancellation and timeout use bounded process-group termination, pipe close,
 and task cleanup before returning one terminal diagnostic.
 
-Codex 0.150.1 emits `remoteControl/status/changed` immediately after initialization, so either
-login method may receive that notification while `account/login/start` is outstanding. The login
-waiter follows the same reviewed pre-disclosure method allowlist as the evaluator: accepted
+Every reviewed release (0.150.1 through 0.162.1) emits `remoteControl/status/changed` immediately
+after initialization, so
+either login method may receive that notification while `account/login/start` is outstanding. The
+login waiter follows the same reviewed pre-disclosure method allowlist as the evaluator: accepted
 structural notifications are demultiplexed and discarded unread, with the remote-control and rate
 limit shapes validated; warnings remain fail-closed. `account/login/completed` remains the only
 terminal login event and must carry the exact `loginId` with `success: true`. Unknown, tool, or
@@ -212,36 +625,49 @@ otherwise unallowlisted notifications still fail closed. This mirrors the offici
 login waiter/global-notification routing without introducing a broad ignore or carrying notification
 payload content across the adapter.
 
-No partial Yoetz binding is written. A timeout, denial, malformed completion, process exit,
-cancellation, or later configuration-write failure leaves a new or replacement Yoetz binding
+No partial FinishUP binding is written. A timeout, denial, malformed completion, process exit,
+cancellation, or later configuration-write failure leaves a new or replacement FinishUP binding
 uncommitted. If Codex completed its own login before the failure, its OAuth state may remain in the
 dedicated home because Codex owns authentication, refresh, `auth.json`, and logout. Use
-`disconnect` to request Codex logout and then remove the Yoetz binding; use `rollback` to remove
-only the Yoetz binding while preserving the home and installation. Guided setup, the prompt-loop
+`disconnect` to request Codex logout and then remove the FinishUP binding; use `rollback` to remove
+only the FinishUP binding while preserving the home and installation. Guided setup, the prompt-loop
 menu, and `/provider` can log out the dedicated home first when switching accounts. CLI, menu, and
 `/provider` recompose the local service after setup, disconnect, or rollback so a running daemon
-cannot keep dispatching the previous cell.
+cannot keep dispatching the previous binding.
 
 Service READY composition does not spawn a Codex app-server to prove login. The READY credential
-fact is the exact binding, executable digest, isolated config, and dedicated home. `account/read`
+fact is the binding, the retained bytes still matching their capability record, the isolated
+config, and the dedicated home. `account/read`
 and `model/list` run inside the same `evaluate()` child that will disclose the case, or from
-`yoetz provider codex-subscription status`.
+`finishup provider codex-subscription status`.
+
+That structural fact is memoized per READY generation (#881). The exact binding, a stat
+fingerprint of the retained executable, its code-mode host, its capability record, the dedicated
+home and its `config.toml` (device, inode, size, mtime, ctime, mode, owner) key the result. Both files are
+re-hashed, off the event loop, only when that key changes; evidence expiry is checked against the
+clock on every read. The launch fence is not memoized: every `evaluate()` child launch still
+hashes both files.
 
 ## Evaluator runtime retention and repair
 
 Issue #855. The evaluator runtime is kept separate from the everyday Codex installation. Setup and
-repair bind a verified private copy of the admitted native executable:
+repair bind a private copy of the checked release's native executable and code-mode host (#874),
+one directory per release:
 
 ```text
-<data bundle>/external-runtimes/codex-evaluator/<source identity>/codex
+<data bundle>/external-runtimes/codex-evaluator/openai-codex-npm-<platform>-<release>/codex
+<data bundle>/external-runtimes/codex-evaluator/openai-codex-npm-<platform>-<release>/codex-code-mode-host
+<data bundle>/external-runtimes/codex-evaluator/openai-codex-npm-<platform>-<release>/capability.json
 ```
 
-The directory is owner-only (`0700`) and the copy `0500`. The bytes are hashed while they are
-copied and committed only when they equal the admitted digest. Every launch re-verifies them with
-the unchanged `verify_local_binding` fence. Updating or replacing the everyday Codex, for example
-`npm install -g @openai/codex@latest`, no longer strands the binding. Each isolated or test
-instance keeps its own copy in its own data bundle. Admission is unchanged: only the exact cell
-above is retained, bound, or launched.
+The directory is owner-only (`0700`), each copy `0500` and the record `0400`. Bytes are hashed
+while copied; a file that already holds the same bytes is kept as-is, and replacing either file
+first removes the record, so a record never vouches for bytes it did not check. The capability
+check runs on the retained copy and commits the record only after it passes. Every launch
+re-verifies both files against the record with the `verify_local_binding` fence. Updating or
+replacing the everyday Codex, for example `npm install -g @openai/codex@latest`, never strands
+the binding; the next `repair` adopts it. Each isolated or test instance keeps its own copies in
+its own data bundle.
 
 Setup, repair, install, and removal serialize mutations of this store. A concurrent command fails
 with `codex_evaluator_runtime_busy`; retry it after the first command finishes. The lock remains
@@ -250,40 +676,48 @@ a newly successful binding pointed at a missing runtime. Service readiness and s
 diagnostics both use the current service clock to reject expired capability evidence.
 
 ```text
-yoetz provider codex-subscription runtime status --json      # no Codex process, no sign-in check
-yoetz provider codex-subscription runtime install --from /absolute/path/to/codex
-yoetz provider codex-subscription runtime install --download # npm, after explicit consent
-yoetz provider codex-subscription repair                     # rebind; keeps sign-in and choices
-yoetz provider codex-subscription runtime remove             # refused while the binding uses it
+finishup provider codex-subscription runtime status --json      # no Codex process, no sign-in check
+finishup provider codex-subscription runtime install --from /absolute/path/to/codex  # retain + check
+finishup provider codex-subscription runtime install --download # newest Codex via npm, after consent
+finishup provider codex-subscription repair                     # adopt the newest passing release
+finishup provider codex-subscription runtime remove             # drop releases the binding does not use
 ```
 
-- **Selection.** With no `--executable`, setup and repair take the retained copy, then the
-  existing binding's executable when it still holds the admitted bytes, then the first discovered
-  installation that resolves to the admitted cell. A discovered binary that is not the admitted cell
-  is never offered. Guided setup (first run, the prompt menu, `/provider`) offers the same default.
-  When nothing eligible exists, first-run setup and the prompt menu offer a consented download;
-  `/provider` shows `yoetz provider codex-subscription runtime install --download` and lets the
-  operator enter a local admitted path or return after installing.
+- **Selection.** With no `--executable`, setup and repair try the eligible releases newest first
+  (see *Newest first* above): FinishUP's retained copies, the existing binding's host installation,
+  and discovered everyday installs, one per release with the retained copy first. A release below
+  the floor or a prerelease is never offered. Guided setup (first run, the prompt menu,
+  `/provider`) offers the newest as the default; accepting it keeps the newest-first fallback,
+  and only a different, explicitly typed path pins setup to that one runtime. When nothing
+  eligible exists, first-run setup and
+  the prompt menu offer a consented download; `/provider` shows
+  `finishup provider codex-subscription runtime install --download` and lets the operator enter a
+  local Codex path or return after installing.
 - **Download.** `runtime install --download` runs the operator's own `npm install --prefix
   <owner-private staging> --ignore-scripts --no-audit --no-fund --no-package-lock
-  @openai/codex@0.150.1` under their registry settings, keeps only the native executable matching
-  the admitted digest, and always deletes the staging prefix. npm output is not captured; failures
+  @openai/codex@latest` under their registry settings, keeps only the native executable and its
+  code-mode host, checks them, and always deletes the staging prefix. npm output is not captured; failures
   are the closed `codex_evaluator_runtime_download_failed|download_timeout|package_manager_unavailable`
   tokens. `--npm` selects an absolute npm; `--from` retains a local copy without any download.
-- **Repair.** `repair` rebinds an existing binding to the current cell and the retained copy. It
-  shows the changed fields, needs `--accept` or an interactive yes, and preserves the provider role,
+- **Repair.** `repair` rebinds an existing binding to the newest release that passes the check. It
+  shows the release change and the fallback candidates, needs `--accept` or an interactive yes,
+  reports `changed_fields` and `runtimes_passed_over`, and preserves the provider role,
   model, reasoning effort, timeout, retries, and dedicated home. The login is reused only when
   Codex's own `account/read` / `model/list` probe reports the home signed in with the exact model.
-  Otherwise it fails `codex_subscription_login_required`, writes nothing, and never starts a
+  A signed-out home fails `codex_subscription_login_required`; a signed-in home whose model no
+  admitted release lists fails `codex_model_unavailable`. Either way it writes nothing and never
+  starts a
   sign-in, logs out, or switches accounts. A missing home, an unsafe home, or a modified
-  `config.toml` is refused for the owner to fix first. Only a missing Yoetz-owned `config.toml` is
+  `config.toml` is refused for the owner to fix first. Only a missing FinishUP-owned `config.toml` is
   restored. The write is checked against the exact preimage, then the service is recomposed.
 - **Rebinding keeps budgets.** Re-running setup keeps the existing binding's `timeout_seconds`,
   `max_retries`, and reasoning effort unless the owner passes a new value, so a repair never
   silently lengthens or multiplies review attempts.
-- **Reverse operations.** `disconnect` and `rollback` leave the retained copy in place. `runtime
-  remove` deletes only that copy, and only while no binding uses it. A stranded binding can still
-  be disconnected: the admitted runtime logs the dedicated home out in memory for that one probe.
+- **Reverse operations.** `disconnect` and `rollback` leave the retained copies in place. `runtime
+  remove` deletes every retained release the binding does not use and is refused
+  (`codex_evaluator_runtime_in_use`) when the bound release is the only one left. A stranded
+  binding can still be disconnected: the newest release that passes the check logs the dedicated
+  home out in memory for that one probe.
 
 ### Structural states
 
@@ -295,49 +729,66 @@ owner diagnostic carrying the state.
 
 | State | Meaning | Continuation |
 |---|---|---|
-| `codex_runtime_executable_changed` | The bound path now holds other bytes, usually a host update. | `repair` |
-| `codex_runtime_executable_missing` / `_invalid` | The bound executable is gone or not an owner-executable file. | `repair` |
-| `codex_runtime_profile_outdated` | Same runtime, older Yoetz capability identity (for example v1). | `repair` |
-| `codex_runtime_capability_unsupported` | The binding names a runtime this release does not admit. | `repair` (with an admitted runtime) |
-| `codex_runtime_config_missing` | The dedicated home's Yoetz-owned `config.toml` is absent. | `repair` restores it |
+| `codex_runtime_executable_changed` | The bound executable, its code-mode host, or its capability record no longer matches what passed the check. | `repair` |
+| `codex_runtime_executable_missing` / `_invalid` | The bound executable, its code-mode host, or its record is gone, or a file is not owner-executable. | `repair` |
+| `codex_runtime_profile_outdated` | The binding was written under an earlier contract, for example a pinned `codex-evaluator/0.157.1/v2` cell. | `repair` |
+| `codex_runtime_version_unsupported` | The binding names a release below the floor. | `repair` (with a newer Codex) |
+| `codex_runtime_capability_unsupported` | The binding's identity disagrees with its release or platform. | `repair` |
+| `codex_runtime_config_missing` | The dedicated home's FinishUP-owned `config.toml` is absent. | `repair` restores it |
 | `codex_runtime_config_changed` | That `config.toml` was modified. | Restore it or remove only that file, then `repair` |
 | `codex_home_unsafe` | The home is not owner-only, local, or symlink-free. | Fix permissions, then `repair` |
 | `codex_home_missing` | The home and its sign-in are gone. | `setup` |
-| `codex_runtime_capability_evidence_stale` | The reviewed evidence expired. | Upgrade Yoetz |
-| `codex_runtime_platform_unsupported` | No reviewed cell exists for this platform. | `rollback` |
+| `codex_runtime_capability_evidence_stale` | The reviewed evidence expired. | Upgrade FinishUP |
+| `codex_runtime_platform_unsupported` | The evaluator does not run on this platform. | `rollback` |
 | `codex_runtime_binding_invalid` / `codex_runtime_unavailable` | Malformed binding / unreadable state. | `setup` / `runtime status` |
 
 Only `ready` means structurally usable, and it is reported only when the launch fence agrees. A
 `ready` binding that still points at a host installation reports `next_command: repair` as advice,
 with no blocker.
 
+The executable tokens cover both retained files. The separate `code_mode_host` field names which
+one failed: `admitted`, `missing`, `changed`, `invalid` or `unreadable`. It appears on
+`runtime status` (`binding.code_mode_host`, `binding.code_mode_host_path`) and `provider status`
+(`external_runtime.code_mode_host`).
+
+`runtime status` (`yoetz.codex-evaluator-runtime-status/2`) lists every retained release in
+`retained_runtimes` with its `runtime_version`, `path`, `code_mode_host_path`, recorded
+`executable_sha256` and `code_mode_host_sha256`, and a `state`: `verified` (both files match a
+current record), `unchecked` (retained, no current record yet), `incomplete` (host absent),
+`changed`, `invalid` or `unsafe`. It also reports the `runtime_floor` and `capability_profile`.
+`codex-subscription status`, setup and repair report `code_mode_host_path` and the record's
+`code_mode_host_sha256`.
+
 ### Host and platform coverage (#855)
 
 The retained runtime belongs to the shared provider, so Codex, Claude Code, and Cursor all use the
 same commands and `/provider` / prompt-menu entries; no host-specific step exists. The unit and
-integration tests use synthetic bytes standing in for the pinned digests. Native acceptance is
-still pending for macOS arm64, native Linux, WSL2, a packaged installed wheel, the npm download
-against a live registry, a live repair of a real stranded binding, and a post-repair AI-powered
-check. Record those cells before claiming release support.
+integration tests use synthetic bytes with stubbed check subprocesses. The real capability check
+has run unauthenticated on macOS arm64 against 0.157.1, 0.159.0 and 0.162.1 (see *Protocol review
+and evidence*). Native acceptance is still pending for native Linux, WSL2, a packaged installed
+wheel, the npm download against a live registry, a live repair of a real pinned-cell binding, and a
+post-repair AI-powered check. Record those before claiming release support.
 
 ## Isolation contract
 
-Each dispatch launches one process group with the exact executable, `--strict-config`, the
+Each dispatch launches one process group with the bound, capability-checked executable,
+`--strict-config`, the
 digest-bound config, and repeated critical deny overrides. The environment allowlist contains only
 the dedicated `CODEX_HOME`, fixed locale, fixed system `PATH`, and bounded Rust log level; API-key
 and proxy variables do not cross. Analytics and OTel are off.
 
-Before task bytes cross stdin, Yoetz initializes app-server v2, requires a ChatGPT account,
+Before task bytes cross stdin, FinishUP initializes app-server v2, requires a ChatGPT account,
 requires the exact model/reasoning cell from `model/list`, and starts an ephemeral thread in a new
 empty owner-private cwd. The returned cwd, model/provider, read-only/no-network sandbox posture,
 empty instruction-source list, and absence of a persisted thread path must match. The exact
 approved case then enters only as `turn/start` text with the digest-bound Codex projection of the
-frozen judgment schema. The exact runtime rejects JSON Schema's `uniqueItems` keyword, so that is
-the only omitted provider-side constraint; Yoetz's unchanged local normalizer still enforces every
+frozen judgment schema. Codex rejects JSON Schema's `uniqueItems` keyword, so that is
+the only omitted provider-side constraint; FinishUP's unchanged local normalizer still enforces every
 uniqueness rule before accepting a judgment. Any child tool request, tool item, unknown event,
 invalid/truncated/refused completion, or configuration mismatch fails closed. Codex tags each
-agent message with a phase: `commentary` messages are interim narration and are discarded
-unread; only `final_answer` messages are judgment candidates, and exactly one must remain
+agent message with a phase: `commentary` messages are interim narration and `partial_answer`
+messages (0.162.1 and later) are unfinished answer text; both are discarded unread. Only
+`final_answer` messages are judgment candidates, and exactly one must remain
 (untagged messages from legacy models fall back to the same one-message rule). Informational
 notifications — thread naming, moderation metadata, safety buffering, deprecation and
 configuration notices, queue and compaction state, plan updates — and the model's own `plan` and
@@ -347,20 +798,22 @@ produce the answer. The post-acknowledgement event budget is 4096 notifications,
 1 MiB, so a content-rich streamed judgment is not mistaken for an unbounded stream. Prompt wording
 is not treated as the isolation boundary.
 
-The cell is application confinement, not a general OS sandbox claim. Its negative controls and
-exact-version behavior are part of compatibility evidence; a version that cannot prove the listed
-postconditions is unsupported.
+This is application confinement, not a general OS sandbox claim. The capability check proves the
+pre-disclosure postconditions for each admitted release, and every attempt proves them again; a
+release that cannot prove them is not admitted, and one that later breaks them fails closed.
 
 ## Privacy and receipts
 
 The same ADR-009 classifier, minimizer, never-send scanner, composed repository authority,
 optional per-request approval, one-use authorization, and terminal receipt govern this route. A
-strict MCP route, unapproved repository, missing login, missing model, stale binary/config, or
-unsupported cell produces zero task-content disclosure.
+strict MCP route, unapproved repository, missing login, missing model, changed binary/config, or
+a release that fails the capability check produces zero task-content disclosure.
 
-`semantic_provenance.runtime_evidence` records only exact digests and bounded structural facts. It
+`semantic_provenance.runtime_evidence` records only exact digests and bounded structural facts:
+the bound Codex release (`runtime_version`), its executable SHA-256, the capability profile and the
+capability-record digest (`capability_cell_sha256`) are provenance of which checked bytes ran. It
 never retains email, token, credential path, raw account/workspace identity, prompt, reasoning,
-stderr, or event log. `disclosed_case_sha256` is the case Yoetz passed to Codex, not Codex's
+stderr, or event log. `disclosed_case_sha256` is the case FinishUP passed to Codex, not Codex's
 upstream request. The explicit `upstream_body_observability=unavailable` field is mandatory. When
 Codex emits `thread/tokenUsage/updated` for the active thread and turn, current runtime evidence
 retains one cumulative total snapshot with the non-overlapping input/output/total counters, cached
@@ -400,6 +853,28 @@ the same token as an owner-only diagnostic line (`semantic_composition` /
 | `judgment_envelope_invalid`, `judgment_enum_invalid`, `judgment_refs_duplicate`, `judgment_refs_invalid`, `judgment_conclusion_mismatch`, `judgment_text_bounds`, `judgment_shape_invalid`, `judgment_invariant_invalid` | Strict JSON that failed the frozen judgment contract at the named stage. | Terminal (`response_schema_invalid`); asking again is not a fix. `judgment_refs_invalid` is the model citing an item id instead of a `citable_refs` entry. |
 | `request_failed`, `transport_failed`, `deadline_expired`, `cleanup_unconfirmed`, `event_limit`, `runtime_warning`, `unclassified` | Runtime transport, deadline, event-budget, warning, or cleanup ambiguity. | Per ADR-006: pre-acknowledgement transients may retry; post-acknowledgement ambiguity is `outcome_unknown` and is not retried. No invalid-answer classification. |
 
+For `tool_request_forbidden`, `event_forbidden` and `tool_event_forbidden` the service also writes
+one owner-only diagnostic line naming the refused Codex event (component `codex_app_server`,
+operation equal to the internal token, for example `codex_app_server_event_forbidden`). Its
+`reason` is the Codex wire name validated as at most five slash-separated camelCase ASCII
+segments, encoded with `/` as `.` and camelCase as snake_case (`thread/settings/updated` becomes
+`thread.settings.updated`; a refused `mcpToolCall` item becomes `item.mcp_tool_call`). Any other
+shape is reported as `event_name_invalid`; no notification body is recorded.
+
+Codex 0.162.1 sends `thread/settings/updated` after the first `turn/start` on every thread,
+because the turn's `effort` and `summary` overrides produce the thread's first settings snapshot.
+It echoes settings FinishUP sent and is discarded unread on both the single-shot and the
+reviewer path (#1118).
+
+Codex 0.162.1 may also send `model/verification` during any turn: an account-verification
+recommendation (for example `trustedAccessForCyber`) carried in the upstream response's metadata.
+It needs no tool or environment, the bound model still answers, and it adds no input or authority,
+so it is discarded unread on both paths. A changed model is `model/rerouted` and still ends the
+attempt. Every other 0.162.1 notification the isolated reviewer configuration cannot produce
+(goals, skills, MCP startup, hooks, provider auth recovery, realtime, filesystem, Windows setup and
+lifecycle events) stays `event_forbidden`; the per-method inventory and its reachability evidence
+were reviewed against the `rust-v0.162.1` source for #1118.
+
 `semantic_case_content_over_item_limit` is a separate coverage gap on the disclosed case; it is
 reported alongside a stage, never inferred from one. `semantic_case_finding_refs_over_limit` is the
 same kind of case-composition gap: a local finding cited more than 16 subjects, so its prose and
@@ -407,9 +882,51 @@ projected assessment were omitted from the case while the review still dispatche
 by the service before any evaluator runs, so it applies identically to every host and evaluator,
 and it is never a `coordinator_failure`.
 
+A large case is planned against the exact first reviewer exchange: the loop instruction, the
+packet (sent as a JSON string, so quoted code and JSON tool output can grow to nearly twice their
+size) and the read catalog, below the exchange budget less 8 KiB. On this route with
+`gpt-6.1-sol` the budget is sized to the model's context (#1118, ADR-006): from the shipped entry's
+272,000-token window, Codex compacts at 90% (244,800 tokens; compaction is refused on the reviewer
+path), and FinishUP keeps 4,096 tokens for Codex's turn framing, 40,960 for one turn's reasoning
+and output, and 30,600 for estimation error, so every exchange carries at most 169,144 estimated
+tokens (152,760 for the first) and at most 524,288 bytes, below Codex's own 1,048,576-character
+turn input limit. Tokens are estimated (1.8 ASCII bytes per token, one per non-ASCII byte), not
+counted with the model's tokenizer. Any other model on this route keeps 262,144 bytes and no
+token budget. The owner's `max_bytes` and `max_tokens` bind first. Setup writes 524,288 bytes
+and 131,072 estimated tokens (privacy-policy 1.3.0), so a freshly provisioned instance, including a
+benchmark instance set up through `finishup --privacy`, plans to the full model budget; a policy
+approved before #1118 (262,144 bytes, 65,536 tokens) keeps every exchange below 262,144 - 8,192
+bytes until the owner re-runs `finishup --privacy` and approves the widening. Verify with
+`finishup privacy show --json`: the `llm_inference` channel's `max_bytes` is `524288`. Excerpts the plan cuts are disclosed as `content_unselected`, and the
+`semantic_case_built` counters show `semantic_excerpt_ceiling_rounds` above zero and, when the
+excerpt budget itself was reduced, `semantic_excerpt_byte_limit` below
+`semantic_excerpt_byte_approved`. An exchange that still does not fit is refused before anything
+is sent, as `failed/case_capacity_exceeded` (its privacy receipt `blocked_by_policy` /
+`policy_denied`, before #1118's owner decision reported `network_egress_denied`); nothing reaches
+the Codex child. The owner diagnostic `semantic_disclosure_capacity_exceeded` names the unit it
+exceeded: `semantic_disclosure_attempted_bytes`/`semantic_disclosure_limit_bytes`, or
+`..._tokens` for the model-token budget. Before the #1118 smoke fix such a
+case ended `coordinator_failure` with an owner diagnostic
+`semantic_attempt_privacy_dispatch_entered_failed` / `exception_value_error` at
+`finishup.ports.privacy:529`; on a current build that line no longer means an oversize review.
+
+A `semantic_case_built` line with `semantic_excerpt_ceiling_rounds` above zero but
+`semantic_excerpt_byte_limit` still equal to `semantic_excerpt_byte_approved`, followed by a
+`blocked_by_policy` `semantic-review` privacy receipt (`final_bytes` 0) and no
+`semantic_review_accounting` line for that request, is a planned case that could not be narrowed
+under the cap; on a current build it also records `semantic_disclosure_capacity_exceeded` with
+`semantic_disclosure_attempted_bytes` and `semantic_disclosure_limit_bytes`. Before the #1118 heat-pump-warranty fix this happened whenever a change too large
+for the excerpt budget was offered decision sections first: the planner measured the change it
+kept from the change's first byte, found 0 against the protected floor, and kept the whole case.
+On a current build only a case that cannot fit while keeping that floor, or whose fixed material
+alone exceeds the cap, ends that way. Each read
+result is fitted to what the exact next exchange leaves, so a review no longer ends on a size
+refusal at a later exchange; a read action whose own bytes leave no room ends the review
+`read_limit`, with nothing sent.
+
 ## Packaged live-evidence checklist
 
-Use an exact packaged Yoetz build and an isolated logged-in evaluator home. Record these as
+Use an exact packaged FinishUP build and an isolated logged-in evaluator home. Record these as
 separate claims:
 
 1. two `semantic_required` checks complete with distinct AI-powered review attempts, one-use
@@ -421,7 +938,7 @@ separate claims:
    project instructions, same-name binary, API/proxy environment, and attempted tool events fail
    before disclosure or record the exact bounded post-disclosure failure;
 5. browser and device login timeout, cancellation, malformed completion, process exit, and
-   configuration-write failure leave no partial Yoetz binding while process groups and pipes are
+   configuration-write failure leave no partial FinishUP binding while process groups and pipes are
    cleaned up within their bounds;
 6. disconnect and rollback leave unrelated Codex installations, homes, settings, and sessions
    byte-unchanged.
@@ -435,10 +952,19 @@ explicitly to select 1–3600 seconds; existing explicit values are preserved. T
 review execution budget, not the browser/device login timeout or a host tool's wait timeout.
 Retries and recovery do not restart it. No extra retries are enabled.
 
+One check may run up to three more reviews (issue #1047): when the reviewer concludes
+`insufficient_packet` naming recorded run output, an exact command or a captured edit the packet had
+no room for, the service sends the case again with that content first. Each such round is its own
+job with its own attempt budget and its own `timeout_seconds` deadline, under the endpoint and
+budget profile frozen with the check's first review job; it is never sent when it would add nothing
+new. Count them when planning subscription usage. `status view=operation` reports the live round's
+progress, and each round leaves one `semantic_review_follow_up` diagnostic record (round, items,
+refs added, parts added) under the check's request ID.
+
 A host tool wait may finish before the review. Keep the same check request and request ID: while
 the service-owned check runs, replay reports pending; after completion it recovers the recorded
 result. A host disconnect does not cancel an admitted review. Explicit control cancellation while
-attached or `yoetz service stop` stops the owned execution; service stop affects the selected
+attached or `finishup service stop` stops the owned execution; service stop affects the selected
 installation, including its other active work. The maintenance gate can delay ordinary status
 reads during review; `status view=operation` for the running check is the one read admitted
 beside it. Parallel review scheduling remains separate work.
@@ -463,19 +989,20 @@ A launch or pre-sampling failure goes straight to `cleanup`, so `status` disting
 start from a long sampling turn. Token-usage, rate-limit, delta, plan, and commentary notifications
 do not produce phases and nothing from them is recorded. `overdue` means the frozen deadline passed
 without a terminal row; replay the same check request to reclaim and terminalize it. To diagnose a
-failed attempt, keep using `yoetz service diagnostics --request-id req_…` for failure stages;
+failed attempt, keep using `finishup service diagnostics --request-id req_…` for failure stages;
 progress is the live view, not the failure record.
 
 ## Routine and final review budgets (#571 item A1)
 
 Each check selects one budget profile from its frozen case. A check whose frontier carries an
-effective completion claim is `final`; every other check is `routine`. The profile is frozen
-with the job, so retries, a disclosure-wait resume, and recovery all dispatch with the same
-effort and output limit.
+effective completion claim, or a check requested with `final_review: true` (the closing review,
+issue #976), is `final`; every other check is `routine`. The profile is frozen with the job, so
+retries, a disclosure-wait resume, recovery and in-check follow-up rounds all dispatch with the
+same effort and output limit.
 
 | Profile | Effort key | Output limit key | New-binding default |
 | --- | --- | --- | --- |
-| `final` | `reasoning_effort` | `final_output_limit` | `high`, 8192 tokens |
+| `final` | `reasoning_effort` | `final_output_limit` | `medium`, 8192 tokens (`high` before 0.3.0) |
 | `routine` | `routine_reasoning_effort` | `routine_output_limit` | `medium`, 4096 tokens |
 
 - **Legacy bindings.** A binding written before this change has no `routine_reasoning_effort`,
@@ -487,17 +1014,30 @@ effort and output limit.
   every configured effort; one attempt requires only its selected effort.
 - **Output limits** count output tokens (1–8192) and are edited in `[external_runtime]`.
   Re-running setup carries them over. The app-server protocol has no per-turn output ceiling,
-  so Yoetz compares each `thread/tokenUsage/updated` snapshot's visible output
+  so FinishUP compares each `thread/tokenUsage/updated` snapshot's visible output
   (`output_tokens − reasoning_output_tokens`) with the selected limit and interrupts the turn as
   `output_oversize` when it is exceeded. When Codex reports no usage, the limit is recorded but
   not measured.
 - **Provenance.** `runtime_evidence.reasoning_effort`, `sampling_params.max_output_tokens`, and
   `semantic_provenance.model` name the exact selection per check, and `selection_sha256`
-  commits to it together with the profile name. Receipts, `yoetz provider status`,
-  `yoetz provider codex-subscription status`, and `/provider` in the terminal interface show
+  commits to it together with the profile name. Receipts, `finishup provider status`,
+  `finishup provider codex-subscription status`, and `/provider` in the terminal interface show
   both profiles.
+- **Comparing final-review effort (issue #1051).** To run final reviews at a higher effort while
+  routine checkpoints stay as they are, re-run
+  `finishup provider codex-subscription setup --reasoning-effort xhigh` (the routine choice and
+  everything else are preserved; setup refuses an effort the model does not list). Each recorded
+  check then carries what served it: `semantic_provenance.model`,
+  `semantic_provenance.runtime_evidence.reasoning_effort`, and the phase in
+  `review_input_manifest.review_phase` (`routine` or `final`), so the two arms can be compared from
+  `check_recorded` rows alone. A different *model* for final reviews only is not configurable: the
+  approved review channel authorizes exact destinations (provider, model and endpoint; one primary
+  and at most one fallback), so a second model needs its own owner-approved destination, a privacy
+  consent change that has not been made. A comparison that also moves routine reviews to the other
+  model can run as two separately configured installations; a final-only model switch cannot.
 
-No disclosure, retention, deadline, retry, or fallback rule changes with the profile. There is
-no per-request override yet; a check reaches the final profile only through a completion claim.
+No disclosure, retention, deadline, retry, or fallback rule changes with the profile. The only
+per-request choice is `final_review: true`; otherwise a check reaches the final profile through a
+completion claim.
 Per-profile latency, output size, judgment validity, and cleanup on an installed Luna cell have
 not been benchmarked here; that needs an authorized live run.

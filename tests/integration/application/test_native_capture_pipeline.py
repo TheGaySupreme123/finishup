@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,31 +29,31 @@ from tests.integration.objects.test_envelope_and_encrypted_files import (
 )
 
 import integration.service.test_semantic_non_dispatch as semantic_non_dispatch
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.sqlite import connection as sqlite_connection
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.sqlite import connection as sqlite_connection
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_content_identity,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-from yoetz.domain.observation import (
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationCaptureTicket,
     ObservationContentKind,
@@ -67,27 +68,27 @@ from yoetz.domain.observation import (
     observation_ingest_request_from_json,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.privacy import ProviderBinding, ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import JsonValue as DomainJsonValue
-from yoetz.domain.values import Timestamp, evidence_id
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.ledger import CheckPhase, FrozenCase
-from yoetz.ports.objects import (
+from finishup.domain.privacy import ProviderBinding, ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import JsonValue as DomainJsonValue
+from finishup.domain.values import Timestamp, evidence_id
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import BundleKeys
+from finishup.ports.ledger import CheckPhase, FrozenCase
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRootSnapshot,
     ObjectSource,
     ObjectStorePort,
 )
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import (
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import (
     BundleRuntimePort,
     OwnershipFence,
     RouteCommand,
@@ -95,17 +96,17 @@ from yoetz.ports.runtime import (
     StartCompletionEvidence,
     TaskRuntime,
 )
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     EvidenceImmutability,
     PublicationChannel,
 )
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.protocol.models import SemanticStatus
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.models import SemanticStatus
 
 _NOW = datetime(2026, 9, 5, 17, 0, tzinfo=UTC)
 _ZERO_DIGEST = "sha256:" + "0" * 64
@@ -238,7 +239,7 @@ async def _pipeline(
         local.enable_content_capture(workspace, profile)
     session_commitment = local.bind_codex_session(workspace, codex_session_id)
 
-    task_id, yoetz_session_id, writer_id = identity or (
+    task_id, finishup_session_id, writer_id = identity or (
         _ids(IdKind.TASK, 1),
         _ids(IdKind.SESSION, 2),
         _ids(IdKind.WRITER, 3),
@@ -248,9 +249,9 @@ async def _pipeline(
             LifecycleMapping(
                 mapping_version=1,
                 codex_session_id=codex_session_id,
-                yoetz_task_id=task_id,
-                yoetz_session_id=yoetz_session_id,
-                yoetz_writer_id=writer_id,
+                finishup_task_id=task_id,
+                finishup_session_id=finishup_session_id,
+                finishup_writer_id=writer_id,
                 last_frontier=None,
             ),
             _state=state,
@@ -297,7 +298,7 @@ async def _pipeline(
     observation = ledger.open_observation_store()
     runtime = TaskRuntime(
         task_id=task_id,
-        session_id=yoetz_session_id,
+        session_id=finishup_session_id,
         writer_id=writer_id,
         capabilities=frozenset(
             {
@@ -374,7 +375,7 @@ def _claude_hook_runner(
     profile: str,
 ) -> Callable[[str, Mapping[str, object]], int]:
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_claude_observe(
@@ -448,7 +449,6 @@ async def _capture_claude_post_requests(
                 "tool_name": "Bash",
                 "tool_use_id": tool_use_id,
                 "tool_response": marker.decode("utf-8"),
-                "exit_status": 0,
             },
         )
         == 0
@@ -499,7 +499,7 @@ def _assert_native_handoff_requests(
     requests: tuple[ObservationIngestRequest, ...],
     *,
     codex_session_id: str,
-    profile: str,
+    profile: str | None,
     captured_bytes: bytes,
     content_kind: ObservationContentKind,
 ) -> tuple[
@@ -527,7 +527,12 @@ def _assert_native_handoff_requests(
     structural_request = next(
         request for request in structural_requests if request.envelope.event_kind == "PostToolUse"
     )
-    assert requests.index(capture_request) < requests.index(pre_request)
+    if pre_request.envelope.source is ObservationSource.CODEX_HOOK:
+        # Codex drains its contentless pre-event immediately; profiled hosts defer it.
+        assert requests.index(pre_request) < requests.index(capture_request)
+    else:
+        assert requests.index(capture_request) < requests.index(pre_request)
+    assert requests.index(capture_request) < requests.index(structural_request)
     assert requests.index(pre_request) < requests.index(structural_request)
     assert pre_request.codex_session_id == codex_session_id
     assert not pre_request.capture_only
@@ -670,7 +675,6 @@ async def _native_claude_case(
                 "tool_name": "Bash",
                 "tool_use_id": "composition-tool-1",
                 "tool_response": marker.decode("utf-8"),
-                "exit_status": 0,
             },
         )
         == 0
@@ -685,9 +689,9 @@ async def _native_claude_case(
 
     observation.record_workspace_session_route(
         workspace=workspace,
-        yoetz_session_id=runtime.session_id,
-        yoetz_task_id=runtime.task_id,
-        yoetz_writer_id=cast(str, runtime.writer_id),
+        finishup_session_id=runtime.session_id,
+        finishup_task_id=runtime.task_id,
+        finishup_writer_id=cast(str, runtime.writer_id),
         codex_session_commitment=session_commitment,
         bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
     )
@@ -838,7 +842,7 @@ async def test_profileless_codex_hook_content_reaches_guarded_task_bundle(
     }
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     assert (
         await asyncio.to_thread(
@@ -876,6 +880,43 @@ async def test_profileless_codex_hook_content_reaches_guarded_task_bundle(
     assert manifest.content_kind is ObservationContentKind.TOOL_OUTPUT
     assert manifest.content_digest == "sha256:" + hashlib.sha256(captured_chunk.content).hexdigest()
     assert manifest.content_bytes == len(captured_chunk.content)
+
+
+_PLANTED_PATCH = (
+    "*** Begin Patch\n*** Update File: {PROJECT}/module.py\n@@\n-old()\n+planted_edit_bug()\n"
+    "*** End Patch"
+)
+_CLAUDE_EDIT_INPUT = {
+    "file_path": "{PROJECT}/module.py",
+    "old_string": "old()",
+    "new_string": "planted_edit_bug()",
+    "replace_all": False,
+}
+_STRUCTURED_PATCH: CanonicalJsonValue = [
+    {
+        "oldStart": 1,
+        "oldLines": 1,
+        "newStart": 1,
+        "newLines": 1,
+        "lines": ["-old()", "+planted_edit_bug()"],
+    }
+]
+_CURSOR_WRITE_INPUT = {"path": "{PROJECT}/module.py", "contents": "planted_edit_bug()\n"}
+
+
+def _with_project(value: object, project: str) -> object:
+    """Substitute the per-test absolute project path into a host payload fixture."""
+
+    if isinstance(value, str):
+        return value.replace("{PROJECT}", project)
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, object], value)
+        return {key: _with_project(item, project) for key, item in mapping.items()}
+    if isinstance(value, list):
+        return [_with_project(item, project) for item in cast(list[object], value)]
+    if isinstance(value, tuple):
+        return tuple(_with_project(item, project) for item in cast(tuple[object, ...], value))
+    return value
 
 
 @pytest.mark.anyio
@@ -940,13 +981,127 @@ async def test_profileless_codex_hook_content_reaches_guarded_task_bundle(
             b"planted-cursor-tool-output-marker: missing validation",
             ObservationContentKind.TOOL_OUTPUT,
         ),
+        (
+            # Codex 0.157.1: apply_patch sends ``tool_input.command`` on Pre and Post, and the
+            # post ``tool_response`` is the exit-code-prefixed text output.
+            "codex",
+            None,
+            "PreToolUse",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "codex-edit-session",
+                "turn_id": "turn-1",
+                "cwd": "{PROJECT}",
+                "model": "gpt-5.5-codex",
+                "permission_mode": "default",
+                "tool_use_id": "codex-edit-1",
+                "tool_name": "apply_patch",
+                "tool_input": {"command": _PLANTED_PATCH},
+            },
+            "PostToolUse",
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "codex-edit-session",
+                "turn_id": "turn-1",
+                "cwd": "{PROJECT}",
+                "model": "gpt-5.5-codex",
+                "permission_mode": "default",
+                "tool_use_id": "codex-edit-1",
+                "tool_name": "apply_patch",
+                "tool_input": {"command": _PLANTED_PATCH},
+                "tool_response": (
+                    "Exit code: 0\nWall time: 0.1 seconds\nOutput:\n"
+                    "Success. Updated the following files:\nM {PROJECT}/module.py\n"
+                ),
+            },
+            b"# yoetz edit outcome: applied\n" + _PLANTED_PATCH.replace("{PROJECT}/", "").encode(),
+            b"planted_edit_bug",
+            ObservationContentKind.WORKSPACE_DIFF,
+        ),
+        (
+            "claude",
+            CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+            "PreToolUse",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "claude-edit-session",
+                "cwd": "{PROJECT}",
+                "permission_mode": "acceptEdits",
+                "tool_use_id": "claude-edit-1",
+                "tool_name": "Edit",
+                "tool_input": _CLAUDE_EDIT_INPUT,
+            },
+            "PostToolUse",
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "claude-edit-session",
+                "cwd": "{PROJECT}",
+                "permission_mode": "acceptEdits",
+                "tool_use_id": "claude-edit-1",
+                "tool_name": "Edit",
+                "tool_input": _CLAUDE_EDIT_INPUT,
+                "tool_response": {
+                    "filePath": "{PROJECT}/module.py",
+                    "oldString": "old()",
+                    "newString": "planted_edit_bug()",
+                    "originalFile": "old()\n",
+                    "structuredPatch": _STRUCTURED_PATCH,
+                    "userModified": False,
+                    "replaceAll": False,
+                },
+            },
+            canonical_encode(
+                {
+                    "edit_outcome": "applied",
+                    "new_string": "planted_edit_bug()",
+                    "old_string": "old()",
+                    "path": "module.py",
+                    "structured_patch": _STRUCTURED_PATCH,
+                }
+            ),
+            b"planted_edit_bug",
+            ObservationContentKind.CHANGED_FILE,
+        ),
+        (
+            "cursor",
+            CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+            "preToolUse",
+            {
+                "hook_event_name": "preToolUse",
+                "conversation_id": "cursor-edit-session",
+                "tool_use_id": "cursor-edit-1",
+                "tool_name": "Write",
+                "tool_input": _CURSOR_WRITE_INPUT,
+                "workspace_roots": (),
+            },
+            "postToolUse",
+            {
+                "hook_event_name": "postToolUse",
+                "conversation_id": "cursor-edit-session",
+                "tool_use_id": "cursor-edit-1",
+                "tool_name": "Write",
+                "tool_input": _CURSOR_WRITE_INPUT,
+                "tool_output": '{"success":true}',
+                "duration": 12,
+                "workspace_roots": (),
+            },
+            canonical_encode(
+                {
+                    "contents": "planted_edit_bug()\n",
+                    "edit_outcome": "applied",
+                    "path": "module.py",
+                }
+            ),
+            b"planted_edit_bug",
+            ObservationContentKind.CHANGED_FILE,
+        ),
     ),
-    ids=("claude-tool-output", "cursor-tool-output"),
+    ids=("claude-tool-output", "cursor-tool-output", "codex-patch", "claude-edit", "cursor-edit"),
 )
 async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     tmp_path: Path,
     host: str,
-    profile: str,
+    profile: str | None,
     pre_event_name: str,
     pre_payload: Mapping[str, object],
     post_event_name: str,
@@ -955,7 +1110,8 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     marker: bytes,
     content_kind: ObservationContentKind,
 ) -> None:
-    codex_session_id = f"{host}:{pre_payload.get('session_id') or pre_payload['conversation_id']}"
+    raw_session = str(pre_payload.get("session_id") or pre_payload["conversation_id"])
+    codex_session_id = raw_session if host == "codex" else f"{host}:{raw_session}"
     (
         project,
         workspace,
@@ -977,9 +1133,21 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
         # pytest-anyio propagates its backend context into ``to_thread``.  Run the synchronous
         # hook's coroutine runner explicitly so the hook exercises its normal service drain.
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
+        payload = cast(Mapping[str, object], _with_project(payload, str(project.resolve())))
+        if host == "codex":
+            return handle_observe(
+                event_name=event_name,
+                stdin_bytes=canonical_encode(cast(CanonicalJsonValue, payload)),
+                workspace=str(project),
+                _state=tmp_path / "state",
+                stdout=io.BytesIO(),
+                connect=cast(object, connect),  # type: ignore[arg-type]
+                run_async=run_async,
+                source=ObservationSource.CODEX_HOOK,
+            )
         if host == "claude":
             return handle_claude_observe(
                 event_name=event_name,
@@ -1014,7 +1182,7 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
         start_payload = {
             "conversation_id": pre_payload["conversation_id"],
             "tool_name": "start",
-            "mcp_server_name": "yoetz",
+            "mcp_server_name": "finishup",
             "result_json": canonical_encode(
                 {
                     "isError": False,
@@ -1036,9 +1204,9 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
         }
         assert await asyncio.to_thread(run_hook, "afterMCPExecution", start_payload) == 0
         mapping = load_mapping(codex_session_id, _state=tmp_path / "state")
-        assert mapping is not None and mapping.yoetz_task_id == runtime.task_id
-        assert mapping.yoetz_session_id == runtime.session_id
-        assert mapping.yoetz_writer_id == runtime.writer_id
+        assert mapping is not None and mapping.finishup_task_id == runtime.task_id
+        assert mapping.finishup_session_id == runtime.session_id
+        assert mapping.finishup_writer_id == runtime.writer_id
         assert client.requests == []  # Binding neither ingests nor captures another event.
     else:
         assert await asyncio.to_thread(run_hook, pre_event_name, pre_payload) == 0
@@ -1084,7 +1252,7 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     # still have been recorded by the coordinator before that optional policy path.
     assert task_observation.observation_route_for_session(
         workspace=workspace,
-        yoetz_session_id=runtime.session_id,
+        finishup_session_id=runtime.session_id,
     ) == (session_commitment, runtime.task_id, True)
     frontier = await ledger.load_frontier()
     frozen = await ledger.freeze_case(
@@ -1136,16 +1304,49 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     assert len(captured_evidence_refs) == 1
     captured_coverage = frozen.case.coverage_by_ref[evidence_id(captured_evidence_refs[0][0])]
     assert captured_coverage.artifact_observation is ArtifactObservation.CONTENT_CAPTURED
-    assert captured_coverage.authorship_assurance is AuthorshipAssurance.SERVICE_AUTHENTICATED
+    assert captured_coverage.authorship_assurance is (
+        AuthorshipAssurance.HARNESS_OBSERVED
+        if host == "codex"
+        else AuthorshipAssurance.SERVICE_AUTHENTICATED
+    )
     assert captured_coverage.evidence_immutability is EvidenceImmutability.IMMUTABLE_SNAPSHOT
     assert PublicationChannel.HOOK_OBSERVED in captured_coverage.publication_channels
-    assert semantic.packet.coverage.known_gaps == ()
-    assert semantic.packet.coverage.check_types
-    excerpt = next(
-        item
-        for item in semantic.packet.targeted_excerpts
-        if item.content_digest == "sha256:" + hashlib.sha256(captured_bytes).hexdigest()
+    # This synthetic ledger records no session or statement, so the only packet limits are the
+    # disclosed missing task statement (issue #908); captured content itself adds none.
+    assert semantic.packet.coverage.known_gaps == (
+        "task_statement_not_supplied",
+        "task_statement_unavailable",
     )
+    assert semantic.packet.coverage.check_types
+    captured_ref = str(captured_evidence_refs[0][0])
+    observed_label = (
+        f"[FinishUP: observed output captured by a host hook (evidence {captured_ref})"
+    ).encode("ascii")
+    if content_kind is ObservationContentKind.TOOL_OUTPUT:
+        # n7 RC6c (#1108): a hook-captured tool output reaches the packet behind its observed
+        # label, which names the capture's own evidence id; the captured bytes follow unchanged.
+        # This is the host-level proof for each host's native post-tool hook.
+        excerpt_item = next(
+            item for item in semantic.items if item.item_id == f"excerpt-{captured_ref}"
+        )
+        assert excerpt_item.content.startswith(observed_label)
+        label_end = b"; not an agent-published result]\n"
+        assert (
+            excerpt_item.content[excerpt_item.content.index(label_end) + len(label_end) :]
+            == captured_bytes
+        )
+        excerpt = next(
+            item
+            for item in semantic.packet.targeted_excerpts
+            if item.excerpt_item_id == excerpt_item.item_id
+        )
+        assert excerpt.content_digest == excerpt_item.content_digest
+    else:
+        excerpt = next(
+            item
+            for item in semantic.packet.targeted_excerpts
+            if item.content_digest == "sha256:" + hashlib.sha256(captured_bytes).hexdigest()
+        )
     assert excerpt.content_visibility == "available"
     assert "unpaired_event" not in semantic.packet.coverage.known_gaps
     prepared = semantic_case_to_prepared_payload(
@@ -1154,6 +1355,10 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
     )
     assert marker.decode("utf-8") in prepared.decode("utf-8")
     assert content_digest.encode("ascii") in prepared
+    # The label reaches the prepared provider payload too, and only for a captured tool output.
+    assert (observed_label.decode("ascii") in prepared.decode("utf-8")) is (
+        content_kind is ObservationContentKind.TOOL_OUTPUT
+    )
 
     reopened_db, reopened_ledger, reopened_runtime = _reopen_runtime(tmp_path, runtime)
     try:
@@ -1393,9 +1598,9 @@ async def test_native_manifest_survives_preappend_cancellation_and_structural_re
         reopened_observation = cast(SqliteObservationStore, reopened_runtime.observation)
         reopened_observation.record_workspace_session_route(
             workspace=workspace,
-            yoetz_session_id=reopened_runtime.session_id,
-            yoetz_task_id=reopened_runtime.task_id,
-            yoetz_writer_id=cast(str, reopened_runtime.writer_id),
+            finishup_session_id=reopened_runtime.session_id,
+            finishup_task_id=reopened_runtime.task_id,
+            finishup_writer_id=cast(str, reopened_runtime.writer_id),
             codex_session_commitment=session_commitment,
             bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
         )
@@ -1503,7 +1708,7 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
         logical_identity=observation_content_identity(structural_request.envelope),
     )
     assert pending_ticket is not None
-    assert pending_ticket.yoetz_session_id == predecessor_session
+    assert pending_ticket.finishup_session_id == predecessor_session
     successor_session = _ids(IdKind.SESSION, 990)
     successor_writer = _ids(IdKind.WRITER, 991)
     successor_runtime = replace(runtime, session_id=successor_session, writer_id=successor_writer)
@@ -1514,9 +1719,9 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
         LifecycleMapping(
             mapping_version=current_mapping.mapping_version,
             codex_session_id=current_mapping.codex_session_id,
-            yoetz_task_id=runtime.task_id,
-            yoetz_session_id=successor_session,
-            yoetz_writer_id=successor_writer,
+            finishup_task_id=runtime.task_id,
+            finishup_session_id=successor_session,
+            finishup_writer_id=successor_writer,
             last_frontier=current_mapping.last_frontier,
         ),
         _state=tmp_path / "state",
@@ -1568,9 +1773,9 @@ async def test_native_pending_ticket_replays_through_same_task_successor(
 
     observation.record_workspace_session_route(
         workspace=workspace,
-        yoetz_session_id=successor_session,
-        yoetz_task_id=runtime.task_id,
-        yoetz_writer_id=successor_writer,
+        finishup_session_id=successor_session,
+        finishup_task_id=runtime.task_id,
+        finishup_writer_id=successor_writer,
         codex_session_commitment=session_commitment,
         bound_at=Timestamp("2026-09-05T17:00:00.000Z"),
     )
@@ -1754,7 +1959,7 @@ async def test_native_ticket_from_unproven_session_cannot_lend_content(
     unproven_ticket = ObservationCaptureTicket(
         workspace_commitment=workspace,
         task_id=runtime.task_id,
-        yoetz_session_id=_ids(IdKind.SESSION, 993),
+        finishup_session_id=_ids(IdKind.SESSION, 993),
         session_commitment=structural_request.envelope.session_commitment,
         source=structural_request.envelope.source,
         source_identity=structural_request.envelope.source_identity,
@@ -1999,19 +2204,19 @@ async def test_ready_composition_route_loss_after_resolution_blocks_native_dispa
             self.delegate = delegate
             self.lost = False
 
-        def workspace_for_yoetz_session(self, session_id: str) -> str | None:
+        def workspace_for_finishup_session(self, session_id: str) -> str | None:
             if self.lost:
                 return None
-            return self.delegate.workspace_for_yoetz_session(session_id)
+            return self.delegate.workspace_for_finishup_session(session_id)
 
         def observation_route_for_session(
-            self, *, workspace: str, yoetz_session_id: str
+            self, *, workspace: str, finishup_session_id: str
         ) -> tuple[str, str, bool] | None:
             if self.lost:
                 return None
             return self.delegate.observation_route_for_session(
                 workspace=workspace,
-                yoetz_session_id=yoetz_session_id,
+                finishup_session_id=finishup_session_id,
             )
 
         def __getattr__(self, name: str) -> object:
@@ -2078,7 +2283,7 @@ async def test_unreadable_native_capture_degrades_without_semantic_content(tmp_p
     )
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
         return handle_claude_observe(
@@ -2111,7 +2316,6 @@ async def test_unreadable_native_capture_degrades_without_semantic_content(tmp_p
             "tool_name": "Bash",
             "tool_use_id": "unreadable-tool-1",
             "tool_response": "unreadable-native-capture-marker",
-            "exit_status": 0,
         },
     )
     _pre_request, _capture_request, structural_request = _assert_native_handoff_requests(
@@ -2179,7 +2383,7 @@ async def test_disabled_native_content_never_enters_service_request(tmp_path: Pa
     local.disable_content_capture(workspace, profile)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     payload = {
         "hook_event_name": "PostToolUse",
@@ -2187,7 +2391,6 @@ async def test_disabled_native_content_never_enters_service_request(tmp_path: Pa
         "tool_name": "Bash",
         "tool_use_id": "disabled-tool-1",
         "tool_response": "must-not-be-captured",
-        "exit_status": 0,
     }
 
     def run_hook() -> int:
@@ -2222,8 +2425,8 @@ async def test_service_recovers_unknown_inventory_without_a_fresh_native_event(
 ) -> None:
     """A rejected failed-command hook must not be the only path to inventory repair."""
 
-    from yoetz.application.observation_drain import ObservationOutboxSweeper
-    from yoetz.domain.observation import ObservationCaptureBacklog
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.domain.observation import ObservationCaptureBacklog
 
     profile = CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
     (
@@ -2264,7 +2467,6 @@ async def test_service_recovers_unknown_inventory_without_a_fresh_native_event(
                 "tool_name": "Bash",
                 "tool_use_id": "rejected-before-recovery",
                 "error": "synthetic failed command",
-                "exit_status": 1,
             },
         )
         == 0
@@ -2294,7 +2496,6 @@ async def test_service_recovers_unknown_inventory_without_a_fresh_native_event(
                     "tool_name": "Bash",
                     "tool_use_id": "accepted-after-recovery",
                     "tool_response": "capture-recovery-marker-695",
-                    "exit_status": 1,
                 },
             )
             == 0
@@ -2306,3 +2507,774 @@ async def test_service_recovers_unknown_inventory_without_a_fresh_native_event(
     finally:
         sweeper.close()
         coordinator.close()
+
+
+def _competing_session(
+    host: str, project: str, outputs: int
+) -> list[tuple[str, dict[str, object]]]:
+    """One early planted edit followed by many large captured tool outputs, per host shape."""
+
+    pad = "log line " * 450  # ~4 KiB of ordinary tool output per call
+    events: list[tuple[str, dict[str, object]]] = []
+    if host == "codex":
+        base: dict[str, object] = {
+            "session_id": "codex-competition",
+            "turn_id": "turn-1",
+            "cwd": project,
+            "model": "gpt-5.5-codex",
+            "permission_mode": "default",
+        }
+        patch = cast(str, _with_project(_PLANTED_PATCH, project))
+        events.append(
+            (
+                "PostToolUse",
+                {
+                    **base,
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "apply_patch",
+                    "tool_use_id": "call-edit",
+                    "tool_input": {"command": patch},
+                    "tool_response": "Exit code: 0\nWall time: 0.1 seconds\nOutput:\n"
+                    f"Success. Updated the following files:\nM {project}/module.py\n",
+                },
+            )
+        )
+        for index in range(outputs):
+            # Codex 0.157.x states the exit only inside ``tool_response`` (the nested
+            # ``exec_command`` result recorded in the rollout, OUT-001); it never sends a
+            # top-level ``exit_status`` (#910).
+            events.append(
+                (
+                    "PostToolUse",
+                    {
+                        **base,
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "exec_command",
+                        "tool_use_id": f"call-out-{index}",
+                        "tool_input": {"cmd": f"pytest -q -k case{index}"},
+                        "tool_response": json.dumps(
+                            {
+                                "chunk_id": f"c{index:05x}",
+                                "wall_time_seconds": 0.5,
+                                "exit_code": 0,
+                                "original_token_count": 900,
+                                "output": f"{index} {pad}",
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                )
+            )
+        return events
+    if host == "claude":
+        base = {"session_id": "claude-competition", "cwd": project}
+        events.append(
+            (
+                "PostToolUse",
+                {
+                    **base,
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "Edit",
+                    "tool_use_id": "toolu-edit",
+                    "tool_input": _with_project(_CLAUDE_EDIT_INPUT, project),
+                    "tool_response": {
+                        "filePath": f"{project}/module.py",
+                        "originalFile": "old()\n",
+                        "structuredPatch": _STRUCTURED_PATCH,
+                    },
+                },
+            )
+        )
+        for index in range(outputs):
+            events.append(
+                (
+                    "PostToolUse",
+                    {
+                        **base,
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": f"toolu-out-{index}",
+                        "tool_input": {"command": f"pytest -q -k case{index}"},
+                        "tool_response": {
+                            "stdout": f"{index} {pad}",
+                            "stderr": "",
+                            "interrupted": False,
+                        },
+                    },
+                )
+            )
+        return events
+    base = {"conversation_id": "cursor-competition", "workspace_roots": ()}
+    events.append(
+        (
+            "postToolUse",
+            {
+                **base,
+                "hook_event_name": "postToolUse",
+                "tool_name": "Write",
+                "tool_use_id": "cursor-edit",
+                "tool_input": _with_project(_CURSOR_WRITE_INPUT, project),
+                "tool_output": '{"success":true}',
+            },
+        )
+    )
+    for index in range(outputs):
+        events.append(
+            (
+                "postToolUse",
+                {
+                    **base,
+                    "hook_event_name": "postToolUse",
+                    "tool_name": "Shell",
+                    "tool_use_id": f"cursor-out-{index}",
+                    "tool_input": {"command": f"pytest -q -k case{index}"},
+                    "tool_output": canonical_encode(
+                        {"exitCode": 0, "stdout": f"{index} {pad}"}
+                    ).decode(),
+                },
+            )
+        )
+    return events
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host", ("codex", "claude", "cursor"))
+@pytest.mark.parametrize("later_structural_events", (0, 300))
+async def test_early_planted_edit_outranks_many_captured_outputs_in_the_packet(
+    tmp_path: Path, host: str, later_structural_events: int
+) -> None:
+    """#883: an early edit hunk must reach the check packet ahead of later tool output."""
+
+    profile = {
+        "codex": None,
+        "claude": CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+        "cursor": CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+    }[host]
+    raw_session = f"{host}-competition"
+    codex_session_id = raw_session if host == "codex" else f"{host}:{raw_session}"
+    (
+        project,
+        workspace,
+        session_commitment,
+        local,
+        task_observation,
+        ledger,
+        runtime,
+        _coordinator,
+        _client,
+        connect,
+    ) = await _pipeline(
+        tmp_path,
+        codex_session_id=codex_session_id,
+        profile=profile,
+        install_mapping=host != "cursor",
+    )
+
+    def run_async(factory: Callable[[], Awaitable[object]]) -> object:
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
+
+    def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
+        stdin = canonical_encode(cast(CanonicalJsonValue, payload))
+        common = {
+            "event_name": event_name,
+            "stdin_bytes": stdin,
+            "workspace": str(project),
+            "_state": tmp_path / "state",
+            "stdout": io.BytesIO(),
+            "connect": cast(object, connect),
+            "run_async": run_async,
+        }
+        if host == "codex":
+            return handle_observe(**common, source=ObservationSource.CODEX_HOOK)  # type: ignore[arg-type]
+        if host == "claude":
+            return handle_claude_observe(**common, observation_profile=profile)  # type: ignore[arg-type]
+        return handle_cursor_observe(**common, observation_profile=profile)  # type: ignore[arg-type]
+
+    if host == "cursor":
+        start_payload = {
+            "conversation_id": raw_session,
+            "tool_name": "start",
+            "mcp_server_name": "finishup",
+            "result_json": canonical_encode(
+                {
+                    "isError": False,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": canonical_encode(
+                                {
+                                    "ok": True,
+                                    "task_id": runtime.task_id,
+                                    "session_id": runtime.session_id,
+                                    "writer_id": runtime.writer_id,
+                                }
+                            ).decode(),
+                        }
+                    ],
+                }
+            ).decode(),
+        }
+        assert await asyncio.to_thread(run_hook, "afterMCPExecution", start_payload) == 0
+
+    events = _competing_session(host, str(project.resolve()), outputs=20)
+    for event_name, payload in events:
+        assert await asyncio.to_thread(run_hook, event_name, payload) == 0
+
+    envelopes = task_observation.list_envelopes_for_session(workspace, session_commitment)
+    assert sum(1 for item in envelopes if item.content_object_refs) == 21
+    # Exercise real SQLite retention, not a mocked latest-window lookup. Captured
+    # edit objects and ledger evidence outlive routine observation traffic.
+    last = envelopes[-1]
+    for index in range(later_structural_events):
+        noise = replace(
+            last,
+            source_identity=f"hook:retention-noise-{index}",
+            cursor=replace(
+                last.cursor,
+                event_position=last.cursor.event_position + index + 1,
+                byte_position=last.cursor.byte_position + index + 1,
+            ),
+            content_object_refs=(),
+        )
+        admitted = await task_observation.ingest(noise)
+        assert admitted.disposition is ObservationIngestDisposition.ACCEPTED
+    assert len(task_observation.list_envelopes(workspace)) <= 256
+    frontier = await ledger.load_frontier()
+    frozen = await ledger.freeze_case(
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        frontier.sequence,
+        _ids(IdKind.REQUEST, 6),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime,
+        frozen=frozen,
+        workspace_commitment=workspace,
+        local_observation=local,
+    )
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000006",
+        frozen_case=frozen.case,
+        dependency_digest=frozen.lease.dependency_digest,
+        findings=(),
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        # The 16-excerpt Expanded preset, so twenty captured outputs still exceed the count cap
+        # (the 1.2.0 preset carries 64 excerpts since #907 Phase 1b).
+        review_selection=ReviewSelectionPolicy.for_profile(
+            ReviewContextProfile.EXPANDED, preset_version="1.1.0"
+        ),
+        policy_id="research-evidence",
+        policy_version="0.1.0",
+        captured_content=resolved.content,
+        captured_content_scope=resolved.scope,
+        captured_content_gaps=resolved.gaps,
+    )
+    prepared = semantic_case_to_prepared_payload(
+        semantic, {item.item_id for item in semantic.items}
+    ).decode("utf-8")
+    # The planted defect hunk reaches the packet although later tool output exceeds the caps.
+    assert "planted_edit_bug" in prepared
+    assert "edit outcome: applied" in prepared or 'edit_outcome\\":\\"applied' in prepared
+    # The first admitted excerpt is the edit, and no absolute project locator is disclosed.
+    first = semantic.packet.targeted_excerpts[0]
+    assert first.source_kind == "diff"
+    assert str(project.resolve()) not in prepared
+    # Competing output still exceeds the caps, and that loss stays disclosed.
+    assert "content_unselected" in semantic.packet.coverage.known_gaps
+
+
+@pytest.mark.anyio
+async def test_codex_code_mode_and_shell_edits_reach_the_packet(tmp_path: Path) -> None:
+    """Codex 0.157.1 code mode: nested apply_patch, shell apply_patch and heredoc writes."""
+
+    raw_session = "codex-code-mode"
+    (
+        project,
+        workspace,
+        _session_commitment,
+        local,
+        _task_observation,
+        ledger,
+        runtime,
+        _coordinator,
+        _client,
+        connect,
+    ) = await _pipeline(tmp_path, codex_session_id=raw_session, profile=None)
+    root = str(project.resolve())
+
+    def run_async(factory: Callable[[], Awaitable[object]]) -> object:
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
+
+    def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
+        return handle_observe(
+            event_name=event_name,
+            stdin_bytes=canonical_encode(cast(CanonicalJsonValue, payload)),
+            workspace=str(project),
+            _state=tmp_path / "state",
+            stdout=io.BytesIO(),
+            connect=cast(object, connect),  # type: ignore[arg-type]
+            run_async=run_async,
+            source=ObservationSource.CODEX_HOOK,
+        )
+
+    base: dict[str, object] = {
+        "session_id": raw_session,
+        "turn_id": "turn-1",
+        "cwd": root,
+        "model": "gpt-5.5-codex",
+        "permission_mode": "default",
+    }
+    nested_patch = (
+        f"*** Begin Patch\n*** Update File: {root}/src/kea/build.ts\n@@\n"
+        "-    throw new Error(`[KEA] Circular build detected.`)\n"
+        "+    throw new Error(`planted_nested_bug`)\n*** End Patch"
+    )
+    shell_patch = (
+        "apply_patch <<'EOF'\n*** Begin Patch\n"
+        f"*** Update File: {root}/src/kea/context.ts\n@@\n"
+        "-      debug: false,\n+      debug: planted_shell_patch_bug,\n*** End Patch\nEOF"
+    )
+    heredoc_write = (
+        "cat > tests/test_planted.py <<'PY'\nassert planted_heredoc_bug()\nPY\n"
+        "python -m pytest -q tests/test_planted.py"
+    )
+    events: list[tuple[str, dict[str, object]]] = [
+        # Nested ``tools.apply_patch`` inside a code-mode ``exec`` cell: Pre and Post fire.
+        (
+            "PreToolUse",
+            {
+                **base,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "apply_patch",
+                "tool_use_id": "nested-1",
+                "tool_input": {"command": nested_patch},
+            },
+        ),
+        (
+            "PostToolUse",
+            {
+                **base,
+                "hook_event_name": "PostToolUse",
+                "tool_name": "apply_patch",
+                "tool_use_id": "nested-1",
+                "tool_input": {"command": nested_patch},
+                "tool_response": "Exit code: 0\nWall time: 0 seconds\nOutput:\n"
+                f"Success. Updated the following files:\nM {root}/src/kea/build.ts\n",
+            },
+        ),
+        # Shell ``apply_patch`` through ``tools.exec_command``: intercepted, Pre only.
+        (
+            "PreToolUse",
+            {
+                **base,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "nested-2",
+                "tool_input": {"command": shell_patch},
+            },
+        ),
+        # Heredoc whole-file write through ``tools.exec_command``.
+        (
+            "PreToolUse",
+            {
+                **base,
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "nested-3",
+                "tool_input": {"command": heredoc_write},
+            },
+        ),
+        (
+            "PostToolUse",
+            {
+                **base,
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "nested-3",
+                "tool_input": {"command": heredoc_write},
+                "tool_response": "1 passed in 0.01s\n",
+            },
+        ),
+    ]
+    for event_name, payload in events:
+        assert await asyncio.to_thread(run_hook, event_name, payload) == 0
+
+    frontier = await ledger.load_frontier()
+    frozen = await ledger.freeze_case(
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        frontier.sequence,
+        _ids(IdKind.REQUEST, 7),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime,
+        frozen=frozen,
+        workspace_commitment=workspace,
+        local_observation=local,
+    )
+    semantic = build_semantic_case(
+        case_id="cas_10000000-0000-4000-8000-000000000007",
+        frozen_case=frozen.case,
+        dependency_digest=frozen.lease.dependency_digest,
+        findings=(),
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        policy_id="research-evidence",
+        policy_version="0.1.0",
+        captured_content=resolved.content,
+        captured_content_scope=resolved.scope,
+        captured_content_gaps=resolved.gaps,
+    )
+    prepared = semantic_case_to_prepared_payload(
+        semantic, {item.item_id for item in semantic.items}
+    ).decode("utf-8")
+    for marker in ("planted_nested_bug", "planted_shell_patch_bug", "planted_heredoc_bug"):
+        assert marker in prepared, marker
+    assert prepared.count("planted_nested_bug") == 1, "nested patch captured once"
+    assert "*** Update File: src/kea/build.ts" in prepared
+    assert root not in prepared
+
+
+@pytest.mark.anyio
+async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) -> None:
+    """#910: Codex hook and rollout outcome facts become ledger results; none is invented.
+
+    A Bash text response states no outcome (n7 RC1): its exit comes from the rollout item. Every
+    OUT-001 hook shape runs through the real hook handler, outbox, coordinator and SQLite
+    ledger. The rollout's completed tool items are handed to the coordinator directly, bypassing
+    the reader's delivery gate (covered in ``test_codex_code_mode_replay``). One of them shares its
+    id with an outcome-less hook call, the case that gate delivers in a hooked session, so the
+    stream failure corrects that ``unknown`` result.
+    """
+
+    from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
+    from finishup.adapters.integrations.observation_local import (
+        STREAM_MAPPING_VERSION,
+        self_observation_deliverable,
+    )
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.observation import ObservationCursor, ObservationEnvelope
+    from fixture_loader import load_fixture_json
+
+    raw_session = "codex-outcomes"
+    (
+        project,
+        workspace,
+        session_commitment,
+        local,
+        _task_observation,
+        ledger,
+        runtime,
+        coordinator,
+        _client,
+        connect,
+    ) = await _pipeline(tmp_path, codex_session_id=raw_session, profile=None)
+    case = cast(
+        dict[str, object],
+        load_fixture_json("observations/codex-post-tool-outcomes-0.157.1.case.json"),
+    )
+    hook_inputs = cast(dict[str, dict[str, object]], cast(dict[str, object], case["input"])["hook"])
+    hook_expected = cast(
+        dict[str, dict[str, object]], cast(dict[str, object], case["expected"])["hook"]
+    )
+
+    def run_async(factory: Callable[[], Awaitable[object]]) -> object:
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
+
+    def run_hook(event_name: str, payload: Mapping[str, object]) -> int:
+        return handle_observe(
+            event_name=event_name,
+            stdin_bytes=canonical_encode(cast(CanonicalJsonValue, payload)),
+            workspace=str(project),
+            _state=tmp_path / "state",
+            stdout=io.BytesIO(),
+            connect=cast(object, connect),  # type: ignore[arg-type]
+            run_async=run_async,
+            source=ObservationSource.CODEX_HOOK,
+        )
+
+    for variant in sorted(hook_inputs):
+        post = {
+            **cast(dict[str, object], hook_inputs[variant]["payload"]),
+            "session_id": raw_session,
+            "cwd": str(project.resolve()),
+        }
+        pre = {key: value for key, value in post.items() if key != "tool_response"}
+        pre["hook_event_name"] = "PreToolUse"
+        assert await asyncio.to_thread(run_hook, "PreToolUse", pre) == 0
+        assert await asyncio.to_thread(run_hook, "PostToolUse", post) == 0
+
+    # A hook drains its own outbox row within the host deadline; on a slow runner a row can remain
+    # for the service sweeper, which is the production path that finishes it. Drain it here.
+    sweeper = ObservationOutboxSweeper(
+        local, coordinator, capture_recovery=coordinator.recover_capture_inventory
+    )
+    try:
+        for _attempt in range(8):
+            if local.pending_outbox_count(workspace) == 0:
+                break
+            await sweeper.sweep()
+    finally:
+        sweeper.close()
+    assert local.pending_outbox_count(workspace) == 0
+    task_store = cast(SqliteObservationStore, runtime.observation)
+    assert task_store.list_pending_capture_tickets(runtime.task_id) == ()
+
+    hook_posts = {
+        cast(str, envelope.structural_payload["tool_call_id"]): envelope
+        for envelope in local.list_envelopes(workspace)
+        if envelope.event_kind == "PostToolUse" and envelope.source is ObservationSource.CODEX_HOOK
+    }
+    generation = next(iter(hook_posts.values())).cursor.source_generation
+
+    # The session stream: the recorded rollout items, plus one completed command whose item id is
+    # the outcome-less hook call's id (an id join), which must correct that ``unknown`` result.
+    rollout = cast(dict[str, object], cast(dict[str, object], case["input"])["rollout"])
+    lines = list(cast(list[dict[str, object]], rollout["lines"]))
+    joined = json.loads(json.dumps(lines[1]))
+    joined["payload"]["item"]["id"] = "call_910_shell_running"
+    lines.append(joined)
+    rollout_path = tmp_path / "rollout.jsonl"
+    rollout_path.write_bytes(
+        b"".join(json.dumps(line, separators=(",", ":")).encode() + b"\n" for line in lines)
+    )
+    reader = SessionStreamReader(
+        session_commitment=session_commitment,
+        profile=None,
+        cursor=ObservationCursor(
+            source_generation=generation,
+            byte_position=0,
+            event_position=0,
+            last_source_commitment=_ZERO_DIGEST.replace("sha256:", "hmac-sha256:"),
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+        key_material=local.key_material(),
+    )
+    stream = [
+        item
+        for item in reader.advance(rollout_path).envelopes
+        if item.event_kind == "item_completed"
+    ]
+    assert len(stream) == 6
+    for envelope in stream:
+        accepted = await coordinator.ingest_request(
+            ObservationIngestRequest(codex_session_id=raw_session, envelope=envelope)
+        )
+        assert accepted.disposition in {
+            ObservationIngestDisposition.ACCEPTED,
+            ObservationIngestDisposition.DUPLICATE,
+        }, accepted.reason
+
+    frontier = await ledger.load_frontier()
+    frozen = await ledger.freeze_case(
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        frontier.sequence,
+        _ids(IdKind.REQUEST, 8),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    results = frozen.case.projection.results
+
+    def ledger_result(
+        envelope: ObservationEnvelope,
+    ) -> tuple[ResultRecordedPayload, tuple[str, ...]] | None:
+        drafted = materialize_observation_envelope(envelope, task_id=runtime.task_id)
+        result_id = next(
+            item.draft.payload.result_id
+            for item in drafted.drafts
+            if type(item.draft.payload) is ResultRecordedPayload
+        )
+        record = results.get(result_id)
+        if record is None:
+            return None
+        assert record.payload is not None
+        return record.payload, frozen.case.coverage_by_ref[result_id].known_gaps
+
+    folded: set[str] = set()
+    for variant, facts in hook_expected.items():
+        call_id = cast(str, cast(dict[str, object], hook_inputs[variant]["payload"])["tool_use_id"])
+        recorded = ledger_result(hook_posts[call_id])
+        if not self_observation_deliverable("PostToolUse", hook_posts[call_id].structural_payload):
+            # A successful or outcome-less FinishUP read stays in the local store only (#564); the
+            # service already holds that call. A stated MCP failure is delivered.
+            assert recorded is None, variant
+            continue
+        assert recorded is not None, variant
+        payload, gaps = recorded
+        assert payload.outcome is ResultOutcome(cast(str, facts["outcome"])), variant
+        assert payload.exit_status == facts["exit_status"], variant
+        # #1001: the stream's corrected outcome for the running shell supersedes its unknown hook
+        # result, so the frozen case no longer carries that record's host_outcome_unavailable.
+        corrected = call_id == "call_910_shell_running"
+        expected_gap = bool(facts["host_outcome_unavailable"]) and not corrected
+        assert (HOST_OUTCOME_UNAVAILABLE_GAP in gaps) is expected_gap, variant
+        if hook_inputs[variant]["provenance"] != "constructed_control":
+            folded.update(gaps)
+    # On hook stdin a recorded Bash text shape is the command's own output (n7 RC1, #1105), so it
+    # states no outcome and carries the standing gap; every other recorded shape states its own.
+    outcome_less = {
+        variant
+        for variant, facts in hook_expected.items()
+        if hook_inputs[variant]["provenance"] != "constructed_control"
+        and facts["host_outcome_unavailable"] is True
+    }
+    assert outcome_less
+    for variant in outcome_less:
+        hook_payload = cast(dict[str, object], hook_inputs[variant]["payload"])
+        assert hook_payload["tool_name"] == "Bash", variant
+        assert type(hook_payload["tool_response"]) is str, variant
+    assert HOST_OUTCOME_UNAVAILABLE_GAP in folded
+
+    def stream_result(envelope: ObservationEnvelope) -> tuple[ResultOutcome, int | None]:
+        recorded = ledger_result(envelope)
+        assert recorded is not None
+        return recorded[0].outcome, recorded[0].exit_status
+
+    assert stream_result(stream[0]) == (ResultOutcome.FAILURE, 2)
+    assert stream_result(stream[1]) == (ResultOutcome.SUCCESS, 0)
+
+    running_record = ledger_result(hook_posts["call_910_shell_running"])
+    assert running_record is not None
+    running, running_gaps = running_record
+    assert running.outcome is ResultOutcome.UNKNOWN  # the hook row is never rewritten
+    # Superseded by the correction below for readers of the frozen case (#1001).
+    assert HOST_OUTCOME_UNAVAILABLE_GAP not in running_gaps
+    corrections = [
+        record.payload
+        for record in results.values()
+        if record.payload is not None
+        and record.payload.action_id == running.action_id
+        and record.payload.result_id != running.result_id
+    ]
+    assert [(item.outcome, item.exit_status) for item in corrections] == [
+        (ResultOutcome.FAILURE, 2)
+    ]
+
+
+@pytest.mark.anyio
+async def test_codex_image_result_reaches_the_ledger_as_digest_only_evidence(
+    tmp_path: Path,
+) -> None:
+    """#1013: an image tool result commits one digest-only evidence row with its result.
+
+    Review regression: the row's ``observation_captured`` provenance once failed the accepted
+    event's validation, which refused the whole post-event batch.
+    """
+
+    import base64
+    import hashlib
+    import struct
+    import zlib
+
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.domain.events import (
+        EvidenceContentAvailability,
+        EvidenceDigestProvenance,
+        EvidenceRecordedPayload,
+    )
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 3, 2, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00" + b"\x00" * 9))
+        + chunk(b"IEND", b"")
+    )
+    raw_session = "codex-image"
+    (
+        project,
+        workspace,
+        _session_commitment,
+        local,
+        _task_observation,
+        ledger,
+        runtime,
+        coordinator,
+        _client,
+        connect,
+    ) = await _pipeline(tmp_path, codex_session_id=raw_session, profile=None)
+
+    def run_async(factory: Callable[[], Awaitable[object]]) -> object:
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
+
+    for event in ("PreToolUse", "PostToolUse"):
+        payload: dict[str, object] = {
+            "session_id": raw_session,
+            "cwd": str(project.resolve()),
+            "turn_id": "turn-1",
+            "hook_event_name": event,
+            "tool_name": "view_image",
+            "tool_input": {"path": "out/render.png"},
+            "tool_use_id": "call-image-1",
+        }
+        if event == "PostToolUse":
+            payload["tool_response"] = [
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64," + base64.b64encode(png).decode(),
+                }
+            ]
+        code = await asyncio.to_thread(
+            handle_observe,
+            event_name=event,
+            stdin_bytes=canonical_encode(cast(CanonicalJsonValue, payload)),
+            workspace=str(project),
+            _state=tmp_path / "state",
+            stdout=io.BytesIO(),
+            connect=cast(object, connect),  # type: ignore[arg-type]
+            run_async=run_async,
+            source=ObservationSource.CODEX_HOOK,
+        )
+        assert code == 0
+    sweeper = ObservationOutboxSweeper(
+        local, coordinator, capture_recovery=coordinator.recover_capture_inventory
+    )
+    try:
+        for _attempt in range(8):
+            if local.pending_outbox_count(workspace) == 0:
+                break
+            await sweeper.sweep()
+    finally:
+        sweeper.close()
+    assert local.pending_outbox_count(workspace) == 0
+    assert local.quarantined_count(workspace) == 0
+
+    frontier = await ledger.load_frontier()
+    frozen = await ledger.freeze_case(
+        runtime.session_id,
+        cast(str, runtime.writer_id),
+        frontier.sequence,
+        _ids(IdKind.REQUEST, 9),
+        _ZERO_DIGEST,
+    )
+    assert isinstance(frozen, FrozenCase)
+    images = [
+        record.payload
+        for record in frozen.case.projection.evidence.values()
+        if type(record.payload) is EvidenceRecordedPayload
+        and record.payload.digest_binding is not None
+        and record.payload.digest_binding.content_availability
+        is EvidenceContentAvailability.DIGEST_ONLY
+        and record.payload.digest_binding.provenance
+        is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+    ]
+    assert len(images) == 1
+    (image,) = images
+    assert image.content_digest == "sha256:" + hashlib.sha256(png).hexdigest()
+    assert image.captured_object_id is None
+    linked = [
+        record.payload
+        for record in frozen.case.projection.results.values()
+        if record.payload is not None and image.evidence_id in record.payload.evidence_refs
+    ]
+    assert len(linked) == 1

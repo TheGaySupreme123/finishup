@@ -19,18 +19,19 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.events import ReceiptRecordedPayload, RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.events import ReceiptRecordedPayload, RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -46,7 +47,7 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptConclusion,
     ReceiptVersionSlice,
@@ -55,23 +56,24 @@ from yoetz.domain.receipts import (
     receipt_document_to_json,
     render_receipt_compact,
 )
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.control import ControlClientKind, ControlError, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.coverage import coverage_to_json
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.control import ControlClientKind, ControlError, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.coverage import coverage_to_json
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
     ReceiptRedactionProfile,
     ReceiptRequest,
     ReceiptResultModel,
+    ReceiptSuccessModel,
     RespondRequest,
     StatusFindingsPageModel,
     StatusRequest,
@@ -81,7 +83,7 @@ pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "7" * 64
 _WORKSPACE = "hmac-sha256:" + "8" * 64
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "receipts"
 
 
@@ -242,7 +244,7 @@ class _BlockingDocumentProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -276,6 +278,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -426,7 +429,7 @@ async def test_receipt_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.RECEIPT, receipt_wire, receipt)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
@@ -463,12 +466,19 @@ async def test_receipt_request_result_parity() -> None:
             }
         ),
     )
-    cli_projected = await app.project_result_for_client(cli_context, cli_binding, receipt)
-    mcp_projected = await app.project_result_for_client(mcp_context, mcp_binding, receipt)
+    # This test compares disclosure, before the separately tested cursor presentation.
+    cli_projected = await app.project_result_for_client(
+        cli_context, cli_binding, receipt, _paginate=False
+    )
+    mcp_projected = await app.project_result_for_client(
+        mcp_context, mcp_binding, receipt, _paginate=False
+    )
     assert isinstance(cli_projected, ReceiptResultModel)
     assert isinstance(mcp_projected, ReceiptResultModel)
     assert cli_projected.root.ok is True
     assert mcp_projected.root.ok is True
+    assert isinstance(cli_projected.root, ReceiptSuccessModel)
+    assert isinstance(mcp_projected.root, ReceiptSuccessModel)
 
     cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
     mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
@@ -601,10 +611,20 @@ async def test_receipt_wording_is_weaker_than_document() -> None:
     assert text_receipt.human_text is not None
     assert text_receipt.conclusion == json_receipt.conclusion
 
-    forbidden = ("fully verified", "all work is complete", "proof of correctness", "passed")
+    forbidden = ("fully verified", "all work is complete", "passed")
     lowered = text_receipt.human_text.lower()
     for phrase in forbidden:
         assert phrase not in lowered
+    # "proof of correctness" may appear only as the honest negation ("... is not proof of
+    # correctness"), the rule of tests/conformance/honesty/test_receipt_wording.py. A receipt with
+    # no declared gap now reaches that sentence (#1041: a local-only check by request on a route
+    # that requires no review discloses no missing review).
+    phrase = "proof of correctness"
+    start = lowered.find(phrase)
+    while start != -1:
+        context = lowered[max(0, start - 60) : start + 40]
+        assert "not " in lowered[max(0, start - 16) : start], context
+        start = lowered.find(phrase, start + 1)
     # The wording never claims a stronger conclusion than the canonical document: an
     # ``unresolved_findings_remain`` receipt must say so, not "clear" or "resolved".
     assert "unresolved" in lowered
@@ -665,7 +685,12 @@ def test_reviewed_receipt_vectors_match_exact_document_and_compact_bytes(
     assert canonical_encode(cast(JsonValue, encoded)) == canonical_encode(cast(JsonValue, wire))
     assert canonical_digest(cast(JsonValue, encoded)) == expected_digest
     compact = render_receipt_compact(document)
-    assert compact == expected_compact
+    # The reviewed vectors are pre-rename receipts (``package_name: yoetz``) with their pre-rename
+    # rendering. The stored document is unchanged; only the product name the renderer prints is
+    # the current one (ADR-048).
+    assert compact == expected_compact.replace(
+        "Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1
+    )
 
 
 def test_wrapper_that_upgrades_receipt_conclusion_fails() -> None:
@@ -674,7 +699,7 @@ def test_wrapper_that_upgrades_receipt_conclusion_fails() -> None:
 
     from dataclasses import replace
 
-    from yoetz.domain.receipts import ReceiptConclusion
+    from finishup.domain.receipts import ReceiptConclusion
 
     wire = _variant("unresolved-findings.case.json", "mixed_open_responses")
     document = receipt_document_from_json(wire)
@@ -796,6 +821,7 @@ async def test_receipt_context_uses_same_availability_snapshot() -> None:
         "at_frontier": str(checked.result_frontier.sequence),
     }
     status = await app.status(StatusRequest.model_validate(status_wire))
+    assert isinstance(status, StatusInternalResult)
     status_page = cast(StatusFindingsPageModel, status.page)
     status_item = next(item for item in status_page.items if item.finding_id == finding.finding_id)
     assert canonical_encode(
@@ -895,8 +921,8 @@ async def test_receipt_replay_integrity_mismatch_is_classified_at_application_si
 ) -> None:
     """Each bounded replay-binding mismatch retains an application-site diagnostic identity."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.observability.diagnostics import lookup_diagnostic_records
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     app, runtime, _projection = _build_app(seed_offset=25)

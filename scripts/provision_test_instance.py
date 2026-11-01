@@ -1,23 +1,28 @@
-"""Provision, inspect, and dispose an independent Yoetz test instance (issue #604).
+"""Provision, inspect, and dispose an independent FinishUP test instance (issue #604).
 
 One instance is one directory tree beneath a short, owner-private base outside every repository:
 
     <base>/<tag>/dist/       the wheel built from the exact requested revision
     <base>/<tag>/runtime/    a virtual environment holding only that wheel (pinned to the root)
-    <base>/<tag>/state/      the YOETZ_ISOLATED_ROOT of that instance (config, data, state, run,
+    <base>/<tag>/state/      the FINISHUP_ISOLATED_ROOT of that instance (config, data, state, run,
                              cache, log) sealed by the instance-identity marker
     <base>/<tag>/provenance.json   digest-only record of what was built and from where
 
 ``create`` builds the wheel with ``uv build --no-sources`` from the exact revision (refusing a
 modified working tree unless ``--allow-dirty``), installs it into the runtime with ``uv``, and lets
-the snapshot's own ``yoetz instance create --bind-runtime`` seal the root. Because the runtime is
-pinned, ``<base>/<tag>/runtime/bin/yoetz`` resolves that root even when a host or shell drops the
+the snapshot's own ``finishup instance create --bind-runtime`` seal the root. Because the runtime is
+pinned, ``<base>/<tag>/runtime/bin/finishup`` resolves that root even when a host or shell drops the
 environment variable, and never the everyday installation. ``dispose`` stops only the service
-holding that root's singleton, removes the root through ``yoetz instance dispose``, then removes
+holding that root's singleton, removes the root through ``finishup instance dispose``, then removes
 the runtime and wheel. Repeating ``dispose`` is a no-op. Nothing here touches the everyday install,
 host configuration, or vaults.
 
-This is contributor tooling; the shipped product surface is ``yoetz instance``. Documented in
+An instance built from a revision before the FinishUP rename ships only the legacy ``yoetz``
+launcher and package and reads ``YOETZ_ISOLATED_ROOT`` (ADR-028 upgrade tests). Every command
+probes ``bin/finishup`` first, then ``bin/yoetz``, and drives whichever package that launcher
+belongs to; snapshot commands never inherit either variable prefix (ADR-048).
+
+This is contributor tooling; the shipped product surface is ``finishup instance``. Documented in
 ``docs/runbooks/test-instances.md``.
 """
 
@@ -28,6 +33,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -37,10 +43,17 @@ from pathlib import Path
 from typing import Final, cast
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[1]
+# Frozen legacy identifier (ADR-048): existing instances' provenance.json carries this schema tag.
 _PROVENANCE_SCHEMA: Final = "yoetz.test-instance-provenance/1"
 _DEFAULT_BASE: Final = Path.home() / ".yz-instances"
 _TAG_ALPHABET: Final = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 _VCS_MARKERS: Final = (".git", ".hg", ".svn", ".jj")
+# Launcher name -> the package it runs, FinishUP first. A pre-rename runtime has only the legacy
+# ``yoetz`` launcher and package; a runtime that ships both resolves to FinishUP (ADR-048).
+_RUNTIME_LAUNCHERS: Final = (("finishup", "finishup"), ("yoetz", "yoetz"))
+# Product variable prefixes a snapshot command must not inherit: FinishUP and legacy (ADR-048).
+_ENV_PREFIXES: Final = ("FINISHUP_", "YOETZ_")
+_ISOLATED_ROOT_ENV_NAMES: Final = ("FINISHUP_ISOLATED_ROOT", "YOETZ_ISOLATED_ROOT")
 
 
 class ProvisionError(Exception):
@@ -58,18 +71,36 @@ def _run(
     cwd: Path | None = None,
     timeout: int = 600,
 ) -> subprocess.CompletedProcess[bytes]:
+    # umask 022 so a runtime or interpreter uv creates here is never group/world-writable,
+    # whatever the operator's umask (Ubuntu and Fedora default to 0002).
     return subprocess.run(  # noqa: S603 - fixed argv assembled from validated inputs
-        args, capture_output=True, env=env, cwd=cwd, timeout=timeout, check=False
+        args, capture_output=True, env=env, cwd=cwd, timeout=timeout, check=False, umask=0o022
     )
 
 
 def _clean_env(home: Path | None = None) -> dict[str, str]:
-    """The environment a snapshot command runs under: no YOETZ_ variables leak in."""
+    """The environment a snapshot command runs under: no FINISHUP_ or YOETZ_ variables leak in."""
 
-    env = {name: value for name, value in os.environ.items() if not name.startswith("YOETZ_")}
+    env = {name: value for name, value in os.environ.items() if not name.startswith(_ENV_PREFIXES)}
     if home is not None:
         env["HOME"] = str(home)
     return env
+
+
+def _runtime_launcher(runtime: Path) -> tuple[Path, str] | None:
+    """Return the runtime's launcher and its package: ``bin/finishup``, else ``bin/yoetz``."""
+
+    for name, package in _RUNTIME_LAUNCHERS:
+        launcher = runtime / "bin" / name
+        if launcher.is_file():
+            return launcher, package
+    return None
+
+
+def _environment_export(root: Path) -> str:
+    """Both isolation-root spellings with one value, so either launcher generation isolates."""
+
+    return " ".join(f"{name}={root}" for name in _ISOLATED_ROOT_ENV_NAMES)
 
 
 def _digest_bytes(path: Path) -> str:
@@ -162,30 +193,65 @@ def _build_wheel(source: Path, dist: Path) -> Path:
     return wheels[0]
 
 
+# Mirrors finishup.adapters.release_runtime.HASH_BYTECODE_EPOCH: any non-empty SOURCE_DATE_EPOCH
+# makes uv's --compile-bytecode write checked-hash pycs, which the retained runtime reuses.
+_HASH_BYTECODE_EPOCH: Final = "315532800"
+
+
+def _hash_bytecode_env(env: dict[str, str]) -> dict[str, str]:
+    """The install child's environment only; an epoch the operator exports is kept."""
+
+    install_env = dict(env)
+    if not install_env.get("SOURCE_DATE_EPOCH"):
+        install_env["SOURCE_DATE_EPOCH"] = _HASH_BYTECODE_EPOCH
+    return install_env
+
+
 def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str]) -> Path:
     created = _run(["uv", "venv", "--python", python, str(runtime)], env=env)
     if created.returncode != 0:
         sys.stderr.write(created.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_venv_failed")
     interpreter = runtime / "bin" / "python"
-    args = ["uv", "pip", "install", "--python", str(interpreter), str(wheel)]
-    installed = _run([*args[:2], "--offline", *args[2:]], env=env)
+    args = ["uv", "pip", "install", "--compile-bytecode", "--python", str(interpreter), str(wheel)]
+    install_env = _hash_bytecode_env(env)
+    installed = _run([*args[:2], "--offline", *args[2:]], env=install_env)
     if installed.returncode != 0:
-        installed = _run(args, env=env)
+        installed = _run(args, env=install_env)
     if installed.returncode != 0:
         sys.stderr.write(installed.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_install_failed")
-    launcher = runtime / "bin" / "yoetz"
-    if not launcher.is_file():
+    found = _runtime_launcher(runtime)
+    if found is None:
         raise _fail("runtime_launcher_missing")
-    return launcher
+    _remove_foreign_write(runtime)
+    return found[0]
+
+
+def _remove_foreign_write(runtime: Path) -> None:
+    """Clear group/other write on the runtime this script just created.
+
+    uv may hard-link package files from a cache written under a looser umask; the runtime
+    refuses anything another account can write, so the copy is made owner-writable only.
+    Links are never followed: the base interpreter is the operator's to repair.
+    """
+
+    for path in (runtime, *runtime.rglob("*")):
+        facts = path.lstat()
+        if stat.S_ISLNK(facts.st_mode):
+            continue
+        mode = stat.S_IMODE(facts.st_mode)
+        if mode & 0o022:
+            path.chmod(mode & ~0o022)
 
 
 def _snapshot_command(launcher: Path, args: list[str], env: dict[str, str]) -> dict[str, object]:
     result = _run([str(launcher), *args, "--json"], env=env)
     if result.returncode != 0:
         sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
-        raise _fail(f"snapshot_command_failed: yoetz {' '.join(args)} exited {result.returncode}")
+        raise _fail(
+            f"snapshot_command_failed: {launcher.name} {' '.join(args)} exited {result.returncode}"
+        )
     parsed = json.loads(result.stdout)
     if not isinstance(parsed, dict):
         raise _fail("snapshot_command_invalid_output")
@@ -213,7 +279,7 @@ def command_create(args: argparse.Namespace) -> dict[str, object]:
     tag = _validate_tag(args.tag)
     checkout = Path(args.checkout).expanduser().resolve()
     if not (checkout / "pyproject.toml").is_file():
-        raise _fail("checkout_invalid: --checkout must be a Yoetz source checkout")
+        raise _fail("checkout_invalid: --checkout must be a FinishUP source checkout")
     base.mkdir(mode=0o700, exist_ok=True)
     os.chmod(base, 0o700)
     layout = _layout(base, tag)
@@ -282,17 +348,17 @@ def command_create(args: argparse.Namespace) -> dict[str, object]:
         **provenance,
         "launcher": str(launcher),
         "isolated_root": str(layout["state"]),
-        "environment_export": f"YOETZ_ISOLATED_ROOT={layout['state']}",
+        "environment_export": _environment_export(layout["state"]),
     }
 
 
 def command_status(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     provenance = _read_provenance(layout["provenance"])
-    launcher = layout["runtime"] / "bin" / "yoetz"
-    if provenance is None or not launcher.is_file():
+    found = _runtime_launcher(layout["runtime"])
+    if provenance is None or found is None:
         return {"tag": args.tag, "state": "absent"}
-    status = _snapshot_command(launcher, ["instance", "status"], _clean_env())
+    status = _snapshot_command(found[0], ["instance", "status"], _clean_env())
     return {"tag": args.tag, "state": "present", "provenance": provenance, "instance": status}
 
 
@@ -300,8 +366,8 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     if not layout["root"].exists():
         return {"tag": args.tag, "state": "absent", "disposed": False}
-    launcher = layout["runtime"] / "bin" / "yoetz"
-    disposer = [str(launcher)] if launcher.is_file() else [sys.executable, "-m", "yoetz"]
+    found = _runtime_launcher(layout["runtime"])
+    disposer = [str(found[0])] if found is not None else [sys.executable, "-m", "finishup"]
     dispose_args = [*disposer, "instance", "dispose", "--root", str(layout["state"]), "--json"]
     if args.retain_logs is not None:
         dispose_args += ["--retain-logs", str(Path(args.retain_logs).expanduser().resolve())]
@@ -319,9 +385,7 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
                 str(layout["runtime"] / "bin" / "python"),
                 "-I",
                 "-c",
-                "import json,sys; from pathlib import Path; "
-                "from yoetz.adapters.release_runtime import prune_release_runtimes; "
-                "print(json.dumps(prune_release_runtimes(Path(sys.prefix), wait_seconds=5.0)))",
+                _prune_bootstrap("finishup" if found is None else found[1]),
             ],
             env=_clean_env(),
             timeout=60,
@@ -336,6 +400,16 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
             raise _fail("runtime_in_use: close this instance's host sessions and retry disposal")
     shutil.rmtree(layout["root"])
     return {"tag": args.tag, "state": "removed", "disposed": True, "instance": outcome}
+
+
+def _prune_bootstrap(package: str) -> str:
+    """The retained-runtime cleanup, run with the package the instance's runtime ships."""
+
+    return (
+        "import json,sys; from pathlib import Path; "
+        f"from {package}.adapters.release_runtime import prune_release_runtimes; "
+        "print(json.dumps(prune_release_runtimes(Path(sys.prefix), wait_seconds=5.0)))"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

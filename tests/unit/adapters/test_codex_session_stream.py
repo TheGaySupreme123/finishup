@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,11 +21,12 @@ from builders.codex_rollout import (
     response_item,
     session_meta,
 )
-from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-from yoetz.adapters.importers.codex_rollout_jsonl import ROLLOUT_MAX_LINE_BYTES
-from yoetz.adapters.integrations import codex_session_stream as stream_module
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.codex_session_stream import (
+from builders.shell_write_vectors import VECTORS, ShellWriteVector
+from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+from finishup.adapters.importers.codex_rollout_jsonl import ROLLOUT_MAX_LINE_BYTES
+from finishup.adapters.integrations import codex_session_stream as stream_module
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.codex_session_stream import (
     CodexSessionStreamLocator,
     SessionStreamReader,
     default_stream_profile,
@@ -33,15 +35,15 @@ from yoetz.adapters.integrations.codex_session_stream import (
     should_trigger_stream_reconcile,
     stream_profile_from_id,
 )
-from yoetz.adapters.integrations.observation_admission import AdmissionPlan
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_admission import AdmissionPlan
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
-from yoetz.domain.host_lineage import host_lineage_from_envelope
-from yoetz.domain.observation import (
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+from finishup.domain.host_lineage import host_lineage_from_envelope
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -50,8 +52,8 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import ObservationMode
-from yoetz.domain.values import JsonObject
+from finishup.domain.observation_budget import AdmissionLossCause, ObservationMode
+from finishup.domain.values import JsonObject, Timestamp
 
 
 def test_source_file_identity_bounds_large_filesystem_integers() -> None:
@@ -103,6 +105,14 @@ def test_incremental_partial_line_then_complete(tmp_path: Path) -> None:
     advance = reader.advance(path)
     assert advance.envelopes == ()
     assert advance.partial_line.startswith(b'{"payload":')
+    # A tail Codex is still writing is held, not truncated (#1041): complete JSON without its
+    # newline, and a line cut mid-object, both wait for the next read.
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in advance.gaps
+    cut = tmp_path / "cut.jsonl"
+    cut.write_bytes(first[:-7])
+    held = _reader(session).advance(cut)
+    assert held.partial_line == first[:-7]
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in held.gaps
     path.write_bytes(first + b"\n")
     advance2 = reader.advance(path)
     assert len(advance2.envelopes) == 1
@@ -399,6 +409,40 @@ def test_reconcile_enqueues_recovered_envelopes_into_outbox(tmp_path: Path) -> N
     assert store.pending_outbox_count(workspace) == accepted
 
 
+def test_an_unfinished_tail_alone_records_no_loss_anywhere(tmp_path: Path) -> None:
+    """tb4n5: a line Codex is still writing is held, never a loss in the reconcile or the store."""
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "stream-unfinished-tail"
+    target = sessions / f"rollout-{session_id}.jsonl"
+    complete = encode_lines(session_meta(), response_item({"type": "message", "role": "user"}))
+    tail = encode_lines(response_item({"type": "message", "role": "assistant"}), terminated=False)
+    target.write_bytes(complete + tail[:-9])
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    result = reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    assert result["resolved"] is True
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in cast(tuple[str, ...], result["gaps"])
+    assert (
+        ObservationGapCode.TRUNCATED_PAYLOAD.value
+        not in store.status(ObservationStatusQuery(workspace)).gaps
+    )
+    assert store.local_retention(workspace) == {"dedup_fence": None, "envelope_ring": None}
+
+
 def test_reconcile_persists_unknown_event_before_advancing_cursor(tmp_path: Path) -> None:
     home = tmp_path / "codex-home"
     sessions = home / "sessions"
@@ -554,11 +598,11 @@ def test_oversized_continuation_survives_final_envelope_backpressure(
                 state: object,
                 plan: object,
                 incoming: object,
-            ) -> bool:
+            ) -> AdmissionLossCause:
                 del workspace_commitment, state, plan, incoming
-                return False
+                return AdmissionLossCause.QUEUE_COUNT
 
-            blocked.setattr(LocalObservationStore, "_selected_admission_plan_allowed", overflow)
+            blocked.setattr(LocalObservationStore, "_selected_admission_plan_refusal", overflow)
         failed = reconcile_session_stream(
             store,
             workspace_commitment=workspace,
@@ -946,11 +990,11 @@ def test_rotated_identity_retries_from_header_when_first_envelope_is_blocked(
                 state: object,
                 plan: object,
                 incoming: object,
-            ) -> bool:
+            ) -> AdmissionLossCause:
                 del workspace_commitment, state, plan, incoming
-                return False
+                return AdmissionLossCause.QUEUE_COUNT
 
-            blocked.setattr(LocalObservationStore, "_selected_admission_plan_allowed", overflow)
+            blocked.setattr(LocalObservationStore, "_selected_admission_plan_refusal", overflow)
         failed = reconcile_session_stream(
             LocalObservationStore(_state=tmp_path),
             workspace_commitment=workspace,
@@ -1284,6 +1328,159 @@ def test_function_call_output_maps_completed_tool_without_unknown_gap() -> None:
     assert tuple(item.role for item in batch.drafts) == ("action", "result")
 
 
+def test_completed_masking_compound_command_preserves_outer_zero_with_nested_gap() -> None:
+    record = CodexParsedRecord(
+        1,
+        0,
+        160,
+        "event_msg",
+        "CommandExecution",
+        JsonObject(
+            {
+                "payload": {
+                    "item": {
+                        "id": "command-compound",
+                        "type": "CommandExecution",
+                        "command": "pnpm vitest test/a.ts; tsc --noEmit",
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                    "type": "item_completed",
+                }
+            }
+        ),
+    )
+    envelope = envelope_from_stream_record(
+        record,
+        session_commitment="hmac-sha256:" + ("ae" * 32),
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=160,
+            event_position=1,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+    )
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
+    assert envelope.structural_payload["exit_status"] == 0
+    assert envelope.structural_payload["result_status"] == "completed"
+    assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value in envelope.gap_codes
+
+
+def _rollout_command_envelope(command: str) -> ObservationEnvelope:
+    record = CodexParsedRecord(
+        1,
+        0,
+        160,
+        "event_msg",
+        "CommandExecution",
+        JsonObject(
+            {
+                "payload": {
+                    "item": {
+                        "id": "command-write",
+                        "type": "CommandExecution",
+                        "command": command,
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                    "type": "item_completed",
+                }
+            }
+        ),
+    )
+    return envelope_from_stream_record(
+        record,
+        session_commitment="hmac-sha256:" + ("ae" * 32),
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=160,
+            event_position=1,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("cat > solve.py <<'EOF'\nx\nEOF", "workspace"),
+        # The agent's notes and FinishUP's own material keep their closed non-counting scope, so a
+        # declared output of that kind can still override the exemption (ADR-045, Codex review).
+        ("echo x > NOTES.md", "notes"),
+        ("echo x > finishup_receipt.md", "yoetz_owned"),
+        ("echo done", None),
+        # An absolute path says nothing without a workspace root; the hook claims those.
+        ("echo x > /app/solve.py", None),
+        # Two non-counting classes in one command keep counting (one token cannot carry both).
+        (": > NOTES.md; : > finishup_receipt.md", "workspace"),
+    ],
+)
+def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
+    command: str, scope: str | None
+) -> None:
+    assert _rollout_command_envelope(command).structural_payload.get("write_scope") == scope
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=[f"{n:03d}" for n, _ in enumerate(VECTORS)])
+def test_a_rollout_command_earns_the_scope_the_shared_vectors_name(
+    vector: ShellWriteVector,
+) -> None:
+    """tb4n3 shell-write review (#1028): the exact commands the domain and hook tests read, here
+    as the Codex rollout stream sees them (no workspace root, so a relative write only), both bare
+    and inside the ``/bin/bash -lc`` argv Codex really records."""
+
+    from shlex import join
+
+    wrapped = join(["/bin/bash", "-lc", vector.command])
+    for command in (vector.command, wrapped):
+        envelope = _rollout_command_envelope(command)
+        assert envelope.structural_payload.get("write_scope") == vector.stream, command
+
+
+def test_completed_and_compound_command_keeps_proven_zero_without_nested_gap() -> None:
+    record = CodexParsedRecord(
+        1,
+        0,
+        160,
+        "event_msg",
+        "CommandExecution",
+        JsonObject(
+            {
+                "payload": {
+                    "item": {
+                        "id": "command-compound-and",
+                        "type": "CommandExecution",
+                        "command": "pnpm vitest test/a.ts && tsc --noEmit",
+                        "exit_code": 0,
+                        "status": "completed",
+                    },
+                    "type": "item_completed",
+                }
+            }
+        ),
+    )
+    envelope = envelope_from_stream_record(
+        record,
+        session_commitment="hmac-sha256:" + ("af" * 32),
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=160,
+            event_position=1,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+    )
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
+    assert envelope.structural_payload["exit_status"] == 0
+    assert ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value not in envelope.gap_codes
+
+
 def test_function_call_output_preserves_negative_one_exit_status() -> None:
     record = CodexParsedRecord(
         1,
@@ -1362,8 +1559,10 @@ def test_function_call_output_rejects_out_of_profile_exit_status(exit_code: obje
     assert batch.skip_reason == "unsupported_or_gap"
 
 
-def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
-    tmp_path: Path,
+# A rollout written under a 0.1-0.2.5 registration names the legacy server (ADR-048).
+@pytest.mark.parametrize("server", ["finishup", "yoetz"])
+def test_reconcile_retains_finishup_self_observation_locally_and_advances_past_it(
+    tmp_path: Path, server: str
 ) -> None:
     """#564: the stream copy of a ``status`` call is the same self-observation the hook saw."""
 
@@ -1375,13 +1574,13 @@ def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
     target.write_bytes(
         encode_lines(
             session_meta(),
-            function_call(name="mcp__yoetz__status", call_id="y1", arguments="{}"),
+            function_call(name=f"mcp__{server}__status", call_id="y1", arguments="{}"),
             function_call_output(call_id="y1", output="private projection", exit_code=None),
             function_call(name="shell", call_id="s1", arguments='{"command":"pytest"}'),
             function_call_output(call_id="s1", output="ok", exit_code=0),
-            function_call(name="mcp__yoetz__respond", call_id="y2", arguments="{}"),
+            function_call(name=f"mcp__{server}__respond", call_id="y2", arguments="{}"),
             function_call_output(call_id="y2", output="recorded", exit_code=None),
-            function_call(name="mcp__yoetz__status", call_id="y3", arguments="{}"),
+            function_call(name=f"mcp__{server}__status", call_id="y3", arguments="{}"),
             function_call_output(call_id="y3", output="error", exit_code=1),
         )
     )
@@ -1412,8 +1611,8 @@ def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
         (None, None),
         ("function_call", "shell"),
         ("function_call_output", "shell"),
-        ("function_call_output", "mcp__yoetz__respond"),
-        ("function_call_output", "mcp__yoetz__status"),
+        ("function_call_output", f"mcp__{server}__respond"),
+        ("function_call_output", f"mcp__{server}__status"),
     ]
     # Every record was ingested locally and the cursor moved past all of them: a second
     # reconcile finds nothing new rather than re-reading the retained calls.
@@ -1510,6 +1709,19 @@ def test_0_150_1_stream_admits_from_header_and_envelopes_carry_no_content(
         if "action" in envelope.structural_payload
     }
     assert {"function_call", "custom_tool_call", "McpToolCall", "CommandExecution"} <= actions
+    # Since 0.150.1 every response-item row names itself (``fc_``/``ctc_``) beside the ``call_id``
+    # its output shares; each call and its output carry that shared id (#1038).
+    call_ids = {
+        str(envelope.structural_payload.get("action")): envelope.structural_payload.get(
+            "tool_call_id"
+        )
+        for envelope in advance.envelopes
+        if envelope.structural_payload.get("action")
+        in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+    }
+    # Frozen legacy identifier (ADR-048): the recorded rollout fixture's own call id.
+    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_yoetz_1"
+    assert call_ids["custom_tool_call"] == call_ids["custom_tool_call_output"] == "call_shell_1"
     dumped = json.dumps(
         [
             {
@@ -1533,9 +1745,12 @@ def test_0_150_1_stream_admits_from_header_and_envelopes_carry_no_content(
         "action",
         "tool_name",
         "result_status",
+        "runner_class",
         "exit_status",
         "tool_call_id",
         "subagent_id",
+        # A completed command's installation-keyed identity (#909, #910), never its text.
+        "command_commitment",
     }
     for envelope in advance.envelopes:
         assert set(envelope.structural_payload) <= allowed, envelope.structural_payload
@@ -1603,7 +1818,7 @@ def test_subagent_stream_accepts_explicit_parent_alias_but_ignores_item_id() -> 
 def test_subagent_stream_invalid_parent_alias_cannot_weaken_identity(
     kind: str, parent_aliases: dict[str, Any]
 ) -> None:
-    from yoetz.domain.host_lineage import host_lineage_from_envelope
+    from finishup.domain.host_lineage import host_lineage_from_envelope
 
     record = CodexParsedRecord(
         1,
@@ -1983,7 +2198,8 @@ def test_unknown_and_incompatible_lines_stay_bounded_under_compatible_profile(
     path.write_bytes(_fixture_bytes(_COMPATIBLE_0153, "truncated"))
     truncated = _header_selected_reader(session).advance(path)
     assert ObservationGapCode.UNSUPPORTED_FORMAT.value not in truncated.gaps
-    assert ObservationGapCode.TRUNCATED_PAYLOAD.value in truncated.gaps
+    # The unterminated tail is held for the next read, not lost (#1041).
+    assert ObservationGapCode.TRUNCATED_PAYLOAD.value not in truncated.gaps
     assert truncated.cursor.event_position == 2
     assert truncated.partial_line.startswith(b"{")
 
@@ -2419,9 +2635,9 @@ def _selection_stream_fixture(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=_STREAM_TASK_ID,
-            yoetz_session_id=_STREAM_SESSION_ID,
-            yoetz_writer_id=_STREAM_WRITER_ID,
+            finishup_task_id=_STREAM_TASK_ID,
+            finishup_session_id=_STREAM_SESSION_ID,
+            finishup_writer_id=_STREAM_WRITER_ID,
             last_frontier=None,
         ),
         _state=tmp_path,
@@ -2429,16 +2645,46 @@ def _selection_stream_fixture(
     return store, workspace, session, target, CodexSessionStreamLocator(home)
 
 
-def test_stream_selects_shell_candidate_from_original_arguments_and_flushes_on_boundary(
+def test_stream_never_summarizes_a_shell_read(tmp_path: Path) -> None:
+    """PR #1080: the stream has no workspace fingerprint, so a shell read stays individual."""
+
+    session_id = "stream-selection-shell"
+    rows = (
+        session_meta(session_id=session_id),
+        function_call(name="shell", call_id="shell-read", arguments='{"command":"ls"}'),
+        function_call_output(call_id="shell-read", exit_code=0),
+    )
+    store, workspace, session, _target, locator = _selection_stream_fixture(
+        tmp_path, rows=rows, session_id=session_id
+    )
+    result = reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=locator,
+    )
+    assert result["accepted"] == 3
+    outbox = store.list_pending_outbox_rows(workspace)
+    assert not [row for row in outbox if row.envelope.event_kind == "RoutineReadSummary"]
+    assert store.selection_accounting(workspace)["buffered_successful_call_count"] == 0
+    assert [
+        row.envelope.structural_payload.get("action")
+        for row in outbox
+        if row.envelope.structural_payload.get("tool_call_id") == "shell-read"
+    ] == ["function_call", "function_call_output"]
+
+
+def test_stream_selects_read_candidate_from_original_arguments_and_flushes_on_boundary(
     tmp_path: Path,
 ) -> None:
     session_id = "stream-selection-summary"
     rows = (
         session_meta(session_id=session_id),
         function_call(
-            name="shell",
+            name="read_file",
             call_id="selection-read",
-            arguments='{"command":"ls"}',
+            arguments='{"path":"README.md"}',
         ),
         function_call_output(call_id="selection-read", exit_code=0),
     )
@@ -2505,9 +2751,9 @@ def test_stream_candidate_marker_survives_store_restart(tmp_path: Path) -> None:
     target_rows = (
         session_meta(session_id=session_id),
         function_call(
-            name="shell",
+            name="read_file",
             call_id="restart-read",
-            arguments='{"command":"pwd"}',
+            arguments='{"path":"README.md"}',
         ),
     )
     store, workspace, session, target, locator = _selection_stream_fixture(
@@ -2795,3 +3041,444 @@ def test_stream_selection_rejection_replays_exact_input(
         locator=locator,
     )
     assert retried["event_position"] == 2
+
+
+_DECIDE_SESSION = "hmac-sha256:" + ("d" * 64)
+_CMD = "hmac-sha256:" + ("c" * 64)
+
+
+def _decide_row(
+    position: int,
+    *,
+    hook: bool,
+    identity: str,
+    call_id: str,
+    exit_status: int | None = None,
+    commitment: str | None = _CMD,
+) -> ObservationEnvelope:
+    structural: dict[str, Any] = {"tool_call_id": call_id, "tool_name": "Bash"}
+    if commitment is not None:
+        structural["command_commitment"] = commitment
+    if exit_status is not None:
+        structural["exit_status"] = exit_status
+    if not hook:
+        structural["action"] = "CommandExecution"
+    return ObservationEnvelope(
+        session_commitment=_DECIDE_SESSION,
+        event_kind="PostToolUse" if hook else "item_completed",
+        source_identity=identity,
+        source=ObservationSource.CODEX_HOOK if hook else ObservationSource.CODEX_SESSION_STREAM,
+        cursor=ObservationCursor(
+            source_generation=1,
+            byte_position=position,
+            event_position=position,
+            last_source_commitment=_EMPTY,
+            mapping_version=STREAM_MAPPING_VERSION,
+        ),
+        receipt_time=Timestamp("2026-09-29T18:00:00.000Z"),
+        structural_payload=JsonObject(structural),
+        content_object_refs=(),
+        gap_codes=(),
+    )
+
+
+def _decisions(*rows: ObservationEnvelope) -> dict[str, str]:
+    return stream_module._rollout_item_decisions(  # pyright: ignore[reportPrivateUsage]
+        rows, _DECIDE_SESSION
+    )
+
+
+def test_rollout_item_read_before_its_post_is_decided_by_that_post() -> None:
+    """#910: arrival order between a rollout item and its hook post never loses an exit."""
+
+    item = _decide_row(1, hook=False, identity="item-a", call_id="exec-a", exit_status=101)
+    unstated = _decide_row(2, hook=True, identity="post-a", call_id="call-a")
+    stated = _decide_row(2, hook=True, identity="post-a", call_id="call-a", exit_status=101)
+    assert _decisions(item) == {"item-a": "pending"}
+    # An outcome-less post makes the earlier item its only outcome; a stated one its copy.
+    assert _decisions(item, unstated) == {"item-a": "carrier"}
+    assert _decisions(item, stated) == {"item-a": "copy"}
+    # The same facts in the other arrival order decide the same way.
+    assert _decisions(unstated, item) == {"item-a": "carrier"}
+    assert _decisions(stated, item) == {"item-a": "copy"}
+
+
+def test_rollout_item_decisions_never_change_once_made() -> None:
+    """A later post pairs only with a still-pending item, never with one already decided."""
+
+    early = _decide_row(1, hook=True, identity="post-a", call_id="call-a", exit_status=0)
+    copy = _decide_row(2, hook=False, identity="item-a", call_id="exec-a", exit_status=0)
+    pending = _decide_row(3, hook=False, identity="item-b", call_id="exec-b", exit_status=2)
+    late = _decide_row(4, hook=True, identity="post-b", call_id="call-b")
+    assert _decisions(early, copy, pending, late) == {"item-a": "copy", "item-b": "carrier"}
+    # A stated post with a different exit is not this item's copy; it stays pending.
+    other = _decide_row(4, hook=True, identity="post-b", call_id="call-b", exit_status=1)
+    assert _decisions(early, copy, pending, other)["item-b"] == "pending"
+
+
+def test_pending_rollout_items_persist_until_settled(tmp_path: Path) -> None:
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    other = "hmac-sha256:" + ("e" * 64)
+    item_a = _decide_row(1, hook=False, identity="item-a", call_id="exec-a", exit_status=101)
+    item_b = _decide_row(2, hook=False, identity="item-b", call_id="exec-b", exit_status=0)
+    item_c = replace(
+        _decide_row(3, hook=False, identity="item-c", call_id="exec-c"),
+        session_commitment=other,
+    )
+    store.note_pending_rollout_item(workspace, _DECIDE_SESSION, "host-1", item_a)
+    store.note_pending_rollout_item(workspace, _DECIDE_SESSION, "host-1", item_b)
+    store.note_pending_rollout_item(workspace, other, "host-2", item_c)
+    reopened = LocalObservationStore(_state=tmp_path)
+    kept = reopened.pending_rollout_items(workspace, _DECIDE_SESSION)
+    assert [item.source_identity for item in kept] == ["item-a", "item-b"]
+    # The account keeps the item itself, so its outcome survives ring eviction.
+    assert kept[0].envelope == item_a and kept[0].codex_session_id == "host-1"
+    # Settling is per session and idempotent.
+    reopened.settle_pending_rollout_item(workspace, other, "item-a")
+    reopened.settle_pending_rollout_item(workspace, _DECIDE_SESSION, "item-a")
+    reopened.settle_pending_rollout_item(workspace, _DECIDE_SESSION, "item-a")
+    assert [item.source_identity for item in reopened.pending_rollout_items(workspace)] == [
+        "item-b",
+        "item-c",
+    ]
+
+
+def test_parallel_same_command_items_wait_for_the_open_call() -> None:
+    """#910: an outcome-less post never takes a pending item an open same-command call owns."""
+
+    pre_a = replace(
+        _decide_row(1, hook=True, identity="pre-a", call_id="call-a"), event_kind="PreToolUse"
+    )
+    pre_b = replace(
+        _decide_row(2, hook=True, identity="pre-b", call_id="call-b"), event_kind="PreToolUse"
+    )
+    item_b = _decide_row(3, hook=False, identity="item-b", call_id="exec-b", exit_status=0)
+    item_a = _decide_row(4, hook=False, identity="item-a", call_id="exec-a", exit_status=1)
+    post_a = _decide_row(5, hook=True, identity="post-a", call_id="call-a")
+    post_b = _decide_row(6, hook=True, identity="post-b", call_id="call-b", exit_status=0)
+    stop = replace(
+        _decide_row(7, hook=True, identity="stop", call_id="none", commitment=None),
+        event_kind="Stop",
+    )
+    for order in ((item_b, item_a), (item_a, item_b)):
+        rows = (pre_a, pre_b, *order, post_a)
+        # B is still open: neither item is A's yet.
+        assert _decisions(*rows) == {"item-a": "pending", "item-b": "pending"}
+        assert _decisions(*rows, post_b) == {"item-a": "carrier", "item-b": "copy"}
+        # Posts first, items after: the same attribution.
+        assert _decisions(pre_a, pre_b, post_a, post_b, *order) == {
+            "item-a": "carrier",
+            "item-b": "copy",
+        }
+        # B's hook never fires: the turn's end delivers both rather than lose A's failure.
+        assert _decisions(*rows, stop) == {"item-a": "carrier", "item-b": "carrier"}
+    # The turn's end settles an unclaimed item as a copy only with a stored proof: without one
+    # (its post evicted, lost, or stored after Stop) it is delivered unpaired, never dropped.
+    assert _decisions(pre_b, item_b, stop) == {"item-b": "unpaired"}
+    twin = _decide_row(8, hook=False, identity="item-twin", call_id="exec-twin", exit_status=0)
+    assert _decisions(pre_b, post_b, item_b, twin, stop) == {
+        "item-b": "copy",
+        "item-twin": "copy",
+    }
+    assert _decisions(pre_b, post_b, item_a, stop) == {"item-a": "unpaired"}
+    # An MCP or patch item has no commitment: it stays local as its hooked call's copy.
+    mcp = _decide_row(9, hook=False, identity="item-mcp", call_id="exec-mcp", commitment=None)
+    assert _decisions(mcp, stop) == {"item-mcp": "copy"}
+
+
+def test_a_call_open_past_the_ring_still_owns_its_copy() -> None:
+    """#910: an evicted ``PreToolUse`` keeps its call open for the pairing replay."""
+
+    item_b = _decide_row(3, hook=False, identity="item-b", call_id="exec-b", exit_status=0)
+    post_a = _decide_row(5, hook=True, identity="post-a", call_id="call-a")
+    # Without the evicted call, A's outcome-less post would take B's item.
+    assert _decisions(item_b, post_a) == {"item-b": "carrier"}
+    kept_open = stream_module._rollout_item_decisions(  # pyright: ignore[reportPrivateUsage]
+        (item_b, post_a), _DECIDE_SESSION, ((_CMD, "call-a"), (_CMD, "call-b"))
+    )
+    assert kept_open == {"item-b": "pending"}
+
+
+def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: Path) -> None:
+    """#1038: a 0.159.3 row names itself (``fc_``/``ctc_``) beside the ``call_id`` it shares."""
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "019f9b27-c1de-7a61-9c5e-5d0b8975aa38"
+    target = sessions / f"rollout-{session_id}.jsonl"
+    target.write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            response_item(
+                {
+                    "arguments": "{}",
+                    "call_id": "call_shell_1038",
+                    "id": "fc_1038",
+                    "name": "shell",
+                    "type": "function_call",
+                }
+            ),
+            response_item(
+                {
+                    "call_id": "call_shell_1038",
+                    "exit_code": 0,
+                    "id": "fco_1038",
+                    "output": "ok",
+                    "status": "completed",
+                    "type": "function_call_output",
+                }
+            ),
+            item_completed(
+                {
+                    "arguments": {},
+                    "id": "exec-1038-mcp",
+                    "result": {"content": []},
+                    "server": "finishup",
+                    "status": "completed",
+                    "tool": "status",
+                    "type": "McpToolCall",
+                }
+            ),
+        )
+    )
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    rows = {
+        str(row.envelope.structural_payload.get("action")): row.envelope
+        for row in store.list_pending_outbox_rows(workspace)
+    }
+    call, output = rows["function_call"], rows["function_call_output"]
+    assert call.structural_payload["tool_call_id"] == "call_shell_1038"
+    assert output.structural_payload["tool_call_id"] == "call_shell_1038"
+    assert output.structural_payload.get("tool_name") == "shell"
+    assert ObservationGapCode.UNPAIRED_EVENT.value not in output.gap_codes
+    batch = materialize_observation_envelope(output, task_id="task_stream_pair_1038")
+    assert tuple(item.role for item in batch.drafts) == ("action", "result")
+    # A completed item keeps its own id (the one decision 15 compares with a hook call id), and
+    # an MCP item keeps its server, as its hook spells it. A successful FinishUP ``status`` read is
+    # retained locally only (#564, tb4 n5): it never reaches the outbox.
+    assert "McpToolCall" not in rows
+    (mcp,) = (
+        envelope
+        for envelope in store.list_envelopes(workspace)
+        if envelope.structural_payload.get("action") == "McpToolCall"
+    )
+    assert mcp.structural_payload["tool_call_id"] == "exec-1038-mcp"
+    assert mcp.structural_payload["tool_name"] == "mcp__finishup__status"
+
+
+def _mcp_item(
+    item_id: str, server: str, tool: str, *, status: str = "completed", error: str | None = None
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "arguments": {},
+        "id": item_id,
+        "result": {"content": []},
+        "server": server,
+        "status": status,
+        "tool": tool,
+        "type": "McpToolCall",
+    }
+    if error is not None:
+        item["error"] = error
+    return item
+
+
+def test_completed_finishup_mcp_read_items_are_not_delivered_but_others_are(tmp_path: Path) -> None:
+    """tb4 n5: a completed FinishUP ``status`` item is not appended to the ledger it read.
+
+    The rollout's completed ``McpToolCall`` item had no hook phase, so the self-observation
+    policy (#564) delivered every successful ``status`` read: each poll appended action, result
+    and evidence and moved the frontier the agent was polling. A failed FinishUP read, a FinishUP
+    mutation and another server's tool of the same name are delivered as before.
+    """
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "019f9b27-c1de-7a61-9c5e-5d0b8975aa39"
+    (sessions / f"rollout-{session_id}.jsonl").write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            item_completed(_mcp_item("exec-n5-status", "yoetz", "status")),
+            item_completed(_mcp_item("exec-n5-receipt", "yoetz", "receipt")),
+            item_completed(_mcp_item("exec-n5-guidance", "yoetz", "read_guidance")),
+            item_completed(
+                _mcp_item("exec-n5-failed", "yoetz", "status", status="failed", error="boom")
+            ),
+            item_completed(_mcp_item("exec-n5-publish", "yoetz", "publish_work")),
+            item_completed(_mcp_item("exec-n5-foreign", "github", "status")),
+        )
+    )
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    delivered = {
+        str(row.envelope.structural_payload.get("tool_call_id"))
+        for row in store.list_pending_outbox_rows(workspace)
+        if row.envelope.structural_payload.get("action") == "McpToolCall"
+    }
+    assert delivered == {"exec-n5-failed", "exec-n5-publish", "exec-n5-foreign"}
+    # Every item, delivered or not, stays in the bounded local store.
+    local = {
+        str(envelope.structural_payload.get("tool_call_id"))
+        for envelope in store.list_envelopes(workspace)
+        if envelope.structural_payload.get("action") == "McpToolCall"
+    }
+    assert local == {
+        "exec-n5-status",
+        "exec-n5-receipt",
+        "exec-n5-guidance",
+        "exec-n5-failed",
+        "exec-n5-publish",
+        "exec-n5-foreign",
+    }
+    assert store.pending_rollout_items(workspace) == ()
+
+
+def _held_mcp_item(
+    position: int, identity: str, tool_name: str, *, result_status: str = "completed"
+) -> ObservationEnvelope:
+    row = _decide_row(position, hook=False, identity=identity, call_id=f"exec-{identity}")
+    return replace(
+        row,
+        structural_payload=JsonObject(
+            {
+                "action": "McpToolCall",
+                "result_status": result_status,
+                "tool_call_id": f"exec-{identity}",
+                "tool_name": tool_name,
+            }
+        ),
+    )
+
+
+def test_released_held_finishup_read_item_is_settled_not_delivered(tmp_path: Path) -> None:
+    """tb4 n5: a held FinishUP read item is settled locally on release; other items still deliver.
+
+    The pending-item release (#910) delivered whatever it held, so a FinishUP ``status`` item held
+    for its hook post reached the ledger once the idle bound, the turn's end or a check's
+    observation wait released it.
+    """
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    store.bind_session(workspace, _DECIDE_SESSION)
+    held = (
+        _held_mcp_item(1, "own-status", "mcp__yoetz__status"),
+        _held_mcp_item(2, "own-failed", "mcp__yoetz__status", result_status="failed"),
+        _held_mcp_item(3, "foreign", "mcp__github__status"),
+    )
+    for item in held:
+        store.note_pending_rollout_item(workspace, _DECIDE_SESSION, "host-1", item)
+
+    still_held = stream_module.release_held_rollout_items_for_check(
+        store, workspace, lambda _item: True, now=4_000_000_000.0
+    )
+
+    assert still_held == ()
+    assert store.pending_rollout_items(workspace) == ()
+    delivered = {row.envelope.source_identity for row in store.list_pending_outbox_rows(workspace)}
+    assert delivered == {"own-failed", "foreign"}
+
+
+@pytest.mark.parametrize(
+    ("server", "tool", "expected"),
+    [
+        (None, "status", "status"),
+        ("finishup", "status", "mcp__finishup__status"),
+        # The legacy server name a 0.1-0.2.5 registration records keeps its own spelling (ADR-048).
+        ("yoetz", "status", "mcp__yoetz__status"),
+        ("github", "status", "mcp__github__status"),
+        # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a FinishUP tool name
+        # under it is not attributable, any other name keeps its name rules.
+        ("ci__bot", "status", None),
+        ("_priv", "check", None),
+        ("x" * 130, "receipt", None),
+        ("ci__bot", "edit_file", "edit_file"),
+    ],
+    ids=[
+        "no-server",
+        "finishup",
+        "yoetz-legacy",
+        "github",
+        "double-underscore",
+        "leading-underscore",
+        "long",
+        "edit",
+    ],
+)
+def test_mcp_item_is_named_by_its_server(
+    server: str | None, tool: str, expected: str | None
+) -> None:
+    """#1038: only an ``McpToolCall`` naming no server keeps a FinishUP tool's bare name."""
+
+    item: dict[str, Any] = {"id": "exec-1038-mcp", "status": "completed", "tool": tool}
+    if server is not None:
+        item["server"] = server
+    item["type"] = "McpToolCall"
+    record = CodexParsedRecord(
+        1, 0, 200, "event_msg", "McpToolCall", JsonObject(item_completed(item))
+    )
+
+    structural, _gaps = stream_module.structural_from_stream_record(record)
+
+    assert structural.get("tool_name") == expected
+
+
+def test_hook_prompt_row_is_bookkeeping_not_an_unsupported_event(tmp_path: Path) -> None:
+    """#1041: the Stop hook's prompt row (``HookPrompt``) is admitted as bookkeeping."""
+
+    path = tmp_path / "session.jsonl"
+    path.write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            item_completed(
+                {
+                    "fragments": [{"hook_run_id": "stop-1", "text": "CANARY_HOOK_PROMPT"}],
+                    "id": "item_hook_prompt_1",
+                    "type": "HookPrompt",
+                }
+            ),
+        )
+    )
+    advance = _header_selected_reader("hmac-sha256:" + ("e" * 64)).advance(path)
+    assert ObservationGapCode.UNSUPPORTED_EVENT.value not in advance.gaps
+    assert advance.reason_codes == ()
+    prompt = advance.envelopes[-1]
+    assert prompt.event_kind == "event_msg"
+    assert prompt.structural_payload.get("action") == "HookPrompt"
+    assert "tool_name" not in prompt.structural_payload
+    assert "CANARY_HOOK_PROMPT" not in json.dumps(dict(prompt.structural_payload))
+    descriptions = [
+        str(getattr(item.draft.payload, "description", ""))
+        for item in materialize_observation_envelope(prompt, task_id=_STREAM_TASK_ID).drafts
+    ]
+    assert descriptions == ["Opaque observation kind=event_msg"]

@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://yoetz.dev/sitemap.xml
+Sitemap: https://finishup.dev/sitemap.xml

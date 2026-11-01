@@ -15,22 +15,22 @@ from types import SimpleNamespace
 import apsw
 import pytest
 
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckRunner,
     approval_commitment,
 )
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.application.observation_coordinator import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.application.observation_coordinator import (
     ObservationCoordinator,
     build_inspection_excerpt_manifest,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
     MaterializedObservationBatch,
     canonical_logical_identity,
@@ -38,8 +38,8 @@ from yoetz.application.observation_materialize import (
     observation_operation_digest,
     observation_writer_id,
 )
-from yoetz.application.observation_verification import ObservationVerificationJob
-from yoetz.domain.observation import (
+from finishup.application.observation_verification import ObservationVerificationJob
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
@@ -50,13 +50,13 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.observability.privacy import PersistenceScanResult
-from yoetz.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
-from yoetz.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.ports.workspace_inspect import InspectedArtifact
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.observability.privacy import PersistenceScanResult
+from finishup.ports.check_sandbox import CheckSandboxLaunch, CheckSandboxStatus
+from finishup.ports.objects import ObjectMetadata, ObjectRef, ObjectSource
+from finishup.ports.workspace_inspect import InspectedArtifact
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _DIGEST = "sha256:" + "ab" * 32
@@ -65,6 +65,10 @@ _WORKSPACE = "hmac-sha256:" + "11" * 32
 _SECRET = b"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 _AZURE = b"AZURE_CLIENT_SECRET=abc123secretvalue0001"
 _TOKEN = b"GITHUB_TOKEN=notakeybutlongenoughvalue"
+# A high-confidence credential shape. The three assignments above are heuristic-only: capture keeps
+# them in the encrypted store and egress redacts them (issue #982).
+_HIGH_VALUE = b"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+_HIGH_SECRET = b"OPENAI_API_KEY=" + _HIGH_VALUE
 
 
 class _ReadySandbox:
@@ -938,14 +942,14 @@ async def test_coordinator_replays_content_commit_after_reply_is_lost(
     codex_session_id = f"reply-lost-{kind}-{len(gaps)}"
     session_commitment = local.bind_codex_session(workspace, codex_session_id)
     task_id = _TASK
-    yoetz_session_id = "ses_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    writer_id = observation_writer_id(task_id, yoetz_session_id)
+    finishup_session_id = "ses_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    writer_id = observation_writer_id(task_id, finishup_session_id)
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_session_id,
-        yoetz_task_id=task_id,
-        yoetz_session_id=yoetz_session_id,
-        yoetz_writer_id=writer_id,
+        finishup_task_id=task_id,
+        finishup_session_id=finishup_session_id,
+        finishup_writer_id=writer_id,
         last_frontier=None,
     )
     db = apsw.Connection(":memory:")
@@ -954,7 +958,7 @@ async def test_coordinator_replays_content_commit_after_reply_is_lost(
     objects = _CapturingObjects()
     runtime = SimpleNamespace(
         task_id=task_id,
-        session_id=yoetz_session_id,
+        session_id=finishup_session_id,
         writer_id=writer_id,
         observation=store,
         objects=objects,
@@ -1120,7 +1124,7 @@ async def test_observation_capture_secret_scans_before_digest_binding(tmp_path: 
         "text/plain",
         0,
         1,
-        b"prefix " + _SECRET,
+        b"prefix " + _HIGH_SECRET + b"\n" + _SECRET,
     )
 
     manifests, replay, redacted, unavailable = await coordinator._capture_content(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -1135,15 +1139,54 @@ async def test_observation_capture_secret_scans_before_digest_binding(tmp_path: 
     assert replay == ()
     assert len(manifests) == 1
     captured_envelope = objects.payloads[0]
-    assert _SECRET not in captured_envelope
+    assert _HIGH_VALUE not in captured_envelope
     captured_inner = base64.b64decode(json.loads(captured_envelope)["content_b64"])
-    assert _SECRET not in captured_inner
+    assert _HIGH_VALUE not in captured_inner
+    # The heuristic-only assignment stays as captured in the encrypted object (issue #982).
+    assert _SECRET in captured_inner
     assert manifests[0].redacted is True
     assert manifests[0].content_digest == ("sha256:" + hashlib.sha256(captured_inner).hexdigest())
 
 
+@pytest.mark.anyio
+async def test_observation_capture_keeps_heuristic_only_content_unredacted(tmp_path: Path) -> None:
+    """Issue #982: a heuristic-only match neither changes bytes nor marks the chunk redacted."""
+
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
+    store = SqliteObservationStore(db)
+    objects = _CapturingObjects()
+    coordinator = _coordinator(tmp_path, objects)
+    runtime = SimpleNamespace(task_id=_TASK, objects=objects)
+    content = b'        self.bot_token = "<|tool_call_start|>"\n' + _TOKEN + b"\n"
+    chunk = ObservationContentChunk(
+        ObservationContentKind.TOOL_OUTPUT,
+        "call-303",
+        _COMMITMENT,
+        "text/plain",
+        0,
+        1,
+        content,
+    )
+
+    manifests, _replay, redacted, unavailable = await coordinator._capture_content(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        runtime,  # type: ignore[arg-type]
+        store,
+        workspace=_WORKSPACE,
+        envelope=_observation_envelope(),
+        chunks=(chunk,),
+    )
+    assert redacted is False
+    assert unavailable is False
+    assert len(manifests) == 1
+    assert manifests[0].redacted is False
+    parsed = json.loads(objects.payloads[0])
+    assert parsed["redacted"] is False
+    assert base64.b64decode(parsed["content_b64"]) == content
+
+
 def test_changed_file_prefix_canary_persists_only_redaction_metadata() -> None:
-    secret_file = _artifact("src/env.py", b"export " + _SECRET + b"\nprint(1)\n")
+    secret_file = _artifact("src/env.py", b"export " + _HIGH_SECRET + b"\nprint(1)\n")
     clean_file = _artifact("src/ok.py", b"print('hello-advice')\n")
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
         (secret_file, clean_file)
@@ -1161,8 +1204,8 @@ def test_changed_file_prefix_canary_persists_only_redaction_metadata() -> None:
     assert artifacts[1]["redacted"] is False
     recovered = base64.b64decode(artifacts[1]["excerpt_b64"])
     assert b"hello-advice" in recovered
-    assert _SECRET not in encoded
-    assert b"wJalrXUtnFEMI" not in encoded
+    assert _HIGH_SECRET not in encoded
+    assert _HIGH_VALUE not in encoded
 
 
 def test_changed_file_canary_withholds_excerpt_object() -> None:
@@ -1183,7 +1226,7 @@ def test_changed_file_scanner_failure_stores_no_excerpt(monkeypatch: pytest.Monk
         return PersistenceScanResult(False, b"", True, ())
 
     monkeypatch.setattr(
-        "yoetz.application.observation_coordinator.prepare_persisted_plaintext",
+        "finishup.application.observation_coordinator.prepare_persisted_plaintext",
         _withhold,
     )
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
@@ -1195,20 +1238,20 @@ def test_changed_file_scanner_failure_stores_no_excerpt(monkeypatch: pytest.Monk
     assert truncated is False
 
 
-def test_azure_and_token_prefixes_are_classified_before_encoding() -> None:
+def test_azure_and_token_prefixes_are_kept_in_the_encrypted_excerpt() -> None:
+    """Issue #982: heuristic-only assignments are local evidence; egress redacts them."""
+
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
         (_artifact("a.env", _AZURE + b"\n"), _artifact("b.env", _TOKEN + b"\n"))
     )
     assert unavailable is False
-    assert redacted is True
+    assert redacted is False
     assert truncated is False
     assert encoded is not None
-    assert _AZURE not in encoded
-    assert _TOKEN not in encoded
     parsed = json.loads(encoded)
-    for item in parsed["artifacts"]:
-        assert item["redacted"] is True
-        assert "excerpt_b64" not in item
+    excerpts = [base64.b64decode(item["excerpt_b64"]) for item in parsed["artifacts"]]
+    assert all(item["redacted"] is False for item in parsed["artifacts"])
+    assert excerpts == [_AZURE + b"\n", _TOKEN + b"\n"]
 
 
 @pytest.mark.anyio
@@ -1216,9 +1259,8 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
     tmp_path: Path,
 ) -> None:
     handle = open_inspect_workspace(tmp_path)
-    captured: list[bytes] = []
-    assignment = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-    argv = ("/bin/echo", assignment)
+    captured: list[tuple[bytes, bool]] = []
+    argv = ("/bin/echo", _HIGH_SECRET.decode("ascii"), _SECRET.decode("ascii"))
     approval = ApprovedCheckApproval(
         approval_id="pytest-unit",
         argv=argv,
@@ -1229,7 +1271,7 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
     runner = ApprovedCheckRunner(
         {approval.approval_commitment: approval},
         sandbox=_ReadySandbox(),
-        output_sink=captured.append,
+        output_sink=lambda output, redacted: captured.append((output, redacted)),
     )
     runner.run(
         ApprovedCheckCommand(
@@ -1239,8 +1281,13 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         )
     )
     assert captured
-    assert b"wJalrXUtnFEMI" not in captured[0]
-    assert b"[REDACTED]" in captured[0]
+    output, runner_redacted = captured[0]
+    assert _HIGH_VALUE not in output
+    assert b"[REDACTED]" in output
+    # The runner's own redaction flag travels with the output it hands over (#1015).
+    assert runner_redacted is True
+    # Heuristic-only output stays in the encrypted object; egress redacts it (issue #982).
+    assert b"wJalrXUtnFEMI" in output
 
     db = apsw.Connection(":memory:")
     initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
@@ -1252,16 +1299,16 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         store,
         _WORKSPACE,
         _job(),
-        captured[0] + b"\n" + _AZURE,
+        output + b"\n" + _AZURE + b"\n" + _HIGH_SECRET,
     )
     assert object_id is not None
     assert objects.payloads
     payload = objects.payloads[0]
-    assert b"wJalrXUtnFEMI" not in payload
-    assert b"abc123secretvalue0001" not in payload
+    assert _HIGH_VALUE not in payload
     parsed = json.loads(payload)
     decoded = base64.b64decode(parsed["content_b64"])
     assert b"[REDACTED]" in decoded
+    assert b"abc123secretvalue0001" in decoded
     assert parsed["redacted"] is True
     rows = db.execute(
         "SELECT redacted,content_kind,content_digest,content_bytes "
@@ -1278,6 +1325,32 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
 
 
 @pytest.mark.anyio
+async def test_the_runner_redaction_flag_reaches_the_stored_output(tmp_path: Path) -> None:
+    """#1015: output the runner already redacted is stored as redacted, though the store's own
+    re-scan of it finds nothing left to replace."""
+
+    already_redacted = b"KEY=[REDACTED]\n"
+    for runner_redacted in (False, True):
+        db = apsw.Connection(":memory:")
+        initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
+        store = SqliteObservationStore(db)
+        objects = _CapturingObjects()
+        coordinator = _coordinator(tmp_path, objects)
+        object_id = await coordinator._persist_approved_check_output(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            SimpleNamespace(task_id=_TASK, objects=objects),  # type: ignore[arg-type]
+            store,
+            _WORKSPACE,
+            _job(),
+            already_redacted,
+            redacted=runner_redacted,
+        )
+        assert object_id is not None
+        parsed = json.loads(objects.payloads[-1])
+        assert base64.b64decode(parsed["content_b64"]) == already_redacted
+        assert parsed["redacted"] is runner_redacted
+
+
+@pytest.mark.anyio
 async def test_approved_check_persistence_withholds_when_scan_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1286,7 +1359,7 @@ async def test_approved_check_persistence_withholds_when_scan_fails(
         return PersistenceScanResult(False, b"", True, ("canary",))
 
     monkeypatch.setattr(
-        "yoetz.application.observation_coordinator.prepare_persisted_plaintext",
+        "finishup.application.observation_coordinator.prepare_persisted_plaintext",
         _withhold,
     )
     db = apsw.Connection(":memory:")

@@ -15,11 +15,11 @@ import pytest
 
 import integration.service.test_semantic_fallback_dispatch as fallback_dispatch
 from builders.ledger_adapters import FixedClock, append_command, memory_adapter, sqlite_adapter
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.observability.semantic_context import report_semantic_progress
-from yoetz.ports.ledger import SemanticProgressRecord
-from yoetz.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.observability.semantic_context import report_semantic_progress
+from finishup.ports.ledger import SemanticProgressRecord
+from finishup.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
 
 _PairedPrivacy = fallback_dispatch._PairedPrivacy  # pyright: ignore[reportPrivateUsage]
 _paired_evaluator = fallback_dispatch._paired_evaluator  # pyright: ignore[reportPrivateUsage]

@@ -8,21 +8,22 @@ owned by #150); amended 2026-08-25 to keep Codex marketplace/MCP removal on the 
 digest-bound `--accept` lane rather than `plugin_artifact_apply` (issue #419); amended 2026-08-30
 for exact bounded Codex JSONL import publication (issue #301).
 Amended 2026-09-03 for user-controlled conversational setup and exact expanded-review grants
-(issues #532 and #533).
-**Implemented by:** `src/yoetz/service/elevated_bootstrap.py`,
-`src/yoetz/cli/elevated.py`, `src/yoetz/cli/trusted_console.py`,
-`src/yoetz/protocol/consent.py`, `src/yoetz/protocol/chat_user_authority.py`, and
+(issues #532 and #533). Amended 2026-10-14 for the first service-wide `UserPresencePort`
+adapter, macOS LocalAuthentication scoped to the owner receipt view (issue #1073, PR #1069).
+**Implemented by:** `src/finishup/service/elevated_bootstrap.py`,
+`src/finishup/cli/elevated.py`, `src/finishup/cli/trusted_console.py`,
+`src/finishup/protocol/consent.py`, `src/finishup/protocol/chat_user_authority.py`, and
 `guidance/agent-instructions.md`.
 **Relates to:** ADR-015 (bootstrap path), ADR-008 (vault/console), ADR-009
 (egress/privacy).
 
 ## Context
 
-Yoetz needs one understandable rule for actions outside the ordinary cooperative workflow while
+FinishUP needs one understandable rule for actions outside the ordinary cooperative workflow while
 keeping the stronger trusted-console authority and secret entry boundaries clear. Human review is
 per-operation and digest-bound; host sandboxing and egress policy remain separate containment
 controls. The optional agent-chat lane deliberately delegates authority to an agent assertion and
-documents that Yoetz cannot independently authenticate its chat provenance.
+documents that FinishUP cannot independently authenticate its chat provenance.
 
 ## Risk classes
 
@@ -36,7 +37,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
 
 ## Decisions
 
-1. **Catalog authority.** `yoetz consent catalog` and `status` list every non-default operation,
+1. **Catalog authority.** `finishup consent catalog` and `status` list every non-default operation,
    risk class, prepare hint, binding requirements, and `implemented` flag. Operations marked
    `implemented=false` cannot be prepared.
 
@@ -58,16 +59,43 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    is the ownership transition; only the winner cleans up the public pending name, while concurrent
    losers are read-only. Every terminal decision and every post-claim failure is single-shot.
 
-4. **Verified presence before console review.** The fixed `yoetz consent review` command takes no
+4. **Verified presence before console review.** The fixed `finishup consent review` command takes no
    authority-bearing arguments. An independently authenticated, action-bound, one-use
    `UserPresencePort` attestation must succeed before the helper opens a foreground console or
    claims pending state. The current runtime has no production adapter and therefore returns
    `human_authority_unavailable`. Redirected, headless, pseudo-terminal, and same-UID automation
    cannot authorize mutation.
 
+   **Amendment (2026-10-14, issue #1073, owner decision).** The service-wide `UserPresencePort`
+   gains its first production adapter, `MacOSLocalAuthenticationPresence`, and it serves exactly
+   one reauthentication: the owner receipt view (`owner_receipt_view`, ADR-009 decision 3,
+   round 5). The packaged service composes it on macOS only, with a `PresenceScope` naming that
+   purpose; Linux, WSL 2 and every other platform compose none and keep their fail-closed
+   continuation (`owner_view_unavailable`, or `owner_view_requires_terminal` with no foreground
+   terminal). The presence is independent of the requesting terminal, as this decision requires:
+   the service, not the client, starts Apple LocalAuthentication
+   (`LAPolicyDeviceOwnerAuthentication`, reuse disabled) through the SIP-protected
+   `/usr/bin/osascript` with a fixed program, and only that helper's exact `approved` token for
+   the exact bound challenge becomes a one-use attestation the vault consumes. A client names
+   the source it asks for and can assert nothing; a TTY, a pseudo-terminal or same-UID
+   automation that cannot produce the owner's fingerprint or device password still cannot pass.
+   Cancellation or failure is `presence_refused`, no answer within the 60-second dialog
+   deadline is `presence_timeout`, and no dialog (not macOS, no LocalAuthentication, no desktop
+   session, or any unreadable helper result) is `presence_unavailable`; none grants anything.
+   Prompts that do not approve back off (5 seconds rising to 5 minutes,
+   `reauthentication_rate_limited`; one cancelled within 2 seconds does not escalate but still
+   delays the next by 5 seconds), and a ceremony opened while another is active is
+   `ceremony_busy`, so an agent cannot make the owner's command read as a locked vault. The
+   backoff lives in the service process and a restart clears it: it slows repeated dialogs, it
+   does not cap them, and an agent that causes misses can delay the owner's own dialog by up to
+   5 minutes (ADR-009 round 5 lists both lockouts and their ways out).
+   This decision's console review is unchanged: `finishup consent review` does not use this
+   adapter and still returns `human_authority_unavailable`, and the adapter authorizes no vault,
+   credential, privacy-policy, setup, keyring or plugin operation.
+
 5. **Agent-attested current-chat authorize (issue #164).** When the user explicitly asks the agent
    in the current chat for help
-   with an exact prepared setup action, `yoetz consent authorize` may complete
+   with an exact prepared setup action, `finishup consent authorize` may complete
    `provider_credential_set`, `provider_credential_rotate`, `repository_privacy_grant`, or one
    importer-prepared `import_publication` under a
    `yoetz.chat-user-attestation/1` envelope. The envelope is an agent assertion, not independent
@@ -171,7 +199,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    removal (`preview_removal` / `apply_removal`) and external MCP unregistration
    (`preview_unregistration` / `apply_unregistration`) use that same lane: exact preview digest
    plus explicit `--accept` or the interactive confirmation already used by
-   `yoetz integrate codex mcp install`. They do not prepare or consume `plugin_artifact_apply`,
+   `finishup integrate codex mcp install`. They do not prepare or consume `plugin_artifact_apply`,
    because that cell is the macOS Cursor portable-artifact presence path and would fail closed
    here. Cache purge is default-off (`--purge-cache`). Agent-chat authorize is not extended to
    these commands. Cursor standalone activation apply is unchanged.
@@ -199,7 +227,7 @@ refused before launching the worker.
 ## Consequences
 
 Agents guide choices in ordinary conversation, prepare and inspect one combined request, then
-either complete it via agent-attested `yoetz consent authorize` on a capable first-party host or
+either complete it via agent-attested `finishup consent authorize` on a capable first-party host or
 give the shortest exact trusted-local continuation when that authority capability is absent. Until an approved
 OS-presence adapter is installed, console review fails closed; chat-user authorize remains available
 for the operations that advertise it. Approval of one operation does not grant another operation,
@@ -207,7 +235,8 @@ another digest, another installation, or a later session.
 
 Native biometrics, host-verified chat provenance, approved-machine profiles, monthly grants,
 E2EE service authority, and authority-bearing MCP tools (beyond the six ADR-011 tools) require
-separate ADRs and threat reviews.
+separate ADRs and threat reviews. The one scoped exception is the macOS LocalAuthentication owner
+receipt view (decision 4 amendment, ADR-009 round 5), whose threat analysis is recorded there.
 
 ## Alternatives considered
 

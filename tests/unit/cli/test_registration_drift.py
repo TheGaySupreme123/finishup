@@ -15,12 +15,12 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.applied_mcp_route import read_applied_route, record_applied_route
-from yoetz.cli import setup as setup_cli
-from yoetz.cli.hook_diagnostics import record_hook_diagnostic
-from yoetz.mcp.server import record_startup_route_drift
-from yoetz.ports.harness_mcp import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.applied_mcp_route import read_applied_route, record_applied_route
+from finishup.cli import setup as setup_cli
+from finishup.cli.hook_diagnostics import record_hook_diagnostic
+from finishup.mcp.server import record_startup_route_drift
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
@@ -29,7 +29,7 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationPreview,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
+from finishup.ports.integrations import HarnessId
 
 pytestmark = pytest.mark.anyio
 
@@ -94,7 +94,7 @@ async def _status_json(
     *,
     registered: str | None,
     applied: str | None,
-    state: McpRegistrationState = McpRegistrationState.YOETZ_OWNED,
+    state: McpRegistrationState = McpRegistrationState.FINISHUP_OWNED,
 ) -> dict[str, Any]:
     if applied is not None:
         serve = MCP_STRICT_SERVE_COMMAND if applied == "strict" else MCP_SERVE_COMMAND
@@ -104,7 +104,7 @@ async def _status_json(
     async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
         return _observation_with_state(state, registered)
 
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
     captured: dict[str, Any] = {}
 
     def _capture(value: object, *, json_output: bool) -> None:
@@ -228,7 +228,7 @@ async def test_mcp_remove_noop_absent_clears_stale_record(
         return preview
 
     monkeypatch.setattr(
-        "yoetz.application.harness_mcp.HarnessMcpService.preview_unregistration",
+        "finishup.application.harness_mcp.HarnessMcpService.preview_unregistration",
         _fake_preview_unregistration,
     )
     captured: dict[str, Any] = {}
@@ -276,7 +276,7 @@ async def test_mcp_install_noop_refreshes_a_stale_record(
     preview = McpRegistrationPreview(
         HarnessId.CODEX,
         McpRegistrationAction.NOOP,
-        McpRegistrationState.YOETZ_OWNED,
+        McpRegistrationState.FINISHUP_OWNED,
         (),
         _DIGEST,
         MCP_STRICT_SERVE_COMMAND,
@@ -287,12 +287,12 @@ async def test_mcp_install_noop_refreshes_a_stale_record(
         return preview
 
     async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
-        return _observation_with_state(McpRegistrationState.YOETZ_OWNED, "strict")
+        return _observation_with_state(McpRegistrationState.FINISHUP_OWNED, "strict")
 
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_mcp.CodexMcpAdapter.observe_registration",
+        "finishup.adapters.integrations.codex_mcp.CodexMcpAdapter.observe_registration",
         _fake_observe,
     )
 
@@ -390,7 +390,7 @@ def test_observe_session_start_runs_no_host_probe(
     latency loop again. Discovery raising here is the guard: nothing may call it.
     """
 
-    from yoetz.cli.observe_hooks import handle_observe
+    from finishup.cli.observe_hooks import handle_observe
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -407,7 +407,7 @@ def test_observe_session_start_runs_no_host_probe(
         raise AssertionError("a hook must not probe the host for the applied route")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
     )
 
     stdout = io.BytesIO()
@@ -425,3 +425,75 @@ def test_observe_session_start_runs_no_host_probe(
     # Output shape is unchanged: exactly one JSON object on stdout.
     json.loads(stdout.getvalue().decode("utf-8"))
     assert _reasons_in(tmp_path) == []
+
+
+async def test_low_level_install_stops_on_a_kept_entry_serving_another_review_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The owned ``yoetz`` entry a project still needs stays beside ``finishup`` and serves the
+    whole home with AI-powered review; a strict install next to it would run both review modes.
+    The home-wide low-level install stops before any change and names the way on (#1073)."""
+
+    from finishup.adapters.integrations.host_admission import CODEX_LEGACY_ADMISSION_TABLES
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    dependent = tmp_path / "a"
+    (dependent / ".codex").mkdir(parents=True, mode=0o700)
+    (dependent / ".codex" / "config.toml").write_text(CODEX_LEGACY_ADMISSION_TABLES[0])
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.FINISHUP_OWNED,
+        (
+            "legacy_registration_kept",
+            "legacy_registration_owned",
+            "legacy_registration_route_kept",
+        ),
+        _DIGEST,
+        MCP_STRICT_SERVE_COMMAND,
+        "strict",
+        None,
+        "legacy_only",
+        "policy",
+        (str(dependent),),
+        False,
+        "policy",
+    )
+
+    async def _fake_preview(self: object, _binary: object) -> McpRegistrationPreview:
+        return preview
+
+    async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
+        return _observation_with_state(McpRegistrationState.FINISHUP_OWNED, "policy")
+
+    async def _forbidden(self: object, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("nothing may be registered")
+
+    monkeypatch.setattr(setup_cli, "discover_codex_binaries", lambda: (_BINARY,))
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.register", _forbidden)
+
+    code = await setup_cli.integrate_mcp(
+        "install",
+        "codex",
+        codex_path=None,
+        codex_home=home,
+        route_profile="strict",
+        accept=True,
+        preview_digest=None,
+        json_output=True,
+        _state=tmp_path,
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "mcp_registration_legacy_registration_route_kept" in err
+    assert str(dependent) in err
+    # Its own rerun keeps the kept mode; the explicit way out reaches the requested one.
+    selection = f"--codex-path /opt/harness/bin/codex --codex-home {home}"
+    assert f"integrate codex mcp install {selection} --route-profile policy" in err
+    assert f"integrate codex mcp preview-remove {selection}" in err
+    assert f"integrate codex mcp install {selection} --route-profile strict" in err
+    assert "finishup setup run --host codex --route-profile" not in err

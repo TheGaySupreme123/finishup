@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.sqlite.connection import verify_schema_identity
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
-from yoetz.protocol.canonical import canonical_encode
+from finishup.adapters.sqlite.connection import verify_schema_identity
+from finishup.adapters.sqlite.migrations import (
+    BUNDLE_MIGRATIONS,
+    current_schema_version,
+    run_migrations,
+)
+from finishup.protocol.canonical import canonical_encode
 
 _WORKSPACE = "hmac-sha256:" + "a" * 64
 _SESSION = "hmac-sha256:" + "b" * 64
@@ -14,7 +18,7 @@ _SOURCE = "hmac-sha256:" + "c" * 64
 _CONTENT = "hmac-sha256:" + "d" * 64
 _OBJECT_ID = "obj_00000000-0000-4000-8000-000000001101"
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000001101"
-_YOETZ_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
+_FINISHUP_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
 _TIME = "2026-09-06T10:00:00.000Z"
 
 
@@ -176,13 +180,24 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
 
     report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
     assert report.from_version == 10
-    assert report.to_version == 15
-    assert report.applied_versions == ("0011", "0012", "0013", "0014", "0015")
-    assert db.execute("PRAGMA user_version").fetchone() == (15,)
+    current = current_schema_version(BUNDLE_MIGRATIONS)
+    assert report.to_version == current
+    assert report.applied_versions == (
+        "0011",
+        "0012",
+        "0013",
+        "0014",
+        "0015",
+        "0016",
+        "0017",
+        "0018",
+        "0019",
+    )
+    assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert verify_schema_identity(db).state == "current"
     assert db.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"
-    ).fetchone() == ("15",)
+    ).fetchone() == (str(current),)
     assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
     assert (
@@ -258,7 +273,7 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
             ticket_id,
             _WORKSPACE,
             _TASK_ID,
-            _YOETZ_SESSION_ID,
+            _FINISHUP_SESSION_ID,
             _SESSION,
             "claude_hook",
             "hook:claude:1101",
@@ -281,8 +296,8 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
     ).fetchone() == ("staging", b"[]")
 
     rerun = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
-    assert rerun.from_version == 15
-    assert rerun.to_version == 15
+    assert rerun.from_version == current
+    assert rerun.to_version == current
     assert rerun.applied_versions == ()
     assert db.execute("SELECT count(*) FROM observation_capture_tickets").fetchone() == (1,)
 

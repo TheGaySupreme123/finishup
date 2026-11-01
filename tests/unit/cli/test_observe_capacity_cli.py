@@ -12,37 +12,37 @@ from typing import Any, Final, cast
 import pytest
 from typer.testing import CliRunner, Result
 
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
 )
-from yoetz.cli import observe as observe_cli
-from yoetz.cli.app import app
-from yoetz.cli.exits import exit_code_for
-from yoetz.cli.observe import (
+from finishup.cli import observe as observe_cli
+from finishup.cli.app import app
+from finishup.cli.exits import exit_code_for
+from finishup.cli.observe import (
     CapacityNoCapUnsupported,
     apply_selection_preview,
     build_selection_preview,
 )
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.observation_budget import (
     ObservationCapacity,
     ObservationMode,
     no_cap_support,
     parse_capacity_request,
 )
-from yoetz.domain.observation_capacity_policy import render_capacity_disclosure_lines
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.recovery import RECOVERY_DIRECTIVES
+from finishup.domain.observation_capacity_policy import render_capacity_disclosure_lines
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.recovery import RECOVERY_DIRECTIVES
 
 TASK = "tsk_17607d01-2f55-4b28-82b6-8659242a1267"
 SESSION = "ses_6201a23d-a03a-46a5-bda9-d16a7a261ee0"
 WRITER = "wri_45c1a9bb-20ac-41ce-9fb9-19394f76e1e1"
 HOST = "codex-observation-capacity-test"
 INVALID_REQUEST_EXIT = exit_code_for(PublicErrorCode.INVALID_REQUEST)
-NO_CAP_SENTENCE = "No Yoetz cap is not available"
+NO_CAP_SENTENCE = "No FinishUP cap is not available"
 INCREASE_SENTENCE = "Larger local retention can increase disk use"
 DECREASE_SENTENCE = "Lowering affects future admission only"
 
@@ -137,7 +137,7 @@ def test_capacity_help_lists_every_choice_and_queue_count() -> None:
             "larger (2048)",
             "largest (8192)",
             "custom (with --queue-count 64..8192)",
-            "none (no Yoetz cap; reports why it is unavailable)",
+            "none (no FinishUP cap; reports why it is unavailable)",
         ):
             assert phrase in text, phrase
 
@@ -175,18 +175,18 @@ def test_custom_preview_discloses_the_increase(env: Env) -> None:
     assert disclosure["remaining_limits"]["state_document_ceiling_bytes"] == 16 * 1024 * 1024
     assert disclosure["no_cap"] == dict(no_cap_support())
     assert disclosure["lower_command"].startswith(
-        "yoetz observe selection-preview --workspace <workspace> --detail focused "
-        "--capacity standard --persist then yoetz observe selection-apply"
+        "finishup observe selection-preview --workspace <workspace> --detail focused "
+        "--capacity standard --persist then finishup observe selection-apply"
     )
-    assert disclosure["pause_command"] == "yoetz observe pause --workspace <workspace>"
-    assert disclosure["resume_command"] == "yoetz observe resume --workspace <workspace>"
+    assert disclosure["pause_command"] == "finishup observe pause --workspace <workspace>"
+    assert disclosure["resume_command"] == "finishup observe resume --workspace <workspace>"
     assert disclosure["revoke_command"] == (
-        "yoetz observe selection-revoke --workspace <workspace> --persist"
+        "finishup observe selection-revoke --workspace <workspace> --persist"
     )
     assert payload["current_effective_budget"]["schema"] == "yoetz.observation-effective-budget/1"
     assert payload["current_effective_budget"]["selected_queue_count"] == 512
     assert payload["next_command"] == (
-        "yoetz observe selection-apply --workspace <workspace> --detail focused "
+        "finishup observe selection-apply --workspace <workspace> --detail focused "
         "--capacity custom --queue-count 1024 --persist "
         f"--accept --preview-digest {payload['preview_digest']}"
     )
@@ -211,10 +211,10 @@ def test_custom_preview_discloses_the_increase(env: Env) -> None:
         "the queue and state-document bounds for every session in the workspace."
     ) in human.stdout
     assert (
-        "Pause new observation ingest with: yoetz observe pause --workspace <workspace>."
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>."
         in human.stdout
     )
-    assert "Resume with: yoetz observe resume --workspace <workspace>." in human.stdout
+    assert "Resume with: finishup observe resume --workspace <workspace>." in human.stdout
     assert "preview_digest: " in human.stdout
     # Structured records are summarized, never dumped as a mapping repr.
     assert "\ndisclosure: " not in human.stdout
@@ -252,10 +252,10 @@ def test_apply_with_the_digest_persists_a_custom_count(env: Env) -> None:
         in human_status.stdout
     )
     assert "no_cap=unavailable(state_document_ceiling); " in human_status.stdout
-    assert "lower=yoetz observe selection-revoke or selection-apply --capacity standard; " in (
+    assert "lower=finishup observe selection-revoke or selection-apply --capacity standard; " in (
         human_status.stdout
     )
-    assert "pause=yoetz observe pause" in human_status.stdout
+    assert "pause=finishup observe pause" in human_status.stdout
 
 
 def test_human_apply_reports_the_effective_budget_and_the_way_back(env: Env) -> None:
@@ -269,12 +269,12 @@ def test_human_apply_reports_the_effective_budget_and_the_way_back(env: Env) -> 
         in (result.stdout)
     )
     assert "effective_budget:selected=1024(custom); effective=1024(custom)" in result.stdout
-    assert "Lower it later with: yoetz observe selection-preview" in result.stdout
+    assert "Lower it later with: finishup observe selection-preview" in result.stdout
     assert (
-        "Pause new observation ingest with: yoetz observe pause --workspace <workspace>."
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>."
         in result.stdout
     )
-    assert "Resume with: yoetz observe resume --workspace <workspace>." in result.stdout
+    assert "Resume with: finishup observe resume --workspace <workspace>." in result.stdout
     assert "effective_budget: {" not in result.stdout
 
 
@@ -321,10 +321,10 @@ def test_decrease_discloses_future_admission_only(env: Env) -> None:
     assert result.exit_code == 0, result.stderr
     assert "capacity=custom(128)" in result.stdout
     assert (
-        "Revoke it with: yoetz observe selection-revoke --workspace <workspace> --persist. "
-        "Pause new observation ingest with: yoetz observe pause --workspace <workspace>."
+        "Revoke it with: finishup observe selection-revoke --workspace <workspace> --persist. "
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>."
     ) in result.stdout
-    assert "Resume with: yoetz observe resume --workspace <workspace>." in result.stdout
+    assert "Resume with: finishup observe resume --workspace <workspace>." in result.stdout
     assert env.workspace_queue_count() == 128
 
 
@@ -370,7 +370,7 @@ def _assert_no_cap_json(payload: Json, operation: str, alternative: str) -> None
 @pytest.mark.parametrize("word", ["none", "unlimited", "No-Cap"])
 def test_no_cap_is_a_typed_outcome_on_preview_and_apply(env: Env, word: str) -> None:
     alternative = (
-        "yoetz observe selection-preview --workspace <workspace> "
+        "finishup observe selection-preview --workspace <workspace> "
         "--detail focused --capacity largest --persist"
     )
     preview = env.json(
@@ -405,7 +405,7 @@ def test_no_cap_is_a_typed_outcome_on_preview_and_apply(env: Env, word: str) -> 
         human = env.invoke(command, "--detail", "focused", "--capacity", word, "--persist", *extra)
         assert human.exit_code == INVALID_REQUEST_EXIT
         assert human.stdout == ""
-        assert "capacity_no_cap_unsupported: No Yoetz cap is not available" in human.stderr
+        assert "capacity_no_cap_unsupported: No FinishUP cap is not available" in human.stderr
         assert "16 MiB safety ceiling" in human.stderr
         assert f"Alternative: {alternative}" in human.stderr
         assert "Continuation: capacity_request_correction" in human.stderr
@@ -426,7 +426,7 @@ def test_no_cap_for_a_session_names_the_session_alternative(env: Env) -> None:
         exit_code=INVALID_REQUEST_EXIT,
     )
     assert payload["error"]["capacity"]["alternative_command"] == (
-        "yoetz observe selection-preview --workspace <workspace> "
+        "finishup observe selection-preview --workspace <workspace> "
         "--detail detailed --capacity largest --session-id <session-id>"
     )
 
@@ -580,7 +580,7 @@ def test_shared_functions_raise_the_typed_no_cap_outcome(env: Env) -> None:
     assert outcome.lines == render_capacity_disclosure_lines(outcome.disclosure)
     assert outcome.message == outcome.lines[0]
     assert outcome.alternative_command == (
-        "yoetz observe selection-preview --workspace <workspace> "
+        "finishup observe selection-preview --workspace <workspace> "
         "--detail focused --capacity largest --persist"
     )
     with pytest.raises(CapacityNoCapUnsupported):

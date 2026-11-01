@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.cli import app as app_module
-from yoetz.cli.app import app, plugin_commands_for_host
-from yoetz.cli.codex_plugin import CODEX_PLUGIN_COMMANDS
-from yoetz.cli.cursor_integration import CURSOR_PLUGIN_COMMANDS
+from finishup.cli import app as app_module
+from finishup.cli.app import app, plugin_commands_for_host
+from finishup.cli.codex_plugin import CODEX_PLUGIN_COMMANDS
+from finishup.cli.cursor_integration import CURSOR_PLUGIN_COMMANDS
 
 _RUNNER = CliRunner()
 _ALL_COMMANDS = ("preview", "install", "update", "enable", "disable", "status", "remove", "export")
@@ -46,9 +46,9 @@ def _host_options(harness: str, tmp_path: Path) -> list[str]:
 def _install_recorders(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, str]]) -> None:
     """Replace every dispatcher with a recorder so the CLI gate is the unit under test."""
 
-    import yoetz.cli.claude_code_integration as claude_module
-    import yoetz.cli.codex_plugin as codex_module
-    import yoetz.cli.cursor_integration as cursor_module
+    import finishup.cli.claude_code_integration as claude_module
+    import finishup.cli.codex_plugin as codex_module
+    import finishup.cli.cursor_integration as cursor_module
 
     def recorder(host: str) -> Callable[..., int]:
         def run(command: str, **_kwargs: object) -> int:
@@ -111,7 +111,7 @@ def test_codex_dispatcher_refuses_generic_lifecycle_without_binary_discovery(
 ) -> None:
     """Defense in depth: the dispatcher itself names the supported actions and never discovers."""
 
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     def forbidden_discovery(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("binary discovery must never run for a refused command")
@@ -138,7 +138,7 @@ def test_codex_dispatcher_refuses_generic_lifecycle_without_binary_discovery(
 def test_cursor_dispatcher_refuses_generic_lifecycle_by_name(
     tmp_path: Path, command: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import yoetz.cli.cursor_integration as module
+    import finishup.cli.cursor_integration as module
 
     code = module.run_cursor_plugin_command(
         command,
@@ -163,7 +163,7 @@ def test_cursor_dispatcher_refuses_generic_lifecycle_by_name(
 def test_wrong_harness_at_the_dispatcher_stays_the_closed_invalid_token(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import yoetz.cli.codex_plugin as module
+    import finishup.cli.codex_plugin as module
 
     code = module.run_codex_plugin_command(
         "preview",

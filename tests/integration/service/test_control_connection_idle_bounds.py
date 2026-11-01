@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import struct
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -17,34 +18,35 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.control.unix_socket as unix_socket_module
-import yoetz.service.daemon as daemon_module
-from yoetz.adapters.control.unix_socket import (
+import finishup.adapters.control.unix_socket as unix_socket_module
+import finishup.service.daemon as daemon_module
+from finishup.adapters.control.unix_socket import (
     RUNTIME_DIRECTORY_MODE,
     AuthenticatedUnixStream,
     bind_control_listener,
     close_endpoint,
     connect_control,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlMethod,
     ControlResult,
     ServiceState,
 )
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.control_protocol import (
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.control_protocol import (
+    MAX_CONTROL_FRAME_BYTES,
     ControlProtocolError,
     client_handshake,
     parse_control_result,
     read_control_frame,
     write_control_frame,
 )
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.vault import VaultMode
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.vault import VaultMode
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000106"
 _COMMITMENT = "sha256:" + "6" * 64
@@ -64,7 +66,7 @@ def runtime_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     runtime = Path(tempfile.mkdtemp(prefix=".yctl-idle-", dir=Path.cwd()))
     runtime.chmod(RUNTIME_DIRECTORY_MODE)
     monkeypatch.setattr(
-        "yoetz.adapters.control.unix_socket._runtime_directory",
+        "finishup.adapters.control.unix_socket._runtime_directory",
         lambda: runtime,
     )
     try:
@@ -359,6 +361,127 @@ async def test_valid_handshake_and_service_status_still_succeed(
         result = parse_control_result(await read_control_frame(client))
         assert result.outcome == "ok"
         assert result.method is ControlMethod.SERVICE_STATUS
+    finally:
+        await client.aclose()
+        await _shutdown(daemon, accept_task, listener)
+
+
+class _FrameRefusals:
+    """Captures the daemon's structural frame-refusal diagnostics as observable state."""
+
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+        self.recorded = asyncio.Event()
+
+    def __call__(self, *, component: str, operation: str, reason: str, **_: object) -> str:
+        if component == "service.daemon" and operation == "control_frame_read":
+            self.reasons.append(reason)
+            self.recorded.set()
+        return "cor_00000000-0000-4000-8000-000000000921"
+
+
+async def _assert_server_closed(client: AuthenticatedUnixStream) -> None:
+    # EOF before any byte of a reply is the server-side close; the outer bound only guards the run.
+    with pytest.raises(ControlProtocolError) as closed:
+        await asyncio.wait_for(read_control_frame(client), timeout=5.0)
+    assert closed.value.reason == "frame_invalid"
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not (sys.platform == "darwin" or sys.platform.startswith("linux")),
+    reason="certified local peer APIs are macOS/Linux only",
+)
+async def test_a_frame_declared_one_byte_over_the_ceiling_closes_the_connection(
+    runtime_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del runtime_directory
+    monkeypatch.setattr(unix_socket_module, "_MAX_ACTIVE_CONNECTIONS", 8)
+    refusals = _FrameRefusals()
+    monkeypatch.setattr(daemon_module, "record_public_error_without_raising", refusals)
+
+    daemon, accept_task = await _daemon_with_real_listener()
+    listener = daemon.composition.control_listener
+    client = await connect_control()
+    try:
+        await client_handshake(client, ControlClientKind.CLI, "0.1.0")
+        await client.send_all(struct.pack(">I", MAX_CONTROL_FRAME_BYTES + 1))
+        await asyncio.wait_for(refusals.recorded.wait(), timeout=5.0)
+        assert refusals.reasons == ["frame_too_large"]
+        await _assert_server_closed(client)
+    finally:
+        await client.aclose()
+        await _shutdown(daemon, accept_task, listener)
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not (sys.platform == "darwin" or sys.platform.startswith("linux")),
+    reason="certified local peer APIs are macOS/Linux only",
+)
+async def test_a_stalled_frame_is_cut_off_even_while_a_call_is_active(
+    runtime_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-flight call exempts the session from idle, never a begun frame from its deadline."""
+
+    del runtime_directory
+    monkeypatch.setattr(unix_socket_module, "_MAX_ACTIVE_CONNECTIONS", 8)
+    monkeypatch.setattr(daemon_module, "_CONTROL_HANDSHAKE_DEADLINE_SECONDS", 5.0)
+    # Idle can never fire during this test; only the frame deadline can close the stream.
+    monkeypatch.setattr(daemon_module, "_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS", 600.0)
+    monkeypatch.setattr(daemon_module, "_CONTROL_FRAME_READ_DEADLINE_SECONDS", _SHORT_IDLE)
+    refusals = _FrameRefusals()
+    monkeypatch.setattr(daemon_module, "record_public_error_without_raising", refusals)
+
+    call_started = asyncio.Event()
+    original_dispatch = ServiceDaemon.dispatch
+
+    async def _held_status_dispatch(
+        self: ServiceDaemon,
+        client_kind: ControlClientKind,
+        request: ControlCallRequest,
+        *,
+        projection_context: object | None = None,
+        _defer_stop: bool = False,
+    ) -> ControlResult:
+        if request.method is ControlMethod.SERVICE_STATUS:
+            call_started.set()
+            await asyncio.Event().wait()
+        return await original_dispatch(
+            self,
+            client_kind,
+            request,
+            projection_context=projection_context,  # pyright: ignore[reportArgumentType]
+            _defer_stop=_defer_stop,
+        )
+
+    monkeypatch.setattr(ServiceDaemon, "dispatch", _held_status_dispatch)
+
+    daemon, accept_task = await _daemon_with_real_listener()
+    listener = daemon.composition.control_listener
+    client = await connect_control()
+    try:
+        session = await client_handshake(client, ControlClientKind.CLI, "0.1.0")
+        await write_control_frame(
+            client,
+            ControlCallRequest(
+                kind="call",
+                protocol_version="1.0",
+                rpc_id=new_id(IdKind.CONTROL_RPC),
+                service_instance_id=session.service_instance_id,
+                service_generation=session.service_generation,
+                method=ControlMethod.SERVICE_STATUS,
+                body=JsonObject({}),
+            ),
+        )
+        await asyncio.wait_for(call_started.wait(), timeout=5.0)
+        # Begin a large frame while the call is in flight, then stop sending.
+        await client.send_all(struct.pack(">I", 1_000_000) + b"{" * 70_000)
+        await asyncio.wait_for(refusals.recorded.wait(), timeout=5.0)
+        assert refusals.reasons == ["frame_read_timeout"]
+        await _assert_server_closed(client)
     finally:
         await client.aclose()
         await _shutdown(daemon, accept_task, listener)

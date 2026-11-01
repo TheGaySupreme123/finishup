@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import CATALOG_MIGRATIONS, run_migrations
+from finishup.adapters.sqlite.migrations import CATALOG_MIGRATIONS, run_migrations
 
 
 def test_catalog_0003_snapshots_only_preupgrade_routes_and_is_idempotent() -> None:
@@ -42,8 +42,8 @@ def test_catalog_0003_snapshots_only_preupgrade_routes_and_is_idempotent() -> No
 
     report = run_migrations(db, CATALOG_MIGRATIONS, maintenance=None)
 
-    assert report.applied_versions == ("0002", "0003", "0004", "0005")
-    assert db.execute("PRAGMA user_version").fetchone() == (5,)
+    assert report.applied_versions == ("0002", "0003", "0004", "0005", "0006", "0007")
+    assert db.execute("PRAGMA user_version").fetchone() == (7,)
     assert db.execute(
         "SELECT task_id, route_identity_digest, migration_policy_generation, "
         "migration_policy_digest, migration_policy_canonical, entitlement_state "

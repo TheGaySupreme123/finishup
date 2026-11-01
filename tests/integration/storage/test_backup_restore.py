@@ -12,7 +12,7 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.maintenance import (
+from finishup.adapters.sqlite.maintenance import (
     RestoredTargetEvidence,
     SqliteMaintenance,
     _AuthorityFacts,  # pyright: ignore[reportPrivateUsage]
@@ -21,9 +21,9 @@ from yoetz.adapters.sqlite.maintenance import (
     build_backup_manifest,
     verify_backup_set,
 )
-from yoetz.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
-from yoetz.domain.coordination import ProjectTextRef
-from yoetz.domain.values import (
+from finishup.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
+from finishup.domain.coordination import ProjectTextRef
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     Timestamp,
@@ -31,8 +31,8 @@ from yoetz.domain.values import (
     session_id,
     task_id,
 )
-from yoetz.ports.keys import RecoverySecret
-from yoetz.ports.maintenance import (
+from finishup.ports.keys import RecoverySecret
+from finishup.ports.maintenance import (
     BackupCommand,
     BackupManifest,
     BackupMode,
@@ -50,10 +50,10 @@ from yoetz.ports.maintenance import (
     RestorePlan,
     RestoreResult,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.privacy import PrivacyAuditObjectRoots
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.privacy import PrivacyAuditObjectRoots
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 @pytest.fixture
@@ -494,7 +494,7 @@ def _harness() -> _Harness:
     backup_command = BackupCommand(
         request_id(backup_request),
         session_id(session),
-        MaintenanceLocation("/private/tmp/yoetz-backup-test"),
+        MaintenanceLocation("/private/tmp/finishup-backup-test"),
         BackupMode.MACHINE_BOUND,
         Frontier.genesis(),
     )
@@ -517,7 +517,7 @@ def _harness() -> _Harness:
     restore_plan_digest = canonical_digest({"plan": "restore"})
     restore_command = RestoreCommand(
         request_id(restore_request),
-        MaintenanceLocation("/private/tmp/yoetz-restore-source"),
+        MaintenanceLocation("/private/tmp/finishup-restore-source"),
         "new_route_only",
         BackupMode.MACHINE_BOUND,
         task_id(task),

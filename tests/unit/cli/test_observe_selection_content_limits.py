@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.observe_hooks import _visible_content_chunks, map_hook_payload_to_envelope
-from yoetz.domain.observation_budget import ObservationMode, mode_limits
+from finishup.cli.observe_hooks import _visible_content_chunks, map_hook_payload_to_envelope
+from finishup.domain.observation_budget import ObservationMode, mode_limits
 
 
 @pytest.mark.parametrize(

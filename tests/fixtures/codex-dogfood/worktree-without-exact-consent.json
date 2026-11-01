@@ -6,7 +6,7 @@
     "status": "blocked",
     "reason": "observation_consent_missing",
     "evidence_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "next_action": "yoetz_observe_grant_exact_worktree"
+    "next_action": "finishup_observe_grant_exact_worktree"
   },
   "expected_preflight_outcome": "blocked",
   "expected_launch_allowed": false

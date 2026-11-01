@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _PATH = "canonical/control-project-policy-2.7.case.json"
 

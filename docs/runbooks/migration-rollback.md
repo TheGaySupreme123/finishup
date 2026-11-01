@@ -36,7 +36,7 @@ newer schema/event lands — downgrading the package is never presumed to be a r
 ## 3. Preview a migration
 
 ```text
-yoetz migrate preview --input <request.json> --json
+finishup migrate preview --input <request.json> --json
 ```
 
 Review the from/to versions, the ordered migration IDs that will run, the current
@@ -46,7 +46,7 @@ re-preview on any mismatch.
 ## 4. Backup-first execution
 
 ```text
-yoetz migrate execute --input <plan.json> --json
+finishup migrate execute --input <plan.json> --json
 ```
 
 Explicitly confirm the exact plan digest; non-interactive use requires the plan digest plus explicit

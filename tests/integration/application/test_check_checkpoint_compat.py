@@ -13,6 +13,7 @@ from typing import NoReturn, cast
 
 import pytest
 
+import finishup.application.check as check_module
 from builders.ledger_adapters import MemoryObjects, ownership_fence
 from builders.start_application import (
     MemoryStartRuntime,
@@ -21,25 +22,25 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.service import Application, VerificationPolicy
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import (
     CheckCommitResult,
     CheckPhase,
     OperationLease,
     OperationState,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -87,6 +88,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -143,7 +145,7 @@ async def _wedge_check_at_local_ready(monkeypatch: pytest.MonkeyPatch) -> _Wedge
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )
@@ -388,3 +390,25 @@ async def test_malformed_superseded_checkpoint_content_stays_storage_corrupt(
         await wedged.app.check(wedged.request)
     assert corrupt.value.code is PublicErrorCode.STORAGE_CORRUPT
     assert corrupt.value.retryable is False
+
+
+async def test_oversized_local_result_is_typed_terminal_and_replayable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real checkpoint limit must never become check_pipeline_failed or remain pending."""
+
+    wedged = await _wedge_check_at_local_ready(monkeypatch)
+    monkeypatch.setattr(check_module, "MAX_OBJECT_PLAINTEXT_BYTES", 1)
+    request = wedged.request.model_copy(update={"request_id": protocol_id("req_", 50_000)})
+    for _ in range(2):
+        with pytest.raises(PublicOperationError) as caught:
+            await wedged.app.check(request)
+        error = caught.value
+        assert error.code is PublicErrorCode.LIMIT_EXCEEDED
+        assert error.retryable is False
+        assert error.safe_details["reason_code"] == "check_result_capacity_exceeded"
+        assert error.safe_details["continuation"] == "check_capacity_handoff"
+    operation = await wedged.ledger.lookup_operation(wedged.writer_id, request.request_id)
+    assert operation is not None
+    assert operation.state is OperationState.COMPLETE
+    assert operation.phase is CheckPhase.TERMINAL

@@ -1,4 +1,4 @@
-"""Shared harness for driving the Yoetz terminal UI in tests."""
+"""Shared harness for driving the FinishUP terminal UI in tests."""
 
 from __future__ import annotations
 
@@ -9,18 +9,18 @@ from typing import Any, cast
 import pytest
 
 from builders.tui_runtime import FakeRuntime
-from yoetz.tui.app import YoetzTui
+from finishup.tui.app import FinishUpTui
 
 
 @pytest.fixture
-def make_app(monkeypatch: pytest.MonkeyPatch) -> Callable[..., YoetzTui]:
-    """Build a ``YoetzTui`` over a fake runtime, with the marker write stubbed.
+def make_app(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FinishUpTui]:
+    """Build a ``FinishUpTui`` over a fake runtime, with the marker write stubbed.
 
     Completing setup writes a first-run marker into the real state directory;
     tests must never do that, so the write is replaced with a recorded no-op.
     """
 
-    import yoetz.cli.setup as setup_module
+    import finishup.cli.setup as setup_module
 
     written: list[str] = []
 
@@ -36,8 +36,8 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> Callable[..., YoetzTui]:
         runtime: FakeRuntime | None = None,
         suspendable: bool = True,
         prompt_codex_home: bool = False,
-    ) -> YoetzTui:
-        app = YoetzTui(cast(Any, runtime or FakeRuntime()), first_run=first_run)
+    ) -> FinishUpTui:
+        app = FinishUpTui(cast(Any, runtime or FakeRuntime()), first_run=first_run)
         if not prompt_codex_home:
 
             async def selected_codex_home(_option: object) -> Path:

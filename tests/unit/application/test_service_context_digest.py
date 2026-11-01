@@ -9,18 +9,18 @@ from typing import Any, cast
 import pytest
 
 from builders.replay import replay_records
-from yoetz.application import service as service_module
-from yoetz.application.coordination import InMemoryCoordinationStore
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.projects import ProjectApplication
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.domain.coordination import (
+from finishup.application import service as service_module
+from finishup.application.coordination import InMemoryCoordinationStore
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.projects import ProjectApplication
+from finishup.application.service import Application, VerificationPolicy
+from finishup.domain.coordination import (
     CoordinationDetection,
     CoordinationDisposition,
     CoordinationObligationState,
     OverlapKind,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     CoordinationContextRecordedPayload,
     CoordinationDispositionRecordedPayload,
@@ -33,7 +33,7 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -43,20 +43,20 @@ from yoetz.domain.values import (
     project_id,
     task_id,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand
-from yoetz.ports.start_catalog import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand
+from finishup.ports.start_catalog import (
     StartCatalogPort,
     TaskRoute,
     TaskRouteState,
     TaskSourceProvenance,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import PublishWorkRequest
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import PublishWorkRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -336,7 +336,7 @@ def _application(
         waiver_authorizer=cast(Callable[[object], bool], _deny),
         import_publication_authorizer=cast(Callable[[object], bool], _deny),
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest={},
         project_application=cast(ProjectApplication, projects),
         enforce_repository_identity=False,
@@ -422,7 +422,10 @@ async def test_matching_or_omitted_context_digest_is_supported_and_mirrored(
     app, runtime, projects = _composition((current, evidence))
     result = object()
 
-    async def execute(_app: Application, _request: PublishWorkRequest) -> object:
+    # #1118 unit 1: the service also passes its outside-input snapshot capture.
+    async def execute(
+        _app: Application, _request: PublishWorkRequest, _capture: object = None
+    ) -> object:
         return result
 
     monkeypatch.setattr(service_module, "execute_publish_work", execute)

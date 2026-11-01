@@ -14,24 +14,24 @@ from typing import TYPE_CHECKING
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
     ObjectRootSnapshot,
     ObjectSource,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryCapability,
     SecretPurpose,
 )
-from yoetz.protocol.ids import IdKind
+from finishup.protocol.ids import IdKind
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _TASK_ID = "tsk_30000000-0000-4000-8000-000000000001"
 _DIGEST = "sha256:" + "0" * 64

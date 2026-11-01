@@ -10,10 +10,10 @@ from typing import Any, cast
 import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
-from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.events import EvidenceRecordedPayload
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_admission import build_routine_read_summary
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.events import EvidenceRecordedPayload
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -22,9 +22,9 @@ from yoetz.domain.observation import (
     observation_selection_route,
     routine_read_summary_from_envelope,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.errors import ProtocolValueError
 
 _SESSION_COMMITMENT = "hmac-sha256:" + "a" * 64
 _CURSOR_COMMITMENT = "hmac-sha256:" + "b" * 64

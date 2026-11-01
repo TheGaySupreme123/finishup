@@ -11,13 +11,13 @@ Claims
   Rate limiting rejects the 11th request in a minute
 
 Checks
-  work-integrity/0.1.0
+  work-integrity/0.3.0
 
 Coverage
   no AI-powered review
 
 Findings
-  P2 unsupported_claim (deterministic): no evidence links the claim
+  P2 unsupported_claim (local): no evidence links the claim
 
 Limitations
   semantic_review_unavailable

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.tui.symbols import Level, style_for, symbol_for
-from yoetz.tui.text import ELLIPSIS, middle_truncate, pad_columns, truncate, wrap
+from finishup.tui.symbols import Level, style_for, symbol_for
+from finishup.tui.text import ELLIPSIS, middle_truncate, pad_columns, truncate, wrap
 
 
 def test_every_certainty_level_has_a_distinct_symbol_and_style() -> None:
@@ -24,7 +24,7 @@ def test_truncate_marks_the_loss_and_never_exceeds_the_width() -> None:
 
 @pytest.mark.parametrize("width", [3, 8, 16, 30])
 def test_middle_truncate_keeps_head_and_tail_within_the_width(width: int) -> None:
-    path = "/srv/projects/yoetz/src/yoetz/cli/app.py"
+    path = "/srv/projects/finishup/src/finishup/cli/app.py"
     result = middle_truncate(path, width)
     assert len(result) == width
     assert ELLIPSIS in result
@@ -35,7 +35,7 @@ def test_middle_truncate_keeps_head_and_tail_within_the_width(width: int) -> Non
 
 
 def test_middle_truncate_leaves_short_values_alone() -> None:
-    assert middle_truncate("~/p/yoetz", 20) == "~/p/yoetz"
+    assert middle_truncate("~/p/finishup", 20) == "~/p/finishup"
 
 
 def test_wrap_breaks_on_words_and_hard_splits_only_when_it_must() -> None:

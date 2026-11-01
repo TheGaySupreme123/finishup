@@ -13,10 +13,10 @@ from collections.abc import Sequence
 
 import pytest
 
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.models import PrivacyPosture, PrivacyRecommendation
-from yoetz.tui.symbols import Level
-from yoetz.tui.widgets.views import BaseView, SelectionView
+from finishup.tui.app import FinishUpTui
+from finishup.tui.models import PrivacyPosture, PrivacyRecommendation
+from finishup.tui.symbols import Level
+from finishup.tui.widgets.views import BaseView, SelectionView
 
 
 class _Runtime:
@@ -35,15 +35,15 @@ class _Runtime:
         return self._recommendation
 
     def project_root(self) -> str:
-        return "/srv/yoetz"
+        return "/srv/finishup"
 
 
 class _Harness:
-    """A ``YoetzTui`` with the mounted-widget surfaces replaced by recording stubs."""
+    """A ``FinishUpTui`` with the mounted-widget surfaces replaced by recording stubs."""
 
     def __init__(self, posture: PrivacyPosture, recommendation: PrivacyRecommendation) -> None:
         runtime = _Runtime(posture, recommendation)
-        self.app = YoetzTui(runtime)  # pyright: ignore[reportArgumentType]
+        self.app = FinishUpTui(runtime)  # pyright: ignore[reportArgumentType]
         self.said: list[tuple[Level, str, tuple[str, ...]]] = []
         self.views: list[SelectionView] = []
         self.answers: list[str | None] = []
@@ -126,7 +126,7 @@ async def test_privacy_names_repository_grant_and_automatic_migration_without_id
     assert "Repository grant: granted for this repository" in harness.transcript
     assert "carried forward and narrowed" in harness.transcript
     assert "sha256:" not in harness.transcript
-    assert "/srv/yoetz" not in harness.transcript
+    assert "/srv/finishup" not in harness.transcript
 
 
 @pytest.mark.anyio
@@ -160,6 +160,52 @@ async def test_a_policy_already_matching_the_recommendation_is_not_offered_as_a_
 
     assert "already on the recommended privacy policy" in harness.transcript
     assert harness.choices(0) == ["keep", "other"]
+
+
+@pytest.mark.anyio
+async def test_an_earlier_version_of_the_recommended_recipe_offers_the_newer_one() -> None:
+    """Issue #907 Phase 1b: an Expanded 1.1.0 approval is not "already recommended"."""
+
+    from dataclasses import replace
+
+    harness = _Harness(
+        replace(_posture("confirm_every_request"), recipe_outdated=True), _recommendation()
+    )
+    harness.answers = [None]
+
+    await harness.app.command_privacy()
+
+    assert "already on the recommended privacy policy" not in harness.transcript
+    assert "A newer version of your recipe is available" in harness.transcript
+    assert harness.choices(0) == ["keep", "recommended", "other"]
+
+
+def test_the_runtime_reads_an_earlier_expanded_preset_as_outdated() -> None:
+    from typing import cast
+
+    from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+    from finishup.tui.runtime import _review_recipe_outdated  # pyright: ignore[reportPrivateUsage]
+
+    def row(selection: ReviewSelectionPolicy) -> dict[str, object]:
+        fields = ReviewSelectionPolicy.__dataclass_fields__
+        return {
+            "review_context_profile": "expanded",
+            "review_selection": {
+                name: list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
+                for name, value in (
+                    (name, cast(object, getattr(selection, name))) for name in fields
+                )
+            },
+        }
+
+    legacy = ReviewSelectionPolicy.for_profile(
+        ReviewContextProfile.EXPANDED, preset_version="1.1.0"
+    )
+    current = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    assert _review_recipe_outdated(row(legacy)) is True
+    assert _review_recipe_outdated(row(current)) is False
+    assert _review_recipe_outdated({"review_context_profile": "custom"}) is False
+    assert _review_recipe_outdated({}) is False
 
 
 @pytest.mark.anyio
@@ -212,14 +258,14 @@ def test_the_fake_runtime_carries_the_production_recommendation_text_verbatim() 
     from unittest.mock import patch
 
     from builders.tui_runtime import RECOMMEND_METADATA_ONLY, RECOMMEND_PRIVATE
-    from yoetz.tui.runtime import YoetzRuntime
+    from finishup.tui.runtime import FinishUpRuntime
 
-    runtime = YoetzRuntime()
+    runtime = FinishUpRuntime()
     for recipe, expected in (
         ("metadata_only", RECOMMEND_METADATA_ONLY),
         ("private", RECOMMEND_PRIVATE),
     ):
-        with patch("yoetz.cli.privacy_setup.recommended_privacy_recipe", return_value=recipe):
+        with patch("finishup.cli.privacy_setup.recommended_privacy_recipe", return_value=recipe):
             assert runtime.privacy_recommendation() == expected
 
 
@@ -227,17 +273,44 @@ def test_an_unreadable_configuration_recommends_the_closed_posture() -> None:
     """Never recommend enabling egress on the strength of a config that could not be read.
 
     Reading the configured provider binding loads configuration, which raises `ConfigError`
-    on any unrecognized `YOETZ_*` variable. `ConfigError` is not a `ValueError`, so it used to
+    on any unrecognized `FINISHUP_*` variable. `ConfigError` is not a `ValueError`, so it used to
     escape every handler between here and the top of `/privacy`.
     """
 
     from unittest.mock import patch
 
-    from yoetz.config.models import ConfigError
-    from yoetz.tui.runtime import YoetzRuntime
+    from finishup.config.models import ConfigError
+    from finishup.tui.runtime import FinishUpRuntime
 
     with patch(
-        "yoetz.cli.privacy_setup.recommended_privacy_recipe",
+        "finishup.cli.privacy_setup.recommended_privacy_recipe",
         side_effect=ConfigError("unknown_config_env_var"),
     ):
-        assert YoetzRuntime().privacy_recommendation().recipe == "private"
+        assert FinishUpRuntime().privacy_recommendation().recipe == "private"
+
+
+def test_the_privacy_screen_names_admitted_outside_workspace_roots() -> None:
+    """Issue #1082: the way in has a way to see it on every owner surface."""
+
+    from finishup.tui.models import PrivacyPosture
+
+    none = PrivacyPosture(profile="assisted_review", llm_inference_enabled=True, readable=True)
+    # Issue #1102 (review surfaces-r2-3): with none admitted the screen still names the way in.
+    assert none.admitted_input_roots_summary == (
+        "Outside-workspace task inputs: none admitted"
+        " (add one with `finishup privacy input-roots add <folder>`)"
+    )
+    unreadable = PrivacyPosture(
+        profile="assisted_review", llm_inference_enabled=True, readable=False
+    )
+    assert unreadable.admitted_input_roots_summary is None
+    some = PrivacyPosture(
+        profile="assisted_review",
+        llm_inference_enabled=True,
+        readable=True,
+        admitted_input_roots=("/data", "/shared/legacy_app"),
+    )
+    summary = some.admitted_input_roots_summary
+    assert summary is not None
+    assert "/data, /shared/legacy_app" in summary
+    assert "finishup privacy input-roots" in summary

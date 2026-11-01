@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,20 +20,20 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.projects import ProjectApplication
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.projects import ProjectApplication
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
-from yoetz.domain.events import AcceptedEvent, RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.events import AcceptedEvent, RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -46,18 +46,18 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
-from yoetz.domain.values import Frontier, session_id
-from yoetz.kernel.reducers import replay
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.domain.receipts import PolicyVersionEntry, ReceiptVersionSlice, SchemaVersionEntry
+from finishup.domain.values import Frontier, session_id
+from finishup.kernel.reducers import replay
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkDryRunModel,
@@ -76,13 +76,14 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResultModel,
     StatusResultsPageModel,
+    StatusSuccessModel,
 )
 
 pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "7" * 64
 _WORKSPACE = "hmac-sha256:" + "8" * 64
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 
 
 class _IdleImporter:
@@ -194,7 +195,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -225,6 +226,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -398,9 +400,10 @@ async def _assert_mcp_scope_projection(
         ),
         _cli_binding(seed, facts),
         status,
+        _paginate=False,
     )
     assert isinstance(projected, StatusResultModel)
-    assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     page = cast(StatusCompactPageModel, projected.root.page)
     assert page.items[0].declared_obligation_count == declared
     assert page.items[0].open_obligation_count == opened
@@ -426,21 +429,23 @@ async def test_status_request_result_parity() -> None:
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
 
     cli_context = ClientProjectionContext(
-        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
     )
     mcp_context = ClientProjectionContext(
         ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
     )
     cli_projected = await app.project_result_for_client(
-        cli_context, _cli_binding(111, facts), status
+        cli_context, _cli_binding(111, facts), status, _paginate=False
     )
     mcp_projected = await app.project_result_for_client(
-        mcp_context, _cli_binding(113, facts), status
+        mcp_context, _cli_binding(113, facts), status, _paginate=False
     )
     assert isinstance(cli_projected, StatusResultModel)
     assert isinstance(mcp_projected, StatusResultModel)
     assert cli_projected.root.ok is True
     assert mcp_projected.root.ok is True
+    assert isinstance(cli_projected.root, StatusSuccessModel)
+    assert isinstance(mcp_projected.root, StatusSuccessModel)
 
     cli_body = cli_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
     mcp_body = mcp_projected.root.model_dump(mode="json", exclude={"privacy_projection"})
@@ -549,10 +554,11 @@ async def test_status_distinguishes_undeclared_and_declared_empty_scope(
         ),
         _cli_binding(seed + 5, facts),
         status,
+        _paginate=False,
     )
     assert isinstance(projected, StatusResultModel)
-    assert projected.root.ok is True
     projected_success = projected.root
+    assert isinstance(projected_success, StatusSuccessModel)
     projected_page = cast(StatusCompactPageModel, projected_success.page)
     assert projected_page.items[0].no_obligations_reason == reason
     assert projected_success.closure_readiness.blocking_conditions == (
@@ -691,7 +697,12 @@ async def test_status_distinguishes_open_and_resolved_declared_obligations() -> 
     resolved_item = cast(StatusCompactPageModel, resolved_status.page).items[0]
     assert resolved_item.declared_obligation_count == "1"
     assert resolved_item.open_obligation_count == "0"
-    assert resolved_status.closure_readiness.blocking_conditions == ()
+    # ADR-046: status lists the gaps the receipt would carry, so the digest-only evidence that
+    # resolved the obligation is declared here instead of surfacing only on the receipt.
+    assert resolved_status.closure_readiness.blocking_conditions == ("coverage_gaps_declared",)
+    assert "evidence_digest_subject_legacy_unknown" in (
+        resolved_status.closure_readiness.standing_limitations or ()
+    )
     await _assert_mcp_scope_projection(
         app,
         resolved_request,
@@ -700,7 +711,7 @@ async def test_status_distinguishes_open_and_resolved_declared_obligations() -> 
         declared="1",
         opened="0",
         reason=None,
-        blockers=(),
+        blockers=("coverage_gaps_declared",),
     )
 
 
@@ -1143,12 +1154,15 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     facts = await app.projection_binding_facts(ControlMethod.STATUS, status_wire, status)
     binding = _cli_binding(212, facts)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     assert projected.root.privacy_projection.sink == "local_human_view"
     assert len(projection.candidates) == 1
 
@@ -1156,7 +1170,9 @@ async def test_status_is_task_state_read_only_and_projection_receipted() -> None
     # minting a fresh one for an unchanged result/policy/sink pair -- at most one additional
     # candidate is proposed to confirm reuse rather than an unbounded receipt per replay.
     projected_again = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         binding,
         status,
     )
@@ -1226,7 +1242,7 @@ async def test_status_projects_requested_attempt_accounting_and_result_structure
     obligation_event = protocol_id("evt_", seed + 2)
     plan_event = protocol_id("evt_", seed + 3)
     command = "uv run pytest tests/unit/example.py"
-    change = "src/yoetz/example.py"
+    change = "src/finishup/example.py"
     published = await app.publish_work(
         PublishWorkRequest.model_validate(
             {
@@ -1892,7 +1908,7 @@ async def test_status_filters_before_payload_hydration() -> None:
 async def test_lineage_paginates_children_and_annotations_and_rejects_changed_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import task_views
+    from finishup.application import task_views
 
     app, _runtime, _projection = _build_app(seed_offset=12)
     started = await app.start(start_request(1200, title="Lineage pagination exercise"))
@@ -1970,7 +1986,7 @@ async def test_lineage_paginates_children_and_annotations_and_rejects_changed_sn
 async def test_project_status_pages_and_lineage_fallback_use_the_public_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application import task_views
+    from finishup.application import task_views
 
     app, _runtime, _projection = _build_app(seed_offset=13)
     app = replace(
@@ -2032,10 +2048,160 @@ async def test_project_status_pages_and_lineage_fallback_use_the_public_projecti
     assert isinstance(fallback.page, StatusLineagePageModel)
     facts = await app.projection_binding_facts(ControlMethod.STATUS, wire, fallback)
     projected = await app.project_result_for_client(
-        ClientProjectionContext(ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True),
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
         _cli_binding(1302, facts),
         fallback,
     )
     assert isinstance(projected, StatusResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, StatusSuccessModel)
     assert projected.root.view == "lineage"
+
+
+async def _projected_status(
+    app: Application, wire: dict[str, JsonValue], rpc_seed: int
+) -> StatusResultModel:
+    status = await app.status(StatusRequest.model_validate(wire))
+    facts = await app.projection_binding_facts(ControlMethod.STATUS, wire, status)
+    projected = await app.project_result_for_client(
+        ClientProjectionContext(
+            ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+        ),
+        _cli_binding(rpc_seed, facts),
+        status,
+        _paginate=False,
+    )
+    assert isinstance(projected, StatusResultModel)
+    return projected
+
+
+@pytest.mark.parametrize("view", ["compact", "findings", "obligations", "results", "history"])
+async def test_brief_status_is_a_strict_subset_of_the_full_body(view: str) -> None:
+    """Issue #1084: ``detail: brief`` only omits; every value it keeps is the full body's."""
+
+    app, _runtime, _projection = _build_app(seed_offset=7)
+    started, _checked, _obligations = await _bootstrap_finding(app, seed=10840)
+    base: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 10850)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "view": view,
+    }
+    full = await _projected_status(app, {**base, "limit": "20"}, 10851)
+    brief = await _projected_status(app, {**base, "detail": "brief"}, 10853)
+    full_body = full.root.model_dump(mode="json", exclude_unset=True)
+    brief_body = brief.root.model_dump(mode="json", exclude_unset=True)
+
+    assert brief_body["detail"] == "brief"
+    assert "detail" not in full_body
+    for key, value in brief_body.items():
+        if key in {"detail", "closure_state", "privacy_projection"}:
+            continue
+        if key == "page" and view == "compact":
+            # #1244 (D13): the brief compact page names each unanswered finding without its detail.
+            page = cast(dict[str, Any], full_body["page"])
+            full_page = {
+                **page,
+                "items": [
+                    {
+                        **item,
+                        "unanswered_findings": [
+                            {k: v for k, v in row.items() if k != "detail"}
+                            for row in item["unanswered_findings"]
+                        ],
+                    }
+                    for item in page["items"]
+                ],
+            }
+            assert any(
+                "detail" in row for item in page["items"] for row in item["unanswered_findings"]
+            )
+            assert full_page == value, key
+            continue
+        assert full_body[key] == value, key
+    # One frontier when they agree; projection metadata at its defaults is omitted.
+    assert full_body["head_frontier"] == full_body["result_frontier"]
+    for key in ("requested_frontier", "head_frontier", "subject_frontier", "projection_lag"):
+        assert key not in brief_body
+    if view == "compact":
+        assert brief_body["closure_readiness"] == full_body["closure_readiness"]
+        assert "closure_state" not in brief_body
+    else:
+        assert "closure_readiness" not in brief_body
+        assert "coverage" not in brief_body
+        readiness = cast(Mapping[str, JsonValue], full_body["closure_readiness"])
+        assert brief_body["closure_state"] == {
+            key: readiness[key]
+            for key in ("blocking_conditions", "state", "agent_actionable")
+            if key in readiness
+        }
+    assert len(canonical_encode(cast(JsonValue, brief_body))) < len(
+        canonical_encode(cast(JsonValue, full_body))
+    )
+
+
+async def test_results_filters_select_by_source_event_envelope() -> None:
+    """Issue #1084: view results admits after_sequence, actor_id and author: mine.
+
+    The result is published in the sparse form (no event ids, times, mirrors or frontier; the
+    request id is the one a host binds), so this also proves the service-filled path end to end.
+    """
+
+    app, _runtime, _projection = _build_app(seed_offset=8)
+    started, checked, _obligations = await _bootstrap_finding(app, seed=10860)
+    action = protocol_id("act_", 10861)
+    result = protocol_id("res_", 10861)
+    sparse = dict(_request_base(protocol_id("req_", 10862)))
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **sparse,
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "event_drafts": [
+                    {
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "payload": {
+                            "action_id": action,
+                            "action_kind": "command",
+                            "command": "pytest -q",
+                            "description": "Ran the tests.",
+                        },
+                    },
+                    {
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "payload": {
+                            "result_id": result,
+                            "action_id": action,
+                            "outcome": "success",
+                            "summary": "passed",
+                        },
+                    },
+                ],
+            }
+        )
+    )
+    assert published.outcome == "accepted"
+    base: dict[str, JsonValue] = {
+        **_request_base(protocol_id("req_", 10870)),
+        "session_id": started.session_id,
+        "writer_id": started.writer_id,
+        "view": "results",
+        "detail": "full",
+    }
+
+    async def result_ids(status_filter: dict[str, JsonValue] | None) -> list[str]:
+        wire = base if status_filter is None else {**base, "filter": status_filter}
+        page = (await app.status(StatusRequest.model_validate(wire))).page
+        return [item.result_id for item in cast(StatusResultsPageModel, page).items]
+
+    assert result in await result_ids(None)
+    head = str(checked.result_frontier.sequence)
+    assert await result_ids({"after_sequence": head}) == [result]
+    assert await result_ids({"after_sequence": str(published.result_frontier.sequence)}) == []
+    assert await result_ids({"actor_id": "nobody-published-this"}) == []
+    actor = cast(Mapping[str, JsonValue], base["actor"])["actor_id"]
+    assert await result_ids({"actor_id": cast(str, actor)}) == [result]
+    assert await result_ids({"author": "mine"}) == [result]

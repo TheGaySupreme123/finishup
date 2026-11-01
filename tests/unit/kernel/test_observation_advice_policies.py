@@ -6,16 +6,16 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.observation import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationLifecycle,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.policies.observation_advice import (
     SEMANTIC_ATTENTION_TOKENS,
     STANDING_MACHINE_ACTIONS,
     ObservationAdviceCandidate,
@@ -719,6 +719,47 @@ def test_observation_gap_or_stale() -> None:
     assert "observation_gap_or_stale" in rules
 
 
+def test_standing_unpaired_record_raises_no_stale_advisory() -> None:
+    """#917: only conditions that can recover in session raise ``refresh_observation``."""
+
+    standing_context = ObservationAdviceContext(
+        envelopes=(),
+        lifecycle=ObservationLifecycle.ACTIVE,
+        gaps=(ObservationGapCode.UNPAIRED_EVENT.value,),
+    )
+    assert "observation_gap_or_stale" not in _rules(standing_context)
+    for transient in (
+        ObservationGapCode.SOURCE_LAG,
+        ObservationGapCode.CURSOR_STALE,
+        ObservationGapCode.SERVICE_UNAVAILABLE,
+        ObservationGapCode.VAULT_LOCKED,
+    ):
+        candidates = observation_advice_findings(
+            replace(
+                standing_context,
+                gaps=(ObservationGapCode.UNPAIRED_EVENT.value, transient.value),
+            )
+        )
+        gap = [item for item in candidates if item.rule_code == "observation_gap_or_stale"]
+        assert len(gap) == 1, transient
+        # The live cause leads the refs; the standing record is never named as one.
+        assert gap[0].evidence_refs[0] == f"cause:{transient.value}"
+        assert "cause:unpaired_event" not in gap[0].evidence_refs
+    for standing_gap in (
+        ObservationGapCode.UNSUPPORTED_EVENT,
+        ObservationGapCode.UNSUPPORTED_FORMAT,
+    ):
+        assert "observation_gap_or_stale" not in _rules(
+            replace(standing_context, gaps=(standing_gap.value,))
+        )
+    # A lifecycle label without a named recoverable cause is operator status, not
+    # agent-facing work. In particular, a drain backlog must not inject ceremony.
+    stale = observation_advice_findings(
+        replace(standing_context, lifecycle=ObservationLifecycle.STALE)
+    )
+    assert "observation_gap_or_stale" not in {item.rule_code for item in stale}
+
+
 def test_provider_not_ready() -> None:
     rules = _rules(
         ObservationAdviceContext(
@@ -962,3 +1003,307 @@ def test_check_fact_binds_edit_staleness() -> None:
         )
     )
     assert "edit_after_successful_check" in rules
+
+
+# --- #909: the advice reads the shared supersession rule -----------------------------------------
+
+_PYTEST_X = "hmac-sha256:" + "1" * 64
+_PYTEST_Y = "hmac-sha256:" + "2" * 64
+
+
+def _bash(
+    pos: int,
+    call: str,
+    *,
+    success: bool,
+    commitment: str | None,
+    event_kind: str = "PostToolUse",
+) -> ObservationEnvelope:
+    """A Claude Code ordinary-profile Bash result as the hook normalizer records it."""
+
+    payload: dict[str, object] = {
+        "tool_name": "Bash",
+        "tool_call_id": call,
+        "success": success,
+        "action": "claude_tool_success" if success else "claude_tool_failure",
+    }
+    if commitment is not None:
+        payload["command_commitment"] = commitment
+    return _envelope(event_kind, pos=pos, identity=f"hook:{call}:{pos}", payload=payload)
+
+
+def _unresolved(*envelopes: ObservationEnvelope) -> list[ObservationAdviceCandidate]:
+    return [
+        item
+        for item in observation_advice_findings(
+            ObservationAdviceContext(
+                envelopes=envelopes, lifecycle=ObservationLifecycle.ACTIVE, gaps=()
+            )
+        )
+        if item.rule_code == "failed_command_unresolved"
+    ]
+
+
+def test_rerun_of_the_same_command_under_a_new_call_id_clears_the_failure() -> None:
+    """A rerun is a new host call; the keyed command identity, not the call id, links it."""
+
+    assert not _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=_PYTEST_X),
+        _bash(2, "toolu-2", success=True, commitment=_PYTEST_X),
+    )
+
+
+def test_passing_run_of_a_different_command_keeps_the_failure_unresolved() -> None:
+    unresolved = _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=_PYTEST_X),
+        _bash(2, "toolu-2", success=True, commitment=_PYTEST_Y),
+    )
+    assert [item.evidence_refs for item in unresolved] == [("hook:toolu-1:1",)]
+
+
+def test_completed_edit_after_a_failure_keeps_it_unresolved() -> None:
+    edit = _envelope(
+        "PostToolUse",
+        pos=2,
+        identity="hook:toolu-edit:2",
+        payload={"tool_name": "Edit", "tool_call_id": "toolu-edit", "success": True},
+    )
+    assert _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), edit)
+    denied_edit = _envelope(
+        "PostToolUse",
+        pos=2,
+        identity="hook:toolu-edit:2",
+        payload={
+            "tool_name": "Edit",
+            "tool_call_id": "toolu-edit",
+            "success": False,
+            "denied": True,
+        },
+    )
+    assert _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), denied_edit)
+    pending_edit = _envelope(
+        "PreToolUse",
+        pos=2,
+        identity="hook:toolu-edit:2",
+        payload={"tool_name": "Edit", "tool_call_id": "toolu-edit"},
+    )
+    assert _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), pending_edit)
+
+
+def test_legacy_envelopes_without_identity_stay_unresolved_after_edit() -> None:
+    assert _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=None),
+        _bash(2, "toolu-2", success=True, commitment=None),
+    )
+    edit = _envelope(
+        "PostToolUse",
+        pos=3,
+        identity="hook:toolu-edit:3",
+        payload={"tool_name": "Write", "tool_call_id": "toolu-edit", "success": True},
+    )
+    assert _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=None),
+        _bash(2, "toolu-2", success=True, commitment=None),
+        edit,
+    )
+
+
+def test_a_new_failure_after_the_pass_is_live_again() -> None:
+    unresolved = _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=_PYTEST_X),
+        _bash(2, "toolu-2", success=True, commitment=_PYTEST_X),
+        _bash(3, "toolu-3", success=False, commitment=_PYTEST_X),
+    )
+    assert [item.evidence_refs for item in unresolved] == [("hook:toolu-3:3",)]
+
+
+def test_a_permission_request_for_an_edit_tool_is_not_a_completed_edit() -> None:
+    """Claude's PermissionRequest names the edit tool before it runs and may still be denied.
+
+    Only a post-event materializes the ledger result the local packs read, so the advice must not
+    retire a failure on a request the packs never see as an edit.
+    """
+
+    requested = _envelope(
+        "PermissionRequest",
+        pos=2,
+        identity="hook:permission:2",
+        payload={
+            "tool_name": "Edit",
+            "action": "claude_permission_request",
+            "permission_decision": "requested",
+        },
+    )
+    unresolved = _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), requested)
+    assert [item.evidence_refs for item in unresolved] == [("hook:toolu-1:1",)]
+
+
+def test_only_the_latest_run_of_a_command_can_stay_unresolved() -> None:
+    unresolved = _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=_PYTEST_X),
+        _bash(2, "toolu-2", success=False, commitment=_PYTEST_X),
+    )
+    assert [item.evidence_refs for item in unresolved] == [("hook:toolu-2:2",)]
+    rerun_without_outcome = _envelope(
+        "PostToolUse",
+        pos=2,
+        identity="hook:toolu-2:2",
+        payload={"tool_name": "Bash", "tool_call_id": "toolu-2", "command_commitment": _PYTEST_X},
+    )
+    assert _unresolved(
+        _bash(1, "toolu-1", success=False, commitment=_PYTEST_X), rerun_without_outcome
+    )
+
+
+def test_cursor_ordinary_shell_failures_reach_the_rule_and_clear_on_rerun() -> None:
+    """Cursor's ordinary profile names its shell tool ``Shell``; its exit code is structural."""
+
+    def shell(pos: int, call: str, exit_status: int) -> ObservationEnvelope:
+        return _envelope(
+            "PostToolUse",
+            pos=pos,
+            identity=f"hook:{call}:{pos}",
+            payload={
+                "tool_name": "Shell",
+                "tool_call_id": call,
+                "exit_status": exit_status,
+                "action": "cursor_tool_failure" if exit_status else "cursor_tool_success",
+                "command_commitment": _PYTEST_X,
+            },
+        )
+
+    assert [item.evidence_refs for item in _unresolved(shell(1, "cursor-1", 1))] == [
+        ("hook:cursor-1:1",)
+    ]
+    assert not _unresolved(shell(1, "cursor-1", 1), shell(2, "cursor-2", 0))
+
+
+def test_an_edit_post_event_without_a_stated_success_does_not_retire_a_failure() -> None:
+    unknown_edit = _envelope(
+        "PostToolUse",
+        pos=2,
+        identity="hook:cursor-edit:2",
+        payload={
+            "tool_name": "cursor_file_edit",
+            "changed_paths_digest": "hmac-sha256:" + "c" * 64,
+        },
+    )
+    unresolved = _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), unknown_edit)
+    assert [item.evidence_refs for item in unresolved] == [("hook:toolu-1:1",)]
+
+
+# --- segment certification and stopped own background jobs (#1104) ---------------------------
+
+
+def _shell_post(
+    pos: int, call: str, *, exit_status: int | None, commitment: str, **extra: object
+) -> ObservationEnvelope:
+    payload: dict[str, object] = {
+        "tool_name": "Bash",
+        "tool_call_id": call,
+        "command_commitment": commitment,
+        **extra,
+    }
+    if exit_status is not None:
+        payload["exit_status"] = exit_status
+    return _envelope("PostToolUse", pos=pos, identity=f"hook:{call}:{pos}", payload=payload)
+
+
+def _certified(*segments: str) -> list[str]:
+    from finishup.domain.command_segments import segment_certification_commitment
+
+    return sorted({*segments, *(segment_certification_commitment(item) for item in segments)})
+
+
+def _stop_marked(commitment: str) -> list[str]:
+    from finishup.domain.process_control import process_control_commitment
+
+    return [process_control_commitment("stop_own_job_term", commitment)]
+
+
+def test_failed_command_rule_honors_segment_certification() -> None:
+    chain = "hmac-sha256:" + "3" * 64
+    failed = _bash(1, "toolu-1", success=False, commitment=_PYTEST_X)
+    certified = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
+        command_composition="and_chain",
+    )
+    assert not _unresolved(failed, certified)
+    # The same chain without the markers listed ``pytest`` after dropping a leading assignment
+    # (``PYTEST_ADDOPTS=--co pytest ...``): it ran a different command and certifies nothing.
+    conditioned = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=[_PYTEST_X, _PYTEST_Y],
+        command_composition="and_chain",
+    )
+    assert len(_unresolved(failed, conditioned)) == 1
+    masked = _shell_post(
+        2,
+        "toolu-2",
+        exit_status=0,
+        commitment=chain,
+        command_segment_commitments=_certified(_PYTEST_X, _PYTEST_Y),
+        command_composition="masked",
+    )
+    assert len(_unresolved(failed, masked)) == 1
+
+
+@pytest.mark.parametrize(
+    ("exit_status", "raised"), [(143, False), (1, True), (137, True), (None, False)]
+)
+def test_failed_command_rule_honors_a_stopped_own_job(
+    exit_status: int | None, raised: bool
+) -> None:
+    stopped = _shell_post(
+        1,
+        "toolu-1",
+        exit_status=exit_status,
+        commitment=_PYTEST_X,
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
+        runner_class="compound",
+    )
+    assert bool(_unresolved(stopped)) is raised
+
+
+def test_a_stream_copy_is_judged_by_the_shape_its_hook_copy_recorded() -> None:
+    """Codex: the hook post carries the shape but no exit; the stream item states the exit."""
+
+    hook = _shell_post(
+        1,
+        "call-1",
+        exit_status=None,
+        commitment=_PYTEST_X,
+        command_segment_commitments=_stop_marked(_PYTEST_X),
+        command_composition="masked",
+    )
+    stream_stopped = _shell_post(2, "exec-1", exit_status=143, commitment=_PYTEST_X)
+    assert not _unresolved(hook, stream_stopped)
+    stream_crashed = _shell_post(2, "exec-1", exit_status=1, commitment=_PYTEST_X)
+    assert len(_unresolved(hook, stream_crashed)) == 1
+
+
+def test_failed_command_detail_text_is_fixed_and_bounded() -> None:
+    from finishup.application.observation_advice import (
+        _RULE_DETAILS,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    detail = _RULE_DETAILS["failed_command_unresolved"]
+    assert "A passing rerun of it" in detail
+    assert "a verification your plan requests" in detail
+    assert "an edit does not" in detail
+    assert "acknowledged" in detail
+    assert "completed edit followed" not in detail
+    from finishup.domain.observation import (
+        _ADVICE_TEXT_RE,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # The advice item's own bound: 240 characters of the closed advice alphabet.
+    assert _ADVICE_TEXT_RE.fullmatch(detail) is not None

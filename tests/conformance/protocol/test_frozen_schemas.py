@@ -14,25 +14,32 @@ from urllib.parse import urldefrag, urlparse
 
 import pytest
 
-from yoetz.protocol.canonical import canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROOT_SCHEMA_DIR = _REPO_ROOT / "schemas"
-_PACKAGE_SCHEMA_DIR = resources.files("yoetz").joinpath("resources").joinpath("schemas")
+_PACKAGE_SCHEMA_DIR = resources.files("finishup").joinpath("resources").joinpath("schemas")
 _MANIFEST_PATH = "manifest.json"
 _SCHEMA_NAMESPACE = "https://schemas.yoetz.dev/0.1/"
 _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
-_EXPECTED_MEMBER_COUNT = 206
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 51
-_EXPECTED_EVENT_VERSION_COUNT = 29
+# +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
+# ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
+_EXPECTED_MEMBER_COUNT = 244  # #1239 +1 contact-expectation-declared 1.0.0;
+# #1170 +1 result-recorded 1.1.0;
+# #1139 +4 lossless result-delivery schemas;
+# #1118 +1 reviewer-reply 1.0.0, +2 check-result/-recorded 1.6.0,
+# +1 privacy-policy 1.3.0;
+# #1119 +2 host-connection batch report and ai-status 1.0.0
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 57  # #1118 reviewer-reply; #1119 batch, ai-status
+_EXPECTED_EVENT_VERSION_COUNT = 30  # #1239 +1 contact-expectation-declared
 
 
 def _schema_module() -> Any:
-    if importlib.util.find_spec("yoetz.protocol.schemas") is None:
-        pytest.skip("yoetz.protocol.schemas not implemented yet")
-    return importlib.import_module("yoetz.protocol.schemas")
+    if importlib.util.find_spec("finishup.protocol.schemas") is None:
+        pytest.skip("finishup.protocol.schemas not implemented yet")
+    return importlib.import_module("finishup.protocol.schemas")
 
 
 def _collect_traversable_files(root: Traversable, prefix: str = "") -> dict[str, bytes]:
@@ -245,6 +252,12 @@ def test_schema_registry_is_complete() -> None:
                 and path != "consent/chat-user-attestation-1.0.0.schema.json"
             )
             or path.endswith("-2.0.0.schema.json")
+            else "1.7.0"
+            if path.endswith("-1.7.0.schema.json")
+            else "1.6.0"
+            if path.endswith("-1.6.0.schema.json")
+            else "1.5.0"
+            if path.endswith("-1.5.0.schema.json")
             else "1.4.0"
             if path.endswith("-1.4.0.schema.json")
             else "1.3.0"
@@ -252,11 +265,14 @@ def test_schema_registry_is_complete() -> None:
             in {
                 "config/yoetz-config-1.3.0.schema.json",
                 "events/finding-recorded-1.3.0.schema.json",
+                "events/check-recorded-1.3.0.schema.json",
                 "findings/finding-1.3.0.schema.json",
                 "operations/check-result-1.3.0.schema.json",
                 "operations/receipt-result-1.3.0.schema.json",
                 "receipts/receipt-document-1.3.0.schema.json",
                 "operations/status-result-1.3.0.schema.json",
+                "operations/status-request-1.3.0.schema.json",
+                "privacy/privacy-policy-1.3.0.schema.json",
             }
             else "1.2.0"
             if path
@@ -266,15 +282,20 @@ def test_schema_registry_is_complete() -> None:
                 "events/evidence-recorded-1.2.0.schema.json",
                 "events/finding-recorded-1.2.0.schema.json",
                 "events/check-recorded-1.2.0.schema.json",
+                "privacy/outbound-case-1.2.0.schema.json",
                 "findings/semantic-provenance-1.2.0.schema.json",
                 "events/opaque-unknown-event-draft-1.2.0.schema.json",
                 "events/session-opened-1.2.0.schema.json",
+                "events/session-resumed-1.2.0.schema.json",
                 "findings/finding-1.2.0.schema.json",
+                "findings/provider-judgment-1.2.0.schema.json",
                 "operations/check-result-1.2.0.schema.json",
                 "operations/publish-work-request-1.2.0.schema.json",
                 "operations/receipt-result-1.2.0.schema.json",
                 "operations/status-request-1.2.0.schema.json",
                 "operations/status-result-1.2.0.schema.json",
+                "privacy/outbound-case-1.2.0.schema.json",
+                "privacy/privacy-policy-1.2.0.schema.json",
                 "receipts/receipt-document-1.2.0.schema.json",
             }
             else (
@@ -293,9 +314,14 @@ def test_schema_registry_is_complete() -> None:
                     "events/evidence-recorded-1.1.0.schema.json",
                     "events/finding-recorded-1.1.0.schema.json",
                     "events/opaque-unknown-event-draft-1.1.0.schema.json",
+                    "events/plan-published-1.1.0.schema.json",
+                    "events/plan-revised-1.1.0.schema.json",
+                    "events/obligation-published-1.1.0.schema.json",
+                    "events/decision-recorded-1.1.0.schema.json",
                     "events/session-opened-1.1.0.schema.json",
                     "events/session-resumed-1.1.0.schema.json",
                     "findings/finding-1.1.0.schema.json",
+                    "findings/provider-judgment-1.1.0.schema.json",
                     "findings/semantic-provenance-1.1.0.schema.json",
                     "operations/check-request-1.1.0.schema.json",
                     "operations/check-result-1.1.0.schema.json",
@@ -305,7 +331,17 @@ def test_schema_registry_is_complete() -> None:
                     "operations/status-result-1.1.0.schema.json",
                     "operations/start-request-1.1.0.schema.json",
                     "operations/start-result-1.1.0.schema.json",
+                    "privacy/egress-receipt-1.1.0.schema.json",
                     "privacy/outbound-case-1.1.0.schema.json",
+                    "findings/provider-judgment-1.1.0.schema.json",
+                    "events/response-recorded-1.1.0.schema.json",
+                    "events/result-recorded-1.1.0.schema.json",
+                    "events/obligation-published-1.1.0.schema.json",
+                    "operations/respond-request-1.1.0.schema.json",
+                    "operations/respond-result-1.1.0.schema.json",
+                    "operations/publish-work-result-1.1.0.schema.json",
+                    "operations/read-guidance-request-1.1.0.schema.json",
+                    "operations/read-guidance-result-1.1.0.schema.json",
                     "privacy/privacy-policy-1.1.0.schema.json",
                     "receipts/receipt-document-1.1.0.schema.json",
                 }
@@ -493,7 +529,7 @@ def test_released_version_manifest_2_2_1_retains_the_0_2_3_inventory() -> None:
 
 
 def test_live_version_manifest_2_3_tracks_the_current_inventory() -> None:
-    from yoetz.version import REVIEWED_RESOURCE_COUNT
+    from finishup.version import REVIEWED_RESOURCE_COUNT
 
     document = _version_manifest_document("2.3.0")
 
@@ -509,7 +545,12 @@ def test_live_version_manifest_2_3_tracks_the_current_inventory() -> None:
     events = _version_manifest_consts(document, "event_schema_versions")
     assert events["claim_recorded"] == "1.1.0"
     requests = _version_manifest_consts(document, "request_result_schema_versions")
+    # The task-statement contracts (issue #908).
     assert requests["publish-work-request"] == "1.2.0"
+    assert requests["start-request"] == "1.1.0"
+    # The sized reviewer exchange bound (#1118).
+    assert requests["privacy-policy"] == "1.3.0"
+    assert events["session_opened"] == "1.2.0"
 
 
 def test_released_version_manifest_2_2_2_retains_the_0_2_4_inventory() -> None:

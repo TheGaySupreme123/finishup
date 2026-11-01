@@ -10,17 +10,20 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.mcp.descriptors import (
+from builders.publish_identity import bridge_bound
+from finishup.mcp.descriptors import (
     ORDINARY_MCP_PUBLISH_EVENT_FAMILIES,
     TOOL_DESCRIPTORS,
     McpRouteProfile,
     descriptor_for,
 )
-from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.mcp.resources import GUIDANCE_RESOURCES
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     CheckRequestModel,
+    ClosurePrepareRequestModel,
     PublishWorkRequestModel,
+    ReadGuidanceRequestModel,
     ReceiptRequestModel,
     RespondRequestModel,
     StartRequestModel,
@@ -39,7 +42,7 @@ _ENVELOPE_FIELDS = {
 }
 _DROPPED_METADATA_KEYS = frozenset({"$defs", "enum", "examples", "oneOf"})
 _JSON_FENCE_RE = re.compile(r"```json\n(?P<body>.*?)\n```", re.DOTALL)
-_REQUEST_TEMPLATE_URI = "yoetz://guidance/request-templates.md"
+_REQUEST_TEMPLATE_URI = "finishup://guidance/request-templates.md"
 _OBSERVATION_FIXTURE = (
     Path(__file__).resolve().parents[3]
     / "fixtures"
@@ -107,7 +110,7 @@ def _lower_observed_host_shape(schema: Mapping[str, JsonValue]) -> dict[str, Any
 def test_required_tool_arguments_remain_authorable_under_observed_lowering(profile: str) -> None:
     route_profile = cast(McpRouteProfile, profile)
     for descriptor in TOOL_DESCRIPTORS[route_profile]:
-        schema = descriptor.input_schema
+        schema = descriptor.advertised_input_schema
         lowered = _lower_observed_host_shape(schema)
         assert lowered != _UNKNOWN, (profile, descriptor.name)
         assert isinstance(lowered, dict) and lowered["kind"] == "object"
@@ -123,7 +126,9 @@ def test_required_tool_arguments_remain_authorable_under_observed_lowering(profi
 @pytest.mark.parametrize("profile", tuple(TOOL_DESCRIPTORS))
 def test_publish_work_envelope_remains_authorable_under_observed_lowering(profile: str) -> None:
     route_profile = cast(McpRouteProfile, profile)
-    lowered = _lower_observed_host_shape(descriptor_for("publish_work", route_profile).input_schema)
+    lowered = _lower_observed_host_shape(
+        descriptor_for("publish_work", route_profile).advertised_input_schema
+    )
     assert isinstance(lowered, dict)
     event_drafts = cast(dict[str, Any], lowered["properties"])["event_drafts"]
     assert event_drafts["kind"] == "array"
@@ -139,16 +144,30 @@ def test_publish_work_envelope_remains_authorable_under_observed_lowering(profil
         "kind": "enum",
         "values": tuple(sorted(ORDINARY_MCP_PUBLISH_EVENT_FAMILIES)),
     }
-    assert envelope["properties"]["payload"] == {"kind": "object", "properties": {}}
+    payload = envelope["properties"]["payload"]
+    assert payload["kind"] == "object"
+    assert payload["properties"]["plan_version"] == {"kind": "integer"}
+    assert payload["properties"]["action_kind"] == {
+        "kind": "enum",
+        "values": ("command", "edit", "research", "review", "other"),
+    }
+    assert payload["properties"]["outcome"] == {
+        "kind": "enum",
+        "values": ("success", "failure", "partial", "unknown"),
+    }
 
 
 @pytest.mark.parametrize("profile", tuple(TOOL_DESCRIPTORS))
 def test_check_scope_and_start_root_remain_objects_under_observed_lowering(profile: str) -> None:
     route_profile = cast(McpRouteProfile, profile)
-    start = _lower_observed_host_shape(descriptor_for("start", route_profile).input_schema)
+    start = _lower_observed_host_shape(
+        descriptor_for("start", route_profile).advertised_input_schema
+    )
     assert isinstance(start, dict) and start["kind"] == "object"
 
-    check = _lower_observed_host_shape(descriptor_for("check", route_profile).input_schema)
+    check = _lower_observed_host_shape(
+        descriptor_for("check", route_profile).advertised_input_schema
+    )
     assert isinstance(check, dict) and check["kind"] == "object"
     scope = cast(dict[str, Any], check["properties"])["scope"]
     assert scope["kind"] == "object"
@@ -177,7 +196,7 @@ def _degraded_agent_surface(profile: McpRouteProfile) -> str:
             "name": descriptor.name,
             "title": descriptor.title,
             "description": descriptor.description,
-            "input_schema": _drop_host_metadata(descriptor.input_schema),
+            "input_schema": _drop_host_metadata(descriptor.advertised_input_schema),
         }
         for descriptor in TOOL_DESCRIPTORS[profile]
     ]
@@ -188,6 +207,10 @@ def _degraded_agent_surface(profile: McpRouteProfile) -> str:
 def _request_model_and_operation(
     request: Mapping[str, JsonValue],
 ) -> tuple[type[Any], str]:
+    if "uri" in request:
+        return ReadGuidanceRequestModel, "read_guidance"
+    if {"session_id", "writer_id", "selection"} <= request.keys():
+        return ClosurePrepareRequestModel, "closure_prepare"
     if "event_drafts" in request:
         return PublishWorkRequestModel, "publish_work"
     if "finding_id" in request:
@@ -213,7 +236,7 @@ def test_degraded_surface_templates_remain_authorable(profile: str) -> None:
     # The fallback must survive even when the host removes the metadata that carried the original
     # examples and event-family discriminators.
     stripped_schema = _drop_host_metadata(
-        descriptor_for("publish_work", route_profile).input_schema
+        descriptor_for("publish_work", route_profile).advertised_input_schema
     )
     serialized_schema = json.dumps(stripped_schema, sort_keys=True)
     for dropped in _DROPPED_METADATA_KEYS:
@@ -228,7 +251,8 @@ def test_degraded_surface_templates_remain_authorable(profile: str) -> None:
 
     for block, request in zip(raw_blocks, parsed_requests, strict=True):
         model, operation = _request_model_and_operation(request)
-        model.model_validate(request)
+        # Issue #1084: the bridge binds a request id to an id-less publish template.
+        model.model_validate(bridge_bound(request) if operation == "publish_work" else request)
         operations.add(operation)
         assert "src/" not in block
         assert "schemas/" not in block
@@ -243,7 +267,16 @@ def test_degraded_surface_templates_remain_authorable(profile: str) -> None:
         elif operation == "check":
             check_scopes.add("scoped" if "scope" in request else "whole")
 
-    assert operations == {"start", "publish_work", "status", "check", "respond", "receipt"}
+    assert operations == {
+        "start",
+        "publish_work",
+        "status",
+        "check",
+        "respond",
+        "receipt",
+        "closure_prepare",
+        "read_guidance",
+    }
     assert families == ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
     assert check_scopes == {"whole", "scoped"}
 

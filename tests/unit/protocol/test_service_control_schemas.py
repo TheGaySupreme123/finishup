@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from copy import deepcopy
 from importlib import resources
@@ -11,13 +12,13 @@ from urllib.parse import urlparse
 
 import pytest
 
-from yoetz.domain.observation import _STRUCTURAL_KEYS  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import ControlCallRequest
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import load_schema_catalog, validate_schema_instance
-from yoetz.service.control_protocol import (
+from finishup.domain.observation import _STRUCTURAL_KEYS  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.values import JsonObject
+from finishup.ports.control import ControlCallRequest
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import load_schema_catalog, validate_schema_instance
+from finishup.service.control_protocol import (
     decode_control_frame,
     encode_control_frame,
     parse_control_request,
@@ -25,7 +26,7 @@ from yoetz.service.control_protocol import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROOT = _REPO_ROOT / "schemas" / "service"
-_PACKAGE_ROOT = resources.files("yoetz").joinpath("resources", "schemas", "service")
+_PACKAGE_ROOT = resources.files("finishup").joinpath("resources", "schemas", "service")
 _VERSION = "1.0.0"
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _RPC_ID = "rpc_00000000-0000-4000-8000-000000000002"
@@ -697,6 +698,27 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "lineage_child_session_id",
             "lineage_child_writer_id",
             "lineage_parent_task_id",
+            # The keyed command identity is additive on the unreleased 2.9 request wire (#909).
+            "command_commitment",
+            # So is the command runner class every tool observation carries.
+            "runner_class",
+            # And the closed runtime facts a hook classifies (#977).
+            "install_target",
+            "write_scope",
+            "effective_user",
+            # And the digest-only image facts (P3-2, issue #1013).
+            "observed_images",
+            # And the keyed segment commitments of a composed command (#977).
+            "command_segment_commitments",
+            "command_composition",
+            # And the before/after workspace fingerprint fact (PR #1080 round 5).
+            "workspace_effect",
+            # And the closed write-scope classes of that change (#1100, c152c9972).
+            "workspace_write_scopes",
+            # And the keyed changed-entry identities of that comparison (#1143).
+            "workspace_changed_entries",
+            # And the announced call's own timeout a pre-tool hook carries (#1239, D6).
+            "tool_timeout_ms",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -892,7 +914,7 @@ def test_v24_pairing_structural_fields_round_trip_and_are_rejected_by_v23() -> N
     with pytest.raises(ProtocolValueError):
         validate_schema_instance("control-request", "2.3.0", cast(JsonValue, frame))
 
-    from yoetz.service.control_protocol import decode_control_frame, encode_control_frame
+    from finishup.service.control_protocol import decode_control_frame, encode_control_frame
 
     encoded = encode_control_frame(cast(JsonValue, frame))
     decoded = decode_control_frame(encoded)
@@ -1121,7 +1143,7 @@ def test_v28_native_child_start_bridge_round_trip_preserves_frozen_v27() -> None
         codex_session_id="native-child-lane",
         structural={
             "hook_name": "PostToolUse",
-            "tool_name": "mcp__yoetz__start",
+            "tool_name": "mcp__finishup__start",
             "subagent_id": "native-worker",
             "parent_tool_call_id": "spawn-call",
             "lineage_child_task_id": "tsk_00000000-0000-4000-8000-000000000001",
@@ -1340,21 +1362,281 @@ def test_v29_custom_capacity_runtime_validates_only_on_29_wire() -> None:
         validate_schema_instance("control-result", "2.9.0", cast(JsonValue, profile))
 
 
+def _structural_properties(document: dict[str, Any]) -> dict[str, Any]:
+    envelope = document["$defs"]["observation_envelope"]["oneOf"][0]
+    return cast(dict[str, Any], envelope["properties"]["structural_payload"]["properties"])
+
+
+def _assert_v29_request_adds_only_command_commitment(
+    v28: dict[str, Any], v29: dict[str, Any]
+) -> None:
+    """The 2.9 request adds the keyed command identity, the runner class, the closed runtime
+    facts (#909, #977), the workspace-effect fact (PR #1080), its write-scope classes (#1100),
+    its keyed changed-entry identities (#1143) and the announced call's own timeout (#1239), and
+    nothing else."""
+
+    v28_fields = _structural_properties(v28)
+    v29_fields = _structural_properties(v29)
+    assert set(v29_fields) - set(v28_fields) == {
+        "command_commitment",
+        "runner_class",
+        "install_target",
+        "write_scope",
+        "effective_user",
+        "observed_images",
+        "command_segment_commitments",
+        "command_composition",
+        "workspace_effect",
+        "workspace_write_scopes",
+        "workspace_changed_entries",
+        "tool_timeout_ms",
+    }
+    # A bounded integer, one day in milliseconds at most: an implied quiet period, never content.
+    assert v29_fields["tool_timeout_ms"] == {
+        "maximum": 86_400_000,
+        "minimum": 1,
+        "type": "integer",
+    }
+    assert v29_fields["workspace_effect"] == {
+        "enum": ["changed", "unavailable", "unchanged"],
+        "type": "string",
+    }
+    # A complete, sorted set of installation-keyed path identities; omission means unknown.
+    assert v29_fields["workspace_changed_entries"] == {
+        "items": {"pattern": "^[a-f0-9]{32}$", "type": "string"},
+        "maxItems": 128,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    assert v29_fields["command_segment_commitments"] == {
+        "items": {
+            "maxLength": 76,
+            "minLength": 76,
+            "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+            "type": "string",
+        },
+        # 32 segment plus 48 canonical commitments (ADR-045): the hook's own bound (#1039).
+        "maxItems": 80,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    assert v29_fields["command_composition"] == {
+        "enum": ["and_chain", "masked", "single"],
+        "type": "string",
+    }
+    image = v29_fields["observed_images"]
+    assert image["maxItems"] == 8
+    assert image["items"]["additionalProperties"] is False
+    assert image["items"]["required"] == ["byte_count", "content_digest", "media_type"]
+    assert image["items"]["properties"]["media_type"]["enum"] == [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/unknown",
+        "image/webp",
+    ]
+    assert v29_fields["install_target"] == {
+        "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
+        "type": "string",
+    }
+    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or FinishUP-owned is named so; ADR-045
+    # adds the agent's notes and a shell command that writes the workspace (#1039); n7 RC2 adds
+    # project documentation in place, since 2.9.0 is unreleased (#1106).
+    assert v29_fields["write_scope"] == {
+        "enum": ["docs", "notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],
+        "type": "string",
+    }
+    assert v29_fields["effective_user"] == {"enum": ["non_root", "root"], "type": "string"}
+    assert v29_fields["runner_class"] == {
+        "enum": ["build", "compound", "exploration", "lint", "other", "test", "typecheck", "vcs"],
+        "type": "string",
+    }
+    assert v29_fields["command_commitment"] == {
+        "maxLength": 76,
+        "minLength": 76,
+        "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+        "type": "string",
+    }
+    stripped = json.loads(json.dumps(v29))
+    for added in (
+        "command_commitment",
+        "runner_class",
+        "install_target",
+        "write_scope",
+        "effective_user",
+        "observed_images",
+        "command_segment_commitments",
+        "command_composition",
+        "workspace_effect",
+        "workspace_write_scopes",
+        "workspace_changed_entries",
+        "tool_timeout_ms",
+    ):
+        del _structural_properties(stripped)[added]
+    assert {k: v for k, v in v28.items() if k != "$id"} == {
+        k: v for k, v in stripped.items() if k != "$id"
+    }
+
+
+def test_v29_request_carries_keyed_command_commitment_never_command_text() -> None:
+    """The unreleased 2.9 request admits the hook's keyed command identity only (#909)."""
+
+    structural = {
+        "action": "claude_tool_failure",
+        "capability_profile_id": "claude-code-ordinary-observation-v1",
+        "command_commitment": "hmac-sha256:" + "a" * 64,
+        "correlation_kind": "tool_call_id",
+        "hook_name": "PostToolUse",
+        "pairing_mode": "post_only",
+        "success": False,
+        "tool_call_id": "tool-1",
+        "tool_name": "Bash",
+    }
+    frame = _current_cli_observation_frame(
+        source="claude_hook", codex_session_id="claude:session-1", structural=structural
+    )
+    validate_schema_instance("control-request", "2.9.0", cast(JsonValue, frame))
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.8.0", cast(JsonValue, frame))
+    for rejected in ("sha256:" + "a" * 64, "pytest -q tests/x.py"):
+        invalid = json.loads(json.dumps(frame))
+        invalid["body"]["envelope"]["structural_payload"]["command_commitment"] = rejected
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+    invalid = json.loads(json.dumps(frame))
+    invalid["body"]["envelope"]["structural_payload"]["command"] = "pytest -q tests/x.py"
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+
+
+def test_v29_request_admits_digest_only_image_facts_and_nothing_more() -> None:
+    """P3-2 (issue #1013): an image result crosses as its digest, size, type, and header size."""
+
+    image = {
+        "byte_count": 68,
+        "content_digest": "sha256:" + "b" * 64,
+        "height": 2,
+        "media_type": "image/png",
+        "width": 3,
+    }
+    structural = {
+        "action": "claude_tool_success",
+        "capability_profile_id": "claude-code-ordinary-observation-v1",
+        "correlation_kind": "tool_call_id",
+        "hook_name": "PostToolUse",
+        "observed_images": [
+            image,
+            {k: image[k] for k in ("byte_count", "content_digest")}
+            | {"media_type": "image/unknown"},
+        ],
+        "pairing_mode": "post_only",
+        "success": True,
+        "tool_call_id": "tool-1",
+        "tool_name": "Read",
+    }
+    frame = _current_cli_observation_frame(
+        source="claude_hook", codex_session_id="claude:session-1", structural=structural
+    )
+    validate_schema_instance("control-request", "2.9.0", cast(JsonValue, frame))
+    for key, value in (
+        ("pixels", "AAAA"),
+        ("media_type", "image/svg+xml"),
+        ("width", 0),
+        ("content_digest", None),
+    ):
+        invalid = cast(dict[str, Any], json.loads(json.dumps(frame)))
+        item = cast(dict[str, Any], invalid["body"]["envelope"]["structural_payload"])[
+            "observed_images"
+        ][0]
+        if value is None:
+            del item[key]
+        else:
+            item[key] = value
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+    too_many = cast(dict[str, Any], json.loads(json.dumps(frame)))
+    too_many["body"]["envelope"]["structural_payload"]["observed_images"] = [image] * 9
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.9.0", cast(JsonValue, too_many))
+
+
+_POLICY_V12 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.2.0.schema.json"
+_POLICY_V13 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.3.0.schema.json"
+
+
+def _without_policy_v12(value: Any) -> Any:
+    """Undo the one other 2.9 change: admitting the privacy-policy 1.2.0 wire (issue #908) and,
+    beside it, the 1.3.0 wire (#1118)."""
+
+    if isinstance(value, list):
+        return [_without_policy_v12(item) for item in cast(list[Any], value)]
+    if not isinstance(value, dict):
+        return value
+    source = cast(dict[str, Any], value)
+    branches = source.get("anyOf")
+    if isinstance(branches, list) and {"$ref": _POLICY_V12} in branches:
+        assert {"$ref": _POLICY_V13} in branches
+        kept = [
+            branch
+            for branch in cast(list[Any], branches)
+            if branch not in ({"$ref": _POLICY_V12}, {"$ref": _POLICY_V13})
+        ]
+        return kept[0] if len(kept) == 1 else {**source, "anyOf": kept}
+    if source.get("$ref") == _POLICY_V12 + "#/$defs/review_selection_policy":
+        return {
+            **source,
+            "$ref": _POLICY_V12.replace("1.2.0", "1.0.0") + "#/$defs/review_selection_policy",
+        }
+    return {key: _without_policy_v12(item) for key, item in source.items()}
+
+
 def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
-    """2.9 derives from 2.8 by one runtime definition; the 2.8 documents are not rewritten."""
+    """2.9 derives from 2.8 by one runtime definition, the partial receipt page (#921) and the
+    privacy-policy 1.2.0 admission (issue #908), and bounded fault-stage attribution (#954);
+    the 2.8 documents are not rewritten."""
 
     for name in ("control-hello", "control-hello-result", "control-request", "control-result"):
         v28 = cast(
             dict[str, Any], strict_json_parse((_ROOT / f"{name}-2.8.0.schema.json").read_bytes())
         )
         v29 = cast(
-            dict[str, Any], strict_json_parse((_ROOT / f"{name}-2.9.0.schema.json").read_bytes())
+            dict[str, Any],
+            _without_policy_v12(
+                strict_json_parse((_ROOT / f"{name}-2.9.0.schema.json").read_bytes())
+            ),
         )
         assert v28["$id"] == f"https://schemas.yoetz.dev/0.1/service/{name}-2.8.0.schema.json"
         assert v29["$id"] == f"https://schemas.yoetz.dev/0.1/service/{name}-2.9.0.schema.json"
         assert (_ROOT / f"{name}-2.9.0.schema.json").read_bytes() == _PACKAGE_ROOT.joinpath(
             f"{name}-2.9.0.schema.json"
         ).read_bytes()
+        # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905), to the
+        # check-result review output (issue #961, deferral reason on 1.5.0, reviewer record on
+        # 1.6.0, #1118; bounded review-result delivery on 1.7.0, #1139 via #1171), to the
+        # publish-work 1.1.0 result that names the current policy-pack versions, and to the
+        # #1139 delivery-paging bodies (status request 1.3.0, status result 1.5.0, receipt result
+        # 1.4.0, #1171). Undo exactly those retargets before comparing, so every other byte must
+        # still match frozen 2.8.
+        v29 = cast(
+            dict[str, Any],
+            _without_policy_v12(
+                strict_json_parse(
+                    (_ROOT / f"{name}-2.9.0.schema.json")
+                    .read_bytes()
+                    .replace(b"respond-request-1.1.0", b"respond-request-1.0.0")
+                    .replace(b"respond-result-1.1.0", b"respond-result-1.0.0")
+                    .replace(b"check-result-1.7.0", b"check-result-1.3.0")
+                    .replace(b"publish-work-result-1.1.0", b"publish-work-result-1.0.0")
+                    .replace(b"status-request-1.3.0", b"status-request-1.2.0")
+                    .replace(b"status-result-1.5.0", b"status-result-1.4.0")
+                    .replace(b"receipt-result-1.4.0", b"receipt-result-1.3.0")
+                )
+            ),
+        )
+        if name == "control-request":
+            _assert_v29_request_adds_only_command_commitment(v28, v29)
+            continue
         if name != "control-result":
             assert {k: v for k, v in v28.items() if k != "$id"} == {
                 k: v for k, v in v29.items() if k != "$id"
@@ -1364,7 +1646,53 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
         v29_defs = cast(dict[str, Any], v29["$defs"])
         assert set(v29_defs) - set(v28_defs) == {"observation_effective_budget"}
         changed = {key for key in v28_defs if v28_defs[key] != v29_defs[key]}
-        assert changed == {"observation_selection_runtime"}
+        assert changed == {
+            "local_disclosure_receipt",
+            "observation_selection_runtime",
+            "privacy_receipt_view",
+            "privacy_receipts_list_body",
+            "privacy_get_setup_body",
+            "error_body",
+        }
+        # Issue #982: the repository setup read gains only the optional, derived
+        # possible-credential filter pair; removing it recovers the frozen 2.8 body exactly.
+        v29_setup = json.loads(json.dumps(v29_defs["privacy_get_setup_body"]))
+        for branch in v29_setup["oneOf"]:
+            pair = branch["properties"].pop("credential_heuristic", None)
+            if pair is not None:
+                assert pair["required"] == ["machine_default", "repository"]
+                assert "credential_heuristic" not in branch.get("required", [])
+        assert v29_setup == v28_defs["privacy_get_setup_body"]
+        # Issue #921: the receipt page gains only optional, paired partial-listing fields, and the
+        # error vocabulary gains only the closed, non-retryable store-side reason.
+        v28_page = cast(dict[str, Any], v28_defs["privacy_receipts_list_body"])
+        v29_page = cast(dict[str, Any], v29_defs["privacy_receipts_list_body"])
+        assert v29_page["required"] == v28_page["required"]
+        assert set(v29_page["properties"]) - set(v28_page["properties"]) == {
+            "undecodable_count",
+            "undecodable_receipt_ids",
+        }
+        assert v29_page["dependentRequired"] == {
+            "undecodable_count": ["undecodable_receipt_ids"],
+            "undecodable_receipt_ids": ["undecodable_count"],
+        }
+        v28_errors = cast(list[Any], v28_defs["error_body"]["oneOf"])
+        v29_errors = cast(list[Any], v29_defs["error_body"]["oneOf"])
+        # A read failure may identify its service-owned stage. The field stays optional, and
+        # stripping that one additive member must recover each frozen error branch exactly.
+        for branch in v29_errors:
+            assert branch["properties"].pop("phase") == {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "maxLength": 64,
+            }
+            assert "phase" not in branch["required"]
+        added = [branch for branch in v29_errors if branch not in v28_errors]
+        assert [branch for branch in v29_errors if branch in v28_errors] == v28_errors
+        assert [branch["properties"]["code"] for branch in added] == [
+            {"const": "privacy_audit_unreadable"}
+        ]
+        assert added[0]["properties"]["retryable"] == {"const": False}
         assert {k: v for k, v in v28.items() if k not in {"$id", "$defs"}} == {
             k: v for k, v in v29.items() if k not in {"$id", "$defs"}
         }
@@ -1390,3 +1718,42 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
         assert budget["additionalProperties"] is False
         assert set(budget["required"]) == set(budget["properties"])
         assert budget["properties"]["no_cap"]["properties"]["available"] == {"const": False}
+
+
+def test_v29_admits_the_evidence_author_filter_in_place() -> None:
+    """Unreleased 0.3 status request 1.2.0 carries ``filter.author=mine`` in place (#914)."""
+
+    request = cast(
+        JsonValue,
+        {
+            "kind": "call",
+            "protocol_version": "1.0",
+            "rpc_id": _RPC_ID,
+            "service_instance_id": _INSTANCE_ID,
+            "service_generation": "1",
+            "method": "status",
+            "body": {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _REQUEST_ID,
+                "session_id": "ses_00000000-0000-4000-8000-000000000004",
+                "writer_id": "wri_00000000-0000-4000-8000-000000000005",
+                "view": "evidence",
+                "limit": "100",
+                "filter": {"author": "mine", "strength": "content_digest"},
+                "actor": {"actor_id": "harness:test", "actor_type": "harness"},
+                "client": {
+                    "kind": "test_client",
+                    "version": "0.3.0",
+                    "integration": "cooperative_mcp",
+                },
+            },
+        },
+    )
+    validate_schema_instance("control-request", "2.9.0", request)
+    body = cast(dict[str, Any], request)["body"]
+    for rejected in ("theirs", "all", True):
+        invalid = deepcopy(request)
+        cast(dict[str, Any], invalid)["body"]["filter"] = {**body["filter"], "author": rejected}
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("control-request", "2.9.0", invalid)

@@ -9,14 +9,14 @@ from datetime import UTC, datetime
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.host_lineage import SqliteHostLineageRegistry
-from yoetz.domain.host_lineage import host_lineage_from_payload
-from yoetz.domain.observation import ObservationSource
-from yoetz.ports.host_lineage import (
+from finishup.adapters.sqlite.host_lineage import SqliteHostLineageRegistry
+from finishup.domain.host_lineage import host_lineage_from_payload
+from finishup.domain.observation import ObservationSource
+from finishup.ports.host_lineage import (
     HostLineageRegistryError,
     HostLineageRegistryReason,
 )
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.protocol.ids import IdKind, new_id
 
 pytestmark = pytest.mark.anyio
 
@@ -421,8 +421,8 @@ async def test_bound_child_only_row_cannot_absorb_later_strong_call() -> None:
     from types import SimpleNamespace
     from typing import cast
 
-    from yoetz.application.observation_coordinator import ObservationCoordinator
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.application.observation_coordinator import ObservationCoordinator
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
 
     db = apsw.Connection(":memory:")
     _schema(db)
@@ -503,7 +503,7 @@ async def test_latest_open_host_operation_counts_only_unstopped_starts_in_bound(
 
     from datetime import timedelta
 
-    from yoetz.domain.values import timestamp_from_datetime
+    from finishup.domain.values import timestamp_from_datetime
 
     db = apsw.Connection(":memory:")
     _schema(db)
@@ -575,7 +575,7 @@ async def test_latest_open_host_operation_counts_only_unstopped_starts_in_bound(
             )
             is None
         )
-        # Binding a Yoetz child does not end the host operation under the parent session.
+        # Binding a FinishUP child does not end the host operation under the parent session.
         await registry.bind_provisional_annotation(parent, running.correlation_id, child)
         assert (
             await registry.latest_open_host_operation(

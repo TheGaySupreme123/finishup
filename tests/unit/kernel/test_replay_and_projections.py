@@ -14,8 +14,7 @@ from typing import Any, cast
 import pytest
 
 from builders.policy_cases import evd, evidence_record
-from fixture_loader import load_fixture_json
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     ActionKind,
     ActionRecordedPayload,
@@ -32,8 +31,8 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.values import action_id, event_id, obligation_id, timestamp_from_datetime
-from yoetz.kernel.projections import (
+from finishup.domain.values import action_id, event_id, obligation_id, timestamp_from_datetime
+from finishup.kernel.projections import (
     PROJECTION_GENERATION,
     PROJECTION_VERSION,
     ObligationProjectionRecord,
@@ -44,8 +43,9 @@ from yoetz.kernel.projections import (
     projection_from_snapshot,
     projection_snapshot,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from fixture_loader import load_fixture_json
 
 _DIGEST = "sha256:" + "1" * 64
 _EVENT_ID = event_id("evt_00000000-0000-4000-8000-000000000001")
@@ -131,7 +131,7 @@ def test_projection_digest_is_hash_seed_and_locale_stable(
     script = (
         "import sys;"
         f"sys.path.insert(0,{str(_SRC_ROOT)!r});"
-        "from yoetz.kernel.projections import empty_projection_state,projection_digest;"
+        "from finishup.kernel.projections import empty_projection_state,projection_digest;"
         "print(projection_digest(empty_projection_state()))"
     )
     environment = os.environ.copy()

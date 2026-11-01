@@ -12,8 +12,12 @@ import pytest
 from mcp import types
 from pydantic import FileUrl
 
-import yoetz.cli.app as cli_app
-import yoetz.mcp.server as bridge
+import finishup.cli.app as cli_app
+import finishup.mcp.server as bridge
+from finishup.cli import elevated
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import StatusRequest
+from finishup.service.elevated_bootstrap import load_pending
 from integration.service.test_consent_vault_initialize_composition import (
     _approve_attestation,  # pyright: ignore[reportPrivateUsage]
     _approved_store,  # pyright: ignore[reportPrivateUsage]
@@ -21,10 +25,6 @@ from integration.service.test_consent_vault_initialize_composition import (
     _production_daemon,  # pyright: ignore[reportPrivateUsage]
     runtime_directory,  # noqa: F401 - imported pytest fixture  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.cli import elevated
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import StatusRequest
-from yoetz.service.elevated_bootstrap import load_pending
 
 
 class _RootsSession:
@@ -111,8 +111,8 @@ async def test_cursor_root_binding_reaches_real_service_and_refuses_root_switch(
     roots = _RootsSession(project)
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)

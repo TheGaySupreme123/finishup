@@ -15,24 +15,24 @@ import apsw
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-import yoetz.adapters.sqlite.connection as connection_module
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.sqlite.maintenance import verify_backup_set
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
-from yoetz.domain.values import Frontier, format_rfc3339_millis, task_id
-from yoetz.ports.ids import IdPort
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.maintenance import PrivacyAuditBackupSnapshot
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRootSnapshot, ObjectSource
-from yoetz.ports.secret_memory import (
+import finishup.adapters.sqlite.connection as connection_module
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.sqlite.maintenance import verify_backup_set
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+from finishup.domain.values import Frontier, format_rfc3339_millis, task_id
+from finishup.ports.ids import IdPort
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.maintenance import PrivacyAuditBackupSnapshot
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRootSnapshot, ObjectSource
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretHandle,
     SecretMemoryCapability,
     SecretMemoryPort,
     SecretPurpose,
 )
-from yoetz.protocol.ids import IdKind
-from yoetz.service.bundle_upgrade import (
+from finishup.protocol.ids import IdKind
+from finishup.service.bundle_upgrade import (
     BundleIntegrity,
     BundleUpgradeOperation,
     BundleUpgradePhase,
@@ -40,7 +40,7 @@ from yoetz.service.bundle_upgrade import (
     BundleUpgradeTarget,
     capture_sqlite_integrity,
 )
-from yoetz.service.bundle_upgrade_effects import (
+from finishup.service.bundle_upgrade_effects import (
     BundleUpgradeFencedLedger,
     SqliteBundleUpgradeEffects,
 )

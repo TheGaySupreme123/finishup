@@ -1,4 +1,4 @@
-"""CLI coverage for ``yoetz provider endpoint`` selectors and interactive gating.
+"""CLI coverage for ``finishup provider endpoint`` selectors and interactive gating.
 
 Pins the interactive-picker predicate so ``--grok`` matches ``--fireworks``
 shape, mutual exclusion across shorthand/provider/origin combinations, alias
@@ -19,10 +19,10 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.provider_binding as provider_binding
-import yoetz.config.write as write_module
-from yoetz.config.write import PROVIDER_PRESETS, grok_provider, provider_preset
+import finishup.cli.app as cli
+import finishup.cli.provider_binding as provider_binding
+import finishup.config.write as write_module
+from finishup.config.write import PROVIDER_PRESETS, grok_provider, provider_preset
 
 _RUNNER = CliRunner()
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -459,7 +459,7 @@ def test_interactive_menu_choice_6_writes_grok_preset(
     assert "xai" in joined
     assert "xai-openai-chat-completions" in joined
     assert "Custom model ID" in joined
-    assert "next: run 'yoetz provider credential set'" in joined
+    assert "next: run 'finishup provider credential set'" in joined
 
 
 def test_composed_endpoint_binding_suppresses_standalone_next_step(
@@ -485,4 +485,4 @@ def test_composed_endpoint_binding_suppresses_standalone_next_step(
 
     assert written == target
     assert target.is_file()
-    assert all("next: run 'yoetz provider credential set'" not in line for line in echoes)
+    assert all("next: run 'finishup provider credential set'" not in line for line in echoes)

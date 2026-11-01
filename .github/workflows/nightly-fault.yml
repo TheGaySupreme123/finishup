@@ -56,7 +56,7 @@ env:
   TZ: UTC
   LANG: C.UTF-8
   LC_ALL: C.UTF-8
-  YOETZ_PROFILE: ${{ inputs.profile || 'standard' }}
+  FINISHUP_PROFILE: ${{ inputs.profile || 'standard' }}
 
 defaults:
   run:
@@ -111,21 +111,21 @@ jobs:
 
       - name: Install candidate outside checkout; record package/resource/runtime identity
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home-$(date +%s)-${RANDOM}"
+          iso="${RUNNER_TEMP}/finishup-home-$(date +%s)-${RANDOM}"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
-          echo "YOETZ_TEST_MARKER=nightly-fault-linux-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+          echo "FINISHUP_TEST_MARKER=nightly-fault-linux-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
           uv sync --locked --group dev
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
           "${{ runner.temp }}/candidate-venv/bin/python" -c "
           import apsw, platform, sys
           print('python', sys.version)
@@ -136,7 +136,7 @@ jobs:
 
       - name: Assert no other suite-owned process or bundle is active
         run: |
-          if pgrep -f "YOETZ_TEST_MARKER=${YOETZ_TEST_MARKER}" >/dev/null 2>&1; then
+          if pgrep -f "FINISHUP_TEST_MARKER=${FINISHUP_TEST_MARKER}" >/dev/null 2>&1; then
             echo "::error::a suite-owned process from a prior marker is still active"
             exit 1
           fi
@@ -152,7 +152,7 @@ jobs:
       - name: Kill only this job's own marked child process group on timeout
         if: always()
         run: |
-          pkill -f "YOETZ_TEST_MARKER=${YOETZ_TEST_MARKER}" 2>/dev/null || true
+          pkill -f "FINISHUP_TEST_MARKER=${FINISHUP_TEST_MARKER}" 2>/dev/null || true
 
       - name: Redact and produce canonical fault-matrix-linux evidence
         if: always()
@@ -215,21 +215,21 @@ jobs:
 
       - name: Install candidate outside checkout; record package/resource/runtime identity
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home-$(date +%s)-${RANDOM}"
+          iso="${RUNNER_TEMP}/finishup-home-$(date +%s)-${RANDOM}"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
-          echo "YOETZ_TEST_MARKER=nightly-fault-macos-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+          echo "FINISHUP_TEST_MARKER=nightly-fault-macos-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
           uv sync --locked --group dev
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
           "${{ runner.temp }}/candidate-venv/bin/python" -c "
           import apsw, platform, sys
           print('python', sys.version)
@@ -249,7 +249,7 @@ jobs:
       - name: Kill only this job's own marked child process group on timeout
         if: always()
         run: |
-          pkill -f "YOETZ_TEST_MARKER=${YOETZ_TEST_MARKER}" 2>/dev/null || true
+          pkill -f "FINISHUP_TEST_MARKER=${FINISHUP_TEST_MARKER}" 2>/dev/null || true
 
       - name: Redact and produce canonical fault-matrix-macos evidence
         if: always()
@@ -302,9 +302,9 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -315,7 +315,7 @@ jobs:
       - name: Extended Hypothesis/reference-machine profile (fixed + randomized seed)
         env:
           PYTHONHASHSEED: ${{ matrix.seed }}
-          YOETZ_PROPERTY_PROFILE: ${{ inputs.profile || 'standard' }}
+          FINISHUP_PROPERTY_PROFILE: ${{ inputs.profile || 'standard' }}
         run: |
           uv run --locked pytest tests/property/test_ledger_state_machine_memory.py \
             tests/property/test_ledger_state_machine_sqlite.py \
@@ -383,7 +383,7 @@ jobs:
 
       - name: Install candidate outside checkout
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -394,9 +394,9 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Incremental vs. full replay at 10K/100K entries (page-size/hash-seed variants)
         run: |

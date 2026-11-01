@@ -24,12 +24,12 @@ _MAX_PASSES: Final = 5
 _VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.3.0.schema.json"
 _OWNED_ROOTS: Final = (
     "schemas",
-    "src/yoetz/resources",
-    ".agents/plugins/yoetz",
-    ".agents/skills/yoetz",
+    "src/finishup/resources",
+    ".agents/plugins/finishup",
+    ".agents/skills/finishup",
 )
 _OWNED_FILES: Final = (
-    "skills/codex/yoetz/manifest.json",
+    "skills/codex/finishup/manifest.json",
     "support/runtime-support.json",
 )
 _SEMANTIC_CHECK_SOURCE: Final = """\
@@ -38,8 +38,8 @@ import pathlib
 
 from jsonschema import Draft202012Validator
 
-from yoetz.protocol.schemas import load_schema_catalog
-from yoetz.version import build_version_manifest, version_manifest_json
+from finishup.protocol.schemas import load_schema_catalog
+from finishup.version import build_version_manifest, version_manifest_json
 
 # Matching source and mirror bytes can share a stale schema inventory. Exercise the same closed
 # catalog loader used by every public request before claiming the package is usable.
@@ -105,7 +105,7 @@ def _preflight(repo_root: Path) -> bool:
             sys.executable,
             "-c",
             "from verify_resource_manifest import load_inventory_config; "
-            "from yoetz.version import REVIEWED_RESOURCE_COUNT; "
+            "from finishup.version import REVIEWED_RESOURCE_COUNT; "
             "print(len(load_inventory_config().entries), REVIEWED_RESOURCE_COUNT)",
         ],
         cwd=repo_root / "scripts",
@@ -130,7 +130,7 @@ def _preflight(repo_root: Path) -> bool:
         "sync_resource_ripple: FAIL (reviewed_resource_count_mismatch)\n"
         f"  inventory entries: {actual_count}\n"
         f"  REVIEWED_RESOURCE_COUNT: {reviewed_count}\n"
-        "  review and update the single cardinality tripwire in src/yoetz/version.py first",
+        "  review and update the single cardinality tripwire in src/finishup/version.py first",
         file=sys.stderr,
     )
     return False
@@ -164,7 +164,23 @@ def _installed_manifest_agrees_with_schema(repo_root: Path) -> bool:
 
 def _check(repo_root: Path) -> bool:
     return (
-        _run(repo_root, "generate_project_policy_fixture.py", "--check")
+        _run(repo_root, "generate_verification_freshness_fixture.py", "--check")
+        and _run(repo_root, "generate_advice_egress_fixture.py", "--check")
+        and _run(repo_root, "generate_project_policy_fixture.py", "--check")
+        and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
+        and _run(repo_root, "generate_check_totals_fixture.py", "--check")
+        and _run(repo_root, "generate_check_observations_awaited_fixture.py", "--check")
+        and _run(repo_root, "generate_check_inspection_fixture.py", "--check")
+        and _run(repo_root, "generate_review_mode_fixture.py", "--check")
+        and _run(repo_root, "generate_deferred_review_fixture.py", "--check")
+        and _run(repo_root, "generate_reviewer_record_fixture.py", "--check")
+        and _run(repo_root, "generate_review_dialogue_fixture.py", "--check")
+        and _run(repo_root, "generate_task_statement_fixture.py", "--check")
+        and _run(repo_root, "generate_publish_action_notices_fixture.py", "--check")
+        and _run(repo_root, "generate_publish_server_filled_fixture.py", "--check")
+        and _run(repo_root, "generate_result_verification_fixture.py", "--check")
+        and _run(repo_root, "generate_verification_coverage_fixture.py", "--check")
+        and _run(repo_root, "generate_review_result_delivery_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
         and _run(repo_root, "verify_resource_manifest.py", "--check")
         and _installed_manifest_agrees_with_schema(repo_root)
@@ -180,11 +196,76 @@ def _write_pass(repo_root: Path) -> bool:
         ):
             return False
     steps = (
-        ("generate_project_policy_fixture.py", "--write"),
+        ("generate_verification_freshness_fixture.py", "--write"),
+        # Fixture builders validate public requests through the packaged schema catalog. Add
+        # the new row contract and heal current builder-owned schemas before refreshing that
+        # catalog. Mirroring a stale current schema first would make request validation fail
+        # before the later generation step could repair it. Frozen historical schemas stay put.
         (
             "generate_schemas.py",
             "--write",
             "--include-builder-owned",
+            "--only",
+            "privacy/review-packet-row-2.0.0.schema.json",
+            "--only",
+            "operations/check-result-1.7.0.schema.json",
+            "--only",
+            "operations/receipt-result-1.4.0.schema.json",
+            "--only",
+            "operations/status-result-1.5.0.schema.json",
+            "--only",
+            "operations/status-request-1.3.0.schema.json",
+            "--only",
+            "integrations/host-connection-batch-1.0.0.schema.json",
+            "--only",
+            "events/result-recorded-1.1.0.schema.json",
+        ),
+        ("generate_result_verification_fixture.py", "--write"),
+        ("generate_verification_coverage_fixture.py", "--write"),
+        ("verify_resource_manifest.py", "--sync"),
+        ("sync_mcp_descriptor_digests.py", "--write"),
+        ("generate_advice_egress_fixture.py", "--write"),
+        ("generate_project_policy_fixture.py", "--write"),
+        ("generate_check_conclusion_fixture.py", "--write"),
+        ("generate_check_totals_fixture.py", "--write"),
+        ("generate_check_observations_awaited_fixture.py", "--write"),
+        ("generate_check_inspection_fixture.py", "--write"),
+        ("generate_review_mode_fixture.py", "--write"),
+        ("generate_deferred_review_fixture.py", "--write"),
+        ("generate_reviewer_record_fixture.py", "--write"),
+        ("generate_review_dialogue_fixture.py", "--write"),
+        ("generate_task_statement_fixture.py", "--write"),
+        ("generate_publish_action_notices_fixture.py", "--write"),
+        ("generate_publish_server_filled_fixture.py", "--write"),
+        ("generate_review_result_delivery_fixture.py", "--write"),
+        (
+            "generate_schemas.py",
+            "--write",
+            "--include-builder-owned",
+            "--only",
+            "events/check-recorded-1.4.0.schema.json",
+            "--only",
+            "events/finding-recorded-1.4.0.schema.json",
+            "--only",
+            "findings/finding-1.4.0.schema.json",
+            "--only",
+            "findings/provider-judgment-1.2.0.schema.json",
+            "--only",
+            "findings/reviewer-reply-1.0.0.schema.json",
+            "--only",
+            "operations/check-result-1.4.0.schema.json",
+            "--only",
+            "operations/check-result-1.7.0.schema.json",
+            "--only",
+            "operations/receipt-result-1.4.0.schema.json",
+            "--only",
+            "operations/status-result-1.5.0.schema.json",
+            "--only",
+            "operations/status-request-1.3.0.schema.json",
+            "--only",
+            "operations/read-guidance-request-1.1.0.schema.json",
+            "--only",
+            "operations/read-guidance-result-1.1.0.schema.json",
             "--only",
             "service/control-request-2.6.1.schema.json",
             "--only",
@@ -194,11 +275,15 @@ def _write_pass(repo_root: Path) -> bool:
             "--only",
             "privacy/privacy-policy-1.1.0.schema.json",
             "--only",
+            "privacy/egress-receipt-1.1.0.schema.json",
+            "--only",
             "operations/status-result-1.1.0.schema.json",
             "--only",
             "operations/status-result-1.2.0.schema.json",
             "--only",
             "integrations/host-connection-1.0.0.schema.json",
+            "--only",
+            "integrations/host-connection-batch-1.0.0.schema.json",
             "--only",
             "integrations/mcp-removal-1.0.0.schema.json",
             "--only",

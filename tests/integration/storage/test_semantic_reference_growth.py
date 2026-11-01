@@ -8,30 +8,39 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import command_from_records, memory_for, uuid_id
-from yoetz.application.semantic_case import bounded_case_envelope, build_semantic_case
-from yoetz.domain.events import (
+from finishup.application import ledger_snapshot
+from finishup.application.semantic_case import bounded_case_envelope, build_semantic_case
+from finishup.domain.events import (
     OBSERVATION_COORDINATOR_ACTOR_ID,
     ActionRecordedPayload,
     encode_payload,
     is_observation_authored,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     MAX_EGRESS_ENVELOPE_BYTES,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import Actor, ActorType, action_id, actor_id, event_id, object_id
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-from yoetz.kernel.projections import ProjectionState
-from yoetz.ports.ledger import AppendEntry, ProjectionView
-from yoetz.protocol.canonical import (
+from finishup.domain.values import (
+    Actor,
+    ActorType,
+    Frontier,
+    action_id,
+    actor_id,
+    event_id,
+    object_id,
+)
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+from finishup.kernel.projections import ProjectionState
+from finishup.ports.ledger import AppendEntry, ProjectionView
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from integration.storage.test_append_and_replay import command_from_records, memory_for, uuid_id
 
 
 @pytest.fixture
@@ -41,7 +50,9 @@ def anyio_backend() -> str:
 
 @pytest.mark.anyio
 @pytest.mark.timeout(300)
-async def test_observation_history_no_longer_forces_full_reference_inventory() -> None:
+async def test_observation_history_no_longer_forces_full_reference_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fixture = replay_records("all-event-families")
     base, objects = command_from_records(fixture[:4], expected_frontier=0)
     ledger = memory_for(base, objects)
@@ -95,6 +106,17 @@ async def test_observation_history_no_longer_forces_full_reference_inventory() -
     assert all(is_observation_authored(row) for row in records[4:])
     snapshot = await ledger.load_projection(base.session_id, ProjectionView.CANDIDATE_FINDINGS)
     assert snapshot is not None and type(snapshot.state) is ProjectionState
+
+    def forbidden_replay(*_args: object) -> ProjectionState:
+        pytest.fail("mature current snapshot must not replay observation history")
+
+    monkeypatch.setattr(ledger_snapshot, "_replay_until_cancelled", forbidden_replay)
+    frontier = Frontier(snapshot.state.frontier, snapshot.state.head_digest)
+    for _ in range(10):
+        assert (
+            await ledger_snapshot.projection_for_records(ledger, base.session_id, frontier, records)
+            is snapshot.state
+        )
     # Freeze through the public builder, retaining its full independent chain/projection replay.
     # The append-built projection is already available; replaying it first would duplicate that.
     frozen = build_deterministic_case(snapshot.state, records, CaseAvailabilityFacts())

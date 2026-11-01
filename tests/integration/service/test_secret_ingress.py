@@ -7,14 +7,14 @@ from datetime import datetime
 
 import pytest
 
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer, SecretHandle
-from yoetz.service.confidential_protocol import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer, SecretHandle
+from finishup.service.confidential_protocol import (
     ConfidentialSecretPurpose,
     SecretIngressBinding,
     encode_secret_header,
 )
-from yoetz.service.secret_ingress import SecretIngressError, SecretIngressService
+from finishup.service.secret_ingress import SecretIngressError, SecretIngressService
 
 _SERVICE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _DIGEST = "sha256:" + "a" * 64

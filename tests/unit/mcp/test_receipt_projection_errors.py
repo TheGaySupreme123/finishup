@@ -6,9 +6,9 @@ from typing import cast
 
 import pytest
 
-import yoetz.mcp.server as bridge
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode
+import finishup.mcp.server as bridge
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode
 
 
 @pytest.fixture

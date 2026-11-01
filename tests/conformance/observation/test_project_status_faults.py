@@ -20,27 +20,26 @@ from typing import cast
 
 import pytest
 
-import yoetz.application.status as status_module
-import yoetz.application.task_views as task_views_module
-import yoetz.kernel.reducers as reducers_module
-import yoetz.observability.diagnostics as diagnostics
+import finishup.application.status as status_module
+import finishup.application.task_views as task_views_module
+import finishup.observability.diagnostics as diagnostics
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.projects import ProjectApplication, ProjectStatus
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.projects import ProjectApplication, ProjectStatus
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
+from finishup.domain.values import JsonObject
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.host_lineage import HostLineageRegistryError, HostLineageRegistryReason
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     OmittedContentModel,
     PublishWorkRequest,
@@ -251,6 +250,7 @@ def _assert_joined(
     *,
     code: PublicErrorCode,
     operation: str,
+    phase: str,
     reason: str,
     origin_module: str,
     request_id: str,
@@ -260,7 +260,7 @@ def _assert_joined(
     assert error.code is code
     assert error.retryable is False
     assert error.correlation_id is not None
-    assert error.safe_details == {}
+    assert error.safe_details == {"phase": phase}
     assert _CANARY not in error.message
     records = _records(correlation_id=error.correlation_id)
     assert len(records) == 1
@@ -350,7 +350,7 @@ async def test_member_receipt_projection_fault_degrades_only_that_member(
         assert records[0]["operation"] == "status_project_model_failed"
         assert records[0]["reason"] == "exception_value_error"
         origin = records[0]["origin"]
-        assert type(origin) is str and origin.startswith("yoetz.application.task_views:")
+        assert type(origin) is str and origin.startswith("finishup.application.task_views:")
         _assert_ring_is_content_free()
 
 
@@ -470,8 +470,9 @@ async def test_host_lineage_storage_fault_is_classified_at_status_boundary(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_lineage_replay_failed",
+            phase="replay",
             reason="exception_host_lineage_registry_error",
-            origin_module="yoetz.application.task_views",
+            origin_module="finishup.application.task_views",
             request_id=request_id,
         )
 
@@ -481,13 +482,13 @@ async def test_candidate_frontier_fault_is_classified_at_status_boundary(
 ) -> None:
     async with multi_agent_service(tmp_path / "state") as service:
         first, _second, _project_id = await _two_roots_with_receipts(service, _workspace(tmp_path))
-        real_replay = reducers_module.replay
+        real_projection = status_module.projection_for_records
 
-        def inconsistent_replay(records: object) -> object:
-            projection = real_replay(records)  # type: ignore[arg-type]
+        async def inconsistent_projection(*args: object) -> object:
+            projection = await real_projection(*args)  # type: ignore[arg-type]
             return replace(projection, frontier=projection.frontier + 1)
 
-        monkeypatch.setattr(reducers_module, "replay", inconsistent_replay)
+        monkeypatch.setattr(status_module, "projection_for_records", inconsistent_projection)
         request_id = new_id(IdKind.REQUEST)
         with pytest.raises(PublicOperationError) as caught:
             await _status(
@@ -501,8 +502,9 @@ async def test_candidate_frontier_fault_is_classified_at_status_boundary(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_candidate_findings_replay_failed",
+            phase="replay",
             reason="exception_value_error",
-            origin_module="yoetz.application.status",
+            origin_module="finishup.application.status",
             request_id=request_id,
         )
 
@@ -525,8 +527,9 @@ async def test_requester_lineage_replay_fault_is_storage_corrupt(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_lineage_replay_failed",
+            phase="replay",
             reason="exception_value_error",
-            origin_module="yoetz.application.task_views",
+            origin_module="finishup.application.task_views",
             request_id=request_id,
         )
 
@@ -556,8 +559,9 @@ async def test_project_row_model_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_model_failed",
+            phase="model",
             reason="exception_validation_error",
-            origin_module="yoetz.application.task_views",
+            origin_module="finishup.application.task_views",
             request_id=request_id,
         )
 
@@ -580,8 +584,9 @@ async def test_project_snapshot_digest_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_digest_failed",
+            phase="digest",
             reason="exception_value_error",
-            origin_module="yoetz.application.status",
+            origin_module="finishup.application.status",
             request_id=request_id,
         )
 
@@ -606,8 +611,9 @@ async def test_unclassified_project_projection_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_projection_failed",
+            phase="projection",
             reason="exception_coordination_error",
-            origin_module="yoetz.application.task_views",
+            origin_module="finishup.application.task_views",
             request_id=request_id,
         )
 

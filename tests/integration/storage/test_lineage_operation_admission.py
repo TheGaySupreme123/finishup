@@ -9,16 +9,16 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.lineage_catalog import SqliteLineageStore
-from yoetz.adapters.sqlite.migrations import initialize_catalog
-from yoetz.application.lineage import (
+from finishup.adapters.sqlite.lineage_catalog import SqliteLineageStore
+from finishup.adapters.sqlite.migrations import initialize_catalog
+from finishup.application.lineage import (
     DelegationRequest,
     LineageCoordinator,
     LineageProjectAdmission,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.ports.clock import ClockPort
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
 
 
 class _Clock(ClockPort):

@@ -174,7 +174,7 @@ def test_uv_lock_is_up_to_date_with_pyproject() -> None:
 def test_every_locked_dependency_comes_from_the_public_registry() -> None:
     packages = _uv_lock_packages()
     for normalized_name, entry in packages.items():
-        if normalized_name == "yoetz":
+        if normalized_name == "finishup":
             continue  # the workspace root itself is legitimately editable
         source = cast(dict[str, object], entry.get("source", {}))
         assert set(source) == {"registry"}, f"{normalized_name} has non-registry source: {source}"
@@ -336,7 +336,7 @@ def test_base_install_matches_locked_direct_dependencies_with_no_unlocked_packag
         assert installed.get(normalized_name) == expected_version
 
     for normalized_name, version in installed.items():
-        if normalized_name == "yoetz":
+        if normalized_name == "finishup":
             continue
         assert normalized_name in packages, f"{normalized_name} is not in uv.lock at all"
         assert packages[normalized_name]["version"] == version, (

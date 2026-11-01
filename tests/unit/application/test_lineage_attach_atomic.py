@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds
-from yoetz.application.lineage import (
+from finishup.application.lineage import (
     AttachHandle,
     DelegationRequest,
     LineageConfig,
@@ -16,9 +16,9 @@ from yoetz.application.lineage import (
     LineageProjectAdmission,
     MemoryLineageStore,
 )
-from yoetz.domain.coordination import SessionHealth
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.domain.coordination import SessionHealth
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
 
 
 def _digest(seed: str) -> str:

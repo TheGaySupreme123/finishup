@@ -1,0 +1,42 @@
+approval_policy = "never"
+cli_auth_credentials_store = "file"
+forced_login_method = "chatgpt"
+model_provider = "openai"
+project_doc_max_bytes = 0
+sandbox_mode = "read-only"
+web_search = "disabled"
+
+[analytics]
+enabled = false
+
+[otel]
+environment = "none"
+
+[features]
+apps = false
+browser_use = false
+browser_use_external = false
+browser_use_full_cdp_access = false
+computer_use = false
+hooks = false
+image_generation = false
+in_app_browser = false
+memories = false
+multi_agent = false
+plugins = false
+recommended_plugins = false
+remote_plugin = false
+shell_snapshot = false
+shell_tool = false
+skill_mcp_dependency_install = false
+skill_search = false
+standalone_web_search = false
+tool_suggest = false
+view_image = false
+workspace_dependencies = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[tools.update_plan]
+enabled = false

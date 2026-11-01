@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from finishup.application.semantic_attempts import run_durable_semantic_attempts
+from finishup.ports.semantic import Deadline
+from finishup.protocol.models import SemanticReason, SemanticStatus
 from unit.application import test_semantic_attempts as attempts
 from unit.application import test_semantic_attempts_fallback as paired
-from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.models import SemanticReason, SemanticStatus
 
 
 @pytest.mark.anyio

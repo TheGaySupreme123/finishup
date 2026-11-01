@@ -12,8 +12,8 @@ from typing import cast
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects
-from yoetz.adapters.memory.project_operations import InMemoryProjectOperationJournal
-from yoetz.application.coordination import (
+from finishup.adapters.memory.project_operations import InMemoryProjectOperationJournal
+from finishup.application.coordination import (
     CoordinationDetector,
     CoordinationParticipant,
     CoordinationRuntime,
@@ -22,7 +22,7 @@ from yoetz.application.coordination import (
     InMemoryCoordinationStore,
     LedgerCoordinationInputProvider,
 )
-from yoetz.application.projects import (
+from finishup.application.projects import (
     CreateProjectCommand,
     EncryptedProjectTextStore,
     InMemoryProjectCatalog,
@@ -33,7 +33,7 @@ from yoetz.application.projects import (
     ProjectStatus,
     RoutedEncryptedProjectTextStore,
 )
-from yoetz.domain.coordination import (
+from finishup.domain.coordination import (
     COORDINATION_DETAIL_FORMAT,
     CoordinationDetection,
     CoordinationError,
@@ -46,22 +46,22 @@ from yoetz.domain.coordination import (
     canonical_resource_identity,
     coordination_detection_identity,
 )
-from yoetz.domain.events import CoordinationObligationDeclaredPayload
-from yoetz.domain.privacy import DataCategory, DataClass, LocalDisclosureSink
-from yoetz.domain.values import JsonObject, JsonValue, event_id, obligation_id, task_id
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectKind, ObjectStorePort
-from yoetz.ports.runtime import OwnershipFence, RouteAccess, RouteCommand, TaskRuntime
-from yoetz.ports.start_catalog import (
+from finishup.domain.events import CoordinationObligationDeclaredPayload
+from finishup.domain.privacy import DataCategory, DataClass, LocalDisclosureSink
+from finishup.domain.values import JsonObject, JsonValue, event_id, obligation_id, task_id
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectKind, ObjectStorePort
+from finishup.ports.runtime import OwnershipFence, RouteAccess, RouteCommand, TaskRuntime
+from finishup.ports.start_catalog import (
     SessionState,
     TaskRoute,
     TaskRouteState,
     TaskSourceProvenance,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _commitment(seed: str) -> str:
@@ -934,7 +934,7 @@ async def test_repository_membership_expands_to_admitted_tasks_and_commitment_re
 
 def test_forged_authority_field_is_rejected() -> None:
     with pytest.raises(ProjectCommandError) as error:
-        from yoetz.application.projects import project_request_from_json
+        from finishup.application.projects import project_request_from_json
 
         project_request_from_json(
             {"operation": "grant", "project_id": new_id(IdKind.PROJECT), "authority": "local_human"}
@@ -1921,8 +1921,8 @@ async def test_declaration_ownership_read_failure_is_isolated_to_its_task(
 ) -> None:
     from dataclasses import replace
 
-    from yoetz.application import coordination as coordination_module
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.application import coordination as coordination_module
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     tasks = tuple(new_id(IdKind.TASK) for _ in range(3))
     busy, left, right = tasks

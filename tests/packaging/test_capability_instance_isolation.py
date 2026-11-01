@@ -35,7 +35,7 @@ def test_capability_request_preserves_outer_holder(monkeypatch: pytest.MonkeyPat
     services: list[subprocess.Popen[bytes]] = []
     try:
         outer = _provision(outer_base, "o", _REPO_ROOT, env)
-        child = _provision(child_base, "yoetz", _REPO_ROOT, env)
+        child = _provision(child_base, "finishup", _REPO_ROOT, env)
         outer_launcher = Path(cast(str, outer["launcher"]))
         child_launcher = Path(cast(str, child["launcher"]))
         services.append(_start_service(outer_launcher, env))
@@ -45,12 +45,14 @@ def test_capability_request_preserves_outer_holder(monkeypatch: pytest.MonkeyPat
         outer_status = _json(outer_launcher, ["service", "status"], env)
         log_root = outer_root / "log"
         logs_before = {p.name: p.read_bytes() for p in log_root.glob("*") if p.is_file()}
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(outer_root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(outer_root))
 
         async def request() -> None:
             parameters = _serve_parameters(cell)
             assert parameters.env is not None
-            assert parameters.env["YOETZ_ISOLATED_ROOT"] == str(child_base / "yoetz" / "state")
+            assert parameters.env["FINISHUP_ISOLATED_ROOT"] == str(
+                child_base / "finishup" / "state"
+            )
             async with stdio_client(parameters) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
@@ -77,7 +79,7 @@ def test_capability_request_preserves_outer_holder(monkeypatch: pytest.MonkeyPat
                     assert "INVALID_REQUEST" not in wire
 
         for candidate in (str(child_launcher.parent / "python"), ""):
-            monkeypatch.setenv("YOETZ_CANDIDATE_PYTHON", candidate)
+            monkeypatch.setenv("FINISHUP_CANDIDATE_PYTHON", candidate)
             asyncio.run(request())
             assert services[0].poll() is None
             assert (
@@ -94,7 +96,7 @@ def test_capability_request_preserves_outer_holder(monkeypatch: pytest.MonkeyPat
     finally:
         for process in services:
             _stop_process(process)
-        for base, tag in ((outer_base, "o"), (child_base, "yoetz")):
+        for base, tag in ((outer_base, "o"), (child_base, "finishup")):
             if (base / tag).exists():
                 _dispose(base, tag, env)
         shutil.rmtree(cell)

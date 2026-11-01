@@ -13,15 +13,15 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.check_sandbox import LinuxCheckSandbox
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli.app import app
-from yoetz.cli.hook_diagnostics import record_hook_diagnostic
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.cli.render import local_recovery_json
-from yoetz.domain.observation import (
+from finishup.adapters.check_sandbox import LinuxCheckSandbox
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli.app import app
+from finishup.cli.hook_diagnostics import record_hook_diagnostic
+from finishup.cli.observe_hooks import handle_observe
+from finishup.cli.render import local_recovery_json
+from finishup.domain.observation import (
     OBSERVATION_BACKPRESSURE_REASON,
     ObservationGapCode,
     ObservationIngestDisposition,
@@ -30,7 +30,7 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_ingest_result_to_json,
 )
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.protocol.ids import IdKind, new_id
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -161,7 +161,7 @@ def test_explicit_git_root_does_not_fall_back_to_legacy_subdirectory_consent(
 
 
 def test_workspace_commitment_stable_and_path_free(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
 
     store = LocalObservationStore(_state=tmp_path)
     one = store.workspace_commitment(str(tmp_path.resolve()))
@@ -217,7 +217,7 @@ def test_status_surfaces_quarantine_depth_and_reclaim_empties_it(
 ) -> None:
     """#211: quarantine is a first-class status line, and reclaim drops it loudly."""
 
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -261,7 +261,7 @@ def test_status_surfaces_quarantine_depth_and_reclaim_empties_it(
     assert "cause: ledger_rejected=2" in text
     assert (
         "reclaim by changing to the selected workspace and running "
-        "'yoetz observe reclaim --workspace .'"
+        "'finishup observe reclaim --workspace .'"
     ) in text
     assert str(tmp_path) not in text
 
@@ -327,8 +327,8 @@ def test_status_reports_modified_present_plugin_as_installed_not_activated(
 ) -> None:
     """#347: exercise the production activation classifier through observe status."""
 
-    from yoetz.adapters.integrations.codex_plugin import install_plugin
-    from yoetz.ports.integrations import IntegrationScope, IntegrationTarget
+    from finishup.adapters.integrations.codex_plugin import install_plugin
+    from finishup.ports.integrations import IntegrationScope, IntegrationTarget
 
     state = tmp_path / "state"
     project = tmp_path / "project"
@@ -337,7 +337,7 @@ def test_status_reports_modified_present_plugin_as_installed_not_activated(
     codex_home.mkdir(mode=0o700)
     target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project))
     install_plugin(target, allow_untested=True, codex_version=None)
-    hooks = project / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks = project / ".agents/plugins/finishup/hooks/hooks.json"
     hooks.write_bytes(hooks.read_bytes() + b"\n")
 
     assert (
@@ -420,7 +420,7 @@ async def test_drain_quarantines_setup_probe_and_routes_other_rows(tmp_path: Pat
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
     store.grant_consent(workspace)
-    for session in ("yoetz-setup-probe-session", "ordinary-session"):
+    for session in ("finishup-setup-probe-session", "ordinary-session"):
         handle_observe(
             event_name="PostToolUse",
             stdin_bytes=json.dumps(
@@ -463,7 +463,7 @@ async def test_drain_quarantines_setup_probe_and_routes_other_rows(tmp_path: Pat
 async def test_manual_drain_retains_protocol_failure_for_reconnect(tmp_path: Path) -> None:
     """#691: a failed protocol response is not a typed ledger refusal."""
 
-    from yoetz.ports.control import ControlError
+    from finishup.ports.control import ControlError
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -836,7 +836,7 @@ async def test_manual_drain_retires_lane_after_attempt_cas_loss(tmp_path: Path) 
 async def test_manual_drain_retry_ceiling_quarantines_head_and_continues_lane(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.application.observation_drain as drain_module
+    import finishup.application.observation_drain as drain_module
 
     monkeypatch.setattr(drain_module, "MAX_CONSECUTIVE_OBSERVATION_REJECTIONS", 2)
     store = LocalObservationStore(_state=tmp_path)
@@ -936,7 +936,7 @@ def test_status_names_an_unresolvable_locator_instead_of_internal_error(
 def test_status_command_reports_typed_workspace_failure_through_the_console(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local
+    import finishup.adapters.integrations.observation_local as local
 
     monkeypatch.setattr(local, "state_dir", lambda: tmp_path)
     result = CliRunner().invoke(app, ["observe", "status", "--workspace", "", "--json"])
@@ -948,7 +948,7 @@ def test_status_command_reports_typed_workspace_failure_through_the_console(
 def test_status_maps_bounded_storage_refusals_to_their_public_exit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     def corrupt(self: LocalObservationStore, workspace: str) -> object:
         raise PublicOperationError(
@@ -987,7 +987,7 @@ def test_status_maps_real_lock_open_permission_refusal_without_leaking_path(
 ) -> None:
     """The issue #428 sandbox failure is forced at the real ``os.open`` boundary."""
 
-    import yoetz.adapters.integrations.observation_local as local
+    import finishup.adapters.integrations.observation_local as local
 
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
@@ -1010,7 +1010,7 @@ def test_status_maps_real_lock_open_permission_refusal_without_leaking_path(
     assert error == {
         "code": "SERVICE_UNAVAILABLE",
         "message": (
-            "the local Yoetz observation store could not be opened or locked from this process; "
+            "the local FinishUP observation store could not be opened or locked from this process; "
             "make the owner-only state directory accessible and writable from the supported host "
             "surface, then retry"
         ),
@@ -1111,7 +1111,7 @@ def test_status_maps_real_lock_contention_to_storage_unavailable(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local
+    import finishup.adapters.integrations.observation_local as local
 
     if local.fcntl is None:
         pytest.skip("POSIX flock is unavailable")
@@ -1168,7 +1168,7 @@ def test_control_verbs_preserve_bounded_public_error_exits(
     verb: str,
     method: str,
 ) -> None:
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     def corrupt(self: LocalObservationStore, command: object) -> object:
         del self, command
@@ -1194,7 +1194,7 @@ def test_control_verbs_preserve_bounded_public_error_exits(
 def test_status_maps_an_unsafe_state_path_to_storage_unsafe(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.config.paths import PathSafetyError
+    from finishup.config.paths import PathSafetyError
 
     def unsafe_store(*args: object, **kwargs: object) -> object:
         raise PathSafetyError("path_contains_symlink")
@@ -1204,7 +1204,7 @@ def test_status_maps_an_unsafe_state_path_to_storage_unsafe(
     captured = capsys.readouterr()
     assert code == 20
     assert captured.err.startswith(
-        "observation_status_failed:storage_unsafe: the local Yoetz observation store has an "
+        "observation_status_failed:storage_unsafe: the local FinishUP observation store has an "
         "unsafe file or path shape"
     )
 
@@ -1369,6 +1369,47 @@ async def test_manual_drain_names_service_unavailable_terminal_with_the_pending_
     assert summary["pending_after"] == 3
     assert summary["retry_pending"] == 3
     assert summary["reasons"] == {ObservationGapCode.SERVICE_UNAVAILABLE.value: 3}
+
+
+@pytest.mark.anyio
+async def test_manual_drain_names_a_service_it_started_that_exited_while_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1040 review: the drain's on-demand start names the stage and record, exit 20 unchanged."""
+
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.ports.control import ControlError
+    from finishup.service.startup_failure import record_startup_failure
+
+    ring = tmp_path / "ring"
+    ring.mkdir(mode=0o700)
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: ring)
+    startup_id = "err_11111111-2222-4333-8444-555555555555"
+    record_startup_failure(NotImplementedError("x"), stage="activation", correlation_id=startup_id)
+    store = LocalObservationStore(_state=tmp_path)
+    store.grant_consent(store.workspace_commitment(str(tmp_path.resolve())))
+    _enqueue_shell_rows(tmp_path, "offline", (1,))
+
+    async def connect(_kind: object):
+        raise ControlError(
+            "service_unavailable", retryable=False, correlation_id=startup_id, phase="activation"
+        )
+
+    capsys.readouterr()  # the structural line recording the failure, when a sink is installed
+    code, summary = await observe_cli._drain_observation_async(  # pyright: ignore[reportPrivateUsage]
+        workspace=str(tmp_path),
+        _state=tmp_path,
+        connect=connect,  # type: ignore[arg-type]
+    )
+
+    assert code == 20
+    assert summary["terminal"] == "service_unavailable"
+    assert summary["reasons"] == {ObservationGapCode.SERVICE_UNAVAILABLE.value: 1}
+    assert capsys.readouterr().err.splitlines() == [
+        "service_unavailable: the local service exited while starting (stage: activation; "
+        f"exception_not_implemented_error); correlation_id {startup_id}; read it with "
+        f"'finishup service diagnostics --correlation-id {startup_id}'"
+    ]
 
 
 @pytest.mark.anyio
@@ -1569,9 +1610,9 @@ def test_explicit_recovery_uses_full_mapped_native_session_id(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,
@@ -1598,7 +1639,7 @@ def test_explicit_recovery_uses_full_mapped_native_session_id(
 
     # The automatic adapter path sees the same cursor/profile and does not create a
     # second stream identity after manual recovery.
-    from yoetz.adapters.integrations.codex_session_stream import (
+    from finishup.adapters.integrations.codex_session_stream import (
         CodexSessionStreamLocator,
         reconcile_session_stream,
     )
@@ -1660,9 +1701,9 @@ def test_explicit_recovery_refuses_rollout_bound_to_another_workspace(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,
@@ -1703,9 +1744,9 @@ def test_explicit_recovery_uses_full_mapping_for_compressed_rollout_variant(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=session_id,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=state,
@@ -1724,8 +1765,8 @@ def test_explicit_recovery_uses_full_mapping_for_compressed_rollout_variant(
     assert "unsupported_format" in status.gaps
 
 
-def _write_check_policy(workspace: Path) -> None:
-    policy_dir = workspace / ".yoetz"
+def _write_check_policy(workspace: Path, directory: str = ".finishup") -> None:
+    policy_dir = workspace / directory
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(
         b'format = "yoetz.approved-check-policy/1"\n'
@@ -1744,7 +1785,7 @@ def test_checks_status_names_the_probed_sandbox_outcome(
 ) -> None:
     """`observe checks status` carries the host sandbox answer, not just the policy state.
 
-    The dependency is named once here (issue #720); `yoetz service status` deliberately does not
+    The dependency is named once here (issue #720); `finishup service status` deliberately does not
     report it, because sandbox availability is a fact about the host running the check.
     """
 
@@ -1778,3 +1819,155 @@ def test_checks_status_names_the_probed_sandbox_outcome(
     assert payload["state"] == "untrusted"
     if reason != "ready":
         assert payload["sandbox"]["remediation"] != ""
+
+
+@pytest.mark.parametrize("directory", [".finishup", ".yoetz"])
+def test_checks_status_names_the_policy_file_in_use(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], directory: str
+) -> None:
+    """The legacy `.yoetz/checks.toml` is used when it is the only policy (ADR-048)."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_check_policy(workspace, directory)
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=True, _state=tmp_path / "state"
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["policy_file"] == f"{directory}/checks.toml"
+    assert payload["state"] == "untrusted"
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "trust", "run"])
+def test_checks_operations_refuse_a_policy_in_both_directories(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_check_policy(workspace, ".finishup")
+    _write_check_policy(workspace, ".yoetz")
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    captured = capsys.readouterr()
+    assert code == 20
+    assert captured.out == ""
+    assert f"observation_checks_{operation}_failed:policy_ambiguous" in captured.err
+    assert "not a task blocker" in captured.err
+
+
+def test_checks_status_reports_missing_policy_as_not_configured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A workspace without `.finishup/checks.toml` is the ordinary opt-in state (tb4v1).
+
+    It used to print `observation_checks_status_failed:invalid_policy` and exit 20, which an agent
+    read as an owner-authority blocker.
+    """
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=True, _state=tmp_path / "state"
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "invalid_policy" not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["state"] == "not_configured"
+    assert payload["policy_digest"] is None
+    assert payload["executable_checks"] == []
+    assert payload["network_check_state"] == "not_requested"
+    assert "not a task blocker" in payload["note"]
+    assert set(payload) == {
+        "workspace_commitment",
+        "policy_digest",
+        "state",
+        "sandbox",
+        "executable_checks",
+        "network_check_state",
+        "note",
+    }
+
+
+def test_checks_status_text_output_reports_not_configured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=False, _state=tmp_path / "state"
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "state: not_configured" in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("operation", ["preview", "trust", "run"])
+def test_checks_operations_name_missing_policy_and_say_it_is_not_a_blocker(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    err = capsys.readouterr().err
+    assert code == 20
+    assert f"observation_checks_{operation}_failed:policy_not_configured" in err
+    assert "invalid_policy" not in err
+    assert "not a task blocker" in err
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "trust", "run"])
+def test_checks_operations_keep_invalid_policy_for_a_broken_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / ".finishup").mkdir(parents=True)
+    (workspace / ".finishup" / "checks.toml").write_bytes(b"format = 1\n")
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    captured = capsys.readouterr()
+    assert code == 20
+    assert captured.out == ""
+    assert f"observation_checks_{operation}_failed:invalid_policy" in captured.err
+    assert "not a task blocker" in captured.err
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "run"])
+def test_checks_operations_do_not_call_a_missing_workspace_a_policy_fault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    code = getattr(observe_cli, f"observe_checks_{operation}")(
+        workspace=str(tmp_path / "absent-workspace"), json_output=True, _state=tmp_path / "state"
+    )
+
+    err = capsys.readouterr().err
+    assert code == 20
+    assert "invalid_policy" not in err
+    assert "policy_not_configured" not in err

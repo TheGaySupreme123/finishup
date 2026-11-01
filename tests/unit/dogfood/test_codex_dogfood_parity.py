@@ -55,7 +55,7 @@ def _report() -> dict[str, object]:
             "launcher_digest": _DIGEST,
             "route_profile": "policy",
             "worktree_digest": _DIGEST,
-            "yoetz_isolation": {
+            "finishup_isolation": {
                 "mode": "isolated",
                 "normal_mode": "ambient",
                 "state_path_digest": _DIGEST,
@@ -78,7 +78,7 @@ def _report() -> dict[str, object]:
         },
         "observed": {
             "activation_state": "active",
-            "yoetz_isolation_state": "isolated",
+            "finishup_isolation_state": "isolated",
             "mcp_registration_state": "yoetz_owned",
             "mcp_isolation_binding": "isolated_exact",
             "mcp_child_state": "ready",
@@ -121,7 +121,7 @@ def test_installed_not_activated_is_disqualifying_and_actionable() -> None:
         "status": "fail",
         "reason": "installed_not_activated",
         "evidence_digest": _DIGEST,
-        "next_action": "yoetz_recommend_list_exact_target",
+        "next_action": "finishup_recommend_list_exact_target",
     }
 
     result = classify_codex_dogfood_report(report)
@@ -212,10 +212,10 @@ def _identity(report: dict[str, object]) -> dict[str, object]:
 
 
 def _isolation(report: dict[str, object]) -> dict[str, object]:
-    return cast(dict[str, object], _identity(report)["yoetz_isolation"])
+    return cast(dict[str, object], _identity(report)["finishup_isolation"])
 
 
-def test_shared_yoetz_identity_cannot_pass_the_isolation_facet() -> None:
+def test_shared_finishup_identity_cannot_pass_the_isolation_facet() -> None:
     report = _report()
     _isolation(report)["state_path_digest"] = _NORMAL_DIGEST
 
@@ -223,7 +223,7 @@ def test_shared_yoetz_identity_cannot_pass_the_isolation_facet() -> None:
         classify_codex_dogfood_report(report)
 
 
-def test_shared_yoetz_executable_cannot_pass_the_isolation_facet() -> None:
+def test_shared_finishup_executable_cannot_pass_the_isolation_facet() -> None:
     report = _report()
     _isolation(report)["executable_path_digest"] = _NORMAL_DIGEST
 
@@ -234,7 +234,7 @@ def test_shared_yoetz_executable_cannot_pass_the_isolation_facet() -> None:
 def test_ambient_or_unknown_isolation_state_contradicts_a_passing_facet() -> None:
     for state in ("ambient", "shared", "unknown"):
         report = _report()
-        _observed(report)["yoetz_isolation_state"] = state
+        _observed(report)["finishup_isolation_state"] = state
         with pytest.raises(DogfoodGateError, match="service_isolation_state_mismatch"):
             classify_codex_dogfood_report(report)
 
@@ -257,12 +257,12 @@ def test_nonambient_normal_snapshot_contradicts_a_passing_isolation_facet() -> N
 
 def test_failed_isolation_refuses_launch_with_the_provisioning_continuation() -> None:
     report = _report()
-    _observed(report)["yoetz_isolation_state"] = "shared"
+    _observed(report)["finishup_isolation_state"] = "shared"
     _facets(report)["service_isolation"] = {
         "status": "fail",
-        "reason": "yoetz_identity_shared",
+        "reason": "finishup_identity_shared",
         "evidence_digest": _DIGEST,
-        "next_action": "provision_isolated_yoetz_root",
+        "next_action": "provision_isolated_finishup_root",
     }
 
     result = classify_codex_dogfood_report(report)
@@ -274,10 +274,10 @@ def test_failed_isolation_refuses_launch_with_the_provisioning_continuation() ->
 
 def test_failed_isolation_without_the_provisioning_continuation_is_invalid() -> None:
     report = _report()
-    _observed(report)["yoetz_isolation_state"] = "unknown"
+    _observed(report)["finishup_isolation_state"] = "unknown"
     _facets(report)["service_isolation"] = {
         "status": "blocked",
-        "reason": "yoetz_identity_unknown",
+        "reason": "finishup_identity_unknown",
         "evidence_digest": None,
         "next_action": "do_not_launch",
     }
@@ -363,7 +363,7 @@ def test_cli_preflight_refuses_launch_on_a_failed_required_facet(
         "status": "fail",
         "reason": "installed_not_activated",
         "evidence_digest": _DIGEST,
-        "next_action": "yoetz_recommend_list_exact_target",
+        "next_action": "finishup_recommend_list_exact_target",
     }
     path = tmp_path / "report.json"
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -375,8 +375,8 @@ def test_cli_preflight_refuses_launch_on_a_failed_required_facet(
 
 
 def test_session_stream_scope_requires_exact_parser_proven_codex_version() -> None:
-    from yoetz.adapters.importers.codex_rollout_jsonl import SUPPORTED_ROLLOUT_PROFILES
-    from yoetz.adapters.integrations.codex_capability_cells import (
+    from finishup.adapters.importers.codex_rollout_jsonl import SUPPORTED_ROLLOUT_PROFILES
+    from finishup.adapters.integrations.codex_capability_cells import (
         rollout_parser_proven_versions,
     )
 
@@ -639,7 +639,7 @@ def test_version_three_reports_with_ambiguous_config_digest_are_refused() -> Non
     report = _report()
     isolation = _isolation(report)
     isolation["config_digest"] = isolation.pop("config_path_digest")
-    with pytest.raises(DogfoodGateError, match="yoetz_isolation_fields_invalid"):
+    with pytest.raises(DogfoodGateError, match="finishup_isolation_fields_invalid"):
         classify_codex_dogfood_report(report)
 
 

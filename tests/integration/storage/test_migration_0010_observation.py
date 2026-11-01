@@ -5,8 +5,8 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.connection import StorageUnsafeError, verify_schema_identity
-from yoetz.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.connection import StorageUnsafeError, verify_schema_identity
+from finishup.adapters.sqlite.migrations import initialize_bundle
 
 
 def test_fresh_content_consent_bundle_reopens_but_future_schema_is_refused(tmp_path: Path) -> None:

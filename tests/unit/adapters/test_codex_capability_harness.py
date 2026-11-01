@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_capability_harness import (
+from finishup.adapters.integrations.codex_capability_harness import (
     CODEX_ARTIFACT_UNAVAILABLE,
     CODEX_CONDUIT_DRIVER_UNAVAILABLE,
     CodexArtifactIdentity,
@@ -48,7 +48,7 @@ def test_evaluate_codex_conduit_availability_fail_closed_without_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_capability_harness.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_capability_harness.discover_codex_binaries",
         lambda: (),
     )
     availability, identity = evaluate_codex_conduit_availability()
@@ -61,7 +61,7 @@ def test_evaluate_codex_conduit_availability_never_calls_discovery_ready(
 ) -> None:
     expected = CodexArtifactIdentity("/safe/codex", "0.146.0", "sha256:" + "a" * 64)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_capability_harness.discover_codex_capability_artifact",
+        "finishup.adapters.integrations.codex_capability_harness.discover_codex_capability_artifact",
         lambda: expected,
     )
     availability, identity = evaluate_codex_conduit_availability()

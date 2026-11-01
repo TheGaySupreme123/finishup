@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -8,15 +9,15 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     LARGEST_CAPACITY,
     STANDARD_CAPACITY,
     ObservationCapacity,
@@ -24,16 +25,18 @@ from yoetz.domain.observation_budget import (
     PressureState,
     no_cap_support,
 )
-from yoetz.domain.observation_settings import (
+from finishup.domain.observation_settings import (
     ObservationDetailProfile,
     ObservationSelection,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _NOW = Timestamp("2026-09-10T00:01:00.000Z")
 _OLD = Timestamp("2026-09-10T00:00:00.000Z")
 _WALL_SECONDS = datetime(2026, 9, 10, 0, 1, tzinfo=UTC).timestamp()
 _SESSION = "hmac-sha256:" + "1" * 64
+# A modification time no write can produce: 1970-01-01T00:00:01Z.
+_PINNED_NS = 1_000_000_000
 
 
 def _store(tmp_path: Path, monotonic: list[float]) -> tuple[LocalObservationStore, str]:
@@ -140,16 +143,29 @@ def test_runtime_status_does_not_advance_recovery_or_write(tmp_path: Path) -> No
     store.update_capture_backlog(workspace, 450, 0, _NOW, _NOW, route_id="capture-a")
     store.update_selection_pressure(workspace, _SESSION)
     state_path = store._workspace_path(workspace)  # pyright: ignore[reportPrivateUsage]
-    before = state_path.stat().st_mtime_ns
+
+    # Detect a write by what it does to a modification time pinned in the past. Comparing two
+    # real mtimes read back to back is a race against the filesystem clock: it ticks once per
+    # jiffy (1 ms on the CI-equivalent box, 4 to 10 ms elsewhere), so two writes inside one tick
+    # carry the same mtime and "was it written" cannot be told from "it was not".
+    def pin_mtime() -> None:
+        os.utime(state_path, ns=(_PINNED_NS, _PINNED_NS))
+
+    def written() -> bool:
+        return state_path.stat().st_mtime_ns != _PINNED_NS
 
     # A low read must not start the dwell timer or persist a snapshot.
+    pin_mtime()
     store.update_capture_backlog(workspace, 0, 0, None, _NOW, route_id="capture-a")
-    before_low_read = state_path.stat().st_mtime_ns
+    assert written(), "the low backlog read is itself recorded"
+    at_rest = state_path.read_bytes()
+
+    pin_mtime()
     status = store.selection_runtime_status(workspace, _SESSION)
     assert status["pressure_state"] == "high"
     assert status["effective_mode"] == "focused"
-    assert state_path.stat().st_mtime_ns == before_low_read
-    assert before_low_read != before
+    assert not written(), "a status read must not write the state file"
+    assert state_path.read_bytes() == at_rest
 
 
 def test_low_pressure_dwell_recovers_and_emits_one_transition(tmp_path: Path) -> None:
@@ -230,6 +246,7 @@ def test_current_hard_pressure_blocks_new_input_but_allows_recovery(
     store, workspace = _store(tmp_path, monotonic)
     old = replace(_pending_envelope(session=_SESSION, receipt_time=_OLD), source=source)
     assert store.enqueue_outbox(workspace, "session", old) is None
+    store.update_capture_backlog(workspace, 512, 0, _NOW, _NOW, route_id="capture-a")
     assert not store.update_selection_pressure(workspace, _SESSION).admission_allowed
     fresh = replace(
         old,
@@ -237,12 +254,13 @@ def test_current_hard_pressure_blocks_new_input_but_allows_recovery(
         receipt_time=_NOW,
         cursor=replace(old.cursor, event_position=2),
     )
-    from yoetz.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
 
     plan = AdmissionPlan(buffer=AdmissionBuffer(), deliveries=(("session", fresh),), deferred=False)
     assert not store.commit_selected_admission(workspace, plan, incoming=fresh, newly_observed=True)
     (row,) = store.list_pending_outbox_rows(workspace)
     assert store.acknowledge_outbox_row(workspace, row)
+    store.update_capture_backlog(workspace, 0, 0, None, _NOW, route_id="capture-a")
     status = store.update_selection_pressure(workspace, _SESSION)
     assert status.admission_allowed
     assert status.state is PressureState.HIGH
@@ -259,8 +277,10 @@ def test_session_end_clears_pressure_only_at_current_generation(tmp_path: Path) 
     store.grant_consent(workspace)
     session = store.bind_codex_session(workspace, "session")
     old = _pending_envelope(session=session, receipt_time=_OLD)
+    store.update_capture_backlog(workspace, 450, 0, _NOW, _NOW, route_id="capture-a")
     assert store.enqueue_outbox(workspace, "session", old) is None
     store.update_selection_pressure(workspace, session)
+    store.update_capture_backlog(workspace, 0, 0, None, _NOW, route_id="capture-a")
     (row,) = store.list_pending_outbox_rows(workspace)
     assert store.acknowledge_outbox_row(workspace, row)
     store.note_session_end(workspace, session, generation=0)
@@ -274,7 +294,7 @@ def test_session_end_clears_pressure_only_at_current_generation(tmp_path: Path) 
 
 
 def test_accepted_buffer_transfer_drains_under_hard_pressure(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.observation_admission import (
+    from finishup.adapters.integrations.observation_admission import (
         AdmissionBuffer,
         AdmissionPlan,
         BufferedInput,
@@ -301,7 +321,7 @@ def test_accepted_buffer_transfer_drains_under_hard_pressure(tmp_path: Path) -> 
 def test_buffer_only_plan_checks_aggregate_bytes_before_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations.observation_admission import (
+    from finishup.adapters.integrations.observation_admission import (
         AdmissionBuffer,
         AdmissionPlan,
         BufferedInput,
@@ -448,7 +468,7 @@ def test_runtime_status_reports_effective_budget_and_labels(tmp_path: Path) -> N
     assert session_status["effective_capacity_label"] == "custom"
     budget = cast(Mapping[str, object], session_status["effective_budget"])
     assert budget["schema"] == "yoetz.observation-effective-budget/1"
-    assert budget["budget_policy_version"] == "observation-budget-v2-provisional"
+    assert budget["budget_policy_version"] == "observation-budget-v3-capacity"
     assert budget["validation_status"] == "not_validated"
     assert budget["scope"] == "session"
     assert budget["selected_queue_count"] == 1_024
@@ -533,3 +553,109 @@ def test_small_session_capacity_does_not_shrink_sibling_admission(tmp_path: Path
     small_status = store.selection_runtime_status(workspace, _SESSION)
     assert small_status["selected_capacity"] == 64
     assert small_status["effective_capacity"] == 512
+
+
+@pytest.mark.parametrize("source", list(ObservationSource))
+def test_aged_backlog_retains_new_inputs_across_restart(
+    tmp_path: Path, source: ObservationSource
+) -> None:
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+
+    monotonic = [0.0]
+    store, workspace = _store(tmp_path, monotonic)
+    _select_detailed(store, workspace)
+    old = replace(_pending_envelope(session=_SESSION, receipt_time=_OLD), source=source)
+    assert store.enqueue_outbox(workspace, "session", old) is None
+    # Twenty minutes of delayed delivery, observed with a controlled clock.
+    monotonic[0] = 1_200.0
+    for index in range(2, 22):
+        fresh = replace(
+            old, source_identity=f"input-{index}", cursor=replace(old.cursor, event_position=index)
+        )
+        plan = AdmissionPlan(AdmissionBuffer(), (("session", fresh),), False)
+        assert store.commit_selected_admission(workspace, plan, incoming=fresh, newly_observed=True)
+    assert store.selection_accounting(workspace)["unrecoverable_input_count"] == 0
+    reopened = LocalObservationStore(
+        _state=tmp_path / "state",
+        _monotonic=lambda: monotonic[0],
+        _wall=lambda: _WALL_SECONDS + monotonic[0],
+    )
+    status = reopened.selection_runtime_status(workspace, _SESSION)
+    assert cast(int, status["oldest_pending_age_ms"]) >= 1_200_000
+    assert status["admission_allowed"] is True
+    assert status["content_allowed"] is True
+    assert status["effective_mode"] == "detailed"
+    rows = reopened.list_pending_outbox_rows(workspace)
+    assert len(rows) == 21
+    for row in rows:
+        assert reopened.acknowledge_outbox_row(workspace, row)
+    assert reopened.list_pending_outbox_rows(workspace) == ()
+    assert reopened.selection_accounting(workspace)["unrecoverable_input_count"] == 0
+
+
+def test_delivery_unit_bytes_match_the_encoded_unit() -> None:
+    envelope = _pending_envelope(session=_SESSION, receipt_time=_OLD)
+    for codex_session_id in ("", "session", 'é "\\', "019a-" * 12, "\U0001f600"):
+        encoded = local_mod.canonical_encode(
+            cast(
+                local_mod.JsonValue,
+                {
+                    "codex_session_id": codex_session_id,
+                    "envelope": local_mod._envelope_fragment(envelope),  # pyright: ignore[reportPrivateUsage]
+                },
+            )
+        )
+        assert local_mod._delivery_unit_bytes(codex_session_id, envelope) == len(encoded)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_admission_pressure_sampling_does_not_reencode_retained_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hook admission cost must not re-encode each retained row (#887).
+
+    With age no longer refusing input, a stalled backlog can reach the session fair share. The
+    admission check then samples every pending row, so its encoder calls must not scale with it.
+    """
+
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+
+    monotonic = [0.0]
+    store, workspace = _store(tmp_path, monotonic)
+    _select_detailed(store, workspace)
+    old = _pending_envelope(session=_SESSION, receipt_time=_OLD)
+
+    def admit(index: int) -> bool:
+        fresh = replace(
+            old, source_identity=f"input-{index}", cursor=replace(old.cursor, event_position=index)
+        )
+        plan = AdmissionPlan(AdmissionBuffer(), (("session", fresh),), False)
+        return store.commit_selected_admission(workspace, plan, incoming=fresh, newly_observed=True)
+
+    for index in range(1, 101):
+        assert admit(index)
+    real_encode = local_mod.canonical_encode
+    calls = 0
+
+    def counting_encode(value: object) -> bytes:
+        nonlocal calls
+        calls += 1
+        return real_encode(cast(local_mod.JsonValue, value))
+
+    monkeypatch.setattr(local_mod, "canonical_encode", counting_encode)
+    assert admit(101)
+    # A handful of whole-document and new-row encodes, never one per retained row.
+    assert calls < 20
+    assert store.selection_accounting(workspace)["unrecoverable_input_count"] == 0
+
+
+def test_backlog_probe_reports_only_unattempted_rows(tmp_path: Path) -> None:
+    monotonic = [0.0]
+    store, workspace = _store(tmp_path, monotonic)
+    assert not store.has_unattempted_outbox_rows()
+    envelope = _pending_envelope(session=_SESSION, receipt_time=_OLD)
+    assert store.enqueue_outbox(workspace, "session", envelope) is None
+    assert store.has_unattempted_outbox_rows()
+    (row,) = store.list_pending_outbox_rows(workspace)
+    assert store.bump_outbox_row_attempt(workspace, row, reason=None) is not None
+    # A row that already failed an attempt keeps the ordinary retry cadence.
+    assert not store.has_unattempted_outbox_rows()

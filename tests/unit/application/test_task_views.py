@@ -11,18 +11,18 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
-from yoetz.application.status import (
+from finishup.application.status import (
     Application,
     _lineage_readiness_gaps,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.status_faults import StatusFault, StatusFaultStage, classify_status_fault
-from yoetz.application.task_views import lineage_status_page
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.values import Frontier, Timestamp
-from yoetz.ports.host_lineage import HostLineageAnnotation, HostLineageRegistryPort
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.start_catalog import SessionState, StartCatalogPort, TaskLineage
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.application.status_faults import StatusFault, StatusFaultStage, classify_status_fault
+from finishup.application.task_views import lineage_status_page
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.values import Frontier, Timestamp
+from finishup.ports.host_lineage import HostLineageAnnotation, HostLineageRegistryPort
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.start_catalog import SessionState, StartCatalogPort, TaskLineage
+from finishup.protocol.errors import PublicErrorCode
 
 pytestmark = pytest.mark.anyio
 _PARENT = "tsk_53000000-0000-4000-8000-000000000001"
@@ -83,15 +83,13 @@ async def test_catalog_child_without_a_manifest_is_never_verified(
     assert item.rollup_state.value == state
     assert item.blocking_conditions == blockers
     catalog.task_lineage.side_effect = [parent, child]
-    assert (
-        await _lineage_readiness_gaps(
-            cast(Application, SimpleNamespace(start_catalog=catalog)),
-            runtime,
-            Frontier(0, "genesis"),
-            "req_53000000-0000-4000-8000-000000000001",
-        )
-        == blockers
-    )
+    assert await _lineage_readiness_gaps(
+        cast(Application, SimpleNamespace(start_catalog=catalog)),
+        runtime,
+        Frontier(0, "genesis"),
+        "req_53000000-0000-4000-8000-000000000001",
+    ) == (blockers, False)
+    assert item.self_verified_finding_count is None
 
 
 @pytest.mark.parametrize("count", [1, 101, 200])
@@ -172,3 +170,42 @@ async def test_lineage_status_reads_every_provisional_host_annotation(count: int
     classified = classify_status_fault(exc_info.value, view="lineage", request_id=None)
     assert classified.code is PublicErrorCode.STORAGE_CORRUPT
     assert classified.message == "Host lineage status is inconsistent."
+
+
+@pytest.mark.parametrize(("acceptance", "expected"), (("accepted", True), ("pending", False)))
+async def test_readiness_reports_an_accepted_child_with_self_verified_findings(
+    monkeypatch: pytest.MonkeyPatch, acceptance: str, expected: bool
+) -> None:
+    """Issue #984/#996 (S2): the lineage row's count drives the standing status note."""
+
+    from finishup.application import task_views
+    from finishup.protocol.models import StatusLineageChildModel
+
+    child = StatusLineageChildModel.model_validate(
+        {
+            "task_id": _CHILD,
+            "parent_task_id": _PARENT,
+            "origin": "self_registered",
+            "acceptance": acceptance,
+            "work_state": "closed",
+            "session_health": "ended",
+            "depth": "1",
+            "rollup_state": "annotation",
+            "blocking_conditions": (),
+            "self_verified_finding_count": "2",
+        }
+    )
+
+    async def page(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(children=(child,))
+
+    monkeypatch.setattr(task_views, "lineage_status_page", page)
+    catalog = AsyncMock(spec=StartCatalogPort)
+    catalog.list_child_task_ids.return_value = (_CHILD,)
+    runtime = cast(TaskRuntime, SimpleNamespace(task_id=_PARENT, session_id=_SESSION))
+    assert await _lineage_readiness_gaps(
+        cast(Application, SimpleNamespace(start_catalog=catalog)),
+        runtime,
+        Frontier(0, "genesis"),
+        "req_53000000-0000-4000-8000-000000000002",
+    ) == ((), expected)

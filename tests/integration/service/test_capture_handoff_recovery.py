@@ -20,16 +20,14 @@ from typing import cast
 
 import pytest
 
-from integration.application import test_native_capture_pipeline as native
-from integration.service import test_capture_inventory_recovery as inventory
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import ObservationCaptureRecoveryOutcome
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import ObservationCaptureRecoveryOutcome
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     CaptureHandoffRetirementReason,
     CaptureHandoffRetirementStage,
@@ -44,16 +42,18 @@ from yoetz.domain.observation import (
     ObservationSource,
     observation_capture_ticket_id,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, timestamp_from_datetime
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import BundleRuntimePort, TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.domain.values import JsonObject, timestamp_from_datetime
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import BundleRuntimePort, TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
+from integration.application import test_native_capture_pipeline as native
+from integration.service import test_capture_inventory_recovery as inventory
 
 _STRANDED_AGE_SECONDS = 61
 _PROFILES: Mapping[str, str | None] = {
@@ -135,7 +135,7 @@ class _Handoff:
         ticket = ObservationCaptureTicket(
             workspace_commitment=self.workspace,
             task_id=runtime.task_id,
-            yoetz_session_id=runtime.session_id,
+            finishup_session_id=runtime.session_id,
             session_commitment=self.world.session,
             source=_SOURCES[self.host],
             source_identity=identity,
@@ -200,15 +200,15 @@ async def _handoff(tmp_path: Path, *, host: str = "claude") -> _Handoff:
     return handoff
 
 
-def _assert_stalled(handoff: _Handoff) -> None:
+def _assert_aged_handoff(handoff: _Handoff) -> None:
     status = handoff.status()
     budget = cast(Mapping[str, object], status["effective_budget"])
     assert status["queue_count"] == 0
     assert cast(int, status["oldest_pending_age_ms"]) >= _STRANDED_AGE_SECONDS * 1_000
-    assert status["pressure_state"] == "hard_limit"
-    assert budget["limiting_dimension"] == "oldest_age"
-    assert status["admission_allowed"] is False
-    assert status["content_allowed"] is False
+    assert status["pressure_state"] == "healthy"
+    assert budget["limiting_dimension"] in {"bytes", "capture_backlog"}
+    assert status["admission_allowed"] is True
+    assert status["content_allowed"] is True
 
 
 def _assert_admitting(handoff: _Handoff) -> None:
@@ -234,7 +234,7 @@ async def test_sweep_retires_a_handoff_whose_structural_row_is_gone(
     handoff.publish_inventory()
     backlog = handoff.world.local.capture_backlog(handoff.workspace)
     assert backlog["reservation_unknown"] is False
-    _assert_stalled(handoff)
+    _assert_aged_handoff(handoff)
     losses_before = handoff.world.local.selection_accounting(handoff.workspace)
 
     sweeper = handoff.world.sweep()
@@ -574,7 +574,7 @@ async def test_quarantined_structural_row_is_named_in_the_retirement(tmp_path: P
     assert local.quarantine_outbox_row(
         handoff.workspace, row, ObservationGapCode.CONTENT_CAPTURE_PROFILE_MISMATCH.value
     )
-    _assert_stalled(handoff)
+    _assert_aged_handoff(handoff)
     try:
         outcome = await handoff.world.coordinator.recover_capture_inventory(handoff.workspace)
         assert outcome is ObservationCaptureRecoveryOutcome.HANDOFF_RETIRED
@@ -589,7 +589,7 @@ async def test_quarantined_structural_row_is_named_in_the_retirement(tmp_path: P
 
 
 @pytest.mark.anyio
-async def test_a_genuinely_pending_handoff_keeps_the_age_gate(tmp_path: Path) -> None:
+async def test_a_genuinely_pending_handoff_is_preserved_without_age_refusal(tmp_path: Path) -> None:
     """Current authority plus a deliverable row: nothing is cleared or raised."""
 
     handoff = await _handoff(tmp_path)
@@ -608,8 +608,8 @@ async def test_a_genuinely_pending_handoff_keeps_the_age_gate(tmp_path: Path) ->
         assert kept is not None and kept.state == "staging"
         assert handoff.retirements() == ()
         status = handoff.status()
-        assert status["pressure_state"] == "hard_limit"
-        assert status["admission_allowed"] is False
+        assert status["pressure_state"] == "healthy"
+        assert status["admission_allowed"] is True
         backlog = handoff.world.local.capture_backlog(handoff.workspace)
         assert backlog["reservation_count"] == 1
         assert not handoff.world.routes.held
@@ -660,7 +660,7 @@ async def test_reservation_outliving_its_ticket_is_released(tmp_path: Path, fini
             "DELETE FROM observation_capture_tickets WHERE ticket_id=?",
             (observation_capture_ticket_id(ticket),),
         )
-    _assert_stalled(handoff)
+    _assert_aged_handoff(handoff)
     try:
         outcome = await handoff.world.coordinator.recover_capture_inventory(handoff.workspace)
         # Nothing was retired: the durable ticket was already finished.
@@ -834,7 +834,7 @@ async def test_check_preflight_does_not_wait_for_a_busy_capture_lane(tmp_path: P
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("host", ("claude", "codex", "cursor"))
-async def test_native_input_is_admitted_and_delivered_after_recovery(
+async def test_native_input_is_captured_before_and_after_aged_handoff_recovery(
     tmp_path: Path, host: str
 ) -> None:
     """An empty queue is not success: real host input must be retained again."""
@@ -845,20 +845,20 @@ async def test_native_input_is_admitted_and_delivered_after_recovery(
     handoff.publish_inventory()
     sweeper = world.sweep()
     try:
-        # During the stall, real native input is refused and its loss counted.
+        # A delayed handoff must not prevent unrelated authorized native capture.
         assert (
             await asyncio.to_thread(
                 inventory._native_failed_command,  # pyright: ignore[reportPrivateUsage]
                 world,
                 host,
                 "during-stall",
-                "lost-during-stall",
+                "retained-during-delay",
             )
             == 0
         )
-        assert world.requests == []
+        assert any(request.capture_only for request in world.requests)
         stalled = world.local.selection_accounting(world.workspace)
-        assert stalled["unrecoverable_input_count"] == 1
+        assert stalled["unrecoverable_input_count"] == 0
 
         assert (await sweeper.sweep()).reasons[:1] == (("capture_handoff_retired", 1),)
         await _drain_selection_losses(world)
@@ -898,6 +898,7 @@ async def test_native_input_is_admitted_and_delivered_after_recovery(
             local_observation=world.local,
         )
         assert any(marker.encode() in item.content for item in resolved.content)
+        assert any(b"retained-during-delay" in item.content for item in resolved.content)
         assert not world.routes.held
     finally:
         sweeper.close()
@@ -949,9 +950,9 @@ async def test_claude_drain_delivers_a_shared_workspace_codex_row_with_its_hando
         native.LifecycleMapping(
             mapping_version=1,
             codex_session_id="codex-shared",
-            yoetz_task_id=world.sibling.task_id,
-            yoetz_session_id=world.sibling.session_id,
-            yoetz_writer_id=cast(str, world.sibling.writer_id),
+            finishup_task_id=world.sibling.task_id,
+            finishup_session_id=world.sibling.session_id,
+            finishup_writer_id=cast(str, world.sibling.writer_id),
             last_frontier=None,
         ),
         _state=tmp_path / "state",

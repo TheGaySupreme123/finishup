@@ -13,6 +13,21 @@ import pytest
 
 from builders.privacy_policies import minimal_external_policy
 from builders.privacy_widenings import llm_channel, other_provider, with_llm
+from finishup.adapters.privacy.gateway import (
+    PolicyEnforcingOutboundGateway,
+    _binding_digest,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.providers.local_model import InstalledLocalModelProfileRegistry
+from finishup.application.egress import SemanticEgressBlocked
+from finishup.domain.privacy import (
+    EgressChannel,
+    PrivacyOutcome,
+    PrivacyPolicy,
+    PrivacyReason,
+    ProviderBinding,
+)
+from finishup.ports.privacy import EffectivePrivacyPolicy
 from integration.privacy.test_egress_gateway import (
     _AuditKey,  # pyright: ignore[reportPrivateUsage]
     _Clock,  # pyright: ignore[reportPrivateUsage]
@@ -29,21 +44,6 @@ from unit.application.test_channel_ceilings_enforced import (
     _coordinator,  # pyright: ignore[reportPrivateUsage]
     _deadline,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.privacy.gateway import (
-    PolicyEnforcingOutboundGateway,
-    _binding_digest,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.providers.local_model import InstalledLocalModelProfileRegistry
-from yoetz.application.egress import SemanticEgressBlocked
-from yoetz.domain.privacy import (
-    EgressChannel,
-    PrivacyOutcome,
-    PrivacyPolicy,
-    PrivacyReason,
-    ProviderBinding,
-)
-from yoetz.ports.privacy import EffectivePrivacyPolicy
 
 
 def _third() -> ProviderBinding:

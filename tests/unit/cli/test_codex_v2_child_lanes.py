@@ -19,28 +19,28 @@ from typing import cast
 import pytest
 
 from builders.codex_rollout import encode_lines, session_meta
-from fixture_loader import build_fixture_loader
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     mapping_from_start_ids,
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.adapters.integrations.hook_spool import HookSpool
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-from yoetz.cli.hooks import (
+from finishup.adapters.integrations.hook_spool import HookSpool
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.hooks import (
     TRANSCRIPT_CHILD_IDENTITY_CONFLICT,
     bind_start_mapping_outcome,
     handle_post_tool_use,
     with_transcript_child_identity,
 )
-from yoetz.cli.observe_hooks import handle_observe, handle_spool
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.cli.observe_hooks import handle_observe, handle_spool
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from fixture_loader import build_fixture_loader
 
 _IMP_015 = "imports/codex/rollout-multi-agent-v2-0.153.4.case.json"
 _PARENT = "019f8b27-b98e-7061-bbb5-d0b897594de6"
@@ -72,9 +72,9 @@ def _rollout(home: Path, thread: str, content: bytes) -> Path:
 def _mapping(session: str, *, task: str | None = None) -> LifecycleMapping:
     return mapping_from_start_ids(
         codex_session_id=session,
-        yoetz_task_id=task or new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=task or new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier=None,
     )
 
@@ -312,15 +312,15 @@ def _attach_result(parent_task: str) -> dict[str, JsonValue]:
 def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
     codex_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``yoetz hooks post-tool-use`` is the production binder for the child's attach."""
+    """``finishup hooks post-tool-use`` is the production binder for the child's attach."""
 
     parent = _mapping(_PARENT)
     store_mapping(parent, _state=tmp_path)
-    result = _attach_result(parent.yoetz_task_id)
+    result = _attach_result(parent.finishup_task_id)
     callback = _callback(
         _rollout(codex_home, _CHILD, _imp_015("child")),
         hook_event_name="PostToolUse",
-        tool_name="mcp__yoetz__start",
+        tool_name="mcp__finishup__start",
         tool_response={"structuredContent": result},
     )
     observed: list[Mapping[str, JsonValue]] = []
@@ -340,7 +340,7 @@ def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
 
     child = load_mapping(_child_lane(), _state=tmp_path)
     assert child is not None
-    assert (child.yoetz_task_id, child.yoetz_session_id, child.yoetz_writer_id) == (
+    assert (child.finishup_task_id, child.finishup_session_id, child.finishup_writer_id) == (
         result["task_id"],
         result["session_id"],
         result["writer_id"],
@@ -356,8 +356,8 @@ def test_without_a_transcript_the_root_session_attach_stays_unbound(tmp_path: Pa
     callback = _callback(
         None,
         hook_event_name="PostToolUse",
-        tool_name="mcp__yoetz__start",
-        tool_response={"structuredContent": _attach_result(parent.yoetz_task_id)},
+        tool_name="mcp__finishup__start",
+        tool_response={"structuredContent": _attach_result(parent.finishup_task_id)},
     )
 
     assert bind_start_mapping_outcome(callback, _state=tmp_path) == "start_bind_child_lane_unbound"
@@ -511,7 +511,7 @@ def test_reconcile_refuses_an_unprovable_child_rollout_with_a_bounded_reason(
         store.grant_consent(other)
         store.bind_codex_session(other, _PARENT)
     if shape in {"lane_names_parent_task", "lane_bound_elsewhere"}:
-        task = parent.yoetz_task_id if shape == "lane_names_parent_task" else None
+        task = parent.finishup_task_id if shape == "lane_names_parent_task" else None
         store_mapping(_mapping(_child_lane(), task=task), _state=state)
     if shape == "lane_bound_elsewhere":
         other = store.workspace_commitment(str((tmp_path / "other").resolve()))
@@ -526,7 +526,7 @@ def test_reconcile_refuses_an_unprovable_child_rollout_with_a_bounded_reason(
     err = capsys.readouterr().err
     assert err.startswith(f"observation_reconcile_failed:{reason}: ")
     # The bounded reason never echoes a host thread, lane, task, or path.
-    for secret in (_PARENT, _CHILD, _child_lane(), parent.yoetz_task_id, str(child_rollout)):
+    for secret in (_PARENT, _CHILD, _child_lane(), parent.finishup_task_id, str(child_rollout)):
         assert secret not in err
     assert store.list_pending_outbox_rows(commitment) == ()
     assert store.codex_sessions_for_workspace(commitment) == before

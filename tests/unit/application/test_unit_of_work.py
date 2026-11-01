@@ -12,7 +12,7 @@ from typing import Literal, cast
 import pytest
 
 from builders.replay import replay_records
-from yoetz.application.unit_of_work import (
+from finishup.application.unit_of_work import (
     CatalogCompletion,
     CatalogPhaseAdvance,
     CatalogQuarantine,
@@ -25,10 +25,10 @@ from yoetz.application.unit_of_work import (
     run_prepared_append,
     run_publish_response_commit,
 )
-from yoetz.domain.events import EventDraft, EventPayload
-from yoetz.domain.privacy import LocalDisclosureSink
-from yoetz.domain.values import Frontier, parse_rfc3339_millis
-from yoetz.ports.ledger import (
+from finishup.domain.events import EventDraft, EventPayload
+from finishup.domain.privacy import LocalDisclosureSink
+from finishup.domain.values import Frontier, parse_rfc3339_millis
+from finishup.ports.ledger import (
     AcceptedEventSummary,
     AppendCommand,
     AppendEntry,
@@ -40,14 +40,14 @@ from yoetz.ports.ledger import (
     OperationRecord,
     OperationState,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.publish_response_catalog import (
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.publish_response_catalog import (
     PublishResponseCatalogPort,
     PublishResponseKey,
     StoredPublishResponse,
 )
-from yoetz.ports.runtime import StartCompletionEvidence, StartMilestone
-from yoetz.ports.start_catalog import (
+from finishup.ports.runtime import StartCompletionEvidence, StartMilestone
+from finishup.ports.start_catalog import (
     EncryptedResultRef,
     SafeReason,
     StartAllocation,
@@ -59,8 +59,8 @@ from yoetz.ports.start_catalog import (
     StartOperationLease,
     StartPhase,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.fixture
@@ -639,9 +639,9 @@ async def test_closed_catalog_transition_values_dispatch_exactly_once() -> None:
 
 
 def test_unit_of_work_has_no_concrete_adapter_or_transaction_dependency() -> None:
-    source = Path(__file__).parents[3] / "src/yoetz/application/unit_of_work.py"
+    source = Path(__file__).parents[3] / "src/finishup/application/unit_of_work.py"
     text = source.read_text(encoding="utf-8")
-    assert "yoetz.adapters" not in text
+    assert "finishup.adapters" not in text
     assert "sqlite" not in text.lower()
     assert "connection" not in text.lower()
     assert "rollback(" not in text

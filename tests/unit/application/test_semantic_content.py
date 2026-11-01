@@ -12,19 +12,30 @@ from typing import cast
 
 import pytest
 
-from builders.policy_cases import evd, make_case
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import (
+from builders.observed_runs import INSTALLATION_KEY
+from builders.policy_cases import (
+    claim_record,
+    clm,
+    evd,
+    make_case,
+    obl,
+    obligation_record,
+    plan_record,
+)
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
     materialize_observation_envelope,
     stable_observation_id,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.domain.events import (
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.domain.events import (
+    ClaimKind,
+    ClaimRecordedPayload,
     EvidenceContentAvailability,
     EvidenceDigestBinding,
     EvidenceDigestProvenance,
@@ -32,11 +43,16 @@ from yoetz.domain.events import (
     EvidenceImmutability,
     EvidenceKind,
     EvidenceRecordedPayload,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
     ResultOutcome,
     ResultRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationControlCommand,
@@ -44,14 +60,17 @@ from yoetz.domain.observation import (
     ObservationEnvelope,
     ObservationRevokeCommand,
     ObservationSource,
+    observed_command_commitment,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+    CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import (
+from finishup.domain.observation_selection import compound_verification_gap_required
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import (
     EvidenceId,
     JsonObject,
     JsonValue,
@@ -59,15 +78,16 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import CheckPhase, FrozenCase, LedgerPort, OperationLease
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import OwnershipFence, TaskRuntime
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.kernel.task_facts import register_command_identity_key
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import CheckPhase, FrozenCase, LedgerPort, OperationLease
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import OwnershipFence, TaskRuntime
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind
 
 _TASK = "tsk_10000000-0000-4000-8000-000000000001"
 _SESSION = "ses_10000000-0000-4000-8000-000000000001"
@@ -132,16 +152,16 @@ class _Observation:
         return self.profiles
 
     def codex_session_commitment_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> str | None:
-        if workspace != _WORKSPACE or yoetz_session_id != _SESSION:
+        if workspace != _WORKSPACE or finishup_session_id != _SESSION:
             return None
         return _SESSION_COMMITMENT
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool] | None:
-        if workspace != _WORKSPACE or yoetz_session_id != _SESSION:
+        if workspace != _WORKSPACE or finishup_session_id != _SESSION:
             return None
         return _SESSION_COMMITMENT, self.route_task, self.route_active
 
@@ -345,6 +365,113 @@ def _codex_profileless_fixture() -> tuple[FrozenCase, TaskRuntime, _Objects, _Ob
         objects,
         observation,
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "source",
+    (
+        ObservationSource.CODEX_HOOK,
+        ObservationSource.CLAUDE_HOOK,
+        ObservationSource.CURSOR_HOOK,
+    ),
+)
+@pytest.mark.parametrize("command", ("python stress.py", "python - <<'PY'\nassert 2 + 2 == 4\nPY"))
+async def test_custom_output_recovers_only_exact_declared_command(
+    tmp_path: Path,
+    source: ObservationSource,
+    command: str,
+) -> None:
+    if source is ObservationSource.CODEX_HOOK:
+        frozen, runtime, _objects, observation = _codex_profileless_fixture()
+    else:
+        frozen, runtime, _objects, observation, _envelope = _fixture()
+    commitment = observed_command_commitment(INSTALLATION_KEY, command)
+    fields = dict(observation.envelope.structural_payload)
+    fields["command_commitment"] = commitment
+    profiles = observation.profiles
+    if source is ObservationSource.CURSOR_HOOK:
+        profiles = (CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,)
+        fields.update(
+            capability_profile_id=profiles[0], mapping_hint=CURSOR_ORDINARY_HOOK_MAPPING_VERSION
+        )
+        observation.profiles = profiles
+    # Use the real mapper's outcome-gap rule: an inline program's newline is
+    # compound-shaped even though its full command identity is known exactly.
+    gaps = (
+        ("compound_outcome_unavailable",)
+        if compound_verification_gap_required(
+            {"tool_name": "Bash", "tool_input": {"command": command}}
+        )
+        else ()
+    )
+    observation.envelope = replace(
+        observation.envelope, source=source, structural_payload=JsonObject(fields), gap_codes=gaps
+    )
+    obligation = ObligationPublishedPayload(
+        obl(1),
+        "Check the result",
+        "A discriminating check",
+        ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.COMMAND, command),),
+    )
+    projection = replace(
+        frozen.case.projection,
+        plans={1: plan_record(PlanPublishedPayload(1, "Plan", (obl(1),)), 2)},
+        obligations={obl(1): obligation_record(obligation, 1)},
+    )
+    frozen = replace(frozen, case=replace(frozen.case, projection=projection))
+    local = LocalObservationStore(_state=tmp_path / "local-state")
+    local.grant_consent(
+        _WORKSPACE,
+        timestamp_from_string("2026-07-01T00:00:00.000Z"),
+        content_capture_profiles=profiles,
+    )
+    register_command_identity_key(INSTALLATION_KEY)
+    try:
+        resolved = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(resolved.content) == 1
+        assert resolved.content[0].observed_command == command
+        assert resolved.content[0].observed_command_identity == "omitted:" + commitment
+        observation.envelope = replace(
+            observation.envelope,
+            structural_payload=JsonObject(
+                {
+                    **fields,
+                    "command_commitment": observed_command_commitment(
+                        INSTALLATION_KEY, command + " --other"
+                    ),
+                }
+            ),
+        )
+        unmatched = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(unmatched.content) == 1
+        assert unmatched.content[0].observed_command is None
+        observation.envelope = replace(
+            observation.envelope,
+            structural_payload=JsonObject(fields),
+            gap_codes=("truncated_payload",),
+        )
+        truncated = await resolve_captured_semantic_content(
+            runtime=runtime,
+            frozen=frozen,
+            workspace_commitment=_WORKSPACE,
+            local_observation=local,
+        )
+        assert len(truncated.content) == 1
+        assert truncated.content[0].observed_command is None
+    finally:
+        register_command_identity_key(None)
 
 
 def _multipart_fixture() -> tuple[FrozenCase, TaskRuntime, _Objects]:
@@ -895,11 +1022,13 @@ async def test_resolver_admits_multipart_groups_atomically_under_part_bound() ->
     )
 
     # Four in-scope object IDs are metadata candidates, but the two-part group
-    # is the atomic semantic unit. The second group is withheld as a whole;
-    # no fragment is opened merely because its ID sorts early.
+    # is the atomic semantic unit. The captured workspace diff outranks the tool
+    # output (#883); the tool-output group is withheld as a whole and no
+    # fragment of it is opened merely because its ID sorts early.
     assert len(resolved.content) == 2
-    assert b"group-a-0:" in resolved.content[0].content
-    assert b"planted-defect-marker" in b"".join(item.content for item in resolved.content)
+    assert b"group-b-0:" in resolved.content[0].content
+    assert b"group-b-1:" in resolved.content[1].content
+    assert b"group-a" not in b"".join(item.content for item in resolved.content)
     assert len(objects.resolve_calls) == 2
     assert objects.open_calls == 2
     assert "content_unselected" in resolved.gaps
@@ -1269,3 +1398,132 @@ async def test_local_resume_rearms_content_after_pause(tmp_path: Path) -> None:
     assert len(resolved.content) == 1
     assert resolved.local_fence_generation == after.generation
     assert objects.open_calls == 1
+
+
+@pytest.mark.anyio
+async def test_linked_multipart_code_group_wins_bounded_resolver_admission() -> None:
+    frozen, runtime, objects = _multipart_fixture()
+    claim = ClaimRecordedPayload(clm(1), ClaimKind.MATERIAL, "Review group B", (evd(4),))
+    case = make_case(
+        evidence=frozen.case.projection.evidence,
+        claims={clm(1): claim_record(claim, 10)},
+        extra_refs=tuple(sorted(frozen.case.allowed_ids)),
+    )
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime,
+        frozen=FrozenCase(case, frozen.lease),
+        workspace_commitment=_WORKSPACE,
+        max_parts=2,
+        max_total_bytes=1024,
+    )
+    assert len(resolved.content) == 2
+    assert b"".join(item.content for item in resolved.content) == b"group-b-0:group-b-1:"
+    assert objects.open_calls == 2
+    assert "content_unselected" in resolved.gaps
+
+
+class _WindowedObservation(_Observation):
+    """The selected capture's envelope has aged out of the latest-256 session window."""
+
+    def __init__(self, base: _Observation, *, by_ref: bool) -> None:
+        super().__init__(base.envelope, base.manifest, profiles=base.profiles)
+        self.by_ref = by_ref
+        self.ref_calls: list[tuple[str, ...]] = []
+
+    def list_envelopes_for_session(
+        self, _workspace: str, _session_commitment: str, *, limit: int | None = None
+    ) -> tuple[ObservationEnvelope, ...]:
+        assert limit == 256
+        return ()
+
+    def list_envelopes_for_content_refs(
+        self, _workspace: str, session_commitment: str, object_ids: tuple[str, ...]
+    ) -> tuple[ObservationEnvelope, ...]:
+        self.ref_calls.append(object_ids)
+        if not self.by_ref or session_commitment != _SESSION_COMMITMENT:
+            return ()
+        return tuple(
+            self.envelope for ref in self.envelope.content_object_refs if ref in object_ids
+        )[:1]
+
+
+@pytest.mark.anyio
+async def test_resolver_reaches_selected_capture_outside_latest_envelope_window() -> None:
+    frozen, runtime, _objects, observation, envelope = _fixture()
+    windowed = _WindowedObservation(observation, by_ref=True)
+    runtime = replace(runtime, observation=cast(TaskObservationPort, windowed))
+
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime, frozen=frozen, workspace_commitment=_WORKSPACE
+    )
+
+    assert windowed.ref_calls == [tuple(envelope.content_object_refs)]
+    assert resolved.gaps == ()
+    assert [part.content for part in resolved.content] == [
+        b"planted-defect-marker: missing validation"
+    ]
+
+
+@pytest.mark.anyio
+async def test_resolver_discloses_selected_capture_it_cannot_reach() -> None:
+    frozen, runtime, _objects, observation, _envelope = _fixture()
+    runtime = replace(
+        runtime,
+        observation=cast(TaskObservationPort, _WindowedObservation(observation, by_ref=False)),
+    )
+
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime, frozen=frozen, workspace_commitment=_WORKSPACE
+    )
+
+    assert resolved.content == ()
+    assert "content_unselected" in resolved.gaps
+
+
+@pytest.mark.anyio
+async def test_response_linked_multipart_repair_precedes_old_claim_evidence() -> None:
+    from builders.policy_cases import BASE_COVERAGE, finding_record, fnd, record
+    from finishup.domain.events import ResponseRecordedPayload
+    from finishup.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
+
+    frozen, runtime, objects = _multipart_fixture()
+    finding = Finding(
+        finding_id=fnd(1),
+        kind=FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
+        origin=FindingOrigin.DETERMINISTIC,
+        priority=1,
+        summary="Repair needs review",
+        detail="Review the changed evidence",
+        subject_refs=(clm(1),),
+        policy_id="work-integrity",
+        policy_version="0.1.0",
+        subject_frontier=frozen.case.frontier,
+        coverage=BASE_COVERAGE,
+    )
+    response = ResponseRecordedPayload(
+        fnd(1), frozen.case.frontier, ResponseDisposition.ACKNOWLEDGED, evidence_refs=(evd(4),)
+    )
+    case = make_case(
+        evidence=frozen.case.projection.evidence,
+        claims={
+            clm(1): claim_record(
+                ClaimRecordedPayload(
+                    clm(1), ClaimKind.MATERIAL, "Old evidence in group A", (evd(1),)
+                ),
+                10,
+            )
+        },
+        findings={fnd(1): finding_record(finding, 11)},
+        responses={fnd(1): record(response, 12)},
+        extra_refs=tuple(sorted(frozen.case.allowed_ids)),
+    )
+    resolved = await resolve_captured_semantic_content(
+        runtime=runtime,
+        frozen=FrozenCase(case, frozen.lease),
+        workspace_commitment=_WORKSPACE,
+        max_parts=2,
+        max_total_bytes=1024,
+    )
+    assert b"".join(item.content for item in resolved.content) == b"group-b-0:group-b-1:"
+    assert objects.open_calls == 2
+    assert "content_unselected" in resolved.gaps

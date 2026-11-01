@@ -1,8 +1,8 @@
 """A rejected request must be repairable from the public output alone, on the next call.
 
-The 2026-08-03 `codex-testing` dogfood rejected 9 of 17 Yoetz operations. Validation was
+The 2026-08-03 `codex-testing` dogfood rejected 9 of 17 FinishUP operations. Validation was
 fail-closed and safe throughout, but three failure classes did not say how to author the next
-request, so the agent guessed four times and then read Yoetz product source -- the one thing the
+request, so the agent guessed four times and then read FinishUP product source -- the one thing the
 packaged workflow forbids.
 
 Every row here replays one of those classes and asserts two things: the public output names every
@@ -18,16 +18,17 @@ from typing import Final, cast
 import pytest
 from pydantic import ValidationError
 
+from builders.publish_identity import bridge_bound
 from builders.replay import replay_records
-from yoetz.application.publish_work import Application, prepare_publication
-from yoetz.domain.events import EventPayload, encode_payload
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.coverage import PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequestModel, PublishWorkRequestModel
+from finishup.application.publish_work import Application, prepare_publication
+from finishup.domain.events import EventPayload, encode_payload
+from finishup.mcp.descriptors import descriptor_for
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.coverage import PublicationChannel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequestModel, PublishWorkRequestModel
 
 type _Request = dict[str, JsonValue]
 
@@ -69,21 +70,24 @@ def _repair_discriminator(rejected: _Request) -> _Request:
 
 def _missing_envelope_keys() -> _Request:
     draft = _example_draft()
-    del draft["artifact_refs"]
-    del draft["evidence_refs"]
+    draft.pop("artifact_refs", None)
+    draft.pop("evidence_refs", None)
     return _publish_request([draft])
 
 
-def _repair_envelope_keys(rejected: _Request) -> _Request:
-    drafts = cast(list[JsonValue], rejected["event_drafts"])
-    draft = dict(cast(Mapping[str, JsonValue], drafts[0]))
-    draft["artifact_refs"] = []
-    draft["evidence_refs"] = []
-    return _publish_request([draft])
+def test_omitted_fillable_envelope_keys_are_admitted() -> None:
+    """Issue #1084: the service fills omitted envelope keys, so their absence is no rejection."""
+
+    PublishWorkRequestModel.model_validate(bridge_bound(_missing_envelope_keys()))
+    draft = _example_draft()
+    assert set(draft) == {"schema", "payload"}
+    PublishWorkRequestModel.model_validate(bridge_bound(_publish_request([draft])))
 
 
 def _stub_draft() -> _Request:
-    return _publish_request([{"event_id": _example_draft()["event_id"], "payload": {}}])
+    return _publish_request(
+        [{"event_id": "evt_00000000-0000-4000-8000-000000000001", "payload": {}}]
+    )
 
 
 def _repair_stub_draft(rejected: _Request) -> _Request:
@@ -125,16 +129,10 @@ _AUTHORING_MATRIX: Final[
     ),
     (
         "publish_work",
-        "missing envelope keys",
-        _missing_envelope_keys,
-        ("event_id", "schema", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
-        _repair_envelope_keys,
-    ),
-    (
-        "publish_work",
         "stub draft with only an id and a payload",
         _stub_draft,
-        ("schema.name", "occurred_at", "causal_parents", "artifact_refs", "evidence_refs"),
+        # Issue #1084: the service fills every other envelope key, so only the family is named.
+        ("schema.name", "schema and payload"),
         _repair_stub_draft,
     ),
     (
@@ -162,7 +160,7 @@ _MODELS: Final = {
 def _rejection_message(tool: str, request: _Request) -> str:
     model = _MODELS[tool]
     with pytest.raises(ValidationError) as captured:
-        model.model_validate(request)
+        model.model_validate(bridge_bound(request) if tool == "publish_work" else request)
     return invalid_request_message(tool, safe_validation_locations(captured.value))
 
 
@@ -186,7 +184,8 @@ def test_one_retry_repairs_the_request_from_the_public_output(
 
     # The repaired request is derived from the rejected one plus the message, and must be admitted
     # by the real model. A message that names the fields but states the wrong rule fails here.
-    _MODELS[tool].model_validate(repair(rejected))
+    repaired = repair(rejected)
+    _MODELS[tool].model_validate(bridge_bound(repaired) if tool == "publish_work" else repaired)
 
 
 def test_the_scope_rule_names_the_third_admitted_shape() -> None:
@@ -277,8 +276,13 @@ def test_a_broken_reference_mirror_names_the_field_and_the_rule(
     # The pointer names the exact list to fix, not just which draft failed.
     assert details["field"] == f"/event_drafts/1/{envelope_field}"
     assert envelope_field in error.message
-    assert "yoetz://guidance/publication-policy.md" in error.message
+    assert "example:" in error.message
+    assert "0000000000ff" not in error.message
+    assert "finishup://guidance/publication-policy.md" in error.message
     assert error.message != "The event batch is invalid. Correct the event payload before retrying."
+    if envelope_field == "evidence_refs":
+        # tb4h V5 (#1118): the repair is to omit the service-filled envelope list.
+        assert "omit the draft envelope evidence_refs" in error.message
 
 
 # Only the ordinary cooperative families can also be published; the reserved ones are rejected by
@@ -323,3 +327,52 @@ def test_no_submitted_value_reaches_a_reference_mirror_message() -> None:
 
     assert secret not in captured.value.message
     assert secret not in repr(captured.value.safe_details)
+
+
+def _obligation_with_commands(*values: str) -> tuple[_Request, object]:
+    draft, record = _record_draft("obligation_published")
+    payload = dict(cast(Mapping[str, JsonValue], draft["payload"]))
+    payload["requested_items"] = [
+        {"item_kind": "file", "value": "results.json"},
+        *({"item_kind": "command", "value": value} for value in values),
+    ]
+    draft["payload"] = payload
+    return draft, record
+
+
+def test_a_placeholder_command_item_is_refused_with_its_exact_location_and_repair() -> None:
+    """tb4n1: `python cracker.py <ciphertext_file>` could never match an observed run (#977)."""
+
+    broken, record = _obligation_with_commands("pytest -q", "python cracker.py <ciphertext_file>")
+
+    with pytest.raises(PublicOperationError) as captured:
+        prepare_publication(
+            _publish_model([cast(JsonValue, broken)], record),
+            channel=PublicationChannel.LOCAL_CLI,
+            app=cast(Application, _App()),
+        )
+
+    error = captured.value
+    assert error.code is PublicErrorCode.EVENT_INVALID
+    details = cast(Mapping[str, str], error.safe_details)
+    assert details["reason_code"] == "requested_command_placeholder"
+    assert details["field"] == "/event_drafts/0/payload/requested_items/2/value"
+    assert "placeholder" in error.message and "acceptance_criteria" in error.message
+    # The submitted value never reaches the public output.
+    assert "ciphertext_file" not in error.message
+    assert "ciphertext_file" not in repr(error.safe_details)
+
+
+@pytest.mark.parametrize(
+    "value", ["python cracker.py data/cipher.bin", "Broad GSEA CLI", "grep '<div>' index.html"]
+)
+def test_concrete_prose_or_quoted_angle_brackets_are_admitted(value: str) -> None:
+    repaired, record = _obligation_with_commands(value)
+
+    prepared = prepare_publication(
+        _publish_model([cast(JsonValue, repaired)], record),
+        channel=PublicationChannel.LOCAL_CLI,
+        app=cast(Application, _App()),
+    )
+
+    assert prepared.drafts[0].draft.schema.name == "obligation_published"

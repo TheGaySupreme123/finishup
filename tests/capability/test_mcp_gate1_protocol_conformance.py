@@ -4,7 +4,7 @@ This gate proves protocol conformance and conduit behavior only; it says nothing
 activation. Live Codex agent behavior is Gate 2/3 work and is intentionally out of scope here.
 
 Every required observation below is also enrolled under ``release/capability-policy.json`` for the
-``mcp_protocol_conformance`` / MCP SDK ``1.28.1`` / ``linux_x86_64`` cell.
+``mcp_protocol_conformance`` / MCP SDK ``1.30.0`` / ``linux_x86_64`` cell.
 """
 
 from __future__ import annotations
@@ -36,14 +36,14 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, read_resource
-from yoetz.mcp.semantic_destination import disclose_semantic_destination
-from yoetz.protocol.canonical import JsonValue, canonical_digest
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
+from finishup.mcp.resources import GUIDANCE_RESOURCES, GuidancePageAssembler, read_resource
+from finishup.mcp.semantic_destination import disclose_semantic_destination
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.errors import PublicErrorCode
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
-_PINNED_MCP = "1.28.1"
+_PINNED_MCP = "1.30.0"
 _PROTOCOL = "2025-11-25"
 _FAMILY = "mcp_protocol_conformance"
 _CHANNEL = "mcp_stdio"
@@ -131,6 +131,11 @@ def _schema_valid_tool_arguments() -> dict[str, dict[str, JsonValue]]:
             "disposition": "acknowledged",
         },
         "status": {**_base(5), **identity, "view": "compact", "limit": "10"},
+        "closure_prepare": {
+            "session_id": identity["session_id"],
+            "writer_id": identity["writer_id"],
+            "selection": {"phase": "inventory"},
+        },
         "receipt": {
             **_base(6),
             **identity,
@@ -167,21 +172,21 @@ def _initialize_frame(protocol_version: object, request_id: int = 1) -> dict[str
 
 
 def _serve_command() -> list[str]:
-    candidate_python = os.environ.get("YOETZ_CANDIDATE_PYTHON", "").strip()
+    candidate_python = os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip()
     if candidate_python:
-        return [candidate_python, "-m", "yoetz", "mcp", "serve"]
-    return ["uv", "run", "yoetz", "mcp", "serve"]
+        return [candidate_python, "-m", "finishup", "mcp", "serve"]
+    return ["uv", "run", "finishup", "mcp", "serve"]
 
 
 def test_candidate_python_is_the_server_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """Candidate CI must execute installed candidate bytes, not checkout ``uv run`` bytes."""
 
-    monkeypatch.setenv("YOETZ_CANDIDATE_PYTHON", "/candidate/bin/python")
+    monkeypatch.setenv("FINISHUP_CANDIDATE_PYTHON", "/candidate/bin/python")
 
     assert _serve_command() == [
         "/candidate/bin/python",
         "-m",
-        "yoetz",
+        "finishup",
         "mcp",
         "serve",
     ]
@@ -386,10 +391,10 @@ async def test_mcp_tools_list_exact(tmp_path: Path) -> None:
     async with _sdk_session(tmp_path) as (session, _initialize):
         listed = await session.list_tools()
         assert [tool.name for tool in listed.tools] == list(_TOOL_NAMES)
-        assert len(listed.tools) == 7
+        assert len(listed.tools) == 8
         for tool, descriptor in zip(listed.tools, TOOL_DESCRIPTORS["policy"], strict=True):
             assert tool.description == descriptor.description
-            assert tool.inputSchema == _plain_json(descriptor.input_schema)
+            assert tool.inputSchema == _plain_json(descriptor.advertised_input_schema)
             assert tool.outputSchema == _plain_json(descriptor.output_schema)
             assert tool.annotations is not None
             assert tool.annotations.title == descriptor.title
@@ -403,7 +408,7 @@ async def test_mcp_tools_list_exact(tmp_path: Path) -> None:
         requirement_id="mcp_tools_list_exact",
         observation="tools_list_exact",
         fixture=b"gate1-tools-list-exact",
-        value=7,
+        value=8,
     )
 
 
@@ -453,6 +458,15 @@ async def test_mcp_tools_call_all_six_dispatch(tmp_path: Path) -> None:
             )
             shapes.append("invalid_request")
         assert len(shapes) == 6
+        closure_result = await session.call_tool(
+            "closure_prepare", _schema_valid_tool_arguments()["closure_prepare"]
+        )
+        assert closure_result.isError is True
+        assert closure_result.structuredContent is not None
+        closure_structured = cast(dict[str, object], closure_result.structuredContent)
+        closure_error = cast(dict[str, object], closure_structured["error"])
+        assert closure_error["code"] in _DEGRADED_CODES
+        assert closure_structured["ok"] is False
     _record_pass(
         tmp_path,
         case_id="MCP-G1-TOOLS-CALL",
@@ -464,23 +478,39 @@ async def test_mcp_tools_call_all_six_dispatch(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_mcp_read_guidance_returns_full_document_text(tmp_path: Path) -> None:
-    """read_guidance returns the registered document as tool text, not a 512-byte summary."""
+async def test_mcp_read_guidance_returns_full_document_or_reconstructable_pages(
+    tmp_path: Path,
+) -> None:
+    """read_guidance returns the registered document or a reconstructable bounded page stream."""
 
     async with _sdk_session(tmp_path) as (session, _initialize):
         for resource in GUIDANCE_RESOURCES:
-            result = await session.call_tool("read_guidance", {"uri": resource.uri})
-            assert result.isError is False
-            assert result.structuredContent is not None
-            structured = cast(dict[str, object], result.structuredContent)
-            assert structured["ok"] is True
-            assert structured["uri"] == resource.uri
-            assert structured["media_type"] == resource.media_type
-            assert structured["text"] == resource.text
-            assert result.content
-            assert result.content[0].type == "text"
-            assert result.content[0].text == resource.text
-            assert len(result.content[0].text) == len(resource.text)
+            arguments: dict[str, object] = {"uri": resource.uri}
+            assembler: GuidancePageAssembler | None = None
+            while True:
+                result = await session.call_tool("read_guidance", arguments)
+                assert result.isError is False
+                assert result.structuredContent is not None
+                structured = cast(dict[str, object], result.structuredContent)
+                assert structured["ok"] is True
+                assert structured["uri"] == resource.uri
+                assert structured["media_type"] == resource.media_type
+                assert result.content
+                assert result.content[0].type == "text"
+                if "page" not in structured:
+                    assert structured["text"] == resource.text
+                    assert result.content[0].text == resource.text
+                    assert len(result.content[0].text) == len(resource.text)
+                    break
+                if assembler is None:
+                    assembler = GuidancePageAssembler()
+                assembler.add(structured, host_text=result.content[0].text)
+                if structured["complete"] is True:
+                    assert assembler.assemble() == resource.text
+                    break
+                continuation = structured.get("continuation")
+                assert isinstance(continuation, dict)
+                arguments = dict(cast(Mapping[str, object], continuation))
     _record_pass(
         tmp_path,
         case_id="MCP-G1-READ-GUIDANCE",
@@ -537,7 +567,7 @@ def test_mcp_malformed_framing(tmp_path: Path) -> None:
 
     child = r"""
 import anyio
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     async with bounded_stdio_server(512) as (read_stream, write_stream):

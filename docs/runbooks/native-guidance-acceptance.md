@@ -47,7 +47,7 @@ procedure alone covers guidance use in the selected variant, not every carrier e
    pending decision instead of bypassing it. No setup or privacy widening is implicit in this gate.
 4. Complete the host-specific preflight: resolved launcher/runtime, exclusive MCP ownership,
    live route, model-visible declarations, active observation consent, native mapping, and drain.
-   Store the expected and observed route/argv only for a Yoetz-owned binding. For `absent`,
+   Store the expected and observed route/argv only for a FinishUP-owned binding. For `absent`,
    `foreign`, `dual`, or `ambiguous`, the effective route/argv is null; record conflicting
    candidates separately. A healthy raw inventory does not establish a model-controlled call.
 5. In the stale-memory variant, create only a disposable fixture note describing an older
@@ -63,7 +63,7 @@ hook context renderers cap advice at 2,000 characters. Presence in a source file
 from delivery to the model. Keep the exact URI route readable under truncation.
 
 For the personalization variant, record the loaded skill source and heading as well: the native
-Claude entrypoint is `Yoetz for Claude Code`, both Cursor formats select `Yoetz for Cursor Agent`,
+Claude entrypoint is `FinishUP for Claude Code`, both Cursor formats select `FinishUP for Cursor Agent`,
 and the generic portable export remains neutral. Confirm that all five referenced documents resolve
 inside the artifact. A project/global skill discovered through a compatibility directory is a
 separate source and must not accidentally satisfy native plugin acceptance. Observe whether the
@@ -85,7 +85,7 @@ completion claim, and do not turn an operator's successful direct MCP call into 
 | --- | --- | --- | --- |
 | 1. Bootstrap and initial work | Start the bounded task in the selected profile; in the stale variant make the old note available through that profile's normal memory path. | Read current workflow through its exact URI/fallback, start or attach with the correct identity, and publish the task's plan and obligations before material work. Current procedure governs product facts while current user instructions and authorization remain authoritative. | Rendered bootstrap digest and truncation limit, guidance-read identity, returned session/task/writer identities, initial effective plan frontier, native mapping. |
 | 2. Feedback changes scope | Add a material requirement, for example disable Retry while a check is running. Include any requested delivery outcome. | Put feedback into effective plan scope through a supported revision or exact next-version restatement before claiming it complete. Preserve exact attempted commands or revise their obligation with rationale when targets change. | Original and revised plan frontiers, effective obligation refs, actual attempt/result evidence; green build alone is insufficient. |
-| 3. Discover evidence | Let native hooks capture a bounded command/result or file excerpt under existing consent; include a digest-only or clipped item alongside an available matching item. | Paginate `status view=evidence` at one frontier with its original filter and limit, inspect per-item state, and reuse matching permitted native evidence IDs. Do not infer a global digest-only ceiling. | Complete bounded page inventory, selection IDs and state, capture/selection limits, claim linkage; record zero matches honestly. |
+| 3. Discover evidence | Let native hooks capture a bounded command/result or file excerpt under existing consent; include a digest-only or clipped item alongside an available matching item. | Cite its own published evidence IDs, find native captures with a filtered `status view=evidence` read (`filter.strength=immutable_snapshot`) keeping its original filter and limit, inspect per-item state, and reuse only permitted native evidence IDs a structural link (a `view=results` row's `evidence_refs`, or a matching digest) ties to the claim. No unfiltered walk to match omitted descriptions. Do not infer a global digest-only ceiling. | Filtered page inventory, selection IDs and state, capture/selection limits, claim linkage; record zero matches honestly. |
 | 4. Repair and resolve | Exercise a real missing-result finding or an explicitly labeled fixture of an incomplete record in the disposable task. Do not invent a command success to seed it. | Publish actual linked repair results and corrected evidence/claim; disposition older findings before a qualifying check, then read `status view=findings` with `filter.include_resolved: true` and actual `resolved` state. Accepted writes and a finding absent from the returned list are insufficient. | Action/result linkage, finding identity and returned frontier, check subject/result frontier and mode, subsequent finding detail and resolution provenance. |
 | 5. Bounded limitation and recovery | Exercise an irreducible proof limit, a supported same-task session rotation, and the ambiguous-write control below. Declare required AI-powered review in the test brief or authorized policy. | Preserve required mode for final checks, or omit mode when relying on the configured default. Recover exact operation/session identity; read actual qualification limits. After one current-state recheck still fails to qualify, stop unchanged rechecks while continuing distinct authorized work. Preserve pending approval. | Exact public status/reason, same-request recovery trace, successor session/writer and native mapping, unresolved counts before/after, evidence of bounded continuation. |
 | 6. Deliver and explain | Complete the last material deliverable covered by the claim; independently inspect the requested UI behavior. | Account for that outcome before the final claim/check/receipt. Respond at the correct check result frontier, read resolution state, request the receipt last, and state actual actionable unresolved count, checked scope/frontier, review mode/status/reason, and material coverage limits. | Final artifact inspection, claim and receipt identities, checked frontier, `closure_readiness` counts, receipt conclusion/coverage, bounded final explanation and its digest. |
@@ -141,7 +141,7 @@ records:
 - `pass`, `fail`, `unsupported`, `blocked`, or `not_run` per tested facet, with limitations and
   explicit non-claims. Unknown evidence remains unknown, never a zero count or a pass.
 
-Report the unanswered and receipt-blocking counts from the matching current `closure_readiness`
+Report the unanswered count and the finding counters (`finding_counts`, and `receipt_blocking_finding_count` = to do plus unmet) from the matching current `closure_readiness`
 projection; keep coverage-only gaps separate. A generated receipt, zero newly returned findings, and
 completed AI-powered review dispatch cannot replace recorded resolution proof. A signed-in profile
 or provider-ready status alone does not establish dispatch. Retain finalized provenance and privacy
@@ -149,7 +149,7 @@ receipt for any AI-powered review claim; strict-route controls require evidence 
 attempts.
 
 Perform the owning host's authorized rollback, compare before/after digests, and preserve foreign
-or modified state and durable Yoetz data. Dispose only the run's own disposable instance using its
+or modified state and durable FinishUP data. Dispose only the run's own disposable instance using its
 pinned launcher/provisioning script. Record rollback failures rather than deleting shared profiles.
 
 Publish only a bounded redacted summary and evidence digests on the owning issue. Never publish

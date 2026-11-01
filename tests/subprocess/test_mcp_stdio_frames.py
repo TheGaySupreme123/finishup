@@ -10,7 +10,7 @@ import sys
 _CHILD = r"""
 import anyio
 import sys
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     maximum = int(sys.argv[1])
@@ -100,7 +100,7 @@ def test_exact_payload_limit_is_accepted() -> None:
 def test_deeply_nested_frame_is_invalid_json_and_the_bridge_keeps_serving() -> None:
     """Excessive nesting yields the fixed parse error, never a RecursionError exit (#394)."""
 
-    from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES
+    from finishup.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES
 
     levels = sys.getrecursionlimit() * 4
     nested = (
@@ -139,7 +139,7 @@ def test_injected_read_failure_closes_cleanly_without_os_detail_leakage() -> Non
     child = f"""
 import anyio
 import errno
-import yoetz.adapters.mcp_stdio as transport
+import finishup.adapters.mcp_stdio as transport
 
 def fail_read(fd, maximum):
     del fd, maximum

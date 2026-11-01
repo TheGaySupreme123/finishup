@@ -3,7 +3,7 @@
 # Authority: ADR-003, ADR-004, ADR-005, ADR-007; tests/capability/;
 # scripts/generate_capability_matrix.py.
 #
-# Probes installed Yoetz artifacts against exact Codex, MCP, platform, key-backend, and optional
+# Probes installed FinishUP artifacts against exact Codex, MCP, platform, key-backend, and optional
 # provider identities and produces redacted capability evidence. Proves only observed cells; keeps
 # strict-local mandatory tests separate from explicitly approved live-provider tests. Exact Codex
 # cells and any publishable live-provider profile are centralized empirical gates E-002 and E-007;
@@ -66,7 +66,7 @@ env:
   TZ: UTC
   LANG: C.UTF-8
   LC_ALL: C.UTF-8
-  YOETZ_LIVE_PROVIDER: ${{ inputs.live_provider }}
+  FINISHUP_LIVE_PROVIDER: ${{ inputs.live_provider }}
 
 defaults:
   run:
@@ -184,7 +184,7 @@ jobs:
 
       - name: Install candidate outside checkout (reject source-tree import); isolated HOME/config/repository
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -195,20 +195,20 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            "${{ runner.temp }}/dist/yoetz-${candidate_version}-py3-none-any.whl"
+            "${{ runner.temp }}/dist/finishup-${candidate_version}-py3-none-any.whl"
           candidate_origin=$("${{ runner.temp }}/candidate-venv/bin/python" -I -c \
-            'import pathlib, yoetz; print(pathlib.Path(yoetz.__file__).resolve())')
+            'import pathlib, finishup; print(pathlib.Path(finishup.__file__).resolve())')
           case "$candidate_origin" in
             "${{ runner.temp }}/candidate-venv/"*) ;;
             *) echo "::error::candidate import escaped isolated environment: $candidate_origin"; exit 1 ;;
           esac
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
           candidate_digest=$(python3 -c "import json; print(json.load(open('${{ runner.temp }}/dist/candidate.json'))['artifact_digest'])")
-          echo "YOETZ_CANDIDATE_ARTIFACT_DIGEST=${candidate_digest}" >> "$GITHUB_ENV"
+          echo "FINISHUP_CANDIDATE_ARTIFACT_DIGEST=${candidate_digest}" >> "$GITHUB_ENV"
 
       - name: Codex/MCP framing probes (subprocess + unit; strict-local)
         env:
-          YOETZ_TESTED_SET_PROFILE: ${{ inputs.tested_set_profile }}
+          FINISHUP_TESTED_SET_PROFILE: ${{ inputs.tested_set_profile }}
         run: |
           uv run --locked pytest tests/subprocess/test_mcp_initialize_and_tools.py \
             tests/subprocess/test_mcp_stdio_frames.py \
@@ -222,9 +222,9 @@ jobs:
 
       - name: Capability inventory — strict-local (excludes live provider/keyring/soak)
         env:
-          YOETZ_TESTED_SET_PROFILE: ${{ inputs.tested_set_profile }}
-          YOETZ_CAPABILITY_EVIDENCE_DIR: ${{ runner.temp }}/codex-mcp-evidence
-          YOETZ_CANDIDATE_ARTIFACT_DIGEST: ${{ env.YOETZ_CANDIDATE_ARTIFACT_DIGEST }}
+          FINISHUP_TESTED_SET_PROFILE: ${{ inputs.tested_set_profile }}
+          FINISHUP_CAPABILITY_EVIDENCE_DIR: ${{ runner.temp }}/codex-mcp-evidence
+          FINISHUP_CANDIDATE_ARTIFACT_DIGEST: ${{ env.FINISHUP_CANDIDATE_ARTIFACT_DIGEST }}
         run: |
           mkdir -p "${{ runner.temp }}/codex-mcp-evidence"
           uv run --locked pytest tests/capability \
@@ -288,7 +288,7 @@ jobs:
 
       - name: Install candidate outside checkout; assert OS/CPU/ABI/Python/APSW/SQLite/filesystem identity
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -299,9 +299,9 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
           "${{ runner.temp }}/candidate-venv/bin/python" -c "
           import apsw, platform, sys
           print('python', sys.version)
@@ -365,7 +365,7 @@ jobs:
 
       - name: Install candidate outside checkout, network denied
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -376,9 +376,9 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz[semantic-openai]==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup[semantic-openai]==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Fake provider cases — success/refusal/malformed/rate-limit/timeout/cancellation/late/stale
         run: |
@@ -437,7 +437,7 @@ jobs:
 
       - name: Install candidate outside checkout
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -447,18 +447,18 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/candidate-venv"
           uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "yoetz[semantic-openai]==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/candidate-venv/bin/python" "finishup[semantic-openai]==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/candidate-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Synthetic minimized live-provider case (hard request/token/spend/time caps; allowlisted network only)
         env:
           # Named provider credential is environment-only per ADR-006/E-007 and never enters
           # argv, config, artifacts, cache, or logs.
           OPENAI_API_KEY: ${{ secrets.CAPABILITY_LIVE_OPENAI_API_KEY }}
-          YOETZ_LIVE_REQUEST_CAP: "1"
-          YOETZ_LIVE_TOKEN_CAP: "2000"
-          YOETZ_LIVE_TIME_CAP_SECONDS: "60"
+          FINISHUP_LIVE_REQUEST_CAP: "1"
+          FINISHUP_LIVE_TOKEN_CAP: "2000"
+          FINISHUP_LIVE_TIME_CAP_SECONDS: "60"
         run: |
           uv run --locked pytest tests/capability/test_provider_profile_live.py \
             -m "live or live_provider" -q --timeout=90

@@ -8,6 +8,17 @@ from typing import cast
 
 import pytest
 
+from finishup.adapters.integrations.observation_local import (
+    LocalObservationStore,
+    ObservationOutboxRow,
+)
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.observation_budget import LARGEST_CAPACITY
+from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.ports.ledger import FrozenCase
+from finishup.protocol.ids import IdKind
 from integration.application.test_check import (  # pyright: ignore[reportPrivateUsage]
     _App,  # pyright: ignore[reportPrivateUsage]
     _request,  # pyright: ignore[reportPrivateUsage]
@@ -21,17 +32,6 @@ from integration.service.test_capture_inventory_recovery import (  # pyright: ig
     _World,  # pyright: ignore[reportPrivateUsage]
     _world,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.integrations.observation_local import (
-    LocalObservationStore,
-    ObservationOutboxRow,
-)
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.observation_budget import LARGEST_CAPACITY
-from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.ports.ledger import FrozenCase
-from yoetz.protocol.ids import IdKind
 
 
 @pytest.fixture
@@ -173,15 +173,15 @@ async def test_real_check_imports_loss_before_freezing_and_preserves_replay(tmp_
 
         from dataclasses import replace
 
+        from finishup.application.receipt import execute_receipt
+        from finishup.ports.importer import ImporterPort
+        from finishup.ports.runtime import BundleRuntimePort
+        from finishup.protocol.models import ReceiptRequest
         from integration.application.test_respond_status_receipt import (  # pyright: ignore[reportPrivateUsage]
             _build_app,  # pyright: ignore[reportPrivateUsage]
             _IdleImporter,  # pyright: ignore[reportPrivateUsage]
             _receipt_wire,  # pyright: ignore[reportPrivateUsage]
         )
-        from yoetz.application.receipt import execute_receipt
-        from yoetz.ports.importer import ImporterPort
-        from yoetz.ports.runtime import BundleRuntimePort
-        from yoetz.protocol.models import ReceiptRequest
 
         current = replace(world.runtime, importer=cast(ImporterPort, _IdleImporter()))
         world.routes.runtimes[current.session_id] = current
@@ -208,8 +208,12 @@ async def test_real_check_imports_loss_before_freezing_and_preserves_replay(tmp_
 async def test_unrouted_loss_stays_local_and_new_task_binding_cannot_claim_it(
     tmp_path: Path,
 ) -> None:
-    from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-    from yoetz.domain.values import JsonObject, timestamp_from_datetime
+    from finishup.domain.observation import (
+        ObservationCursor,
+        ObservationEnvelope,
+        ObservationSource,
+    )
+    from finishup.domain.values import JsonObject, timestamp_from_datetime
 
     world = await _world(tmp_path)
     try:
@@ -243,7 +247,7 @@ async def test_healthy_capture_inventory_still_reports_loss_and_preserves_native
     try:
         await asyncio.to_thread(_native_failed_command, world, "claude", "lost", "not-retained")
         # A separate successful inventory proof must not remove loss demand.
-        from yoetz.domain.observation import ObservationCaptureBacklog
+        from finishup.domain.observation import ObservationCaptureBacklog
 
         world.local.bootstrap_capture_reservations(
             world.workspace,
@@ -276,7 +280,7 @@ async def test_failed_loss_reconciliation_prevents_new_check_freeze() -> None:
         raise OSError("synthetic loss read failure")
 
     setattr(app, "reconcile_observation_losses", unavailable)
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     with pytest.raises(PublicOperationError) as caught:
         await execute_check_commit(app, _request())
@@ -288,9 +292,9 @@ async def test_failed_loss_reconciliation_prevents_new_check_freeze() -> None:
 async def test_store_contention_during_loss_reconciliation_is_a_retryable_refusal() -> None:
     """#689: a contended local store is not an internal failure of the child recheck."""
 
-    from yoetz.ports.ledger import CheckAdmissionStage, check_admission_stage
-    from yoetz.ports.observation import ObservationStoreLockTimeout
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.ports.ledger import CheckAdmissionStage, check_admission_stage
+    from finishup.ports.observation import ObservationStoreLockTimeout
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     app = _App()
 
@@ -342,7 +346,7 @@ async def test_quarantined_loss_marker_uses_one_recovery_operation(
 ) -> None:
     from hashlib import sha256
 
-    from yoetz.ports.ledger import (
+    from finishup.ports.ledger import (
         CheckPhase,
         OperationKind,
         OperationQuarantineCode,
@@ -354,8 +358,8 @@ async def test_quarantined_loss_marker_uses_one_recovery_operation(
     try:
         await asyncio.to_thread(_native_failed_command, world, "claude", "lost", "not-retained")
         report = world.local.pending_selection_losses(world.workspace)[0]
-        from yoetz.domain.observation_loss import ObservationSelectionLoss
-        from yoetz.protocol.canonical import canonical_digest
+        from finishup.domain.observation_loss import ObservationSelectionLoss
+        from finishup.protocol.canonical import canonical_digest
 
         loss = ObservationSelectionLoss.from_local_range(report)
         digest = canonical_digest(
@@ -407,8 +411,8 @@ async def test_quarantined_loss_marker_uses_one_recovery_operation(
 
 @pytest.mark.anyio
 async def test_route_valid_malformed_lane_keeps_explicit_loss_coverage(tmp_path: Path) -> None:
-    from yoetz.domain.observation_loss import ObservationSelectionLoss
-    from yoetz.domain.values import JsonObject
+    from finishup.domain.observation_loss import ObservationSelectionLoss
+    from finishup.domain.values import JsonObject
 
     world = await _world(tmp_path)
     try:
@@ -614,15 +618,15 @@ async def _check_and_receipt_known_gaps(
 
     from dataclasses import replace
 
+    from finishup.application.receipt import execute_receipt
+    from finishup.ports.importer import ImporterPort
+    from finishup.ports.runtime import BundleRuntimePort
+    from finishup.protocol.models import ReceiptRequest
     from integration.application.test_respond_status_receipt import (  # pyright: ignore[reportPrivateUsage]
         _build_app,  # pyright: ignore[reportPrivateUsage]
         _IdleImporter,  # pyright: ignore[reportPrivateUsage]
         _receipt_wire,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.application.receipt import execute_receipt
-    from yoetz.ports.importer import ImporterPort
-    from yoetz.ports.runtime import BundleRuntimePort
-    from yoetz.protocol.models import ReceiptRequest
 
     app = _App()
     app.runtime = cast(object, world.routes)  # pyright: ignore[reportAttributeAccessIssue]

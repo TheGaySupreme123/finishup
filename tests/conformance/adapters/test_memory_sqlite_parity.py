@@ -11,35 +11,28 @@ import pytest
 
 from builders.ledger_adapters import MemoryObjects
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import (
-    command_from_records,
-    file_sqlite_for,
-    memory_for,
-    sqlite_for,
-    uuid_id,
-)
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckRecordedPayload,
     ClaimRecordedPayload,
     EvidenceRecordedPayload,
     FindingRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import CheckVerdict, Finding, RankedFindings
-from yoetz.domain.values import (
+from finishup.domain.findings import CheckVerdict, Finding, RankedFindings
+from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
     actor_id,
     finding_id,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     UnavailableCapturedObject,
 )
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.receipt_capacity import receipt_gap_codes
-from yoetz.ports.ledger import (
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.receipt_capacity import receipt_gap_codes
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     CheckCommitResult,
@@ -52,21 +45,28 @@ from yoetz.ports.ledger import (
     ProjectionQuery,
     ProjectionView,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,
     coverage_from_json,
     coverage_to_json,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     SemanticReason,
     SemanticStatus,
     StatusFindingItemModel,
     StatusHistoryItemModel,
+)
+from integration.storage.test_append_and_replay import (
+    command_from_records,
+    file_sqlite_for,
+    memory_for,
+    sqlite_for,
+    uuid_id,
 )
 
 

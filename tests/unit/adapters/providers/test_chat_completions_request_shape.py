@@ -8,32 +8,33 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.providers.openai_chat_completions import (
+from finishup.adapters.providers.openai_chat_completions import (
     ChatCompletionsProfile,
     StructuredOutputEnforcement,
     classify_provider_failure,
     normalize_response,
     render_case,
 )
-from yoetz.adapters.providers.openai_responses import owner_declared_data_use_profile
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
-from yoetz.ports.semantic import (
+from finishup.adapters.providers.openai_responses import (
+    SEMANTIC_REVIEW_INSTRUCTION,
+    owner_declared_data_use_profile,
+)
+from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
+from finishup.ports.semantic import (
     SemanticResultInvalid,
     SemanticResultRefused,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 _NOW = datetime(2026, 7, 24, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
 _CREDENTIAL = "sk-live-never-appears-anywhere"
 
-_JUDGMENT = (
-    '{"conclusion":"no_material_discrepancy","reviewer_challenges":[]}'  # exact judgment shape
-)
+_JUDGMENT = '{"conclusion":"no_material_discrepancy","review_summary":"The supplied packet was reviewed.","verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'  # exact judgment shape
 
 
 def _profile(
@@ -173,6 +174,30 @@ def test_response_format_follows_the_recorded_endpoint_capability() -> None:
     assert "reviewer_challenges" in instruction
 
 
+def test_every_protocol_cell_sends_the_one_shared_review_instruction() -> None:
+    """A private Chat Completions copy had drifted behind the shared rules (issue #905).
+
+    Both structured-output cells lead with the exact instruction the Responses and Codex cells
+    send, so the convergence rules (every distinct problem, no re-raise of an answered finding
+    without newer cited material) reach every provider; only the shape suffix is local.
+    """
+
+    for enforcement in ("provider_enforced", "prompt_only"):
+        body = cast(
+            dict[str, JsonValue],
+            strict_json_parse(render_case(_case(), _profile(enforcement)).body),
+        )
+        system = cast(dict[str, JsonValue], cast(list[JsonValue], body["messages"])[0])
+        instruction = cast(str, system["content"])
+        assert instruction.startswith(SEMANTIC_REVIEW_INSTRUCTION + " ")
+    assert "one challenge for each distinct material problem" in SEMANTIC_REVIEW_INSTRUCTION
+    assert "never only the most important one" in SEMANTIC_REVIEW_INSTRUCTION
+    assert "Do not raise again a finding the main agent has answered" in (
+        SEMANTIC_REVIEW_INSTRUCTION
+    )
+    assert "earlier finding's fnd_ id from citable_refs" in SEMANTIC_REVIEW_INSTRUCTION
+
+
 def test_grok_profile_renders_the_exact_xai_chat_completions_shape() -> None:
     profile = _profile(
         provider_id="xai",
@@ -195,7 +220,7 @@ def test_grok_profile_renders_the_exact_xai_chat_completions_shape() -> None:
     assert profile.base_url == "https://api.x.ai/v1"
     assert profile.path == "/v1/chat/completions"
     assert response_format["type"] == "json_schema"
-    assert json_schema["name"] == "yoetz_semantic_judgment"
+    assert json_schema["name"] == "finishup_semantic_judgment"
     assert json_schema["strict"] is True
 
 
@@ -323,3 +348,28 @@ def test_transport_and_status_failures_keep_their_public_class() -> None:
 def test_profile_rejects_an_unlisted_base_path_prefix() -> None:
     with pytest.raises(ValueError, match="chat_completions_profile_path_invalid"):
         _profile(prefix="/inference/v1")
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+)
+@pytest.mark.parametrize("purpose", ["semantic-review", "credential-probe"])
+def test_october_anthropic_models_omit_incompatible_optional_parameters(
+    model: str, purpose: str
+) -> None:
+    from finishup.adapters.providers.factory import chat_completions_profile_from_provider_config
+    from finishup.config.write import anthropic_provider
+
+    provider = anthropic_provider(model=model)
+    profile = chat_completions_profile_from_provider_config(provider, now=_NOW)
+    case = replace(
+        _case(
+            provider_id=provider.provider_id,
+            model=model,
+            endpoint_profile_id=provider.endpoint_profile_id,
+        ),
+        purpose=purpose,
+    )
+    body = cast(dict[str, JsonValue], strict_json_parse(render_case(case, profile).body))
+    assert body["model"] == model
+    assert {"temperature", "top_p", "tool_choice", "tools", "response_format"}.isdisjoint(body)

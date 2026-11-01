@@ -1,7 +1,7 @@
 # ADR-023 — Portable plugin carrier and host activation
 
 **Status:** Accepted (2026-08-21), acknowledged in
-[issue #149](https://github.com/TheGaySupreme123/yoetz/issues/149#issuecomment-5371952502).
+[issue #149](https://github.com/TheGaySupreme123/finishup/issues/149#issuecomment-5371952502).
 Issue #149 suggested the name ADR-020; that number was taken by typed evidence digest provenance
 before this document landed, so the accepted decision set lives here unchanged.
 **Implemented by:** the skills-only artifact slice (#150) and optional exclusive plugin-managed MCP
@@ -15,8 +15,8 @@ egress ceiling).
 
 ## Context
 
-Yoetz has the right security split but no neutral package model. The current Codex renderer
-(`src/yoetz/adapters/integrations/codex_plugin.py`) directly produces `.codex-plugin/plugin.json`,
+FinishUP has the right security split but no neutral package model. The current Codex renderer
+(`src/finishup/adapters/integrations/codex_plugin.py`) directly produces `.codex-plugin/plugin.json`,
 `.mcp.json`, skills, and hooks with no owning port, and its generated `.mcp.json` hard-imports the
 policy serve command with no strict variant — a generated file claiming a route the artifact does
 not own, exactly what ADR-018 exists to prevent. Generalizing that renderer would make a Codex
@@ -27,12 +27,12 @@ The Agent Plugins specification 1.0.0 (Published) standardizes a portable plugin
 `plugin.json` manifest at the plugin root, shared skills, and an optional MCP configuration. It
 intentionally does not standardize installation, trust, consent, hooks, observation, marketplaces,
 credentials, or proof, and it prescribes no install root — each client chooses. That thinness is
-useful: the portable format can carry Yoetz's shared guidance to any standards-compliant host
-without Yoetz inheriting authority claims it must then disown.
+useful: the portable format can carry FinishUP's shared guidance to any standards-compliant host
+without FinishUP inheriting authority claims it must then disown.
 
 This change is about platform reach, not user experience. Adopting the universal standard lets
-Yoetz reach every host that speaks it while preserving first-class support for hosts that do not.
-The user-facing install surface — the ADR-012 wizard and `yoetz integrate` commands, one
+FinishUP reach every host that speaks it while preserving first-class support for hosts that do not.
+The user-facing install surface — the ADR-012 wizard and `finishup integrate` commands, one
 preview/apply experience — does not change; only the backend selection of what is rendered where
 becomes host-derived.
 
@@ -41,7 +41,7 @@ becomes host-derived.
 1. **A portable plugin is a carrier, never an authority.** A portable artifact may carry common
    metadata, shared skill/guidance bytes, and an optional exact MCP declaration. It cannot
    authorize disclosure, store credentials, unlock the vault, approve observation, call providers
-   directly, strengthen coverage, or replace a Yoetz receipt. The trusted local service remains the
+   directly, strengthen coverage, or replace a FinishUP receipt. The trusted local service remains the
    sole state, privacy, and provider authority (ADR-008, ADR-009); plugin and MCP clients remain
    untrusted. Nothing a host does with the artifact — discovery, activation, marketplace listing —
    creates authority, consent, or coverage.
@@ -64,7 +64,7 @@ becomes host-derived.
    entrypoints must not fork those contracts. A generic portable export retains a neutral skill;
    a Cursor-targeted portable artifact carries the Cursor skill. The neutral portable skill contains
    no host-specific restart procedure. This clarification follows the maintainer's scoped personalization request
-   recorded on [#613](https://github.com/TheGaySupreme123/yoetz/issues/613#issuecomment-5608159518).
+   recorded on [#613](https://github.com/TheGaySupreme123/finishup/issues/613#issuecomment-5608159518).
 
 3. **The upstream revision is pinned for vendoring.** The portable projection targets Agent Plugins
    specification 1.0.0 exactly. Its two canonical schemas are pinned for vendoring by URL and
@@ -111,7 +111,7 @@ becomes host-derived.
    consume it receives a generated native projection in a distinct, per-host documented native
    root. The user-facing installer is unchanged: setup detects the host and derives format and
    root; the user approves exact before/after bytes and never chooses a root, format, or migration
-   path. For Codex the client plugin root is the existing `.agents/plugins/yoetz`, so migration
+   path. For Codex the client plugin root is the existing `.agents/plugins/finishup`, so migration
    from the bespoke layout to the portable layout is a whole-directory, marker-identified,
    digest-bound replacement at the same root under the existing ADR-012 preview/apply and
    activation ceremony — exactly one managed tree exists there at a time, its format identified by
@@ -126,7 +126,7 @@ becomes host-derived.
 7. **Exclusive MCP ownership.** Under `external_registration` the portable artifact omits
    `mcp.json` and the existing `HarnessMcpPort` registration remains authoritative. Under
    `plugin_managed` the artifact includes a generated `mcp.json` and no second native or global
-   registration may own the `yoetz` server name. Observed ownership is the closed
+   registration may own the `finishup` server name. Observed ownership is the closed
    `McpOwnershipState` (`absent | external | plugin | dual | foreign | ambiguous`); dual, foreign,
    and ambiguous are explicit reported states — never silently resolved, chosen between, or
    overwritten. Child-issue shorthand is reconciled to this enum: `owned` is not a seventh state
@@ -178,7 +178,7 @@ becomes host-derived.
 
     **Amendment (2026-08-25, issue #419).** Codex marketplace removal is authorized the same way
     Codex marketplace activation already is: the ADR-012 digest-bound `--accept` composition on
-    `yoetz integrate codex plugin remove` and `yoetz integrate codex mcp remove`. That path does
+    `finishup integrate codex plugin remove` and `finishup integrate codex mcp remove`. That path does
     not consume `plugin_artifact_apply`. Using the Cursor OS-presence cell here would fail closed
     on this host and would mis-name the authority Codex activation already uses. Cache purge is
     default-off. Removal never deletes the skill tree, consent records, or the observation store.
@@ -192,7 +192,7 @@ becomes host-derived.
     and `preview` reports the selected cell so the operator sees which ceremony the accepted
     mutation will demand.
     After a successful activation removal, `inspect_activation` follows the #347/#387 closed
-    states: `installed_not_activated` when the managed plugin source at `.agents/plugins/yoetz`
+    states: `installed_not_activated` when the managed plugin source at `.agents/plugins/finishup`
     remains, and `not_installed` only when that source is also absent.
 
 12. **Phased rollout, ADR-009 untouched.** Slice 1 is explicitly skills-only with
@@ -207,9 +207,9 @@ becomes host-derived.
 
 ### Implemented slice-1 artifact (issue #150)
 
-The portable projection contains exactly `plugin.json`, `skills/yoetz/SKILL.md`, and the five
-`skills/yoetz/references/*.md` guidance mirrors. It contains neither `mcp.json` nor the
-Codex-specific `skills/yoetz/manifest.json`. The root manifest validates offline against the
+The portable projection contains exactly `plugin.json`, `skills/finishup/SKILL.md`, and the five
+`skills/finishup/references/*.md` guidance mirrors. It contains neither `mcp.json` nor the
+Codex-specific `skills/finishup/manifest.json`. The root manifest validates offline against the
 byte-pinned Agent Plugins 1.0.0 schema, and the immediate-child skill uses only `name` and
 `description` frontmatter. Unknown root manifest fields are reported and ignored for component
 loading; fatal known-field violations reject the manifest, while an invalid skill component is
@@ -218,7 +218,7 @@ reported at its own boundary.
 ### Implemented slice-2 MCP projection (issue #151)
 
 `plugin_managed` adds only root `mcp.json`, generated in exact policy and strict variants from the
-same plan. The route uses bare executable `yoetz`, contains no secrets or environment, and remains
+same plan. The route uses bare executable `finishup`, contains no secrets or environment, and remains
 exclusive with native/global registration. Preview and artifact identities bind the full bytes,
 route profile, and current ownership state. Offline validation preserves the specification's
 top-level/component/server failure boundaries. Provider status combines external and plugin
@@ -250,7 +250,7 @@ from the plan's bound route profile.
 The cost is a third managed-artifact vocabulary to keep honest (portable format, native
 projections, and their proof facets), a vendored upstream schema pin to maintain, and a per-host
 root model that must be frozen cell by cell instead of assumed. The distinct-cells rule means
-Yoetz will frequently be *format-compatible* with a host it does not *support*; status wording must
+FinishUP will frequently be *format-compatible* with a host it does not *support*; status wording must
 keep saying so.
 
 ADR-007, ADR-010, ADR-012, ADR-016, and ADR-018 are amended in the same review as this ADR.
@@ -299,7 +299,7 @@ cells remain unavailable rather than inheriting that proof.
 ### Claude Code native/project amendment (2026-08-27, issue #154)
 
 `PluginFormatProfile` adds exactly `claude_code_plugin_native`; `HarnessId` adds exactly `claude`.
-The native plugin root is `plugins/yoetz/` inside a generated strict private marketplace source;
+The native plugin root is `plugins/finishup/` inside a generated strict private marketplace source;
 only its manifest lives at `.claude-plugin/plugin.json`, while skills, hooks, and optional
 `.mcp.json` are siblings at the plugin root. Shared skill/reference bytes remain identical to the
 portable projection, but neither Agent Plugins JSON nor Codex/Cursor native JSON is an input.
@@ -331,20 +331,20 @@ disabled; enabled state still does not prove a loaded session.
 #### Launcher binding and development export (2026-08-27 dogfood follow-up)
 
 The first live Claude dogfood failed on two carrier-level facts: the rendered `.mcp.json` and
-hooks launched a bare `yoetz` from the host's PATH, so the plugin bridge, hook process, and
+hooks launched a bare `finishup` from the host's PATH, so the plugin bridge, hook process, and
 long-running service came from different installations on one machine; and a
 `defaultEnabled:false` carrier does not load under `claude --plugin-dir`, so no supported
 development activation existed. The Claude carrier therefore binds the exact invoking launcher
-(shared with the Cursor native carrier through `yoetz.adapters.integrations.launcher`), records it
+(shared with the Cursor native carrier through `finishup.adapters.integrations.launcher`), records it
 in a version 2 source marker, and folds it into the artifact digest. A separate `development`
-render (`defaultEnabled:true`) exists only for `yoetz integrate claude plugin export`, which writes
+render (`defaultEnabled:true`) exists only for `finishup integrate claude plugin export`, which writes
 the plugin root to a caller-chosen new directory without touching host state or consuming review
 authority; preview refuses that carrier, and it never earns marketplace-installed proof. The
 marketplace cell still installs disabled.
 
 The dogfood's third failure was not a carrier fact: an upgraded bridge could not talk to the
 previous installation's still-running service, and could not ask it to stop. That is resolved in
-the local-control client (`service_incompatible`, supersede-on-upgrade, `yoetz service restart`);
+the local-control client (`service_incompatible`, supersede-on-upgrade, `finishup service restart`);
 see `docs/INTERFACES.md` under the trusted local service contract.
 
 

@@ -24,25 +24,25 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.start_catalog import MemoryStartCatalogAdapter
-from yoetz.adapters.objects import encrypted_files as encrypted_files_module
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.objects.envelope import decode_object_envelope
-from yoetz.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.application.start import execute_start, start_projection_wire
-from yoetz.domain.values import Frontier
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import (
+from finishup.adapters.memory.start_catalog import MemoryStartCatalogAdapter
+from finishup.adapters.objects import encrypted_files as encrypted_files_module
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.objects.envelope import decode_object_envelope
+from finishup.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.application.start import execute_start, start_projection_wire
+from finishup.domain.values import Frontier
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import (
     ObjectKind,
     ObjectRef,
     ObjectRootSnapshot,
     ObjectStorePort,
 )
-from yoetz.ports.runtime import (
+from finishup.ports.runtime import (
     BundleProvisionCommand,
     RouteCommand,
     StartCompletionEvidence,
@@ -50,18 +50,18 @@ from yoetz.ports.runtime import (
     StartMilestoneExpectation,
     TaskRuntime,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryCapability,
     SecretPurpose,
 )
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import StartRequest
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import StartRequest
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 pytestmark = pytest.mark.anyio
 

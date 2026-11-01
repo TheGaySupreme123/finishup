@@ -16,7 +16,7 @@ from builders.policy_cases import (
     make_case,
     record,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     CheckScope,
     FinalSemanticEvaluation,
     allocate_findings,
@@ -24,7 +24,7 @@ from yoetz.application.check import (
     case_coverage,
     run_deterministic_policies,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -32,14 +32,14 @@ from yoetz.domain.events import (
     ResponseDisposition,
     ResponseRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     CheckVerdict,
     Finding,
     FindingKind,
     FindingOrigin,
     WaiverScope,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
@@ -48,18 +48,18 @@ from yoetz.domain.receipts import (
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
 )
-from yoetz.domain.values import EventId, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.values import EventId, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import (
     CaseGap,
     DeterministicAssessment,
     DeterministicCase,
     FindingBasisRef,
 )
-from yoetz.kernel.projections import LatestTestedState
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import Coverage, EvidenceImmutability
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.kernel.projections import LatestTestedState
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import Coverage, EvidenceImmutability
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 
 class _Ids:
@@ -83,7 +83,7 @@ def test_deterministic_packs_account_and_rank_actual_kernel_findings() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)
@@ -213,7 +213,7 @@ def test_finding_response_penalty_has_one_policy_owner(
     assessments, executions = run_deterministic_policies(
         _finding_response_case(disposition, stale=stale),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (expected_kind,)
@@ -228,7 +228,7 @@ def test_response_with_work_only_evidence_gap_is_not_dropped() -> None:
             work_only_gap=True,
         ),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -244,7 +244,7 @@ def test_work_pack_selected_alone_still_reports_the_hollow_rejection() -> None:
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("work-integrity/0.1.0",),
+        ("work-integrity/0.3.0",),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -261,8 +261,8 @@ def test_failed_research_pack_leaves_the_work_response_finding_standing() -> Non
     assessments, executions = run_deterministic_policies(
         _finding_response_case(ResponseDisposition.REJECTED, stale=False),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
-        evaluators={"research-evidence/0.1.0": _explode},
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
+        evaluators={"research-evidence/0.2.0": _explode},
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -281,7 +281,7 @@ def test_collapse_is_scoped_to_the_response_it_matched() -> None:
     assessments, _executions = run_deterministic_policies(
         _two_response_case(),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     # fnd(1) is a plain hollow rejection and collapses to the research-evidence kind; fnd(2) is
@@ -300,7 +300,7 @@ def test_direct_scope_excludes_pack_without_selected_root() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), (unrelated,)),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert assessments == ()
@@ -316,8 +316,8 @@ def test_policy_failure_is_accounted_without_inventing_findings() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("work-integrity/0.1.0",),
-        evaluators={"work-integrity/0.1.0": fail},
+        ("work-integrity/0.3.0",),
+        evaluators={"work-integrity/0.3.0": fail},
     )
 
     assert assessments == ()
@@ -346,9 +346,9 @@ def test_semantic_status_reason_cross_pair_is_rejected() -> None:
 
 
 def test_deterministic_only_marks_semantic_not_requested_gap_without_verdict_change() -> None:
-    from yoetz.application.check import semantic_coverage_gap_code
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
-    from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+    from finishup.application.check import semantic_coverage_gap_code
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+    from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 
     gap = semantic_coverage_gap_code(
         SemanticStatus.NOT_REQUESTED, SemanticReason.DETERMINISTIC_MODE
@@ -359,14 +359,14 @@ def test_deterministic_only_marks_semantic_not_requested_gap_without_verdict_cha
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)
     # Simulate check merge: add gap, CURRENT -> PARTIAL, COVERAGE_INCOMPLETE
     gaps = set(coverage.known_gaps)
     gaps.add(gap)
-    from yoetz.protocol.coverage import LedgerFreshness as LF
+    from finishup.protocol.coverage import LedgerFreshness as LF
 
     freshness = coverage.ledger_freshness
     if freshness is LF.CURRENT:
@@ -405,7 +405,7 @@ def test_completion_scope_gaps_dominate_an_actionable_finding(
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)
@@ -534,11 +534,11 @@ def test_judgment_rejection_preserves_the_truncation_disclosure() -> None:
     stays the case that was truncated, so the disclosure must survive the restatement.
     """
 
-    from yoetz.application.check import (
+    from finishup.application.check import (
         _judgment_rejected_evaluation,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
-    from yoetz.ports.semantic import SemanticJudgment
+    from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
+    from finishup.ports.semantic import SemanticJudgment
 
     digest = "sha256:" + "a" * 64
     succeeded = FinalSemanticEvaluation(
@@ -568,6 +568,8 @@ def test_judgment_rejection_preserves_the_truncation_disclosure() -> None:
         ),
         withheld_review_categories=("obligation_text",),
         case_content_over_item_limit=True,
+        case_reference_scope_reduced=True,
+        case_included_refs=frozenset({"evt_20000000-0000-4000-8000-000000000001"}),
         case_content_gaps=("captured_object_unavailable",),
     )
 
@@ -577,3 +579,62 @@ def test_judgment_rejection_preserves_the_truncation_disclosure() -> None:
     assert rejected.case_content_over_item_limit is True
     assert rejected.case_content_gaps == ("captured_object_unavailable",)
     assert rejected.withheld_review_categories == ("obligation_text",)
+    assert rejected.case_reference_scope_reduced is True
+    assert rejected.case_included_refs == succeeded.case_included_refs
+
+
+def test_only_a_completed_reduced_review_records_its_included_references() -> None:
+    """Issue #904: the check records what a reduced packet included, and nothing it cannot bound."""
+
+    from finishup.application.check import (
+        _judgment_rejected_evaluation,  # pyright: ignore[reportPrivateUsage]
+        semantic_included_refs,
+    )
+    from finishup.domain.events import MAX_SEMANTIC_INCLUDED_REFS
+    from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticProvenance
+    from finishup.ports.semantic import SemanticJudgment
+
+    digest = "sha256:" + "a" * 64
+    refs = frozenset(
+        {"obl_20000000-0000-4000-8000-000000000002", "evt_20000000-0000-4000-8000-000000000001"}
+    )
+    succeeded = FinalSemanticEvaluation(
+        SemanticStatus.SUCCEEDED,
+        SemanticReason.SEMANTIC_COMPLETED,
+        judgment=SemanticJudgment("no_material_discrepancy", ()),
+        provenance=SemanticProvenance(
+            provider="fake",
+            endpoint_profile_id="fake",
+            endpoint_profile_version="1.0.0",
+            model="fake/model",
+            sdk_version="1.0.0",
+            prompt_digest=digest,
+            schema_digest=digest,
+            policy_digest=digest,
+            privacy_policy_digest=digest,
+            sampling_params=SamplingParams(128),
+            latency_ms=1,
+            semantic_attempt_id="att_20000000-0000-4000-8000-000000000001",
+            dispatch_kind=SemanticDispatchKind.EXTERNAL,
+            privacy_receipt_id="egr_20000000-0000-4000-8000-000000000001",
+            status=SemanticStatus.SUCCEEDED,
+            reason=SemanticReason.SEMANTIC_COMPLETED,
+            provider_request_id="fake-1",
+            egress_authorization_id="aut_20000000-0000-4000-8000-000000000001",
+            request_commitment="hmac-sha256:" + "b" * 64,
+        ),
+        case_reference_scope_reduced=True,
+        case_included_refs=refs,
+    )
+
+    assert semantic_included_refs(succeeded) == tuple(sorted(refs, key=str.encode))
+    # Nothing to record: no reduced scope, no conclusion, or no bounded selection.
+    assert semantic_included_refs(_judgment_rejected_evaluation(succeeded)) is None
+    assert semantic_included_refs(replace(succeeded, case_included_refs=frozenset())) is None
+    oversized = frozenset(
+        f"evt_20000000-0000-4000-8000-{number:012x}"
+        for number in range(MAX_SEMANTIC_INCLUDED_REFS + 1)
+    )
+    assert semantic_included_refs(replace(succeeded, case_included_refs=oversized)) is None
+    # An unreduced review sent its whole frontier and records nothing.
+    assert semantic_included_refs(replace(succeeded, case_reference_scope_reduced=False)) is None

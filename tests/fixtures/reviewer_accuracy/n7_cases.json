@@ -1,0 +1,69 @@
+{
+  "schema": "finishup.test.reviewer-accuracy-cases/1",
+  "source": "Issue #1108 (n7 investigation, RC6c and RC7) and issue #1094 R2-N1: reviewer abstentions on observed checks, re-listed supplied answers, verdicts that leaned on a disclosure, and a delivery-risk challenge on correct work. Spec and claim texts are synthetic paraphrases of each failure pattern, not task text.",
+  "cases": [
+    {
+      "case": "observed-validator-outside-workspace",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "insufficient_packet, asking for the validator's source",
+      "miss": "abstained_on_observed_output",
+      "secondary": ["trusted_agent_validator"],
+      "lenses": ["grounding", "own_checks"],
+      "directives": [
+        "Output FinishUP observed is such a witness: an excerpt that begins [FinishUP: observed holds bytes a host hook captured from a call the agent made, and it witnesses what its lines show, the host-reported outcome and exit status included.",
+        "never mark the requirement not_assessable, conclude insufficient_packet, or ask for the check's source only because that source is absent.",
+        "A line that prints only a verdict (PASS, OK, a pass count) witnesses that the check passed, not what it measured",
+        "what FinishUP observed the check print (its values, cases and comparisons) is evidence of what it printed, which you judge against the task yourself."
+      ],
+      "spec_excerpt": "The fitted curve must stay within 0.01 of every reference point.",
+      "agent_claim": "A scratch validator outside the workspace printed max_err=0.003 <= 0.01 for all 40 points and PASS."
+    },
+    {
+      "case": "supplied-after-request",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "insufficient_packet, listing the supplied item again",
+      "miss": "relisted_supplied_material",
+      "secondary": ["abstained_on_observed_output"],
+      "lenses": ["reading_the_packet"],
+      "directives": [
+        "what the agent published, and each re-run of a requested command that FinishUP observed",
+        "When the packet also carries observed output, the check-time change or the file that answers the same request, that material is the witness: judge from it, and never withhold support because the agent's own answer was a summary."
+      ],
+      "spec_excerpt": "Run the full test suite and report the result.",
+      "agent_claim": "Re-ran the suite as requested; summary: 212 passed. The run's captured output is in the packet."
+    },
+    {
+      "case": "disclosed-limit-with-decisive-fact",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "no_material_discrepancy, the requirement marked not_assessable as disclosed",
+      "miss": "deferred_to_disclosure",
+      "secondary": ["adopted_agent_premise"],
+      "lenses": ["review_phase", "blockers"],
+      "directives": [
+        "is a verified row with verdict not_assessable, not a challenge, when the packet holds no material that settles it.",
+        "It never stops you from judging what the packet shows: when the code, an observed output or the task text settles the requirement, judge it from that material, and challenge it when that material shows the requirement unmet, disclosed or not.",
+        "A disclosed limitation excuses an unmet requirement only when it lies outside the agent's control (authority, credentials, an unavailable external resource), and it never supports a claim that the work is done;"
+      ],
+      "spec_excerpt": "Output timestamps in UTC.",
+      "agent_claim": "Recorded a verification limit: the hidden grader's time zone is unknown. The diff in the packet formats every timestamp in local time."
+    },
+    {
+      "case": "task-supplied-input-and-service",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "challenges_returned, a delivery risk on correct work",
+      "miss": "delivery_risk_on_correct_work",
+      "secondary": [],
+      "lenses": ["environment"],
+      "directives": [
+        "data, model, template or configuration file read at run time that the deliverable does not ship and the task does not supply",
+        "network access the task does not provide"
+      ],
+      "spec_excerpt": "Write a client that fetches the daily rates from the given service and reads the supplied currencies file.",
+      "agent_claim": "The client reads the supplied currencies file and fetches the rates from the service the task names."
+    }
+  ]
+}

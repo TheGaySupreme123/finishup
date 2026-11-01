@@ -14,27 +14,27 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationSource,
 )
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     LARGER_CAPACITY,
     LARGEST_CAPACITY,
     STANDARD_CAPACITY,
     BudgetLimits,
     ObservationCapacity,
 )
-from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_encode
 
 _NOW = Timestamp("2026-09-10T00:01:00.000Z")
 _WALL_SECONDS = datetime(2026, 9, 10, 0, 1, tzinfo=UTC).timestamp()
@@ -383,7 +383,7 @@ def test_over_target_writes_never_heal_a_truncation_gap(tmp_path: Path) -> None:
 
 
 def test_an_accepted_buffered_input_still_transfers_over_target(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.observation_admission import (
+    from finishup.adapters.integrations.observation_admission import (
         AdmissionBuffer,
         AdmissionPlan,
         BufferedInput,

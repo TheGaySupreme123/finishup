@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
+import threading
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import replace
@@ -14,33 +16,39 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.providers import codex_app_server as module
-from yoetz.adapters.providers.codex_app_server import (
-    CODEX_APP_SERVER_SCHEMA_SHA256,
-    CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
+from builders.codex_capability import (
+    LINUX,
+    MAC,
+    binding_for,
+    profile_for,
+    record_for,
+    retained_runtime,
+    write_home,
+)
+from finishup.adapters.providers import codex_app_server as module
+from finishup.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
     CODEX_EVALUATOR_CONFIG_SHA256,
-    CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-    CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256,
-    CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY,
-    CODEX_EVALUATOR_RUNTIME_VERSION,
     CodexAppServerEvaluator,
     CodexAppServerExternalFactory,
     CodexAppServerProfile,
     CodexReviewBudget,
     CodexRuntimeStatus,
 )
-from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.domain.privacy import (
+from finishup.adapters.providers.codex_capability import CodexCapabilityRecord
+from finishup.adapters.providers.openai_responses import (
+    JUDGMENT_JSON_SCHEMA,
+    SEMANTIC_REVIEW_INSTRUCTION,
+)
+from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.privacy import (
     ApprovedOutboundCase,
     DataCategory,
     ProviderBinding,
     RequestCommitment,
 )
-from yoetz.ports.secret_memory import ProviderAttemptAuthBinding
-from yoetz.ports.semantic import (
+from finishup.ports.secret_memory import ProviderAttemptAuthBinding
+from finishup.ports.semantic import (
     Deadline,
     ExternalRuntimeAuthority,
     SemanticResultInvalid,
@@ -48,8 +56,8 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.ports.semantic_budget import semantic_budget_profile_scope
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.ports.semantic_budget import semantic_budget_profile_scope
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 pytestmark = pytest.mark.anyio
 
@@ -67,154 +75,165 @@ class _Clock:
 
 
 def _profile() -> CodexAppServerProfile:
-    return CodexAppServerProfile(
-        provider_id="openai-codex",
-        endpoint_profile_id="codex-chatgpt-subscription",
-        endpoint_profile_version="1.0.0",
-        executable_path=Path("/opt/codex/0.150.1/codex"),
-        executable_sha256="sha256:a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
-        runtime_version="0.150.1",
-        source_identity="openai-codex-npm-darwin-arm64-0.150.1",
-        app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-        capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-        capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-        capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=Path("/var/lib/yoetz/codex-0.150.1"),
-        isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        model="gpt-5.6-sol",
-        reasoning_effort="high",
-        timeout_seconds=30,
-        data_use_profile=data_use_record_for_endpoint("codex-chatgpt-subscription").profile,
-    )
+    """A capability-checked Codex 0.159.0 profile whose record is held in memory."""
+
+    return profile_for()
 
 
-def test_committed_compatibility_cell_matches_runtime_constants() -> None:
+def test_committed_isolated_config_matches_the_runtime_constant() -> None:
     root = Path(__file__).resolve().parents[4]
-    cell = json.loads((root / "support/codex-evaluator/0.150.1/cell.json").read_text("utf-8"))
-    config = (root / "support/codex-evaluator/0.150.1/config.toml").read_bytes()
+    config = (root / "support/codex-evaluator/config.toml").read_bytes()
 
-    assert cell["runtime_version"] == module.CODEX_EVALUATOR_RUNTIME_VERSION
-    assert cell["app_server_schema_sha256"] == CODEX_APP_SERVER_SCHEMA_SHA256
-    assert cell["capability_profile"] == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert cell["capability_cell_sha256"] == CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
-    assert cell["evidence_expires_at"] == CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT
-    identity_keys = (
-        "schema",
-        "runtime_version",
-        "distribution_kind",
-        "distribution",
-        "platform",
-        "protocol",
-        "executable_sha256",
-        "app_server_schema_sha256",
-        "isolated_config_sha256",
-        "capability_profile",
-        "credential_authority",
-        "upstream_body_observability",
-        "evidence_reviewed_at",
-        "evidence_expires_at",
-    )
-    assert canonical_digest({key: cell[key] for key in identity_keys}) == (
-        CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
-    )
-    assert cell["isolated_config_sha256"] == CODEX_EVALUATOR_CONFIG_SHA256
     assert "sha256:" + hashlib.sha256(config).hexdigest() == CODEX_EVALUATOR_CONFIG_SHA256
     assert config.decode("utf-8") == module.CODEX_EVALUATOR_CONFIG
-    assert cell["upstream_body_observability"] == "unavailable"
-    assert cell["release_evidence"] == "pending"
+    # The exact pinned 0.157.1 cells are gone: admission is the capability check (ADR-006).
+    assert not (root / "support/codex-evaluator/0.157.1").exists()
 
 
-def test_committed_linux_compatibility_cell_matches_runtime_constants() -> None:
-    root = Path(__file__).resolve().parents[4]
-    cell = json.loads(
-        (root / "support/codex-evaluator/0.150.1/cell-linux-x64.json").read_text("utf-8")
-    )
-    identity_keys = (
-        "schema",
-        "runtime_version",
-        "distribution_kind",
-        "distribution",
-        "platform",
-        "protocol",
-        "executable_sha256",
-        "app_server_schema_sha256",
-        "isolated_config_sha256",
-        "capability_profile",
-        "credential_authority",
-        "upstream_body_observability",
-        "evidence_reviewed_at",
-        "evidence_expires_at",
-    )
+@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1", "1.0.0"])
+def test_any_stable_release_at_or_above_the_floor_forms_a_binding(version: str) -> None:
+    record = record_for(b"codex", b"host", version=version)
+    profile = profile_for(record)
 
-    assert cell["runtime_version"] == CODEX_EVALUATOR_RUNTIME_VERSION
-    assert cell["app_server_schema_sha256"] == CODEX_APP_SERVER_SCHEMA_SHA256
-    assert cell["capability_profile"] == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert cell["capability_cell_sha256"] == CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    assert cell["executable_sha256"] == CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256
-    assert cell["isolated_config_sha256"] == CODEX_EVALUATOR_CONFIG_SHA256
-    assert canonical_digest({key: cell[key] for key in identity_keys}) == (
-        CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    )
-    assert cell["platform"] == {"architecture": "x86_64", "os": "linux"}
-    assert cell["release_evidence"] == "pending"
-    runtime_cell = module.codex_evaluator_cell_for_platform("linux", "x86_64")
-    assert cell["native_package"] == f"@openai/{runtime_cell.native_package_directory}"
-    assert cell["native_executable_relative"] == (
-        runtime_cell.native_executable_relative.as_posix()
-    )
+    assert profile.runtime_version == version
+    assert profile.capability_profile == CODEX_EVALUATOR_CAPABILITY_PROFILE
+    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v4"
+    assert module.CODEX_EVALUATOR_RUNTIME_FLOOR == "0.157.1"
 
 
-def test_linux_cell_identity_binds_the_native_digest_and_package_alias() -> None:
-    cell = module.codex_evaluator_cell_for_platform("linux", "x86_64")
-    assert module.codex_evaluator_cell_for_platform("linux2", "amd64") is cell
+@pytest.mark.parametrize(
+    ("overrides", "token"),
+    [
+        # Bindings written under the exact pinned cells move through repair, never launch.
+        ({"capability_profile": "codex-evaluator/0.157.1/v2"}, "codex_runtime_profile_outdated"),
+        ({"capability_profile": "codex-evaluator/0.150.1/v2"}, "codex_runtime_profile_outdated"),
+        ({"isolated_config_sha256": "sha256:" + "c" * 64}, "codex_runtime_profile_outdated"),
+        (
+            {"capability_evidence_expires_at": "2026-12-31T00:00:00Z"},
+            "codex_runtime_profile_outdated",
+        ),
+        # Below the floor, a prerelease, or an identity that disagrees with its version.
+        (
+            {
+                "runtime_version": "0.153.4",
+                "source_identity": "openai-codex-npm-darwin-arm64-0.153.4",
+            },
+            "codex_runtime_version_unsupported",
+        ),
+        ({"runtime_version": "0.163.0-alpha.9"}, "codex_runtime_version_unsupported"),
+        (
+            {"source_identity": "openai-codex-npm-darwin-arm64-0.162.1"},
+            "codex_runtime_capability_unsupported",
+        ),
+        (
+            {"source_identity": "openai-codex-brew-darwin-arm64-0.159.0"},
+            "codex_runtime_capability_unsupported",
+        ),
+        ({"executable_sha256": "sha256:short"}, "codex_runtime_binding_invalid"),
+    ],
+)
+def test_binding_fields_are_validated_before_any_file_access(
+    overrides: dict[str, object], token: str
+) -> None:
+    profile = profile_for(in_memory=False)
 
-    assert cell.source_identity == CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY
-    assert cell.executable_sha256 == CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256
-    assert cell.capability_cell_sha256 == CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    assert cell.native_package_directory == "codex-linux-x64"
-    assert cell.native_package_spec == "npm:@openai/codex@0.150.1-linux-x64"
-    assert cell.native_executable_relative.as_posix() == (
-        "vendor/x86_64-unknown-linux-musl/bin/codex"
-    )
+    with pytest.raises(ValueError, match=token):
+        replace(profile, **overrides)  # pyright: ignore[reportArgumentType]
 
 
-def test_linux_cell_rejects_mac_digest_or_source_identity() -> None:
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.codex_evaluator_cell_for_binding(
-            source_identity=CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY,
-            executable_sha256="sha256:a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
-            runtime_version="0.150.1",
-            app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-            capability_cell_sha256=CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-            capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-            capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-            isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        )
+def test_an_in_memory_record_must_be_the_one_the_binding_commits_to() -> None:
+    record = record_for(b"codex", b"host")
+    other = record_for(b"other codex", b"host")
 
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.codex_evaluator_cell_for_binding(
-            source_identity="openai-codex-npm-darwin-arm64-0.150.1",
-            executable_sha256=CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256,
-            runtime_version="0.150.1",
-            app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-            capability_cell_sha256=CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-            capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-            capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-            isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        )
+    with pytest.raises(ValueError, match="codex_runtime_capability_record_invalid"):
+        replace(profile_for(record), capability_record=other)
 
 
-def test_local_binding_rejects_a_mac_cell_on_linux_before_file_access(
+def test_local_binding_rejects_a_mac_binding_on_linux_before_file_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(module.sys, "platform", "linux")
-    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
 
     with pytest.raises(ValueError, match="codex_runtime_platform_unsupported"):
         _profile().verify_local_binding()
 
 
-def test_codex_output_schema_omits_only_provider_rejected_uniqueness_keyword() -> None:
+def _launchable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, version: str = "0.159.0"
+) -> tuple[Path, CodexCapabilityRecord, CodexAppServerProfile]:
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+    def allow_private(_path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(module, "verify_private_local_bundle", allow_private)
+    bundle = tmp_path / "bundle"
+    executable, record = retained_runtime(bundle, version=version)
+    home = write_home(tmp_path / "home")
+    profile = CodexAppServerProfile.from_config(binding_for(record, executable, home))
+    return executable, record, profile
+
+
+def test_launch_fence_accepts_the_retained_bytes_and_record_it_commits_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _executable, record, profile = _launchable(tmp_path, monkeypatch)
+
+    profile.verify_local_binding()
+    assert profile.bound_capability_record() == record
+
+
+@pytest.mark.parametrize("target", ["codex", "codex-code-mode-host", "capability.json"])
+def test_launch_fence_refuses_bytes_or_record_changed_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    executable, _record, profile = _launchable(tmp_path, monkeypatch)
+    changed = executable.parent / target
+    changed.chmod(0o700)
+    if target == "capability.json":
+        replacement = record_for(b"a newer codex", b"its host").to_json()
+        changed.write_text(json.dumps(replacement), encoding="utf-8")
+    else:
+        changed.write_bytes(b"bytes a later update wrote")
+
+    with pytest.raises(ValueError, match="codex_runtime_executable_changed"):
+        profile.verify_local_binding()
+
+
+def test_launch_fence_refuses_a_missing_record_as_a_missing_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable, _record, profile = _launchable(tmp_path, monkeypatch)
+    (executable.parent / "capability.json").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        profile.verify_local_binding()
+
+
+def test_linux_and_mac_identities_stay_bound_to_their_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linux = record_for(b"codex", b"host", platform=LINUX)
+    profile = profile_for(linux)
+    assert profile.source_identity == "openai-codex-npm-linux-x64-0.159.0"
+    assert LINUX.native_package_spec("0.159.0") == "npm:@openai/codex@0.159.0-linux-x64"
+    assert MAC.native_package_spec("0.159.0") == "npm:@openai/codex@0.159.0-darwin-arm64"
+    assert MAC.native_executable_relative.as_posix() == "vendor/aarch64-apple-darwin/bin/codex"
+    assert LINUX.native_executable_relative.as_posix() == (
+        "vendor/x86_64-unknown-linux-musl/bin/codex"
+    )
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    with pytest.raises(ValueError, match="codex_runtime_platform_unsupported"):
+        profile.verify_local_binding()
+    assert module.codex_code_mode_host_path(Path("/store/codex")) == Path(
+        "/store/codex-code-mode-host"
+    )
+
+
+def test_codex_output_schema_omits_provider_rejected_keywords() -> None:
     def keys(value: object) -> set[str]:
         if type(value) is dict:
             source = cast(dict[str, object], value)
@@ -229,10 +248,9 @@ def test_codex_output_schema_omits_only_provider_rejected_uniqueness_keyword() -
             return result
         return set()
 
-    assert "uniqueItems" in keys(module.JUDGMENT_JSON_SCHEMA)
-    assert "uniqueItems" not in keys(
-        module._CODEX_JUDGMENT_JSON_SCHEMA  # pyright: ignore[reportPrivateUsage]
-    )
+    assert "uniqueItems" in keys(JUDGMENT_JSON_SCHEMA)
+    sent = keys(module._CODEX_JUDGMENT_JSON_SCHEMA)  # pyright: ignore[reportPrivateUsage]
+    assert not {"allOf", "default", "if", "not", "then", "uniqueItems"} & sent
 
 
 def _case() -> ApprovedOutboundCase:
@@ -380,7 +398,9 @@ class _Runtime:
                     "item": {
                         "type": "agentMessage",
                         "text": (
-                            '{"conclusion":"no_material_discrepancy","reviewer_challenges":[]}'
+                            '{"conclusion":"no_material_discrepancy",'
+                            '"review_summary":"The supplied packet was reviewed.",'
+                            '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'
                         ),
                     }
                 },
@@ -410,7 +430,7 @@ class _Runtime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.150.1",
+                "userAgent": "finishup_semantic_evaluator/0.159.0 (Mac OS 26.6.2; arm64) unknown",
             }
         if method == "account/read":
             return {"account": self.account}
@@ -502,7 +522,7 @@ class _LoginRuntime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.150.1",
+                "userAgent": "finishup_semantic_evaluator/0.159.0 (Mac OS 26.6.2; arm64) unknown",
             }
         if method == "account/login/start":
             assert isinstance(params, dict)
@@ -645,8 +665,9 @@ async def test_login_demultiplexes_exact_remote_control_notice_before_completion
                 "params": {"loginId": "login-1", "success": True},
             }
         ],
-        # Codex 0.150.1 emits this notification while account/login/start is in flight. The
-        # request buffers it before returning the login challenge, as the native process does.
+        # Codex 0.150.1 through 0.162.1 emit this notification while account/login/start is in
+        # flight. The request buffers it before returning the login challenge, as the native
+        # process does.
         login_notifications=[
             {
                 "method": "remoteControl/status/changed",
@@ -710,6 +731,8 @@ _LOGIN_COMPLETED: dict[str, object] = {
         {"limitId": "other-bucket", "primary": {"usedPercent": 100}},
         {"secondary": {"usedPercent": 0, "resetsAt": None, "windowDurationMins": None}},
         {"credits": {"hasCredits": True, "unlimited": False}},
+        {"limitId": "codex", "normalModelSlug": "gpt-6-luna"},
+        {"normalModelSlug": None},
         {
             "individualLimit": {
                 "limit": "10.0",
@@ -729,7 +752,7 @@ async def test_sparse_rate_limit_snapshots_do_not_prevent_a_valid_answer(
         "params": {"rateLimits": snapshot},
     }
     # Exercise the strict pre-disclosure validator too; post-ack fallback must not mask
-    # accidental rejection of a supported 0.150.1 sparse shape.
+    # accidental rejection of a sparse shape the pinned app-server schema allows.
     module._discard_rate_limits_notification(notice)  # pyright: ignore[reportPrivateUsage]
     runtime.events.insert(0, notice)
     result = await _evaluate(monkeypatch, runtime)
@@ -749,6 +772,7 @@ async def test_sparse_rate_limit_snapshots_do_not_prevent_a_valid_answer(
     ("native_error", "failure_class"),
     [
         ("usageLimitExceeded", SemanticFailureClass.QUOTA_EXHAUSTED),
+        ("rateLimitExceeded", SemanticFailureClass.RATE_LIMITED),
         ({"httpConnectionFailed": {"httpStatusCode": 429}}, SemanticFailureClass.RATE_LIMITED),
     ],
 )
@@ -786,6 +810,8 @@ async def test_rate_limit_bookkeeping_cannot_mask_authoritative_quota_or_rate_er
         {"unexpected": "private-account-canary"},
         {"limitId": 42},
         {"limitName": "x" * 129},
+        {"normalModelSlug": 42},
+        {"normalModelSlug": "x" * 129},
         {"planType": []},
         {"spendControlReached": 1},
         {"rateLimitReachedType": "unknown-canary"},
@@ -825,6 +851,14 @@ async def test_malformed_rate_limit_snapshot_records_only_nonterminal_diagnostic
         {"method": "unreviewed/method", "params": {}},
         {"method": "account/rateLimits/updated", "id": 99, "params": {}},
         {"method": "item/started", "params": {"item": {"type": "commandExecution"}}},
+        # Codex 0.157.1 schema additions that were reviewed and deliberately not allowlisted.
+        {"method": "item/completed", "params": {"item": {"type": "functionCallOutput"}}},
+        {
+            "method": "modelProvider/authRecoveryStarted",
+            "params": {"message": "canary", "provider": "openai", "threadId": "t", "turnId": "u"},
+        },
+        {"method": "thread/attachment/updated", "params": {"threadId": "t"}},
+        {"method": "account/gatewayOAuth/changed", "params": {}},
     ],
 )
 async def test_post_ack_isolation_failures_remain_terminal_without_answer_blame(
@@ -1470,7 +1504,7 @@ def test_token_usage_parser_rejects_incoherent_counters() -> None:
 
     for notice in notices:
         with pytest.raises(ValueError, match="^codex_app_server_token_usage_invalid$"):
-            module._runtime_token_usage_from_notification(  # pyright: ignore[reportPrivateUsage]
+            module._runtime_token_usages_from_notification(  # pyright: ignore[reportPrivateUsage]
                 notice, thread_id=_THREAD_ID, turn_id=_TURN_ID
             )
 
@@ -1546,6 +1580,36 @@ async def test_unknown_predisclosure_event_prevents_case_bytes_crossing_stdin(
     assert result.provenance.runtime_evidence.case_disclosed is False
     assert result.provenance.runtime_evidence.turn_acknowledged is False
     assert all(method != "turn/start" for method in (item.get("method") for item in runtime.sent))
+
+
+async def test_linux_missing_bubblewrap_config_warning_fails_before_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A notice shaped like Codex 0.157.1's missing-bubblewrap warning but not byte-identical to
+    # the reviewed 0.162.1 text, from an unreviewed release. It stays outside the pre-disclosure
+    # allowlist: no case byte crosses.
+    runtime = _Runtime(
+        _profile(),
+        predisclosure_event={
+            "method": "configWarning",
+            "params": {
+                "summary": (
+                    "Codex could not find bubblewrap on PATH. canary-native-text Codex will use "
+                    "the bundled bubblewrap in the meantime."
+                ),
+                "details": None,
+            },
+        },
+    )
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert result.provenance.runtime_evidence.failure_stage == "predisclosure_event_forbidden"
+    assert all(method != "turn/start" for method in (item.get("method") for item in runtime.sent))
+    assert "canary" not in repr(result)
 
 
 async def test_exact_disabled_remote_control_notice_is_discarded_before_disclosure(
@@ -1776,7 +1840,7 @@ def test_launcher_and_environment_do_not_inherit_aliases_credentials_or_proxies(
     )
 
     assert profile.launcher_argv[:3] == (
-        "/opt/codex/0.150.1/codex",
+        "/opt/codex/0.159.0/codex",
         "app-server",
         "--stdio",
     )
@@ -1784,6 +1848,32 @@ def test_launcher_and_environment_do_not_inherit_aliases_credentials_or_proxies(
     assert "OPENAI_API_KEY" not in environment
     assert "HTTPS_PROXY" not in environment
     assert "HOME" not in environment
+
+
+@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1", "0.163.0", "0.164.0"])
+def test_only_the_reviewed_release_gets_its_extra_tool_removal_overrides(version: str) -> None:
+    """#1118/#1228: catalog- and default-driven tools a reviewed release registers are disabled."""
+
+    profile = profile_for(record_for(b"codex", b"host", version=version))
+    overrides = [
+        value
+        for flag, value in zip(profile.launcher_argv[4::2], profile.launcher_argv[5::2])
+        if flag == "-c"
+    ]
+    extra = {
+        "agents.enabled=false",
+        "features.goals=false",
+        "features.sleep_tool=false",
+        "skills.include_instructions=false",
+    }
+
+    assert "tools.update_plan.enabled=false" in overrides
+    assert "features.shell_tool=false" in overrides
+    # ``--strict-config`` refuses a key a release does not define, so only reviewed releases get
+    # them (0.162.1, and 0.164.0 since #1228).
+    reviewed = version in {"0.162.1", "0.164.0"}
+    assert extra.issubset(overrides) is reviewed
+    assert extra.isdisjoint(overrides) is (not reviewed)
 
 
 def test_factory_binds_every_runtime_authority_field(
@@ -1824,7 +1914,10 @@ async def test_evaluator_rejects_deadline_not_bound_to_runtime_authority() -> No
 # --- issue #527: bounded validation-stage diagnostics -------------------------------------------
 
 _REF = "clm_20000000-0000-4000-8000-000000000001"
-_NO_DISCREPANCY = '{"conclusion":"no_material_discrepancy","reviewer_challenges":[]}'
+_NO_DISCREPANCY = (
+    '{"conclusion":"no_material_discrepancy","review_summary":"The supplied packet was reviewed.",'
+    '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'
+)
 
 
 def _challenge_json(**overrides: object) -> str:
@@ -1832,6 +1925,7 @@ def _challenge_json(**overrides: object) -> str:
         "finding_kind": "claim_without_admissible_evidence",
         "summary": "Evidence gap",
         "cited_refs": [_REF],
+        "snippet": "The claim lacks a recorded basis.",
         "discrepancy": "The claim lacks a recorded basis.",
         "alternative_interpretation": "The claim may remain unresolved.",
         "message_to_main_agent": "Main agent: provide evidence for the claim.",
@@ -1839,7 +1933,15 @@ def _challenge_json(**overrides: object) -> str:
         "uncertainty": "The missing material may exist outside the case.",
     }
     challenge.update(overrides)
-    return json.dumps({"conclusion": "challenges_returned", "reviewer_challenges": [challenge]})
+    return json.dumps(
+        {
+            "conclusion": "challenges_returned",
+            "review_summary": "The supplied packet was reviewed.",
+            "verified": [],
+            "reviewer_challenges": [challenge],
+            "prior_finding_verdicts": [],
+        }
+    )
 
 
 def _agent_message(text: str, *, phase: str | None = None) -> dict[str, object]:
@@ -1921,20 +2023,28 @@ async def test_unknown_message_phase_is_a_forbidden_event(
         ('{"conclusion":"no_material_discrepancy","reviewer_challenges":[],}', "output_not_json"),
         ('{"result":' + _NO_DISCREPANCY + "}", "judgment_envelope_invalid"),
         ('{"judgment":"' + "prose-canary" + '"}', "judgment_envelope_invalid"),
-        ('{"conclusion":"maybe-canary","reviewer_challenges":[]}', "judgment_enum_invalid"),
+        (
+            '{"conclusion":"maybe-canary","review_summary":"The supplied packet was reviewed.",'
+            '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}',
+            "judgment_enum_invalid",
+        ),
         (_challenge_json(finding_kind="hunch-canary"), "judgment_enum_invalid"),
         (_challenge_json(requested_next_step="ask-canary"), "judgment_enum_invalid"),
         (_challenge_json(cited_refs=[_REF, _REF]), "judgment_refs_duplicate"),
         (_challenge_json(cited_refs=["item-canary"]), "judgment_refs_invalid"),
         (
-            '{"conclusion":"challenges_returned","reviewer_challenges":[]}',
+            '{"conclusion":"challenges_returned","review_summary":"The supplied packet was reviewed.",'
+            '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}',
             "judgment_conclusion_mismatch",
         ),
         (
             json.dumps(
                 {
                     "conclusion": "no_material_discrepancy",
+                    "review_summary": "The supplied packet was reviewed.",
+                    "verified": [],
                     "reviewer_challenges": json.loads(_challenge_json())["reviewer_challenges"],
+                    "prior_finding_verdicts": [],
                 }
             ),
             "judgment_conclusion_mismatch",
@@ -1990,6 +2100,7 @@ async def test_informational_notifications_and_plan_items_are_discarded_unread(
         {"method": "thread/name/updated", "params": {"threadId": thread, "threadName": "canary"}},
         {"method": "turn/moderationMetadata", "params": {"metadata": {"note": "canary"}}},
         {"method": "model/safetyBuffering/updated", "params": {"threadId": thread}},
+        {"method": "model/verification", "params": {"verifications": ["canary"]}},
         {"method": "deprecationNotice", "params": {"message": "canary"}},
         {"method": "configWarning", "params": {"message": "canary"}},
         {"method": "thread/queue/changed", "params": {"threadId": thread}},
@@ -2007,6 +2118,122 @@ async def test_informational_notifications_and_plan_items_are_discarded_unread(
 
     assert type(result) is SemanticResultSuccess
     assert "canary" not in repr(result)
+
+
+async def test_thread_settings_echo_before_the_turn_ack_is_discarded_unread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118: Codex 0.162.1 echoes the first ``turn/start``'s settings before the ack."""
+
+    thread = "019a0000-0000-7000-8000-000000000001"
+
+    class SettingsRuntime(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            if method == "turn/start":
+                # Real order: the notification is buffered while ``turn/start`` awaits its ack.
+                self.pending_notifications.append(
+                    {
+                        "method": "thread/settings/updated",
+                        "params": {
+                            "threadId": thread,
+                            "threadSettings": {"effort": "high", "cwd": "canary"},
+                        },
+                    }
+                )
+            return await super().request(request_id, method, params, timeout)
+
+    runtime = SettingsRuntime(_profile())
+    runtime.events[0:0] = [
+        {"method": "thread/status/changed", "params": {"threadId": thread}},
+        {"method": "turn/started", "params": {"threadId": thread}},
+    ]
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultSuccess
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.failure_stage is None
+    assert "canary" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    ("event", "operation", "reason"),
+    [
+        (
+            {"method": "thread/goal/updated", "params": {"goal": "canary"}},
+            "codex_app_server_event_forbidden",
+            "thread.goal.updated",
+        ),
+        (
+            {"method": "item/fileChange/patchUpdated", "params": {"patch": "canary"}},
+            "codex_app_server_event_forbidden",
+            "item.file_change.patch_updated",
+        ),
+        (
+            {"method": "canary text/with spaces", "params": {}},
+            "codex_app_server_event_forbidden",
+            "event_name_invalid",
+        ),
+        (
+            {"method": "item/commandExecution/requestApproval", "id": 7, "params": {}},
+            "codex_app_server_tool_request_forbidden",
+            "item.command_execution.request_approval",
+        ),
+        (
+            {"method": "item/completed", "params": {"item": {"type": "mcpToolCall"}}},
+            "codex_app_server_tool_event_forbidden",
+            "item.mcp_tool_call",
+        ),
+    ],
+)
+async def test_a_refused_event_records_its_validated_name_in_service_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], operation: str, reason: str
+) -> None:
+    recorded: list[dict[str, str]] = []
+
+    def record(**fields: str) -> str:
+        recorded.append(fields)
+        return "err_00000000-0000-4000-8000-000000000000"
+
+    monkeypatch.setattr(module, "record_bounded_event_without_raising", record)
+    runtime = _Runtime(_profile())
+    runtime.events.insert(0, event)
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultUnavailable
+    assert recorded == [{"component": "codex_app_server", "operation": operation, "reason": reason}]
+    assert "canary" not in repr(recorded)
+
+
+@pytest.mark.parametrize(
+    ("method", "item_type", "reason"),
+    [
+        ("thread/settings/updated", None, "thread.settings.updated"),
+        ("item/agentMessage/delta", None, "item.agent_message.delta"),
+        ("item/started", "dynamicToolCall", "item.dynamic_tool_call"),
+        ("turn/plan/updated", None, "turn.plan.updated"),
+        (None, None, "event_name_invalid"),
+        (7, None, "event_name_invalid"),
+        ("Thread/started", None, "event_name_invalid"),
+        ("thread//started", None, "event_name_invalid"),
+        ("thread/started\n", None, "event_name_invalid"),
+        ("a/b/c/d/e/f", None, "event_name_invalid"),
+        ("a" * 33, None, "event_name_invalid"),
+        ("/".join(["abcdefghijklmnop"] * 5), None, "event_name_invalid"),
+        ("item/completed", 3, "event_name_invalid"),
+        ("item/completed", "tool call", "event_name_invalid"),
+    ],
+)
+def test_runtime_event_names_become_closed_bounded_tokens(
+    method: object, item_type: object, reason: str
+) -> None:
+    token = module.runtime_event_diagnostic_reason(method, item_type)
+
+    assert token == reason
+    assert re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", token)
 
 
 async def test_model_reroute_ends_the_turn_as_refused_with_its_stage(
@@ -2036,15 +2263,18 @@ async def test_model_reroute_ends_the_turn_as_refused_with_its_stage(
     assert "other-canary" not in repr(result)
 
 
-async def test_delta_storm_is_bounded_by_the_event_limit_stage(
+@pytest.mark.parametrize("large", [False, True], ids=["work", "bytes"])
+async def test_delta_storm_is_bounded_by_bytes_and_work(
     monkeypatch: pytest.MonkeyPatch,
+    large: bool,
 ) -> None:
     runtime = _Runtime(_profile())
-    delta: dict[str, object] = {"method": "item/agentMessage/delta", "params": {"delta": "x"}}
-    runtime.events[0:0] = [
-        delta
-        for _ in range(module._MAX_EVENT_COUNT)  # pyright: ignore[reportPrivateUsage]
-    ]
+    monkeypatch.setattr(module, "_MAX_TURN_EVENT_WORK", 4096)
+    delta: dict[str, object] = {
+        "method": "item/agentMessage/delta",
+        "params": {"delta": "x" * (5000 if large else 1)},
+    }
+    runtime.events[0:0] = [delta] * (1 if large else 17)
 
     result = await _evaluate(monkeypatch, runtime)
 
@@ -2063,6 +2293,23 @@ async def test_large_streamed_judgment_fits_the_event_budget(
     result = await _evaluate(monkeypatch, runtime)
 
     assert type(result) is SemanticResultSuccess
+
+
+async def test_wire_bytes_bound_notifications_with_large_discarded_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class WireHeavyRuntime(_Runtime):
+        received_bytes = 0
+
+        async def read(self, timeout: float) -> dict[str, object]:
+            self.received_bytes += 8192  # same small decoded object, padded JSONL on the wire
+            return await super().read(timeout)
+
+    monkeypatch.setattr(module, "_MAX_TURN_EVENT_WORK", 4096)
+    result = await _evaluate(monkeypatch, WireHeavyRuntime(_profile()))
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.failure_stage == "event_limit"
 
 
 @pytest.mark.parametrize("buffered_count", [1, 4094, 4096])
@@ -2089,15 +2336,47 @@ async def test_buffered_notifications_drain_before_live_events_with_the_same_lim
 
     runtime = BufferedRuntime(_profile())
     result = await _evaluate(monkeypatch, runtime)
-    if buffered_count == 4096:
-        assert type(result) is SemanticResultUnavailable
-        assert result.provenance.runtime_evidence is not None
-        assert result.provenance.runtime_evidence.failure_stage == "event_limit"
-        assert runtime.reads == 0
-    else:
-        assert type(result) is SemanticResultSuccess
-        assert runtime.reads == 2
+    assert type(result) is SemanticResultSuccess
+    assert runtime.reads == 2
     assert not runtime.pending_notifications
+
+
+@pytest.mark.parametrize("family", ["usage", "rate_limits", "delta", "intermediate"])
+async def test_discarded_notifications_can_exceed_the_old_limit_with_content_free_counts(
+    monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    runtime = _Runtime(_profile())
+    notices: dict[str, dict[str, object]] = {
+        "usage": _token_usage_notice(),
+        "rate_limits": {"method": "account/rateLimits/updated", "params": {}},
+        "delta": {"method": "item/agentMessage/delta", "params": {"delta": "PRIVATE_DELTA_CANARY"}},
+        "intermediate": {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "PRIVATE_INTERIM_CANARY",
+                }
+            },
+        },
+    }
+    runtime.events[0:0] = [notices[family]] * 5000
+    records: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> str:
+        records.append(kwargs)
+        return "err_00000000-0000-4000-8000-000000000001"
+
+    monkeypatch.setattr(module, "record_bounded_counts_without_raising", record)
+    result = await _evaluate(monkeypatch, runtime)
+    assert type(result) is SemanticResultSuccess
+    (event,) = records
+    counts = cast(dict[str, int], event["counts"])
+    selected = "telemetry" if family in {"usage", "rate_limits"} else family
+    assert counts[f"codex_event_{selected}_count"] == 5000
+    assert counts[f"codex_event_{selected}_bytes"] > 0 and counts["duration_ms"] >= 0
+    assert "PRIVATE_" not in repr(records)
 
 
 async def test_tool_event_and_unconfirmed_cleanup_name_their_stages(
@@ -2139,7 +2418,7 @@ async def test_post_ack_read_timeout_names_the_deadline_stage(
 
 
 def test_every_adapter_stage_token_is_a_registered_closed_stage() -> None:
-    from yoetz.domain.findings import RUNTIME_FAILURE_STAGES
+    from finishup.domain.findings import RUNTIME_FAILURE_STAGES
 
     mapped = set(module._FAILURE_STAGE_BY_TOKEN.values())  # pyright: ignore[reportPrivateUsage]
     assert mapped <= RUNTIME_FAILURE_STAGES
@@ -2201,6 +2480,29 @@ def test_legacy_binding_keeps_its_single_effort_for_routine_checks() -> None:
     assert profile.required_reasoning_efforts == ("high",)
 
 
+def test_background_advice_uses_lower_default_effort_without_routine_config() -> None:
+    """Issue #888: background advice is cheaper even when no routine effort is configured.
+
+    Explicit checks (no background scope) keep the legacy single effort.
+    """
+
+    legacy = _phased_profile(routine=None)
+    assert legacy.review_budget("routine", background=True) == CodexReviewBudget(
+        "routine", "low", 4096
+    )
+    assert legacy.review_budget("routine") == CodexReviewBudget("routine", "high", 4096)
+    assert legacy.review_budget("final", background=True) == CodexReviewBudget(
+        "final", "high", 8192
+    )
+    # An owner routine effort always wins, and a configured effort already at or below the
+    # background default (or an unknown vendor effort) is never raised or rewritten.
+    configured = _phased_profile(routine="medium")
+    assert configured.review_budget("routine", background=True).reasoning_effort == "medium"
+    for effort in ("minimal", "low", "vendor-custom"):
+        profile = replace(_phased_profile(routine=None), reasoning_effort=effort)
+        assert profile.review_budget("routine", background=True).reasoning_effort == effort
+
+
 @pytest.mark.parametrize("limit", [0, 8193, True])
 def test_profile_rejects_unbounded_output_limits(limit: object) -> None:
     with pytest.raises(ValueError, match="codex_runtime_output_limit_invalid"):
@@ -2234,6 +2536,25 @@ async def test_routine_attempt_dispatches_and_records_the_routine_selection(
             "reasoning_effort": "medium",
         }
     )
+
+
+async def test_codex_thread_uses_the_one_shared_reviewer_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #906: the benchmark path sends the same instruction bytes as the API adapters."""
+
+    runtime = _Runtime(_profile())
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultSuccess
+    thread = cast(Mapping[str, object], runtime.params["thread/start"])
+    assert thread["baseInstructions"] == SEMANTIC_REVIEW_INSTRUCTION
+    assert "You are the requested review:" in SEMANTIC_REVIEW_INSTRUCTION
+    expected = "sha256:" + hashlib.sha256(SEMANTIC_REVIEW_INSTRUCTION.encode()).hexdigest()
+    assert result.provenance.prompt_digest == expected
+    evidence = result.provenance.runtime_evidence
+    assert evidence is not None and evidence.instruction_sha256 == expected
 
 
 async def test_final_attempt_uses_the_configured_high_effort_and_final_limit(
@@ -2363,7 +2684,7 @@ def test_factory_builds_the_evaluator_for_the_dispatch_budget_profile(
 async def _evaluate_recording_progress(
     monkeypatch: pytest.MonkeyPatch, runtime: _Runtime
 ) -> tuple[object, list[object]]:
-    from yoetz.observability.semantic_context import semantic_progress_sink
+    from finishup.observability.semantic_context import semantic_progress_sink
 
     recorded: list[object] = []
 
@@ -2383,7 +2704,7 @@ async def test_runtime_reports_only_closed_structural_phases_in_execution_order(
 ) -> None:
     """Issue #571 A2: tokens, reasoning, deltas, and account identity never reach progress."""
 
-    from yoetz.protocol.models import SemanticProgressPhase
+    from finishup.protocol.models import SemanticProgressPhase
 
     sentinel = "SENTINEL-REASONING-DELTA-91c2"
     runtime = _Runtime(_profile())
@@ -2411,7 +2732,7 @@ async def test_runtime_reports_only_closed_structural_phases_in_execution_order(
 async def test_runtime_failure_before_sampling_still_reports_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.protocol.models import SemanticProgressPhase
+    from finishup.protocol.models import SemanticProgressPhase
 
     runtime = _Runtime(_profile(), model_available=False)
 
@@ -2428,7 +2749,7 @@ async def test_runtime_failure_before_sampling_still_reports_cleanup(
 async def test_progress_sink_failure_never_changes_the_review_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.observability.semantic_context import semantic_progress_sink
+    from finishup.observability.semantic_context import semantic_progress_sink
 
     async def failing_sink(phase: object) -> None:
         del phase
@@ -2443,3 +2764,767 @@ async def test_progress_sink_failure_never_changes_the_review_outcome(
     assert type(result) is SemanticResultSuccess
     assert result.provenance.runtime_evidence is not None
     assert result.provenance.runtime_evidence.process_cleanup == "terminated"
+
+
+async def test_launch_binding_hash_runs_off_loop_and_failure_prevents_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    def changed_binding(_profile: CodexAppServerProfile) -> None:
+        threads.append(threading.get_ident())
+        raise ValueError("codex_runtime_executable_changed")
+
+    async def forbidden_spawn(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("changed executable must not launch")
+
+    monkeypatch.setattr(CodexAppServerProfile, "verify_local_binding", changed_binding)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    with pytest.raises(ValueError, match="codex_runtime_executable_changed"):
+        await module._launch(_profile())  # pyright: ignore[reportPrivateUsage]
+    assert len(threads) == 1 and threads[0] != loop_thread
+
+
+# -- capability admission (ADR-006 capability amendment) -----------------------------------------
+
+
+async def _probe(
+    monkeypatch: pytest.MonkeyPatch, runtime: _Runtime, *, cleanup_outcome: str = "terminated"
+) -> None:
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        assert profile is runtime.profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return cleanup_outcome
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+    await module.codex_capability_probe(runtime.profile)
+
+
+async def test_capability_probe_proves_isolation_without_any_turn_or_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _Runtime(_profile(), predisclosure_event=_REMOTE_CONTROL_NOTICE)
+
+    await _probe(monkeypatch, runtime)
+
+    # No turn is ever started, so nothing is sampled and no task content exists. The second
+    # account/read is the barrier that closes the pre-disclosure window.
+    assert runtime.methods == ["initialize", "account/read", "thread/start", "account/read"]
+    thread = cast(dict[str, object], runtime.params["thread/start"])
+    assert (thread["sandbox"], thread["ephemeral"], thread["approvalPolicy"]) == (
+        "read-only",
+        True,
+        "never",
+    )
+    assert runtime.pending_notifications == deque()
+
+
+@pytest.mark.parametrize(
+    ("event", "token"),
+    [
+        (
+            {"method": "thread/prediction/updated", "params": {}},
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {"method": "configWarning", "params": {"summary": "bubblewrap is unavailable"}},
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {
+                "method": "warning",
+                "params": {"message": "Code Mode is unavailable", "threadId": "t"},
+            },
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "environmentId": None,
+                    "installationId": "i",
+                    "serverName": "s",
+                    "status": "connected",
+                },
+            },
+            "codex_app_server_remote_control_not_disabled",
+        ),
+        (
+            {"id": 7, "method": "item/tool/call", "params": {}},
+            "codex_app_server_tool_request_forbidden",
+        ),
+    ],
+)
+async def test_capability_probe_fails_closed_on_any_unreviewed_predisclosure_event(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], token: str
+) -> None:
+    runtime = _Runtime(_profile(), predisclosure_event=event)
+
+    with pytest.raises(ValueError, match=token):
+        await _probe(monkeypatch, runtime)
+    assert "turn/start" not in runtime.methods
+
+
+async def test_capability_probe_refuses_a_runtime_reporting_another_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fake app-server reports 0.159.0; the bytes are being checked as 0.162.1.
+    runtime = _Runtime(profile_for(record_for(b"codex", b"host", version="0.162.1")))
+
+    with pytest.raises(ValueError, match="codex_runtime_version_mismatch"):
+        await _probe(monkeypatch, runtime)
+    assert runtime.methods == ["initialize"]
+
+
+async def test_capability_probe_refuses_an_unproven_isolated_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkedThread(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            result = await super().request(request_id, method, params, timeout)
+            if method == "thread/start":
+                result["sandbox"] = {"type": "readOnly", "networkAccess": True}
+            return result
+
+    runtime = NetworkedThread(_profile())
+
+    with pytest.raises(ValueError, match="codex_thread_isolation_unproven"):
+        await _probe(monkeypatch, runtime)
+
+
+async def test_capability_probe_with_unconfirmed_cleanup_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _probe(monkeypatch, _Runtime(_profile()), cleanup_outcome="failed")
+
+
+async def test_a_probe_failure_never_masks_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal raised while probing must not hide a process group that may still run."""
+
+    class NetworkedThread(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            result = await super().request(request_id, method, params, timeout)
+            if method == "thread/start":
+                result["sandbox"] = {"type": "readOnly", "networkAccess": True}
+            return result
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed") as raised:
+        await _probe(monkeypatch, NetworkedThread(_profile()), cleanup_outcome="failed")
+    # The original refusal is preserved as the cause rather than lost.
+    assert str(raised.value.__cause__) == "codex_thread_isolation_unproven"
+
+
+async def test_a_readiness_failure_never_masks_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Warning_(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            if method == "account/read":
+                raise ValueError("codex_app_server_predisclosure_event_forbidden")
+            return await super().request(request_id, method, params, timeout)
+
+    runtime = Warning_(_profile())
+
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return "failed"
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed") as raised:
+        await module.codex_account_status(runtime.profile)
+    assert str(raised.value.__cause__) == "codex_app_server_predisclosure_event_forbidden"
+
+
+@pytest.mark.parametrize(
+    "agent",
+    [
+        "finishup_semantic_evaluator/0.159.1 (Mac OS 26.6.2; arm64) unknown",
+        "finishup_semantic_evaluator/0.159.0-alpha.1 (Mac OS 26.6.2; arm64) unknown",
+        "something 0.159.0",
+        None,
+    ],
+)
+def test_initialize_must_name_exactly_the_checked_release(agent: object) -> None:
+    profile = _profile()
+
+    with pytest.raises(ValueError, match="codex_runtime_version_mismatch"):
+        module._validate_initialize(  # pyright: ignore[reportPrivateUsage]
+            profile, {"codexHome": str(profile.codex_home), "userAgent": agent}
+        )
+
+
+async def test_partial_answer_is_discarded_like_commentary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex 0.162.1 adds ``partial_answer``; only the ``final_answer`` is the judgment."""
+
+    runtime = _runtime_with_output(
+        _agent_message("partial-canary: still reviewing", phase="partial_answer"),
+        _agent_message(_NO_DISCREPANCY, phase="final_answer"),
+    )
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultSuccess
+    assert "partial-canary" not in repr(result)
+
+
+def test_new_plan_names_stay_bounded_bookkeeping() -> None:
+    """Codex 0.159.0 adds the ``promax`` plan; rate-limit plan names are discarded unread."""
+
+    notice = {"method": "account/rateLimits/updated", "params": {"rateLimits": {"planType": ""}}}
+    for plan in ("promax", "a_future_plan"):
+        cast(dict[str, dict[str, object]], notice["params"])["rateLimits"]["planType"] = plan
+        module._discard_rate_limits_notification(notice)  # pyright: ignore[reportPrivateUsage]
+    cast(dict[str, dict[str, object]], notice["params"])["rateLimits"]["planType"] = "Not A Plan!"
+    with pytest.raises(ValueError, match="codex_app_server_rate_limits_invalid"):
+        module._discard_rate_limits_notification(notice)  # pyright: ignore[reportPrivateUsage]
+    assert module._account(  # pyright: ignore[reportPrivateUsage]
+        {"account": {"type": "chatgpt", "planType": "promax"}}
+    ) == ("chatgpt", "promax")
+
+
+def test_flex_tier_unavailability_is_a_provider_outage() -> None:
+    failure = module._turn_failure(  # pyright: ignore[reportPrivateUsage]
+        {"codexErrorInfo": "flexUnavailable", "message": "private"}
+    )
+    assert failure.failure_class is SemanticFailureClass.PROVIDER_OUTAGE
+
+
+# -- buffered pre-disclosure events (round-2 finding 1 and 2) ------------------------------------
+
+
+class _StdinRecorder:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    def write(self, data: bytes) -> None:
+        self.messages.append(cast(dict[str, object], json.loads(data)))
+
+    async def drain(self) -> None:
+        return None
+
+
+class _StreamProcess:
+    def __init__(self, stdout: asyncio.StreamReader) -> None:
+        self.stdin = _StdinRecorder()
+        self.stdout = stdout
+
+
+_BUFFERED_FORBIDDEN_EVENTS: list[dict[str, object]] = [
+    {"method": "thread/prediction/updated", "params": {}},
+    {"method": "warning", "params": {"message": "private-canary", "threadId": "t"}},
+    {"id": 7, "method": "item/tool/call", "params": {}},
+]
+
+
+async def _responses(
+    profile: CodexAppServerProfile, *steps: tuple[int, str] | dict[str, object]
+) -> list[dict[str, object]]:
+    """Real JSONL replies (and raw events) in the order Codex writes them to stdout."""
+
+    fake = _Runtime(profile)
+    lines: list[dict[str, object]] = []
+    for step in steps:
+        if isinstance(step, dict):
+            lines.append(step)
+        else:
+            request_id, method = step
+            lines.append(
+                {"id": request_id, "result": await fake.request(request_id, method, None, 1.0)}
+            )
+    return lines
+
+
+def _stream_runtime(
+    profile: CodexAppServerProfile, lines: list[dict[str, object]]
+) -> tuple[module._CodexProcess, _StdinRecorder]:  # pyright: ignore[reportPrivateUsage]
+    """A real ``_CodexProcess`` whose stdout already holds every line Codex wrote."""
+
+    reader = asyncio.StreamReader()
+    for line in lines:
+        reader.feed_data(json.dumps(line).encode("utf-8") + b"\n")
+    reader.feed_eof()
+    process = _StreamProcess(reader)
+    stderr_done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    stderr_done.set_result(False)
+    runtime = module._CodexProcess(  # pyright: ignore[reportPrivateUsage]
+        profile=profile,
+        process=cast(asyncio.subprocess.Process, process),
+        workdir=Path("/private/empty-attempt"),
+        stderr_task=cast("asyncio.Task[bool]", stderr_done),
+        pending_notifications=deque(),
+    )
+    return runtime, process.stdin
+
+
+def _launch_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: module._CodexProcess,  # pyright: ignore[reportPrivateUsage]
+) -> None:
+    async def launch(profile: CodexAppServerProfile) -> object:
+        del profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return "terminated"
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_event_buffered_right_after_thread_start_blocks_case_disclosure(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    # Codex wrote the event immediately after the thread/start reply: it sits unread in the
+    # reader buffer when the reply returns, and must still be inspected before turn/start.
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        event,
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+    assert "private-canary" not in repr(result)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_capability_probe_inspects_events_buffered_after_thread_start(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (30, "thread/start"),
+        event,
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_"):
+        await module.codex_capability_probe(profile)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_readiness_probe_is_not_ready_when_codex_queues_a_forbidden_event(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    # A runtime that passed the signed-out scratch probe but warns during the authenticated
+    # model/list must not be reported ready (selection then falls back to an older runtime).
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (10, "model/list"),
+        event,
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_"):
+        await module.codex_account_status(profile)
+
+
+async def test_readiness_probe_stays_ready_with_only_reviewed_notices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        _REMOTE_CONTROL_NOTICE,
+        (1, "account/read"),
+        (10, "model/list"),
+        {"method": "account/updated", "params": {}},
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+
+    assert (status.runtime_ready, status.auth_mode, status.model_available) == (
+        True,
+        "chatgpt",
+        True,
+    )
+
+
+# -- the two admitted configWarnings: Codex's Linux sandbox without user namespaces or bwrap ----
+
+# Verbatim ``USER_NAMESPACE_WARNING`` from codex-rs/sandboxing/src/bwrap.rs at rust-v0.162.1, in
+# the exact ``ConfigWarningNotification`` envelope app-server writes (``details`` serialises as
+# null; ``path`` and ``range`` are skipped when absent; the envelope carries ``emittedAtMs``).
+_USER_NAMESPACE_WARNING = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
+)
+_SANDBOX_UNAVAILABLE_EVENT: dict[str, object] = {
+    "method": "configWarning",
+    "params": {"summary": _USER_NAMESPACE_WARNING, "details": None},
+    "emittedAtMs": 1791958274243,
+}
+# Verbatim ``MISSING_BWRAP_WARNING`` from the same file, also present byte for byte in the shipped
+# 0.162.1 linux-x64 ``codex`` binary (sha256 628e3548...). app-server writes it, in the same
+# envelope, when no system ``bwrap`` is on PATH (an official task container without the
+# distribution ``bubblewrap`` package).
+_MISSING_BWRAP_WARNING = (
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. "
+    "See the sandbox prerequisites: "
+    "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
+    "Codex will use the bundled bubblewrap in the meantime."
+)
+_BWRAP_MISSING_EVENT: dict[str, object] = {
+    "method": "configWarning",
+    "params": {"summary": _MISSING_BWRAP_WARNING, "details": None},
+    "emittedAtMs": 1791958274243,
+}
+# Each admitted warning with the reason FinishUP discloses for it.
+_ADMITTED_SANDBOX_WARNINGS: list[tuple[dict[str, object], str]] = [
+    (_SANDBOX_UNAVAILABLE_EVENT, "user_namespaces_unavailable"),
+    (_BWRAP_MISSING_EVENT, "bubblewrap_missing"),
+]
+# Look-alikes that are different warnings and must stay refused before disclosure.
+_NOT_THE_SANDBOX_WARNING: list[dict[str, object]] = [
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": "private-canary"},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING + " ", "details": None},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": None, "range": None},
+    },
+    {"method": "configWarning", "params": {"summary": _MISSING_BWRAP_WARNING}},
+    {"method": "warning", "params": {"message": _MISSING_BWRAP_WARNING, "threadId": "t"}},
+    {
+        "method": "configWarning",
+        "params": {
+            "summary": (
+                "Codex's Linux sandbox uses bubblewrap, which is not supported on WSL1 because "
+                "WSL1 cannot create the required user namespaces. Use WSL2 for sandboxed shell "
+                "commands."
+            ),
+            "details": None,
+        },
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": "private-canary"},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": None, "path": "/x"},
+    },
+    {"method": "configWarning", "params": {"summary": _USER_NAMESPACE_WARNING + " "}},
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": None},
+        "emittedAtMs": "now",
+    },
+    {"method": "warning", "params": {"message": _USER_NAMESPACE_WARNING, "threadId": "t"}},
+]
+
+
+def _reviewed_profile(version: str = "0.162.1") -> CodexAppServerProfile:
+    """A profile for a release whose source review covers the sandbox warning (or ``version``)."""
+
+    return profile_for(record_for(b"codex", b"host", version=version))
+
+
+async def _release_responses(
+    profile: CodexAppServerProfile, *steps: tuple[int, str] | dict[str, object]
+) -> list[dict[str, object]]:
+    """``_responses`` whose ``initialize`` reports the profile's own release, as Codex does."""
+
+    lines = await _responses(profile, *steps)
+    first = cast(dict[str, object], lines[0]["result"])
+    first["userAgent"] = (
+        f"finishup_semantic_evaluator/{profile.runtime_version} (Linux 6.8; x86_64) unknown"
+    )
+    return lines
+
+
+def test_the_sandbox_warning_is_reviewed_only_for_source_verified_releases() -> None:
+    assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1", "0.164.0"})
+
+
+@pytest.mark.parametrize("version", sorted(module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES))
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str, version: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    await module.codex_capability_probe(profile)
+
+    assert runtime.sandbox_unavailable is True
+    assert runtime.sandbox_unavailable_reason == reason
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+@pytest.mark.parametrize("event", _NOT_THE_SANDBOX_WARNING)
+async def test_capability_probe_still_refuses_every_other_config_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_predisclosure_event_forbidden"):
+        await module.codex_capability_probe(profile)
+    assert runtime.sandbox_unavailable is False
+    assert runtime.sandbox_unavailable_reason is None
+
+
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+
+    assert (status.runtime_ready, status.model_available, status.sandbox_unavailable) == (
+        True,
+        True,
+        True,
+    )
+    assert status.sandbox_unavailable_reason == reason
+
+
+async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile, (0, "initialize"), (1, "account/read"), (10, "model/list"), (32, "account/read")
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+    assert (status.sandbox_unavailable, status.sandbox_unavailable_reason) == (False, None)
+
+
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    # The stream ends after turn/start, so the attempt cannot complete; what matters is that
+    # the admitted warning did not stop disclosure before the turn.
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is True
+    assert any(message.get("method") == "turn/start" for message in stdin.messages)
+
+
+# A release outside the reviewed set: an older admitted one, and a synthetic newer one that keeps
+# the same warning and protocol but whose tool semantics nobody has reviewed.
+_UNREVIEWED_RELEASES = ["0.159.0", "0.163.0", "1.0.0"]
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_capability_probe_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_capability_probe(profile)
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_readiness_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_account_status(profile)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_an_attempt_on_an_unreviewed_release_never_discloses_after_the_warning(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert result.provenance.runtime_evidence.failure_stage == "predisclosure_event_forbidden"
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+async def _model_listed(
+    monkeypatch: pytest.MonkeyPatch, runtime: _Runtime, cleanup_outcome: str = "terminated"
+) -> bool:
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        assert profile is runtime.profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return cleanup_outcome
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+    return await module.codex_model_listed(runtime.profile)
+
+
+async def test_model_listed_reads_only_the_catalog_and_never_account_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _Runtime(_profile())
+
+    assert await _model_listed(monkeypatch, runtime) is True
+    assert runtime.methods == ["initialize", "model/list"]
+    assert runtime.sent == [{"method": "initialized"}]
+
+
+async def test_model_listed_is_false_for_an_unlisted_model_or_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert await _model_listed(monkeypatch, _Runtime(_profile(), model_available=False)) is False
+    unlisted_effort = _Runtime(_profile())
+    unlisted_effort.supported_efforts = ("medium",)
+    assert await _model_listed(monkeypatch, unlisted_effort) is False
+
+
+async def test_model_listed_refuses_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="^codex_subscription_readiness_unproven$"):
+        await _model_listed(monkeypatch, _Runtime(_profile()), cleanup_outcome="failed")

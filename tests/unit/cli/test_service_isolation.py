@@ -2,7 +2,7 @@
 
 The report must prove — with path-identity digests over canonical resolved paths, never raw
 paths — which identity roots this exact environment would use, so a parity preflight can reject
-shared, ambient, or unprovable Yoetz service/state identity before any launch. Path identity is
+shared, ambient, or unprovable FinishUP service/state identity before any launch. Path identity is
 not byte content: only the opt-in content lane binds the selected config's bytes, and it records
 SHA-256, size, existence, and observation time only.
 """
@@ -22,14 +22,20 @@ from typing import cast, get_args
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.isolation_status as module
-from yoetz.cli.isolation_status import isolation_report, observe_file_content
-from yoetz.config.installation import ReportedLifecycle
-from yoetz.config.paths import ISOLATED_ROOT_ENV, IsolationBinding, PathSafetyError
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.isolation_report import IsolationReportContract
-from yoetz.protocol.schemas import validate_schema_instance
+import finishup.cli.app as cli
+import finishup.cli.isolation_status as module
+from finishup.cli.isolation_status import isolation_report, observe_file_content
+from finishup.config.installation import ReportedLifecycle
+from finishup.config.models import ConfigError
+from finishup.config.paths import (
+    ISOLATED_ROOT_ENV,
+    LEGACY_ISOLATED_ROOT_ENV,
+    IsolationBinding,
+    PathSafetyError,
+)
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.isolation_report import IsolationReportContract
+from finishup.protocol.schemas import validate_schema_instance
 
 _PATH_KEYS = (
     "state_path_digest",
@@ -51,8 +57,8 @@ def private_root() -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _scrub_yoetz_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("YOETZ_")]:
+def _scrub_finishup_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in [name for name in os.environ if name.startswith(("FINISHUP_", "YOETZ_"))]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -71,9 +77,9 @@ def _observe(path: Path) -> dict[str, object]:
 def test_ambient_mode_reports_the_exact_platform_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     # A hermetic explicit config keeps the probe away from the live user config file.
-    monkeypatch.setenv("YOETZ_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(tmp_path / "missing.toml"))
 
     report = isolation_report()
 
@@ -88,7 +94,7 @@ def test_ambient_mode_reports_the_exact_platform_identity(
 def test_isolated_mode_reports_every_identity_beneath_the_exact_root(
     private_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     root = private_root / "iso"
     root.mkdir(mode=0o700)
     monkeypatch.setenv(ISOLATED_ROOT_ENV, str(root))
@@ -105,15 +111,60 @@ def test_isolated_mode_reports_every_identity_beneath_the_exact_root(
     assert str(root) not in repr(report)
 
 
+def test_the_legacy_root_and_config_spellings_select_the_same_identities(
+    private_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``YOETZ_ISOLATED_ROOT`` and ``YOETZ_CONFIG`` still select their targets (ADR-048)."""
+
+    _scrub_finishup_env(monkeypatch)
+    root = private_root / "iso"
+    root.mkdir(mode=0o700)
+    config = private_root / "legacy.toml"
+    monkeypatch.setenv(LEGACY_ISOLATED_ROOT_ENV, str(root))
+    monkeypatch.setenv("YOETZ_CONFIG", str(config))
+
+    report = isolation_report()
+
+    assert report["mode"] == "isolated"
+    assert report["binding"] == "environment"
+    assert report["path_identity"]["state_path_digest"] == _expected_digest(root / "state")
+    assert report["path_identity"]["config_path_digest"] == _expected_digest(config)
+
+
+def test_conflicting_config_spellings_are_unprovable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scrub_finishup_env(monkeypatch)
+    monkeypatch.setenv("FINISHUP_CONFIG", str(tmp_path / "new.toml"))
+    monkeypatch.setenv("YOETZ_CONFIG", str(tmp_path / "old.toml"))
+
+    with pytest.raises(ConfigError) as caught:
+        isolation_report()
+    assert caught.value.reason_code == "config_env_conflict"
+
+
+def test_conflicting_root_spellings_are_unprovable(
+    private_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scrub_finishup_env(monkeypatch)
+    for name, leaf in ((ISOLATED_ROOT_ENV, "new"), (LEGACY_ISOLATED_ROOT_ENV, "old")):
+        (private_root / leaf).mkdir(mode=0o700)
+        monkeypatch.setenv(name, str(private_root / leaf))
+
+    with pytest.raises(PathSafetyError) as caught:
+        isolation_report()
+    assert caught.value.reason_code == "isolation_root_env_conflict"
+
+
 def test_two_target_reports_expose_shared_relocated_storage(
     private_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The exact normal target, not platform defaults, supplies the comparison identity."""
 
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     relocated = private_root / "relocated-data"
     relocated.mkdir(mode=0o700)
-    monkeypatch.setenv("YOETZ_STORAGE_DATA_DIR", str(relocated))
+    monkeypatch.setenv("FINISHUP_STORAGE_DATA_DIR", str(relocated))
 
     normal = isolation_report()
 
@@ -131,7 +182,7 @@ def test_two_target_reports_expose_shared_relocated_storage(
 
 
 def test_unusable_root_is_unprovable_never_ambient(monkeypatch: pytest.MonkeyPatch) -> None:
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     monkeypatch.setenv(ISOLATED_ROOT_ENV, "relative/never-valid")
 
     with pytest.raises(PathSafetyError) as caught:
@@ -144,10 +195,10 @@ def test_path_stable_config_edit_changes_content_not_path_identity(
 ) -> None:
     """The #567 confusion: an in-place edit is invisible to ``config_path_digest``."""
 
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     config = tmp_path / "config.toml"
     config.write_bytes(_SECRET)
-    monkeypatch.setenv("YOETZ_CONFIG", str(config))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(config))
 
     before = isolation_report(content=True, now=lambda: _NOW)
     config.write_bytes(_SECRET + b"# edited\n")
@@ -335,10 +386,10 @@ def test_unreadable_file_reports_unreadable(tmp_path: Path) -> None:
 def test_cli_content_lane_is_opt_in_and_digest_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _scrub_yoetz_env(monkeypatch)
+    _scrub_finishup_env(monkeypatch)
     config = tmp_path / "config.toml"
     config.write_bytes(_SECRET)
-    monkeypatch.setenv("YOETZ_CONFIG", str(config))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(config))
     runner = CliRunner()
 
     plain = runner.invoke(cli.app, ["service", "isolation", "--json"])

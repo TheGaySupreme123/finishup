@@ -14,7 +14,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from yoetz.protocol.schemas import (
+from finishup.protocol.schemas import (
     SchemaInstanceInvalid,
     _best_schema_instance_error,  # pyright: ignore[reportPrivateUsage]
     _project_selected_one_of_required_locations,  # pyright: ignore[reportPrivateUsage]

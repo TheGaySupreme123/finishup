@@ -19,8 +19,12 @@ from typing import Any
 
 
 def _invoke(root: str, host: str, lane: int) -> dict[str, Any]:
-    from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-    from yoetz.domain.observation_profiles import (
+    from finishup.cli.observe_hooks import (
+        handle_claude_observe,
+        handle_cursor_observe,
+        handle_observe,
+    )
+    from finishup.domain.observation_profiles import (
         CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
         CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
     )
@@ -69,18 +73,18 @@ def _invoke(root: str, host: str, lane: int) -> dict[str, Any]:
 def _worker(root: str, host: str, lane: int, barrier: Any, results: Any) -> None:
     # Import before the barrier; the reported boundary excludes interpreter
     # startup and explicitly measures concurrent adapter/store execution.
-    import yoetz.cli.observe_hooks  # noqa: F401
+    import finishup.cli.observe_hooks  # noqa: F401
 
     barrier.wait(timeout=30)
     results.put(_invoke(root, host, lane))
 
 
 def _seed(root: Path, retained: bool, pending_rows: int = 60) -> tuple[Any, str]:
-    from yoetz.adapters.integrations.observation_local import (
+    from finishup.adapters.integrations.observation_local import (
         LocalObservationStore,
         ObservationOutboxRow,
     )
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
 
     store = LocalObservationStore(_state=root / "state")
     workspace = store.workspace_commitment(str(root / "workspace"))
@@ -88,8 +92,8 @@ def _seed(root: Path, retained: bool, pending_rows: int = 60) -> tuple[Any, str]
     session = store.bind_codex_session(workspace, "seed")
     if retained and pending_rows > 60:
         # A larger accepted queue needs a capacity that admits it (#689 probe shapes).
-        from yoetz.domain.observation_budget import LARGEST_CAPACITY
-        from yoetz.domain.observation_settings import (
+        from finishup.domain.observation_budget import LARGEST_CAPACITY
+        from finishup.domain.observation_settings import (
             ObservationDetailProfile,
             ObservationSelection,
         )
@@ -142,8 +146,8 @@ def _drain_concurrently(store: Any, stop: Any, delivered: set[str], stats: dict[
 
     import asyncio
 
-    from yoetz.application.observation_drain import ObservationOutboxSweeper
-    from yoetz.domain.observation import ObservationIngestDisposition, ObservationIngestResult
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.domain.observation import ObservationIngestDisposition, ObservationIngestResult
 
     class _Acknowledging:
         async def ingest_request(self, request: Any) -> ObservationIngestResult:
@@ -204,7 +208,7 @@ def run(
         before_bytes = store._workspace_path(workspace).stat().st_size
         import threading
 
-        from yoetz.adapters.integrations import observation_local
+        from finishup.adapters.integrations import observation_local
 
         lock_events: list[Any] = []
         if hasattr(observation_local, "set_observation_store_lock_reporter"):
@@ -252,8 +256,8 @@ def run(
             if drainer is not None and drainer.is_alive():
                 # One more pass may run to its 30-second deadline after the grace ends.
                 drainer.join(timeout=_DRAIN_GRACE_SECONDS + 60.0)
-        from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-        from yoetz.protocol.canonical import canonical_encode
+        from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+        from finishup.protocol.canonical import canonical_encode
 
         after = store.selection_accounting(workspace)
         lanes = {row.codex_session_id for row in store.list_pending_outbox_rows(workspace)}

@@ -1,8 +1,8 @@
-"""The plugin tree committed at ``.agents/plugins/yoetz/`` must equal a real install.
+"""The plugin tree committed at ``.agents/plugins/finishup/`` must equal a real install.
 
 That tree is a generated artifact: the output of ``install_plugin`` at
 ``IntegrationScope.TRUSTED_PROJECT``, committed so a contributor who clones this repository and
-runs Codex in it gets the yoetz skill, MCP server, and hooks for working on *this* repository. It
+runs Codex in it gets the finishup skill, MCP server, and hooks for working on *this* repository. It
 is deliberately absent from the sdist and the wheel -- package users install their own copy.
 
 Because nothing regenerated it, it drifted. The consent-security change that landed in
@@ -24,19 +24,19 @@ from typing import Final, cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_plugin import (
+from finishup.adapters.integrations.codex_plugin import (
     PLUGIN_ROOT,
     install_plugin,
     render_plugin_tree,
 )
-from yoetz.ports.integrations import IntegrationScope, IntegrationTarget
-from yoetz.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
+from finishup.ports.integrations import IntegrationScope, IntegrationTarget
+from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _COMMITTED_TREE: Final = _REPO_ROOT / PLUGIN_ROOT
 _MARKER_NAME: Final = ".yoetz-plugin-install.json"
 _GUIDANCE_DIR: Final = _REPO_ROOT / "guidance"
-_REFERENCES_PREFIX: Final = "skills/yoetz/references/"
+_REFERENCES_PREFIX: Final = "skills/finishup/references/"
 
 
 def _rendered() -> dict[str, bytes]:

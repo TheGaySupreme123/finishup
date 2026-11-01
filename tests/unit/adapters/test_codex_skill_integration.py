@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
-from yoetz.adapters.integrations.codex_skill import (
+from finishup.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
+from finishup.adapters.integrations.codex_skill import (
     CODEX_HARNESS_PROFILE,
     CodexSkillIntegration,
     build_managed_marker,
     inspect_destination,
     load_packaged_skill_source,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.integrations import (
+from finishup.domain.values import request_id
+from finishup.ports.integrations import (
     HarnessId,
     HarnessProfile,
     IntegrationAction,
@@ -29,8 +29,8 @@ from yoetz.ports.integrations import (
     SkillPreviewCommand,
     SkillStatusCommand,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
 
 
 @pytest.fixture
@@ -55,8 +55,8 @@ def _digest(data: bytes) -> str:
 
 def _resources() -> _Resources:
     skill = (
-        b"---\nname: yoetz\ndescription: Durable evidence guidance.\n"
-        b"metadata:\n  short-description: Yoetz guidance\n---\n\n# Yoetz\n"
+        b"---\nname: finishup\ndescription: Durable evidence guidance.\n"
+        b"metadata:\n  short-description: FinishUP guidance\n---\n\n# FinishUP\n"
     )
     skill_manifest_body: dict[str, JsonValue] = {
         **dict(skill_manifest_capability_fields()),
@@ -65,26 +65,42 @@ def _resources() -> _Resources:
         "managed_members": [],
         "protocol_version": "0.1",
         "schema": "yoetz.codex-skill-manifest/1",
-        "skill": "yoetz",
+        "skill": "finishup",
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     files = {
-        "skills/codex/yoetz/SKILL.md": skill,
-        "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
+        "skills/codex/finishup/SKILL.md": skill,
+        "skills/codex/finishup/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
         "guidance/agent-instructions.md": b"# Agent instructions\n",
         "guidance/coverage-and-receipts.md": b"# Coverage and receipts\n",
         "guidance/publication-policy.md": b"# Publication policy\n",
         "guidance/request-templates.md": b"# Request templates\n",
         "guidance/workflow.md": b"# Workflow\n",
+        "guidance/startup.md": b"# Startup\n",
+        "guidance/recovery.md": b"# Recovery\n",
+        "guidance/publication.md": b"# Publication\n",
+        "guidance/review.md": b"# Review\n",
+        "guidance/receipt.md": b"# Receipt\n",
+        "guidance/delegation.md": b"# Delegation\n",
+        "guidance/consent.md": b"# Consent\n",
+        "guidance/page-delivery.md": b"# Page delivery\n",
     }
     installed_paths = {
-        "SKILL.md": "skills/codex/yoetz/SKILL.md",
+        "SKILL.md": "skills/codex/finishup/SKILL.md",
         "references/agent-instructions.md": "guidance/agent-instructions.md",
         "references/coverage-and-receipts.md": "guidance/coverage-and-receipts.md",
         "references/publication-policy.md": "guidance/publication-policy.md",
         "references/request-templates.md": "guidance/request-templates.md",
         "references/workflow.md": "guidance/workflow.md",
+        "references/startup.md": "guidance/startup.md",
+        "references/recovery.md": "guidance/recovery.md",
+        "references/publication.md": "guidance/publication.md",
+        "references/review.md": "guidance/review.md",
+        "references/receipt.md": "guidance/receipt.md",
+        "references/delegation.md": "guidance/delegation.md",
+        "references/consent.md": "guidance/consent.md",
+        "references/page-delivery.md": "guidance/page-delivery.md",
     }
     managed_members: list[JsonValue] = []
     for logical_name, package_path in installed_paths.items():
@@ -111,7 +127,7 @@ def _resources() -> _Resources:
     skill_manifest_body["managed_members"] = managed_members
     skill_manifest_body.pop("member_digest")
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
-    files["skills/codex/yoetz/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
+    files["skills/codex/finishup/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
     entries: list[JsonValue] = []
     for package_path, data in sorted(files.items(), key=lambda item: item[0].encode("ascii")):
         entries.append(
@@ -129,7 +145,7 @@ def _resources() -> _Resources:
         )
     manifest_body: dict[str, JsonValue] = {
         "entries": entries,
-        "package": "yoetz",
+        "package": "finishup",
         "resource_set_version": "0.1.0",
         "schema": "yoetz.resource-manifest/1",
     }
@@ -140,14 +156,14 @@ def _resources() -> _Resources:
 
 def test_profile_does_not_promote_rollout_parser_evidence_to_skill_support() -> None:
     assert CODEX_HARNESS_PROFILE.harness_id is HarnessId.CODEX
-    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/yoetz/"
+    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/finishup/"
     assert CODEX_HARNESS_PROFILE.capability_profile_ids == ()
     assert CODEX_HARNESS_PROFILE.supported_versions == ()
     assert dict(CODEX_HARNESS_PROFILE.hooks_by_capability_profile) == {}
     with pytest.raises(ProtocolValueError):
         HarnessProfile(
             HarnessId.CODEX,
-            ".agents/skills/yoetz/",
+            ".agents/skills/finishup/",
             "codex_skill_frontmatter_v1",
             (),
             ("0.139.0",),
@@ -163,9 +179,17 @@ def test_injected_source_is_manifest_verified_and_marker_is_path_free() -> None:
         "SKILL.md",
         "manifest.json",
         "references/agent-instructions.md",
+        "references/consent.md",
         "references/coverage-and-receipts.md",
+        "references/delegation.md",
+        "references/page-delivery.md",
         "references/publication-policy.md",
+        "references/publication.md",
+        "references/receipt.md",
+        "references/recovery.md",
         "references/request-templates.md",
+        "references/review.md",
+        "references/startup.md",
         "references/workflow.md",
     )
     marker = build_managed_marker(source, IntegrationScope.TRUSTED_PROJECT)
@@ -236,7 +260,7 @@ async def test_explicit_allow_untested_installs_discoverable_project_skill(
     status = await adapter.status_skill(HarnessId.CODEX, SkillStatusCommand(target))
     assert status.state is IntegrationState.INSTALLED_EXACT
     assert status.compatibility == "unsupported"
-    assert (tmp_path / ".agents/skills/yoetz/SKILL.md").is_file()
+    assert (tmp_path / ".agents/skills/finishup/SKILL.md").is_file()
 
 
 @pytest.mark.anyio
@@ -260,7 +284,7 @@ async def test_symlinked_agents_and_skills_parents_are_target_unsafe(tmp_path: P
     with pytest.raises(IntegrationError) as caught_skills:
         await adapter.status_skill(HarnessId.CODEX, SkillStatusCommand(target))
     assert caught_skills.value.reason is IntegrationReason.TARGET_UNSAFE
-    assert not (outside / "yoetz").exists()
+    assert not (outside / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -294,8 +318,8 @@ async def test_parent_replaced_between_preview_and_apply_fails_closed(tmp_path: 
             ),
         )
     assert caught.value.reason is IntegrationReason.PREVIEW_STALE
-    assert not (skills / "yoetz").exists()
-    assert not (replaced / "yoetz").exists()
+    assert not (skills / "finishup").exists()
+    assert not (replaced / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -304,7 +328,7 @@ async def test_parent_swap_after_path_identity_check_is_caught_by_retained_fd(
 ) -> None:
     """#396: the descriptor itself, not a prior pathname check, binds the preview."""
 
-    import yoetz.adapters.integrations.codex_skill as module
+    import finishup.adapters.integrations.codex_skill as module
 
     tmp_path.chmod(0o700)
     skills = tmp_path / ".agents" / "skills"
@@ -343,8 +367,8 @@ async def test_parent_swap_after_path_identity_check_is_caught_by_retained_fd(
             ),
         )
     assert caught.value.reason is IntegrationReason.PREVIEW_STALE
-    assert not (skills / "yoetz").exists()
-    assert not (replaced / "yoetz").exists()
+    assert not (skills / "finishup").exists()
+    assert not (replaced / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -368,7 +392,7 @@ async def test_install_and_remove_stay_atomic_on_owner_directories(tmp_path: Pat
             False,
         ),
     )
-    destination = tmp_path / ".agents/skills/yoetz"
+    destination = tmp_path / ".agents/skills/finishup"
     assert destination.is_dir()
     assert not destination.is_symlink()
 
@@ -395,5 +419,246 @@ def test_package_import_has_no_filesystem_side_effect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    __import__("yoetz.adapters.integrations")
+    __import__("finishup.adapters.integrations")
     assert list(tmp_path.iterdir()) == []
+
+
+async def _apply(
+    adapter: CodexSkillIntegration,
+    target: IntegrationTarget,
+    action: IntegrationAction,
+    suffix: str,
+) -> None:
+    request = request_id(f"req_00000000-0000-4000-8000-0000000001{suffix}")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, action, False)
+    )
+    command = SkillApplyCommand(request, target, action, preview.preview_digest, True, False)
+    if action is IntegrationAction.REMOVE:
+        await adapter.remove_skill(HarnessId.CODEX, command)
+    else:
+        await adapter.install_skill(HarnessId.CODEX, command)
+
+
+async def _legacy_skill_tree(
+    adapter: CodexSkillIntegration, tmp_path: Path, target: IntegrationTarget
+) -> Path:
+    """A Yoetz-era tree: the same marker name and schema under the legacy directory name."""
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "90")
+    skills = tmp_path / ".agents/skills"
+    (skills / "finishup").rename(skills / "yoetz")
+    return skills / "yoetz"
+
+
+@pytest.mark.anyio
+async def test_install_migrates_an_owned_legacy_skill_tree(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    request = request_id("req_00000000-0000-4000-8000-000000000191")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.INSTALL, False)
+    )
+    assert preview.state_before is IntegrationState.ABSENT
+    assert "legacy_skill_tree_owned" in preview.warnings
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "92")
+
+    assert not legacy.exists()
+    assert (tmp_path / ".agents/skills/finishup/SKILL.md").is_file()
+    after = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert after.state is IntegrationState.INSTALLED_EXACT
+    assert after.legacy_tree == "absent"
+
+
+@pytest.mark.anyio
+async def test_install_beside_an_exact_tree_still_removes_the_legacy_one(tmp_path: Path) -> None:
+    import shutil
+
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    shutil.copytree(legacy, legacy.with_name("finishup"))
+    before = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert before.state is IntegrationState.INSTALLED_EXACT
+    assert before.legacy_tree == "owned"
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "93")
+
+    assert not legacy.exists()
+    after = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert after.state is IntegrationState.INSTALLED_EXACT
+    assert after.legacy_tree == "absent"
+
+
+@pytest.mark.anyio
+async def test_a_modified_legacy_skill_tree_is_never_removed(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    (legacy / "SKILL.md").write_bytes(b"# owner edit\n")
+    request = request_id("req_00000000-0000-4000-8000-000000000197")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.INSTALL, False)
+    )
+    assert "legacy_skill_tree_retained" in preview.warnings
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "98")
+    await _apply(adapter, target, IntegrationAction.REMOVE, "99")
+
+    assert (legacy / "SKILL.md").read_bytes() == b"# owner edit\n"
+
+
+@pytest.mark.anyio
+async def test_remove_takes_a_legacy_only_skill_tree(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    await _apply(adapter, target, IntegrationAction.REMOVE, "80")
+    assert not legacy.exists()
+    assert not any((tmp_path / ".agents/skills").iterdir())
+
+
+@pytest.mark.anyio
+async def test_a_legacy_tree_changed_after_preview_is_stale(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    request = request_id("req_00000000-0000-4000-8000-000000000181")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.REMOVE, False)
+    )
+    (legacy / "SKILL.md").write_bytes(b"# changed after preview\n")
+    with pytest.raises(IntegrationError) as caught:
+        await adapter.remove_skill(
+            HarnessId.CODEX,
+            SkillApplyCommand(
+                request, target, IntegrationAction.REMOVE, preview.preview_digest, True, False
+            ),
+        )
+    assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert legacy.is_dir()
+
+
+async def _prior_skill(adapter: CodexSkillIntegration, target: IntegrationTarget) -> Path:
+    """Model an earlier install whose recorded inventory differs from this release."""
+    import json
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "70")
+    destination = Path(target.project_root) / ".agents/skills/finishup"
+    (destination / "references/workflow.md").write_bytes(b"# Earlier shipped workflow\n")
+    (destination / "references/obsolete.md").write_bytes(b"# Earlier reference\n")
+    # Earlier releases need not have every member the new release introduces.
+    (destination / "references/startup.md").unlink()
+    marker_path = destination / ".yoetz-install.json"
+    marker = json.loads(marker_path.read_bytes())
+    marker["managed_files"] = [
+        {
+            "relative_path": path.relative_to(destination).as_posix(),
+            "sha256": _digest(path.read_bytes()),
+            "size": path.stat().st_size,
+        }
+        for path in sorted(destination.rglob("*"))
+        if path.is_file() and path != marker_path
+    ]
+    marker.pop("marker_digest")
+    marker["marker_digest"] = canonical_digest(marker)
+    marker_path.write_bytes(canonical_encode(marker) + b"\n")
+    return destination
+
+
+@pytest.mark.anyio
+async def test_pristine_prior_skill_upgrades_and_disconnects(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX,
+        SkillPreviewCommand(
+            request_id("req_00000000-0000-4000-8000-000000000171"),
+            target,
+            IntegrationAction.INSTALL,
+            False,
+        ),
+    )
+    assert preview.state_before is IntegrationState.MODIFIED
+    assert "owned_skill_update" in preview.warnings
+    assert any(
+        row["relative_path"] == "references/obsolete.md" and row["action"] == "remove"
+        for row in preview.file_changes
+    )
+    await _apply(adapter, target, IntegrationAction.INSTALL, "72")
+    assert not (destination / "references/obsolete.md").exists()
+    assert (destination / "references/startup.md").exists()
+    before = {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    await _apply(adapter, target, IntegrationAction.INSTALL, "73")
+    assert before == {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    await _apply(adapter, target, IntegrationAction.REMOVE, "74")
+    assert not destination.exists()
+
+
+@pytest.mark.anyio
+async def test_pristine_prior_skill_can_disconnect_without_upgrading(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    await _apply(adapter, target, IntegrationAction.REMOVE, "75")
+    assert not destination.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("damage", ["edit", "extra", "missing", "marker"])
+async def test_prior_skill_user_changes_are_preserved(tmp_path: Path, damage: str) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    if damage == "edit":
+        (destination / "references/workflow.md").write_bytes(b"My workflow\n")
+    elif damage == "extra":
+        (destination / "personal.md").write_bytes(b"My notes\n")
+    elif damage == "missing":
+        (destination / "SKILL.md").unlink()
+    else:
+        (destination / ".yoetz-install.json").write_bytes(b"{}\n")
+    before = {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+    with pytest.raises(IntegrationError) as caught:
+        await _apply(adapter, target, IntegrationAction.INSTALL, "76")
+    assert caught.value.reason in {
+        IntegrationReason.MODIFIED_COPY,
+        IntegrationReason.PARTIAL_INSTALL,
+    }
+    assert before == {
+        p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()
+    }
+
+
+@pytest.mark.anyio
+async def test_upgrade_preview_binds_obsolete_members_and_marker(tmp_path: Path) -> None:
+    adapter = CodexSkillIntegration(resource_source=_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    destination = await _prior_skill(adapter, target)
+    operation = request_id("req_00000000-0000-4000-8000-000000000177")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(operation, target, IntegrationAction.INSTALL, False)
+    )
+    (destination / "references/obsolete.md").write_bytes(b"My changed old reference\n")
+    with pytest.raises(IntegrationError) as caught:
+        await adapter.install_skill(
+            HarnessId.CODEX,
+            SkillApplyCommand(
+                operation, target, IntegrationAction.INSTALL, preview.preview_digest, True, False
+            ),
+        )
+    assert caught.value.reason is IntegrationReason.PREVIEW_STALE

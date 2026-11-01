@@ -8,18 +8,18 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.config.load import validate_config_mapping
-from yoetz.config.models import (
+from finishup.config.load import validate_config_mapping
+from finishup.config.models import (
     ConfigError,
     ExternalRuntimeProfileConfig,
+    FinishUpConfig,
     LocalModelProfileConfig,
     ProviderProfileConfig,
     SemanticFallbackConfig,
-    YoetzConfig,
     fallback_external_endpoint,
     primary_external_endpoint,
 )
-from yoetz.config.write import (
+from finishup.config.write import (
     cleared_external_runtime_config,
     codex_subscription_runtime,
     external_runtime_binding_config,
@@ -51,7 +51,7 @@ def _runtime() -> ExternalRuntimeProfileConfig:
         isolated_config_sha256=_DIGEST,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/Yoetz Tools/codex-home",
+        codex_home="/opt/FinishUP Tools/codex-home",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
@@ -70,8 +70,8 @@ def _local_model() -> LocalModelProfileConfig:
     )
 
 
-def _paired(primary: Literal["api_provider", "codex_subscription"]) -> YoetzConfig:
-    return YoetzConfig(
+def _paired(primary: Literal["api_provider", "codex_subscription"]) -> FinishUpConfig:
+    return FinishUpConfig(
         profile="codex-subscription" if primary == "codex_subscription" else "local-openai",
         provider=_provider(),
         external_runtime=_runtime(),
@@ -133,7 +133,7 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
     selector = SemanticFallbackConfig(primary="api_provider")
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="local-openai", provider=_provider(), semantic_fallback=selector
             )
         )
@@ -141,7 +141,7 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
     )
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="codex-subscription",
                 external_runtime=_runtime(),
                 semantic_fallback=SemanticFallbackConfig(primary="codex_subscription"),
@@ -150,12 +150,12 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
         == "semantic_fallback_endpoint_missing"
     )
     assert (
-        _reason(lambda: YoetzConfig(profile="local-openai", semantic_fallback=selector))
+        _reason(lambda: FinishUpConfig(profile="local-openai", semantic_fallback=selector))
         == "semantic_fallback_endpoint_missing"
     )
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="local-openai",
                 provider=_provider(),
                 external_runtime=_runtime(),
@@ -168,7 +168,7 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
     # The profile must name the primary: swapping either side is a mismatch, not a coercion.
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="codex-subscription",
                 provider=_provider(),
                 external_runtime=_runtime(),
@@ -179,7 +179,7 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
     )
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="local-openai",
                 provider=_provider(),
                 external_runtime=_runtime(),
@@ -191,7 +191,7 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
     for profile in ("strict-local", "test-fake"):
         assert (
             _reason(
-                lambda: YoetzConfig(
+                lambda: FinishUpConfig(
                     profile=cast(Literal["strict-local"], profile),
                     provider=_provider(),
                     external_runtime=_runtime(),
@@ -203,26 +203,26 @@ def test_a_pairing_fails_closed_on_every_incomplete_or_mismatched_shape() -> Non
 
 
 def test_without_a_pairing_the_single_bound_table_is_the_primary() -> None:
-    api_only = YoetzConfig(profile="local-openai", provider=_provider())
-    codex_only = YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+    api_only = FinishUpConfig(profile="local-openai", provider=_provider())
+    codex_only = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     assert primary_external_endpoint(api_only) == _provider()
     assert primary_external_endpoint(codex_only) == _runtime()
-    assert primary_external_endpoint(YoetzConfig()) is None
+    assert primary_external_endpoint(FinishUpConfig()) is None
     assert fallback_external_endpoint(api_only) is None
     assert fallback_external_endpoint(codex_only) is None
     # Both tables without a selector is still the pre-#582 exclusivity error.
     assert (
         _reason(
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="codex-subscription", provider=_provider(), external_runtime=_runtime()
             )
         )
         == "external_runtime_forbids_provider"
     )
     with pytest.raises(TypeError, match="config_wrong_type"):
-        primary_external_endpoint(cast(YoetzConfig, object()))
+        primary_external_endpoint(cast(FinishUpConfig, object()))
     with pytest.raises(TypeError, match="config_wrong_type"):
-        fallback_external_endpoint(cast(YoetzConfig, object()))
+        fallback_external_endpoint(cast(FinishUpConfig, object()))
 
 
 @pytest.mark.parametrize("primary", ("api_provider", "codex_subscription"))
@@ -240,19 +240,21 @@ def test_rendered_toml_carries_the_selector_and_round_trips_through_the_loader(
     assert render_config_toml(loaded) == text
     # A single-endpoint config still renders without the table.
     assert "[semantic_fallback]" not in render_config_toml(
-        YoetzConfig(profile="local-openai", provider=_provider())
+        FinishUpConfig(profile="local-openai", provider=_provider())
     )
 
 
 def test_binding_an_api_provider_as_fallback_needs_the_bound_subscription() -> None:
     assert (
-        _reason(lambda: provider_binding_config(_provider(), base=YoetzConfig(), as_fallback=True))
+        _reason(
+            lambda: provider_binding_config(_provider(), base=FinishUpConfig(), as_fallback=True)
+        )
         == "semantic_fallback_endpoint_missing"
     )
     with pytest.raises(TypeError, match="config_write_wrong_type"):
         provider_binding_config(cast(ProviderProfileConfig, _runtime()))
 
-    base = YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+    base = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     paired = provider_binding_config(_provider(), base=base, as_fallback=True)
     assert paired == _paired("codex_subscription")
 
@@ -275,13 +277,13 @@ def test_binding_a_subscription_as_fallback_needs_the_bound_api_provider() -> No
     assert (
         _reason(
             lambda: external_runtime_binding_config(
-                _runtime(), base=YoetzConfig(), as_fallback=True
+                _runtime(), base=FinishUpConfig(), as_fallback=True
             )
         )
         == "semantic_fallback_endpoint_missing"
     )
 
-    base = YoetzConfig(profile="local-openai", provider=_provider())
+    base = FinishUpConfig(profile="local-openai", provider=_provider())
     paired = external_runtime_binding_config(_runtime(), base=base, as_fallback=True)
     assert paired == _paired("api_provider")
 
@@ -299,27 +301,27 @@ def test_clearing_the_subscription_inside_a_pairing_keeps_the_api_provider_alone
     primary: Literal["api_provider", "codex_subscription"],
 ) -> None:
     cleared = cleared_external_runtime_config(_paired(primary))
-    assert cleared == YoetzConfig(profile="local-openai", provider=_provider())
+    assert cleared == FinishUpConfig(profile="local-openai", provider=_provider())
     assert cleared_external_runtime_config(cleared) == cleared
 
 
 def test_removing_the_fallback_is_the_exact_reverse_of_declaring_it() -> None:
-    assert semantic_fallback_removed_config(_paired("api_provider")) == YoetzConfig(
+    assert semantic_fallback_removed_config(_paired("api_provider")) == FinishUpConfig(
         profile="local-openai", provider=_provider()
     )
-    assert semantic_fallback_removed_config(_paired("codex_subscription")) == YoetzConfig(
+    assert semantic_fallback_removed_config(_paired("codex_subscription")) == FinishUpConfig(
         profile="codex-subscription", external_runtime=_runtime()
     )
     assert (
         _reason(
             lambda: semantic_fallback_removed_config(
-                YoetzConfig(profile="local-openai", provider=_provider())
+                FinishUpConfig(profile="local-openai", provider=_provider())
             )
         )
         == "semantic_fallback_endpoint_missing"
     )
     with pytest.raises(TypeError, match="config_write_wrong_type"):
-        semantic_fallback_removed_config(cast(YoetzConfig, object()))
+        semantic_fallback_removed_config(cast(FinishUpConfig, object()))
 
 
 def test_swapping_the_primary_keeps_both_endpoints_bound() -> None:
@@ -330,13 +332,13 @@ def test_swapping_the_primary_keeps_both_endpoints_bound() -> None:
     assert (
         _reason(
             lambda: semantic_fallback_primary_config(
-                YoetzConfig(profile="local-openai", provider=_provider()), "codex_subscription"
+                FinishUpConfig(profile="local-openai", provider=_provider()), "codex_subscription"
             )
         )
         == "semantic_fallback_endpoint_missing"
     )
     with pytest.raises(TypeError, match="config_write_wrong_type"):
-        semantic_fallback_primary_config(cast(YoetzConfig, object()), "api_provider")
+        semantic_fallback_primary_config(cast(FinishUpConfig, object()), "api_provider")
 
 
 def test_written_pairings_round_trip_from_disk_in_both_directions(tmp_path: Path) -> None:

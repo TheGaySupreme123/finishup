@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def synchronize(root: Path, *, write: bool) -> bool:
-    path = root / "src/yoetz/mcp/descriptors.py"
+    path = root / "src/finishup/mcp/descriptors.py"
     original = path.read_text(encoding="utf-8")
     tree = ast.parse(original, filename=str(path))
     tree.body = [
@@ -29,7 +29,7 @@ def synchronize(root: Path, *, write: bool) -> bool:
             and node.value.func.id == "_lint_descriptor_sets"
         )
     ]
-    name = "_yoetz_descriptor_generation"
+    name = "_finishup_descriptor_generation"
     module = types.ModuleType(name)
     module.__file__ = str(path)
     sys.modules[name] = module

@@ -16,12 +16,13 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
-import yoetz.mcp.server as bridge
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.mcp.errors import authoring_hint, safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.models import PublishWorkRequestModel
+import finishup.mcp.server as bridge
+from builders.publish_identity import bridge_bound
+from finishup.mcp.descriptors import descriptor_for
+from finishup.mcp.errors import authoring_hint, safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.models import PublishWorkRequestModel
 
 _PUBLISH_SCHEMA = descriptor_for("publish_work").input_schema
 _FAMILY = "obligation_published"
@@ -63,7 +64,7 @@ def _obligation_request() -> dict[str, Any]:
 
 def _locations(request: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
     with pytest.raises(ValidationError) as captured:
-        PublishWorkRequestModel.model_validate(request)
+        PublishWorkRequestModel.model_validate(bridge_bound(request))
     return safe_validation_locations(captured.value)
 
 
@@ -280,7 +281,7 @@ async def test_safe_details_never_carries_the_internal_family_or_count_keys(
 def test_every_declared_schema_name_can_be_located_in_a_public_error() -> None:
     """A declared name outside the allowlist collapses its failure to an allowlisted parent."""
 
-    from yoetz.mcp.errors import (
+    from finishup.mcp.errors import (
         _DELIBERATELY_UNLOCATABLE_DECLARED,  # pyright: ignore[reportPrivateUsage]
         _SAFE_LOCATION_SEGMENTS,  # pyright: ignore[reportPrivateUsage]
         _schema_names,  # pyright: ignore[reportPrivateUsage]

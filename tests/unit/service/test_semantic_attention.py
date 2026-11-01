@@ -6,19 +6,19 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.application.egress import (
+from finishup.application.egress import (
     SemanticEgressAttemptUnknown,
     SemanticEgressProviderOutcome,
     SemanticEgressSuccess,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     RuntimeAttemptEvidence,
     SamplingParams,
     SemanticDispatchKind,
     SemanticFailureClass,
 )
-from yoetz.domain.privacy import ProviderBinding
-from yoetz.ports.semantic import (
+from finishup.domain.privacy import ProviderBinding
+from finishup.ports.semantic import (
     ProviderAttemptProvenance,
     SemanticJudgment,
     SemanticResultInvalid,
@@ -27,8 +27,8 @@ from yoetz.ports.semantic import (
     SemanticResultTimeout,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.models import SemanticStatus
-from yoetz.service.semantic_attention import (
+from finishup.protocol.models import SemanticStatus
+from finishup.service.semantic_attention import (
     SemanticAttentionTracker,
     semantic_attention_for_outcome,
 )

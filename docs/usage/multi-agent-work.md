@@ -1,12 +1,12 @@
 # Working with several agents
 
-Each Yoetz task has its own work record. A parent can delegate part of its work to a child task,
+Each FinishUP task has its own work record. A parent can delegate part of its work to a child task,
 and a project can group independently running tasks. These relationships help agents see unfinished
 dependencies and overlapping declared work. They do not authorize an agent to resume another task.
 
 ## Delegating work
 
-The parent calls `start` with `mode=delegate` and its current `session_id`. Yoetz creates an accepted
+The parent calls `start` with `mode=delegate` and its current `session_id`. FinishUP creates an accepted
 child relationship and returns the child task identity and an expiring `attach_handle`. Give the
 complete handle to the intended child in its assignment. The child calls `start` with `mode=attach`
 and that handle, then uses its returned session and writer for its own publications, checks, and
@@ -20,7 +20,7 @@ pending. The parent explicitly publishes `child_accepted` or `child_rejected`; a
 the child's `self_registered` origin. An accepted relationship cannot later be rejected to remove
 its findings from the parent's responsibility.
 
-Host observations may show a provisional subagent annotation before any child starts with Yoetz.
+Host observations may show a provisional subagent annotation before any child starts with FinishUP.
 An annotation is evidence of the observed host signal, not evidence that a child task was created,
 published work, or received a receipt. Host support is described separately for each integration.
 
@@ -45,31 +45,67 @@ lost. It does not establish permanent activity or immediately mean the work was 
 
 A task session stays in contact through the work itself. Two kinds of activity count:
 
-- Yoetz calls from the agent: start, publish, check, status, respond, or receipt.
-- Host events Yoetz observes, such as tool use, the end of a turn, or a subagent finishing.
+- FinishUP calls from the agent: start, publish, check, status, respond, or receipt.
+- Host events FinishUP observes, such as tool use, the end of a turn, or a subagent finishing.
 
-Each observed event counts from the moment the host reported it, even if Yoetz processes it
+Each observed event counts from the moment the host reported it, even if FinishUP processes it
 later. When the host reports that the agent started a native subagent, the parent stays in
 contact until the host reports that subagent finished. That holds for up to an hour, which covers
 a host that closes without reporting it. You never need to add polling calls or filler updates
 to keep work alive.
 
-When nothing is reported for about a minute, contact is lost. After the recovery window (five
-minutes by default), Yoetz records the open work as abandoned. This can still happen during
-ordinary work with no observable activity: one long command, a reply that waits for the user, or
-a host that reports no subagent events. If your work often goes quiet for longer than that, raise
-the `lineage.contact_lost_recovery_seconds` setting.
+When nothing is reported for about a minute, contact is lost. What happens next depends on
+whether another task is waiting on yours:
+
+- **A subagent whose parent is waiting on it** is abandoned after the recovery window (five
+  minutes by default), so the parent is never left waiting on a subagent that stopped. If your
+  subagents often go quiet for longer than that, raise the `lineage.contact_lost_recovery_seconds`
+  setting.
+- **Any other task**, including every task you start yourself, keeps its work open for a day by
+  default (`lineage.top_level_contact_lost_horizon_seconds`, up to a week). Status shows that
+  contact was lost and when the work would be abandoned. One long model turn, a long-running
+  command, or a reply that waits for you does not end your work.
+
+An agent that expects a long silent step, such as a long build or a wait for your reply, can
+declare a quiet period first. Silence during that period does not count: the window above starts
+when the period ends at the earliest. The `lineage.max_declared_quiet_seconds` setting caps the
+period (an hour by default, up to a day), and 0 turns declarations off. A new declaration replaces
+the previous one.
+
+Some hosts announce a tool call before running it and say how long the call may take. While
+such a call runs, the work counts as quiet too, until the call's own time limit ends, with the
+same cap; 0 turns this off as well. Only a call made in the task's own session counts, and the
+call does not need to report back when it finishes. A call that names no time limit, and a long
+model turn with no tool call, are not covered, so declare a quiet period for those. Today this
+covers Claude Code with ordinary-work observation turned on, for that session's own shell
+commands that set a time limit; a call made inside one of its native subagents does not count for
+that subagent. Codex and Cursor do not report a time limit before a call, so on those hosts
+declare the quiet period instead.
+
+Status shows until when the work is expected to stay quiet, whichever period ends later.
+
+When the host reports that the session ended, the session stops. Its open work is abandoned after
+the recovery window, unless the session resumes first. Work that was already closed stays closed.
+
+`finishup status` shows your own task's work state and contact on every view. The line is omitted
+only while the work is open and in contact.
 
 ## When your own task was abandoned
 
-Abandoned work is final. Yoetz does not reopen it, and later activity cannot undo it. Until you
-move on:
+If FinishUP abandoned your work only because it lost contact, and the same session is still
+working, close the work as usual. The close stands. Both records stay in the history, and later
+receipts say the abandonment was reversed. Cancelling or writing off such work is still refused.
+
+Any other abandonment is final. FinishUP does not reopen it, and later activity cannot undo it.
+That covers a session that ended or a subagent that never attached. Until you move on:
 
 - **The original session keeps working for history.** It can still read status, record late
-  evidence, run checks, and request receipts. Every receipt says the work is incomplete.
-  Receipts issued before abandonment stay exactly as they were.
-- **It cannot continue the work.** It cannot resume the task or start new child work. Yoetz
-  refuses both and points you to a successor task.
+  evidence, run checks, and request receipts. Every receipt says the service abandoned the work
+  and that the work is incomplete as recorded. Receipts issued before abandonment stay
+  exactly as they were.
+- **It cannot continue the work.** It cannot resume the task or start new child work. FinishUP
+  refuses both and points you to a successor task. A refused close names the state, when it
+  began, and what still works.
 
 To continue, start one new task in the same workspace with a new external reference. Open it with
 a short handoff that names the abandoned task, and delegate from the new task. It starts with its
@@ -77,7 +113,7 @@ own plan, children, evidence, and receipts. Nothing moves over from the abandone
 present the new task's receipt as proof that the abandoned work was completed. The same applies to
 work that was closed, cancelled, or written off.
 
-Publishing `delegation_cancelled` revokes the Yoetz delegation capability. It does not stop the host
+Publishing `delegation_cancelled` revokes the FinishUP delegation capability. It does not stop the host
 process. Writing off or cancelling an accepted child keeps the dependency and its incomplete
 outcome visible. Requesting a receipt never closes work.
 
@@ -91,7 +127,7 @@ conclusion.
 Accepted children with unresolved actionable findings prevent clean completion wording. Pending
 children, rejected children, and informational findings annotate the receipt. Rejecting a child
 that was never accepted does not by itself make the parent receipt incomplete. Live children,
-lost contact, missing data, and abandoned or written-off work appear as gaps. Yoetz can produce
+lost contact, missing data, and abandoned or written-off work appear as gaps. FinishUP can produce
 an honest incomplete receipt while children are still working; an earlier receipt remains
 unchanged after they finish.
 
@@ -104,7 +140,7 @@ Automatic grouping begins when a repository has a second live task and grouping 
 Different worktrees retain their separate workspace identities. A dormant task alone is never a
 reason to resume it, and grouping never chooses a task for attachment.
 
-`status` with `view=project`, `yoetz project status`, and `/project` show the admitted project view.
+`status` with `view=project`, `finishup project status`, and `/project` show the admitted project view.
 The CLI status command requires the exact `--session-id` and `--writer-id` held by the task and
 one selector, either `--project-id` or `--task-id`; it never attaches or resumes a task.
 General projects have `create`, `link`, `unlink`, `amend`, and `dissolve` commands. Repository
@@ -116,7 +152,7 @@ view still answers for every other member and reports `project_member_unavailabl
 A project view that fails for a reason unrelated to your request returns `STORAGE_CORRUPT` (stored
 records could not be read) or `INTERNAL_ERROR`, never `INVALID_REQUEST`. Do not change or guess
 selectors to work around it: report the error's correlation id, which
-`yoetz service diagnostics --correlation-id err_…` resolves to where the read failed.
+`finishup service diagnostics --correlation-id err_…` resolves to where the read failed.
 
 Coordination requires workspace-level observation consent from each source workspace. Consent for
 one worktree does not cover another. General or cross-repository coordination also requires approval
@@ -128,9 +164,9 @@ content in an external semantic review.
 `coordination_source_policy_denied` means its disclosure policy refused coordination (or could not
 be evaluated); granting workspace consent alone does not resolve that refusal.
 
-Project-generation approval currently uses the exact prepared `yoetz consent authorize` handoff,
+Project-generation approval currently uses the exact prepared `finishup consent authorize` handoff,
 relayed only after the human sees the warning and explicitly approves that target in the current
-chat. Console `yoetz consent review` has no production user-presence adapter and fails closed. Even
+chat. Console `finishup consent review` has no production user-presence adapter and fails closed. Even
 with verified console presence, this project operation remains unsupported on that channel and
 leaves the pending request untouched; it never silently broadens the accepted approval authority.
 
@@ -143,7 +179,7 @@ Overlap detection uses declared resource scopes and structured requested items. 
 path in two worktrees of one repository is an integration overlap; the same spelling in unrelated
 repositories is not. Hosts without attributable resource information report that coverage limit.
 Detection reads each consented sibling's recorded scopes the same way whether that task is
-active, idle, or was last used before a service restart or vault relock. If Yoetz confirms a
+active, idle, or was last used before a service restart or vault relock. If FinishUP confirms a
 sibling's consent but cannot read its recorded scopes during an update, that sibling reports the
 same coverage limit. Overlaps among the other tasks are still detected, and the next update
 retries. A sibling whose consent is revoked or cannot be confirmed contributes nothing to detection.
@@ -154,7 +190,7 @@ check can resolve the finding.
 Opting out or in, revoking consent or approval, and linking, unlinking, or dissolving a project each
 start a new membership generation. A coordination obligation declared under an older generation no
 longer describes current coordination, and that generation cannot be approved again. Before the
-task's next check, Yoetz records the older context in that task's own history as superseded. That
+task's next check, FinishUP records the older context in that task's own history as superseded. That
 check derives no current coordination finding from it and can resolve the earlier finding. The
 receipt says that the generation was superseded rather than that a disposition addressed it.
 Declaring or disposing against the older generation returns `coordination_generation_superseded`;
@@ -162,7 +198,7 @@ run a check instead. If the overlap still applies, declare against the current d
 coordination advice.
 
 For an admitted detection, each affected task can receive the repository-relative overlap paths
-through the project status projection. Yoetz rechecks both participants' current project
+through the project status projection. FinishUP rechecks both participants' current project
 generation and workspace consent, then applies the source and recipient disclosure policies before
 reading the encrypted detail. A denied, stale, or unavailable detail is shown as an explicit
 omission. Structural catalog rows and MCP text summaries retain only task identities, counts, and

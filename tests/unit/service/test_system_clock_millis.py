@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from yoetz.domain.values import format_rfc3339_millis
-from yoetz.service import daemon as daemon_module
+from finishup.domain.values import format_rfc3339_millis
+from finishup.service import daemon as daemon_module
 
 
 def test_system_clock_now_utc_is_whole_millisecond() -> None:

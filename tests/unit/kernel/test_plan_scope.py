@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     NoObligationsReason,
     ObligationChange,
     ObligationChangeKind,
@@ -12,10 +12,10 @@ from yoetz.domain.events import (
     PlanRevisedPayload,
     encode_payload,
 )
-from yoetz.domain.values import event_id, obligation_id
-from yoetz.kernel.plan_scope import current_plan_scope
-from yoetz.kernel.projections import PlanProjectionRecord
-from yoetz.protocol.canonical import canonical_digest
+from finishup.domain.values import event_id, obligation_id
+from finishup.kernel.plan_scope import current_plan_scope
+from finishup.kernel.projections import PlanProjectionRecord
+from finishup.protocol.canonical import canonical_digest
 
 
 def _event(tail: int) -> str:

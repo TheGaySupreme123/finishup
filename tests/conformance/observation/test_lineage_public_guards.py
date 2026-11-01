@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import multi_agent_service
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import PublishWorkRequest, StartRequest
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import PublishWorkRequest, StartRequest
 
 pytestmark = pytest.mark.anyio
 

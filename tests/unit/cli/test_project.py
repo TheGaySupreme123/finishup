@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import cast
 
 import pytest
 
-from yoetz.cli import project as project_cli
-from yoetz.cli.render import render_human_status
-from yoetz.domain.values import JsonValue
-from yoetz.ports.control import ControlError
-from yoetz.protocol.models import StatusResultModel, StatusSuccessModel, public_model_to_wire
+from builders.readiness import with_checklist
+from finishup.cli import project as project_cli
+from finishup.cli.render import render_human_status
+from finishup.domain.values import JsonValue
+from finishup.ports.control import ControlError
+from finishup.protocol.models import StatusResultModel, StatusSuccessModel, public_model_to_wire
 
 pytestmark = pytest.mark.anyio
 
@@ -85,14 +86,16 @@ def _status_result() -> StatusResultModel:
                 "report_evidence_id": None,
                 "source_identity_digest": None,
             },
-            "closure_readiness": {
-                "declared_obligation_count": "0",
-                "no_obligations_reason": None,
-                "open_obligation_count": "0",
-                "unanswered_finding_count": "0",
-                "receipt_blocking_finding_count": "0",
-                "blocking_conditions": ["no_obligations_declared"],
-            },
+            "closure_readiness": with_checklist(
+                {
+                    "declared_obligation_count": "0",
+                    "no_obligations_reason": None,
+                    "open_obligation_count": "0",
+                    "unanswered_finding_count": "0",
+                    "receipt_blocking_finding_count": "0",
+                    "blocking_conditions": ["no_obligations_declared"],
+                }
+            ),
             "privacy_projection": {
                 "sink": "agent_context",
                 "local_disclosure_receipt_id": "egr_69000000-0000-4000-8000-000000000006",
@@ -131,7 +134,7 @@ async def test_project_status_json_omits_unset_optional_project_text(
     async def build(**_kwargs: object) -> _Client:
         return client
 
-    monkeypatch.setattr("yoetz.cli.app.build_service_client", build)
+    monkeypatch.setattr("finishup.cli.app.build_service_client", build)
 
     wire = await project_cli._invoke_status(  # pyright: ignore[reportPrivateUsage]
         {"project_id": PROJECT_ID},
@@ -190,10 +193,10 @@ def test_project_mutation_surfaces_generated_request_id_for_retry(
         raise ControlError("request_timeout", retryable=True)
 
     def run_async(factory: Callable[[], Awaitable[object]]) -> object:
-        return asyncio.run(factory())
+        return asyncio.run(cast(Coroutine[object, object, object], factory()))
 
     monkeypatch.setattr(project_cli, "_invoke", invoke)
-    monkeypatch.setattr("yoetz.cli.app.run_async", run_async)
+    monkeypatch.setattr("finishup.cli.app.run_async", run_async)
 
     with pytest.raises(project_cli.typer.Exit):
         project_cli._run(  # pyright: ignore[reportPrivateUsage]
@@ -224,7 +227,7 @@ def test_project_mutation_rejects_unsafe_request_id_before_connection(
         connections.append(factory)
         raise ControlError("request_timeout", retryable=True)
 
-    monkeypatch.setattr("yoetz.cli.app.run_async", run_async)
+    monkeypatch.setattr("finishup.cli.app.run_async", run_async)
     with pytest.raises(project_cli.typer.Exit) as caught:
         project_cli._run(  # pyright: ignore[reportPrivateUsage]
             {"operation": "dissolve", "project_id": PROJECT_ID, "request_id": request_id},

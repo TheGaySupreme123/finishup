@@ -7,19 +7,19 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.publish_work import (  # pyright: ignore[reportPrivateUsage]
+from finishup.application.publish_work import (  # pyright: ignore[reportPrivateUsage]
     PreparedPublication,
     _preflight_dry_run_feasibility,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.values import Actor, ActorType, Frontier, actor_id
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Actor, ActorType, Frontier, actor_id
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import PublishWorkRequestModel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import PublishWorkRequestModel
 
 
 @pytest.mark.anyio

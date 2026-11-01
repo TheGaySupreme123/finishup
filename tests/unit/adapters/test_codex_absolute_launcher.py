@@ -13,13 +13,16 @@ from pathlib import Path
 import anyio
 import pytest
 
-from yoetz.adapters.integrations import codex_launcher
-from yoetz.adapters.integrations.codex_launcher import installed_launcher
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
-from yoetz.application.applied_mcp_route import read_applied_route
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.config.paths import PathSafetyError
-from yoetz.ports.harness_mcp import (
+from builders.codex_capability import binding_for, record_for
+from finishup.adapters.integrations import codex_launcher
+from finishup.adapters.integrations.codex_launcher import installed_launcher
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
+from finishup.application.applied_mcp_route import read_applied_route
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.config.home_project import home_project_scope
+from finishup.config.models import FinishUpConfig, VerificationConfig
+from finishup.config.paths import PathSafetyError
+from finishup.ports.harness_mcp import (
     HarnessBinary,
     McpRegistrationAction,
     McpRegistrationCommand,
@@ -27,7 +30,8 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationReason,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
+from finishup.ports.integrations import HarnessId
+from finishup.protocol.canonical import JsonValue
 
 _BINARY = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "supported")
 
@@ -42,11 +46,11 @@ def private_root() -> Iterator[Path]:
 @pytest.fixture
 def launcher(private_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = private_root
-    script = root / "yoetz"
-    raw = b"#!/test/python\nfrom yoetz.cli.app import main\nmain()\n"
+    script = root / "finishup"
+    raw = b"#!/test/python\nfrom finishup.cli.app import main\nmain()\n"
     script.write_bytes(raw)
     script.chmod(0o700)
-    record = PackagePath("yoetz")
+    record = PackagePath("finishup")
     record.hash = FileHash(
         "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
     )
@@ -64,10 +68,12 @@ def launcher(private_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     def scripts(_name: str) -> str:
         return str(root)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.distribution", package)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.sysconfig.get_path", scripts)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: root)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.read_runtime_pin", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_launcher.distribution", package)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_launcher.sysconfig.get_path", scripts)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: root)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_launcher.read_runtime_pin", lambda: None
+    )
     assert installed_launcher() is not None
     return script
 
@@ -76,11 +82,13 @@ def test_absolute_registration_is_owned(launcher: Path) -> None:
     entry = {
         "command": str(launcher),
         "args": ["mcp", "serve", "--host", "codex"],
-        "env": {"YOETZ_ISOLATED_ROOT": str(launcher.parent)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(launcher.parent)},
     }
-    adapter = CodexMcpAdapter(lambda _: CommandOutput(0, json.dumps(entry).encode()))
+    adapter = CodexMcpAdapter(
+        lambda argv: CommandOutput(0, b"[]" if argv[2] == "list" else json.dumps(entry).encode())
+    )
     observed = anyio.run(lambda: adapter.observe_registration(_BINARY))
-    assert observed.state is McpRegistrationState.YOETZ_OWNED
+    assert observed.state is McpRegistrationState.FINISHUP_OWNED
     assert observed.route_profile == "policy"
     assert observed.isolation_binding == "isolated_exact"
 
@@ -106,10 +114,113 @@ class Host:
             index = argv.index("--")
             entry: dict[str, object] = {"command": argv[index + 1], "args": list(argv[index + 2 :])}
             self.entry = entry
-            if "--env" in argv:
-                key, value = argv[argv.index("--env") + 1].split("=", 1)
-                self.entry["env"] = {key: value}
+            environment = dict(
+                argv[index + 1].split("=", 1)
+                for index, token in enumerate(argv[: argv.index("--")])
+                if token == "--env"
+            )
+            if environment:
+                self.entry["env"] = environment
         return CommandOutput(0, b"")
+
+
+@pytest.mark.parametrize("selected_home", ["default", "explicit"])
+def test_home_project_route_survives_install_status_reconcile_and_remove(
+    launcher: Path, monkeypatch: pytest.MonkeyPatch, selected_home: str
+) -> None:
+    """Zero-quota reproduction of #1154's second failure, using the real route/store stack."""
+    from finishup.cli import provider_status, setup
+
+    project = launcher.parent
+    monkeypatch.setenv("HOME", str(project))
+    monkeypatch.chdir(project)
+    codex_home = project / (".codex" if selected_home == "default" else "selected-codex")
+    codex_home.mkdir(mode=0o700)
+    host = Host()
+
+    def runner(argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
+        assert codex_home == project / (
+            ".codex" if selected_home == "default" else "selected-codex"
+        )
+        return host(argv)
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp._default_runner", runner)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
+        lambda: (_BINARY,),
+    )
+    runtime = binding_for(record_for(b"codex", b"host"), project / "codex", codex_home)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=runtime)
+
+    def load_config(*_args: object) -> FinishUpConfig:
+        return config
+
+    monkeypatch.setattr(setup, "load_config", load_config)
+    monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (_BINARY,))
+    status: dict[str, JsonValue] = {}
+
+    def emit(value: dict[str, JsonValue], *, json_output: bool) -> None:
+        assert json_output is True
+        status.update(value)
+
+    monkeypatch.setattr(setup, "_emit", emit)
+    state = project / "state"
+    with home_project_scope(project):
+        adapter = CodexMcpAdapter(codex_home=codex_home)
+        service = HarnessMcpService(adapter)
+        preview = anyio.run(lambda: service.preview(_BINARY))
+        confirmation = McpRegistrationConfirmation(
+            preview.preview_digest, True, "noninteractive_flag"
+        )
+        anyio.run(lambda: service.register(_BINARY, confirmation, _state=state))
+        record = read_applied_route(_state=state)
+        assert record is not None
+        assert record["applied_serve_command"] == list(preview.serve_command)
+        assert preview.serve_command[1:3] == ("--home-project", str(project))
+        noop = anyio.run(lambda: service.preview(_BINARY))
+        assert noop.action is McpRegistrationAction.NOOP
+        service.reconcile_applied_route(_BINARY, noop, _state=state)
+        assert (
+            anyio.run(
+                lambda: setup.integrate_mcp(
+                    "status",
+                    "codex",
+                    codex_path=None,
+                    codex_home=codex_home,
+                    accept=False,
+                    preview_digest=None,
+                    json_output=True,
+                    _state=state,
+                )
+            )
+            == 0
+        )
+        assert status["registered_profile"] == status["applied_profile"] == "policy"
+        assert status["isolation_binding"] == "isolated_exact"
+        route = anyio.run(
+            lambda: provider_status.mcp_route_observation(
+                project, codex_home=codex_home, _state=state
+            )
+        )
+        assert route["observed"] is True
+        assert route["registered_profile"] == route["applied_profile"] == "policy"
+        assert route["configured_profile"] == "policy"
+        assert route["ownership_state"] == "external"
+        assert route["drift_since_install"] is False
+        # Disabling review still derives strict; it never mutates the existing policy route.
+        config = config.model_copy(update={"verification": VerificationConfig(semantic="disabled")})
+        assert setup.configured_mcp_route_profile() == "strict"
+        assert anyio.run(lambda: service.observe(_BINARY)).route_profile == "policy"
+        removal = anyio.run(lambda: service.preview_unregistration(_BINARY))
+        anyio.run(
+            lambda: service.unregister(
+                _BINARY,
+                McpRegistrationConfirmation(removal.preview_digest, True, "noninteractive_flag"),
+                _state=state,
+            )
+        )
+        assert host.entry is None
+        assert read_applied_route(_state=state) is None
 
 
 def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) -> None:
@@ -123,7 +234,7 @@ def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) 
     result = anyio.run(
         lambda: service.register(_BINARY, confirmation, _state=launcher.parent / "store")
     )
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     record = read_applied_route(_state=launcher.parent / "store")
     assert record is not None
     assert record["applied_serve_command"] == list(preview.serve_command)
@@ -162,11 +273,12 @@ def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_bare_compatibility_migrates_to_proven_absolute(launcher: Path, legacy: bool) -> None:
     host = Host(
-        {"command": "yoetz", "args": ["mcp", "serve"] + ([] if legacy else ["--host", "codex"])}
+        {"command": "finishup", "args": ["mcp", "serve"] + ([] if legacy else ["--host", "codex"])}
     )
     adapter = CodexMcpAdapter(host)
     assert (
-        anyio.run(lambda: adapter.status_registration(_BINARY)) is McpRegistrationState.YOETZ_OWNED
+        anyio.run(lambda: adapter.status_registration(_BINARY))
+        is McpRegistrationState.FINISHUP_OWNED
     )
     preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
     assert preview.action is McpRegistrationAction.REREGISTER
@@ -193,7 +305,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     entry: dict[str, object] = {
         "command": str(launcher),
         "args": ["mcp", "serve", "--host", "codex"],
-        "env": {"YOETZ_ISOLATED_ROOT": str(launcher.parent)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(launcher.parent)},
     }
     if change == "modified":
         launcher.write_bytes(b"#!/bin/sh\nexit 0\n")
@@ -208,7 +320,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     elif change == "same_name":
         other_dir = launcher.parent / "foreign"
         other_dir.mkdir()
-        other = other_dir / "yoetz"
+        other = other_dir / "finishup"
         other.write_bytes(launcher.read_bytes())
         other.chmod(0o700)
         entry["command"] = str(other)
@@ -217,7 +329,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     elif change == "environment":
         entry["env"] = {"PYTHONPATH": "/other"}
     elif change == "root":
-        entry["env"] = {"YOETZ_ISOLATED_ROOT": str(launcher.parent / "other")}
+        entry["env"] = {"FINISHUP_ISOLATED_ROOT": str(launcher.parent / "other")}
     elif change == "cwd":
         entry["cwd"] = "/other"
     elif change == "dual_transport":
@@ -261,7 +373,7 @@ def test_absolute_preview_rejects_route_drift(launcher: Path, removal: bool) -> 
     "change", ["missing_hash", "unsupported_hash", "duplicate", "missing_entry", "size"]
 )
 def test_record_must_supply_unique_matching_identity(launcher: Path, change: str) -> None:
-    package = codex_launcher.distribution("yoetz")
+    package = codex_launcher.distribution("finishup")
     entries = package.files
     assert entries
     if change == "missing_hash":
@@ -299,7 +411,7 @@ def test_preview_binds_a_replaced_but_valid_installed_script(launcher: Path) -> 
     preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
     raw = launcher.read_bytes() + b"# new installation\n"
     launcher.write_bytes(raw)
-    entries = codex_launcher.distribution("yoetz").files
+    entries = codex_launcher.distribution("finishup").files
     assert entries
     entries[0].hash = FileHash(
         "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
@@ -314,3 +426,23 @@ def test_preview_binds_a_replaced_but_valid_installed_script(launcher: Path) -> 
         )
     assert caught.value.reason is McpRegistrationReason.PREVIEW_STALE
     assert host.mutations == []
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_launcher_is_proved_only_for_a_user_private_group(
+    launcher: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    """``uv tool install`` under umask 0002 leaves the console script and its dir g+w."""
+
+    from finishup.config import foreign_write
+
+    def answer(_uid: int, _gid: int) -> bool:
+        return private
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", answer)
+    launcher.chmod(0o775)
+    launcher.parent.chmod(0o775)
+    try:
+        assert (installed_launcher() is not None) is private
+    finally:
+        launcher.parent.chmod(0o700)

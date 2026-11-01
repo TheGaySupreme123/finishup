@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -10,8 +11,8 @@ import pytest
 
 from builders.privacy_policies import INSTALLATION_ID, local_only_policy, minimal_external_policy
 from builders.privacy_widenings import llm_channel, with_llm
-from yoetz.application.egress import PrivacyCoordinator, SemanticEgressBlocked
-from yoetz.domain.privacy import (
+from finishup.application.egress import PrivacyCoordinator, SemanticEgressBlocked
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -23,12 +24,15 @@ from yoetz.domain.privacy import (
     PrivacyDecision,
     PrivacyOutcome,
     PrivacyPolicy,
+    PrivacyPolicyPresetVersion,
     PrivacyReason,
     ProviderBinding,
+    ReviewContextProfile,
+    ReviewSelectionPolicy,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
     DisclosureProposalRequest,
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
@@ -39,9 +43,10 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 8, 3, tzinfo=UTC)
 _REQUEST = "req_30000000-0000-4000-8000-000000000101"
@@ -105,9 +110,10 @@ class _Store:
 
 
 class _Classifier:
-    def __init__(self, *, byte_count: int, token_count: int) -> None:
-        self._byte_count = byte_count
+    def __init__(self, *, byte_count: int, token_count: int, prepared: bytes | None = None) -> None:
+        self._byte_count = byte_count if prepared is None else len(prepared)
         self._token_count = token_count
+        self._prepared = prepared
         self.classify_calls = 0
 
     def classify(
@@ -131,7 +137,13 @@ class _Classifier:
         self, classified: ClassifiedContext, decision: PrivacyDecision
     ) -> MinimizedDisclosure:
         del decision
-        payload = b"x" * self._byte_count
+        # A readable prepared document of exactly the requested size with no excerpt rows, so
+        # only the channel ceilings under test can refuse it.
+        payload = (
+            b'{"p":"' + b"x" * (self._byte_count - 8) + b'"}'
+            if self._prepared is None
+            else self._prepared
+        )
         return MinimizedDisclosure(
             prepared_bytes=payload,
             included_item_ids=tuple(item.candidate.item_id for item in classified.items),
@@ -331,6 +343,8 @@ async def test_oversize_bytes_blocks_admission() -> None:
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
+    # #1118: the refusal is a size one; the receipt reason is unchanged, the sizes ride beside it.
+    assert result.capacity == (_OVERSIZE_BYTES, _POLICY_CEILING_BYTES)
     assert audit.prepared == []
 
 
@@ -342,7 +356,64 @@ async def test_oversize_tokens_blocks_admission() -> None:
     assert isinstance(result, SemanticEgressBlocked)
     assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
     assert result.reason is PrivacyReason.POLICY_DENIED
+    assert result.capacity == (_OVERSIZE_TOKENS, _POLICY_CEILING_TOKENS)
+    assert result.capacity_unit == "tokens"
     assert audit.prepared == []
+
+
+def test_a_byte_capacity_refusal_is_reported_as_case_capacity_not_network_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1118 owner decision: a refusal over the channel's ``max_bytes`` or the disclosure cap was
+    reported ``blocked_by_policy`` / ``network_egress_denied`` though network egress was allowed.
+    It is ``failed`` / ``case_capacity_exceeded`` now, with the sizes in a bounded diagnostic;
+    any other ``policy_denied`` refusal keeps its mapping."""
+
+    from finishup.protocol.models import SemanticReason, SemanticStatus
+    from finishup.service import ready_composition
+
+    events: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> str:
+        events.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(ready_composition, "record_bounded_counts_without_raising", record)
+    request = "req_10000000-0000-4000-8000-000000000001"
+    sized = SemanticEgressBlocked(
+        request,
+        PrivacyOutcome.BLOCKED_BY_POLICY,
+        PrivacyReason.POLICY_DENIED,
+        capacity=(263_010, 262_144),
+    )
+    final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        sized, ready_composition.IdPort()
+    )
+    assert (final.status, final.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    (event,) = [e for e in events if e["operation"] == "semantic_disclosure_capacity_exceeded"]
+    assert event["counts"] == {
+        "semantic_disclosure_attempted_bytes": 263_010,
+        "semantic_disclosure_limit_bytes": 262_144,
+    }
+    assert event["request_id"] == request
+    plain = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        replace(sized, capacity=None), ready_composition.IdPort()
+    )
+    assert (plain.status, plain.reason) == (
+        SemanticStatus.BLOCKED_BY_POLICY,
+        SemanticReason.NETWORK_EGRESS_DENIED,
+    )
+    # Only a size refusal can carry sizes, and only an over-limit pair.
+    for capacity in ((262_144, 262_144), (-1, 0), (10, 5.0)):
+        with pytest.raises(ValueError, match="semantic_capacity_invalid"):
+            replace(sized, capacity=capacity)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="semantic_capacity_invalid"):
+        SemanticEgressBlocked(
+            request, PrivacyOutcome.HUMAN_DENIED, PrivacyReason.HUMAN_DENIED, capacity=(2, 1)
+        )
 
 
 @pytest.mark.anyio
@@ -448,8 +519,8 @@ async def test_shipped_recipe_ceilings_admit_a_full_size_review_case() -> None:
     are allowed to gather — so enforcing it refused essentially every real review case.
     """
 
-    from yoetz.adapters.privacy.local_enforcer import estimated_token_count
-    from yoetz.cli.privacy_setup import (
+    from finishup.adapters.privacy.local_enforcer import estimated_token_count
+    from finishup.cli.privacy_setup import (
         _CASE_MAX_BYTES,  # pyright: ignore[reportPrivateUsage]
         _CASE_MAX_TOKENS,  # pyright: ignore[reportPrivateUsage]
     )
@@ -468,3 +539,162 @@ async def test_shipped_recipe_ceilings_admit_a_full_size_review_case() -> None:
     )
     result = await coordinator.evaluate_semantic(_candidate(), _deadline())
     assert audit.prepared, f"a full-size review case must reach prepare; got {result!r}"
+
+
+def _packet_with_excerpts(count: int, *, content_bytes: int = 64) -> bytes:
+    """A prepared review packet whose ``excerpt`` rows are what the egress check counts."""
+
+    from finishup.protocol.canonical import canonical_encode
+
+    rows = [
+        {
+            "category": "evidence_excerpt",
+            "content": "x" * content_bytes,
+            "content_bytes": content_bytes,
+            "item_id": f"excerpt-{index:03d}",
+            "section": "excerpt",
+        }
+        for index in range(count)
+    ]
+    return canonical_encode(
+        cast(JsonValue, {"items": rows, "omissions": [], "schema": "yoetz.review-packet-case/1"})
+    )
+
+
+def _expanded(preset_version: PrivacyPolicyPresetVersion) -> PrivacyPolicy:
+    return replace(
+        _policy_with_ceilings(max_bytes=262_144, max_tokens=65_536),
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(
+            ReviewContextProfile.EXPANDED, preset_version=preset_version
+        ),
+    )
+
+
+async def _evaluate(policy: PrivacyPolicy, prepared: bytes) -> tuple[object, _Audit]:
+    audit = _Audit()
+    coordinator = PrivacyCoordinator(
+        cast(PrivacyPolicyStorePort, _Store(policy)),
+        cast(
+            PrivacyClassifierPort,
+            _Classifier(byte_count=0, token_count=len(prepared) // 4, prepared=prepared),
+        ),
+        cast(PrivacyAuditPort, audit),
+        cast(OutboundGatewayPort, _Gateway()),
+        cast(ClockPort, _Clock()),
+        cast(IdPort, _Ids()),
+        human_authority=_human_authority(),
+    )
+    return await coordinator.evaluate_semantic(_candidate(), _deadline()), audit
+
+
+@pytest.mark.anyio
+async def test_more_excerpts_than_the_policy_approved_that_cannot_be_shed_are_denied() -> None:
+    """Issue #907 Phase 1b: the approved excerpt count is authoritative at egress.
+
+    Since #1230 egress first sheds the lowest-ranked excerpts (``test_disclosure_capacity_fit``);
+    this classifier returns the same packet whatever it approves, so nothing can be shed and the
+    packet is refused whole, never dispatched over the approval.
+    """
+
+    current = _expanded("1.2.0")
+    assert current.review_selection.max_excerpts == 64
+    admitted, admitted_audit = await _evaluate(current, _packet_with_excerpts(40))
+    assert admitted_audit.prepared, f"40 excerpts fit a 64-excerpt approval; got {admitted!r}"
+
+    over, over_audit = await _evaluate(current, _packet_with_excerpts(65))
+    assert isinstance(over, SemanticEgressBlocked)
+    assert over.reason is PrivacyReason.POLICY_DENIED
+    assert over.capacity == (65, 64)
+    assert (over.capacity_scope, over.capacity_unit) == ("excerpt", "excerpts")
+    assert over_audit.prepared == []
+
+
+@pytest.mark.anyio
+async def test_a_1_1_0_approval_denies_more_than_16_excerpts() -> None:
+    legacy = _expanded("1.1.0")
+    assert legacy.review_selection.max_excerpts == 16
+    within, within_audit = await _evaluate(legacy, _packet_with_excerpts(16))
+    assert within_audit.prepared, f"16 excerpts fit a 1.1.0 approval; got {within!r}"
+
+    over, over_audit = await _evaluate(legacy, _packet_with_excerpts(17))
+    assert isinstance(over, SemanticEgressBlocked)
+    assert over.reason is PrivacyReason.POLICY_DENIED
+    assert over_audit.prepared == []
+
+
+@pytest.mark.anyio
+async def test_excerpt_bytes_over_the_approved_budget_are_policy_denied() -> None:
+    current = _expanded("1.2.0")
+    per_excerpt = current.review_selection.max_excerpt_bytes
+    # Nine full-size excerpts exceed the 128 KiB total while each fits its own 16 KiB bound.
+    over_total, _ = await _evaluate(current, _packet_with_excerpts(9, content_bytes=per_excerpt))
+    assert isinstance(over_total, SemanticEgressBlocked)
+    assert over_total.reason is PrivacyReason.POLICY_DENIED
+    assert over_total.capacity == (
+        9 * per_excerpt,
+        current.review_selection.max_total_excerpt_bytes,
+    )
+    assert (over_total.capacity_scope, over_total.capacity_unit) == ("excerpt_total", "bytes")
+    over_one, _ = await _evaluate(current, _packet_with_excerpts(1, content_bytes=per_excerpt + 1))
+    assert isinstance(over_one, SemanticEgressBlocked)
+    assert over_one.reason is PrivacyReason.POLICY_DENIED
+    assert over_one.capacity == (per_excerpt + 1, per_excerpt)
+    assert (over_one.capacity_scope, over_one.capacity_unit) == ("excerpt", "bytes")
+    unreadable, _ = await _evaluate(current, b"not a review packet")
+    assert isinstance(unreadable, SemanticEgressBlocked)
+    assert unreadable.reason is PrivacyReason.POLICY_DENIED
+    assert unreadable.capacity is None
+
+
+@pytest.mark.anyio
+async def test_a_packet_over_the_channel_ceiling_is_denied_whatever_its_excerpt_count() -> None:
+    """Issue #907 acceptance 1: more than 16 excerpts inside the approved excerpt budget, plus a
+    large (100 KB) non-excerpt row, still exceed the channel ceiling and are never dispatched.
+
+    The ceiling is narrowed to 200,000 bytes because a prepared disclosure can never exceed
+    262,144 bytes by construction, so the shipped ceiling cannot be crossed in a unit fixture.
+    """
+
+    from finishup.application.egress import (
+        _excerpt_limit_capacity,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.protocol.canonical import canonical_encode
+
+    policy = replace(
+        _expanded("1.2.0"),
+        channel_policies=tuple(
+            replace(channel, max_bytes=200_000)
+            if channel.channel is EgressChannel.LLM_INFERENCE
+            else channel
+            for channel in _expanded("1.2.0").channel_policies
+        ),
+    )
+    rows: list[dict[str, JsonValue]] = [
+        {
+            "content": "x" * 3_000,
+            "content_bytes": 3_000,
+            "item_id": f"excerpt-{index:03d}",
+            "section": "excerpt",
+        }
+        for index in range(40)
+    ]
+    rows.append(
+        {
+            "content": "t" * 100_000,
+            "content_bytes": 100_000,
+            "item_id": "timeline-1",
+            "section": "timeline",
+        }
+    )
+    prepared = canonical_encode(
+        cast(JsonValue, {"items": rows, "schema": "yoetz.review-packet-case/1"})
+    )
+    assert len(prepared) > 200_000
+    assert _excerpt_limit_capacity(prepared, policy.review_selection) is None
+
+    result, audit = await _evaluate(policy, prepared)
+
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.POLICY_DENIED
+    assert audit.prepared == []

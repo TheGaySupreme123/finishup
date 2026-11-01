@@ -1,0 +1,48 @@
+{
+  "schema": "finishup.test.reviewer-accuracy-cases/1",
+  "source": "Issue #1245 (TB4 full-sol run, build 5372c00d9): a review that agreed a requested output should be withheld because two supplied inputs conflicted, and advice to test a boundary value the input schema forbids. Spec and claim texts are synthetic paraphrases of each failure pattern, not task text.",
+  "cases": [
+    {
+      "case": "conflicting-references-withheld-output",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "agreed the required report should be withheld because two supplied references disagree",
+      "miss": "endorsed_withheld_output",
+      "secondary": ["adopted_agent_premise"],
+      "lenses": ["blockers"],
+      "directives": [
+        "when the statement requires the outcome, challenge it and name the strongest interpretation under which it is achievable.",
+        "Reporting such a conclusion honestly is not completing the task."
+      ],
+      "loop_directives": [
+        "When the task requires an outcome the agent calls infeasible, contradictory or blocked, challenge it by naming the strongest interpretation under which it is achievable"
+      ],
+      "acknowledged_directives": [
+        "Conflicting inputs are not inability: challenge a withheld output and ask for a best-effort output under the strongest reading the task permits, with the assumption recorded",
+        "Your agreeing that a conflict exists is not permission to withhold.",
+        "When the inputs still permit a reading, only a missing authority, a missing credential or a destructive change the task does not permit excuses withholding the output."
+      ],
+      "spec_excerpt": "Write one report row per qualifying variant, giving its position in the encoded protein.",
+      "agent_claim": "The supplied exon coordinates rebuild one transcript while the annotation cache holds another, so no variant can be placed and no report is written."
+    },
+    {
+      "case": "unreachable-zero-budget",
+      "reviewer_detectable": true,
+      "decisive_material_in_packet": "yes",
+      "reviewer_returned": "a correctness note asking for a zero-budget test the request schema rejects",
+      "miss": "unreachable_recommendation",
+      "secondary": ["boundary_not_tested"],
+      "lenses": ["procedure"],
+      "directives": [
+        "Before you recommend a change to an input, a guard, or a state, check that the visible interface in the packet can reach it: the types, conditions, and contracts the excerpts show.",
+        "If that interface cannot produce the input or state, do not recommend the change; say what the interface allows."
+      ],
+      "loop_directives": [
+        "Suggest only inputs and states the visible interface can reach (no zero budget where the schema requires a positive one)."
+      ],
+      "acknowledged_directives": [],
+      "spec_excerpt": "Each request carries a positive token budget, and batched output must equal single-request output.",
+      "agent_claim": "The request schema rejects a budget below 1, and batched output equals single-request output on every recorded request."
+    }
+  ]
+}

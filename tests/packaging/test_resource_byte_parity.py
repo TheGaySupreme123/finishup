@@ -1,11 +1,11 @@
 """Reviewed/source/embedded/installed resource byte equality.
 
 Proves each manifest-declared runtime resource is the exact reviewed byte set in the
-root canonical source tree, the ``src/yoetz/resources`` package tree, the built wheel, and a clean
+root canonical source tree, the ``src/finishup/resources`` package tree, the built wheel, and a clean
 offline install; that the canonical fixtures are the only ``fixtures/`` corpus shipped; and
 that corruption/missing/extra resource drift is detected before decode/use, both at the source
 level (``scripts/verify_resource_manifest.py --check``) and at the installed-package level
-(``yoetz.version.read_verified_resource``).
+(``finishup.version.read_verified_resource``).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Any, Final
 
 import pytest
 
-from yoetz.version import REVIEWED_RESOURCE_COUNT
+from finishup.version import REVIEWED_RESOURCE_COUNT
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _VERIFY_SCRIPT: Final = _REPO_ROOT / "scripts" / "verify_resource_manifest.py"
@@ -32,7 +32,7 @@ _BUILD_TIMEOUT: Final = 120
 
 
 def _load_manifest() -> Any:  # raw JSON document, deliberately untyped
-    manifest_path = _REPO_ROOT / "src" / "yoetz" / "resources" / "manifest.json"
+    manifest_path = _REPO_ROOT / "src" / "finishup" / "resources" / "manifest.json"
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
@@ -60,10 +60,10 @@ def _export_clean_source(dest: Path) -> None:
     # overlay the current generated manifest's complete reviewed source/package set. Deriving this
     # list from the manifest avoids creating another inventory that must be updated by hand.
     manifest = _load_manifest()
-    overlays = {"src/yoetz/resources/manifest.json"}
+    overlays = {"src/finishup/resources/manifest.json"}
     for entry in manifest["entries"]:
         overlays.add(entry["source_path"])
-        overlays.add(f"src/yoetz/resources/{entry['package_path']}")
+        overlays.add(f"src/finishup/resources/{entry['package_path']}")
     for relative in sorted(overlays, key=str.encode):
         source = _REPO_ROOT / relative
         target = dest / relative
@@ -108,7 +108,7 @@ def test_source_tree_and_package_tree_are_byte_identical_in_the_real_checkout() 
 def test_nested_codex_skill_member_metadata_detects_changed_owned_bytes(
     synthetic_repo_root: Path,
 ) -> None:
-    skill = synthetic_repo_root / "skills/codex/yoetz/SKILL.md"
+    skill = synthetic_repo_root / "skills/codex/finishup/SKILL.md"
     skill.write_bytes(skill.read_bytes() + b"\n")
     completed = subprocess.run(  # noqa: S603 - fixed local verifier argv, no shell
         [
@@ -205,10 +205,10 @@ def test_wheel_resource_bytes_match_the_package_tree_for_every_manifest_entry(
     manifest = _load_manifest()
     with zipfile.ZipFile(built_wheel.path) as archive:
         for entry in manifest["entries"]:
-            member = f"yoetz/resources/{entry['package_path']}"
+            member = f"finishup/resources/{entry['package_path']}"
             wheel_data = archive.read(member)
             source_data = (
-                _REPO_ROOT / "src" / "yoetz" / "resources" / entry["package_path"]
+                _REPO_ROOT / "src" / "finishup" / "resources" / entry["package_path"]
             ).read_bytes()
             assert wheel_data == source_data, entry["logical_name"]
             assert _sha256(wheel_data) == entry["sha256"], entry["logical_name"]
@@ -240,7 +240,7 @@ def test_installed_package_resource_bytes_match_the_reviewed_source_for_every_en
     probe_script = (
         "import importlib.resources as r, json, sys\n"
         "names = json.loads(sys.argv[1])\n"
-        "root = r.files('yoetz.resources')\n"
+        "root = r.files('finishup.resources')\n"
         "digests = {}\n"
         "for name in names:\n"
         "    node = root\n"
@@ -273,7 +273,7 @@ def test_installed_resource_manifest_digest_matches_the_source_manifest(
         [
             str(installed_python),
             "-c",
-            "from yoetz.version import build_version_manifest; "
+            "from finishup.version import build_version_manifest; "
             "print(build_version_manifest().resource_manifest_digest)",
         ],
         capture_output=True,
@@ -295,7 +295,7 @@ def test_verification_precedes_use_a_corrupted_installed_resource_fails_closed(
             str(installed_python),
             "-c",
             "import importlib.resources as r; "
-            "print(r.files('yoetz.resources').joinpath("
+            "print(r.files('finishup.resources').joinpath("
             "'schemas/common/actor-assertion-1.0.0.schema.json'))",
         ],
         capture_output=True,
@@ -312,7 +312,7 @@ def test_verification_precedes_use_a_corrupted_installed_resource_fails_closed(
             [
                 str(installed_python),
                 "-c",
-                "from yoetz.version import read_verified_resource; "
+                "from finishup.version import read_verified_resource; "
                 "read_verified_resource('schemas/common/actor-assertion-1.0.0.schema.json')",
             ],
             capture_output=True,
@@ -332,7 +332,7 @@ def test_verification_precedes_use_a_deleted_installed_resource_fails_closed(
             str(installed_python),
             "-c",
             "import importlib.resources as r; "
-            "print(r.files('yoetz.resources').joinpath('guidance/workflow.md'))",
+            "print(r.files('finishup.resources').joinpath('guidance/workflow.md'))",
         ],
         capture_output=True,
         check=True,
@@ -346,7 +346,7 @@ def test_verification_precedes_use_a_deleted_installed_resource_fails_closed(
             [
                 str(installed_python),
                 "-c",
-                "from yoetz.version import read_verified_resource; "
+                "from finishup.version import read_verified_resource; "
                 "read_verified_resource('guidance/workflow.md')",
             ],
             capture_output=True,
@@ -384,7 +384,12 @@ def test_synthetic_clean_export_passes_verification(synthetic_repo_root: Path) -
 
 def test_a_one_byte_changed_package_resource_is_detected(synthetic_repo_root: Path) -> None:
     target = (
-        synthetic_repo_root / "src" / "yoetz" / "resources" / "guidance" / "agent-instructions.md"
+        synthetic_repo_root
+        / "src"
+        / "finishup"
+        / "resources"
+        / "guidance"
+        / "agent-instructions.md"
     )
     data = bytearray(target.read_bytes())
     data[0] ^= 0xFF
@@ -397,7 +402,12 @@ def test_a_one_byte_changed_package_resource_is_detected(synthetic_repo_root: Pa
 
 def test_a_missing_package_resource_is_detected(synthetic_repo_root: Path) -> None:
     target = (
-        synthetic_repo_root / "src" / "yoetz" / "resources" / "guidance" / "agent-instructions.md"
+        synthetic_repo_root
+        / "src"
+        / "finishup"
+        / "resources"
+        / "guidance"
+        / "agent-instructions.md"
     )
     target.unlink()
 
@@ -407,7 +417,7 @@ def test_a_missing_package_resource_is_detected(synthetic_repo_root: Path) -> No
 
 
 def test_an_extra_untracked_package_resource_is_detected(synthetic_repo_root: Path) -> None:
-    stray = synthetic_repo_root / "src" / "yoetz" / "resources" / "guidance" / "stray.md"
+    stray = synthetic_repo_root / "src" / "finishup" / "resources" / "guidance" / "stray.md"
     stray.write_text("not a reviewed resource\n", encoding="utf-8")
 
     completed = _run_verify(synthetic_repo_root)
@@ -416,7 +426,7 @@ def test_an_extra_untracked_package_resource_is_detected(synthetic_repo_root: Pa
 
 
 def test_a_manifest_json_byte_drift_is_detected(synthetic_repo_root: Path) -> None:
-    manifest_path = synthetic_repo_root / "src" / "yoetz" / "resources" / "manifest.json"
+    manifest_path = synthetic_repo_root / "src" / "finishup" / "resources" / "manifest.json"
     manifest_path.write_bytes(manifest_path.read_bytes()[:-1] + b" \n")
 
     completed = _run_verify(synthetic_repo_root)

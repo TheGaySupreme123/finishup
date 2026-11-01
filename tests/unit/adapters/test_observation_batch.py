@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import ObservationGapCode, ObservationStatusQuery
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import ObservationGapCode, ObservationStatusQuery
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 def _store(tmp_path: Path) -> tuple[LocalObservationStore, str]:

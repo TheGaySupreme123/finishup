@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations import codex_plugin as plugin_mod
-from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
-from yoetz.adapters.integrations.codex_plugin import (
+from finishup.adapters.integrations import codex_plugin as plugin_mod
+from finishup.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
+from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
     codex_supports_async_hooks,
     inspect_plugin,
@@ -18,8 +18,11 @@ from yoetz.adapters.integrations.codex_plugin import (
     parse_hooks_json,
     render_plugin_tree,
 )
-from yoetz.adapters.integrations.codex_skill import SkillResourceSource, load_packaged_skill_source
-from yoetz.ports.integrations import (
+from finishup.adapters.integrations.codex_skill import (
+    SkillResourceSource,
+    load_packaged_skill_source,
+)
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
     IntegrationFile,
@@ -29,7 +32,7 @@ from yoetz.ports.integrations import (
     IntegrationTarget,
     SkillSource,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 
 class _Resources:
@@ -49,8 +52,8 @@ def _digest(data: bytes) -> str:
 
 def _resources() -> _Resources:
     skill = (
-        b"---\nname: yoetz\ndescription: Durable evidence guidance.\n"
-        b"metadata:\n  short-description: Yoetz guidance\n---\n\n# Yoetz\n"
+        b"---\nname: finishup\ndescription: Durable evidence guidance.\n"
+        b"metadata:\n  short-description: FinishUP guidance\n---\n\n# FinishUP\n"
     )
     guidance_files = {
         "references/agent-instructions.md": (
@@ -70,6 +73,14 @@ def _resources() -> _Resources:
             b"# Request templates\n",
         ),
         "references/workflow.md": ("guidance/workflow.md", b"# Workflow\n"),
+        "references/startup.md": ("guidance/startup.md", b"# Startup\n"),
+        "references/recovery.md": ("guidance/recovery.md", b"# Recovery\n"),
+        "references/publication.md": ("guidance/publication.md", b"# Publication\n"),
+        "references/review.md": ("guidance/review.md", b"# Review\n"),
+        "references/receipt.md": ("guidance/receipt.md", b"# Receipt\n"),
+        "references/delegation.md": ("guidance/delegation.md", b"# Delegation\n"),
+        "references/consent.md": ("guidance/consent.md", b"# Consent\n"),
+        "references/page-delivery.md": ("guidance/page-delivery.md", b"# Page delivery\n"),
     }
     managed_members: list[JsonValue] = [
         {
@@ -104,13 +115,13 @@ def _resources() -> _Resources:
         "managed_members": managed_members,
         "protocol_version": "0.1",
         "schema": "yoetz.codex-skill-manifest/1",
-        "skill": "yoetz",
+        "skill": "finishup",
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     files = {
-        "skills/codex/yoetz/SKILL.md": skill,
-        "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
+        "skills/codex/finishup/SKILL.md": skill,
+        "skills/codex/finishup/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
         **{package_path: data for package_path, data in guidance_files.values()},
     }
     entries: list[JsonValue] = []
@@ -130,7 +141,7 @@ def _resources() -> _Resources:
         )
     manifest_body: dict[str, JsonValue] = {
         "entries": entries,
-        "package": "yoetz",
+        "package": "finishup",
         "resource_set_version": "0.1.0",
         "schema": "yoetz.resource-manifest/1",
     }
@@ -152,7 +163,7 @@ def _enable_supported_profile(
         (
             IntegrationFile(
                 "SKILL.md",
-                len(resources.files["skills/codex/yoetz/SKILL.md"]),
+                len(resources.files["skills/codex/finishup/SKILL.md"]),
                 "sha256:" + "b" * 64,
                 "text/markdown",
             ),
@@ -170,17 +181,18 @@ def test_render_plugin_tree_wires_observation_and_compat_hooks() -> None:
     assert ".codex-plugin/plugin.json" in tree
     assert "hooks/hooks.json" in tree
     assert ".mcp.json" in tree
-    assert "skills/yoetz/SKILL.md" in tree
+    assert "skills/finishup/SKILL.md" in tree
     hooks = tree["hooks/hooks.json"].decode("utf-8")
-    assert "yoetz hooks user-prompt-submit --workspace ." in hooks
-    assert "yoetz hooks post-tool-use" in hooks
+    assert "finishup hooks user-prompt-submit --workspace ." in hooks
+    assert "finishup hooks post-tool-use" in hooks
     # The re-ground probe names its workspace like every other rendered hook (#659).
-    assert "yoetz hooks session-start --workspace ." in hooks
-    assert "yoetz hooks observe --workspace . --event SessionStart" in hooks
-    assert "yoetz hooks spool --workspace . --event PreToolUse" in hooks
-    assert "yoetz hooks spool --workspace . --event PermissionRequest" in hooks
-    assert "yoetz hooks observe --workspace . --event SubagentStop" in hooks
-    assert "mcp__yoetz__start" in hooks
+    assert "finishup hooks session-start --workspace ." in hooks
+    assert "finishup hooks observe --workspace . --event SessionStart" in hooks
+    assert "finishup hooks spool --workspace . --event PreToolUse" in hooks
+    assert "finishup hooks spool --workspace . --event PermissionRequest" in hooks
+    assert "finishup hooks observe --workspace . --event SubagentStop" in hooks
+    # The start correlation matches either registration key (ADR-048).
+    assert "^mcp__(?:finishup|yoetz)__start$" in hooks
     assert "resume|compact" in hooks
 
 
@@ -188,7 +200,7 @@ def _observe_handler(parsed: Mapping[str, object], event: str) -> dict[str, obje
     groups = parsed["hooks"][event]  # type: ignore[index, call-overload]
     for group in groups:  # type: ignore[union-attr]
         for handler in group["hooks"]:  # type: ignore[index, call-overload]
-            if str(handler["command"]).startswith("yoetz hooks observe "):  # type: ignore[index]
+            if str(handler["command"]).startswith("finishup hooks observe "):  # type: ignore[index]
                 return dict(handler)  # type: ignore[arg-type, call-overload]
     raise AssertionError(f"no observe handler declared for {event}")
 
@@ -197,7 +209,7 @@ def _spool_handler(parsed: Mapping[str, object], event: str) -> dict[str, object
     groups = parsed["hooks"][event]  # type: ignore[index, call-overload]
     for group in groups:  # type: ignore[union-attr]
         for handler in group["hooks"]:  # type: ignore[index, call-overload]
-            if str(handler["command"]).startswith("yoetz hooks spool "):  # type: ignore[index]
+            if str(handler["command"]).startswith("finishup hooks spool "):  # type: ignore[index]
                 return dict(handler)  # type: ignore[arg-type, call-overload]
     raise AssertionError(f"no spool handler declared for {event}")
 
@@ -215,7 +227,7 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
     discards its stdout.
     """
 
-    from yoetz.cli.observe_hooks import ADVICE_SAFE_EVENTS, SUPPORTED_HOOK_EVENTS
+    from finishup.cli.observe_hooks import ADVICE_SAFE_EVENTS, SUPPORTED_HOOK_EVENTS
 
     parsed = dict(
         parse_hooks_json(
@@ -225,7 +237,6 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
         )
     )
     pure_ingress = (
-        "PreToolUse",
         "PermissionRequest",
         "PreCompact",
         "PostCompact",
@@ -240,13 +251,13 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
     assert set(pure_ingress) == (
         SUPPORTED_HOOK_EVENTS
         - ADVICE_SAFE_EVENTS
-        - {"UserPromptSubmit", "SessionEnd", "PermissionDecision"}
+        - {"PreToolUse", "UserPromptSubmit", "SessionEnd", "PermissionDecision"}
     )
     for event in pure_ingress:
         handler = _observe_handler(parsed, event)
         assert handler.get("async") is True, f"{event} observe must not block the session"
         assert handler["timeout"] == 10, f"{event} needs an explicit modest timeout"
-    for event in ("SessionStart", "PostToolUse", "Stop"):
+    for event in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
         handler = _observe_handler(parsed, event)
         assert "async" not in handler, f"{event} returns advice or a Stop decision; async drops it"
         assert handler["timeout"] == 10, f"{event} declared timeout must be meetable"
@@ -324,7 +335,7 @@ def test_install_allow_untested_installs_hooks(tmp_path: Path) -> None:
     assert inspection.presence is PluginHookPresence.INSTALLED
     assert inspection.state is IntegrationState.INSTALLED_EXACT
     assert inspection.trust_observable is False
-    assert (tmp_path / ".agents/plugins/yoetz/hooks/hooks.json").is_file()
+    assert (tmp_path / ".agents/plugins/finishup/hooks/hooks.json").is_file()
 
 
 def test_install_refuses_locally_modified_file(
@@ -338,7 +349,7 @@ def test_install_refuses_locally_modified_file(
     assert first.presence is PluginHookPresence.INSTALLED
     assert first.trust_observable is False
 
-    hooks_path = tmp_path / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks_path = tmp_path / ".agents/plugins/finishup/hooks/hooks.json"
     hooks_path.write_bytes(hooks_path.read_bytes() + b"# modified\n")
     with pytest.raises(IntegrationError) as caught:
         install_plugin(target, resource_source=resources)
@@ -364,7 +375,7 @@ def test_install_replaces_prior_managed_variant_render_without_replace_modified(
     _enable_supported_profile(monkeypatch, resources)
     target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
     install_plugin(target, resource_source=resources, codex_version="0.148.0-alpha.6")
-    hooks_path = tmp_path / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks_path = tmp_path / ".agents/plugins/finishup/hooks/hooks.json"
     assert b'"async":true' in hooks_path.read_bytes()
 
     inspection = install_plugin(target, resource_source=resources, codex_version=None)
@@ -374,7 +385,7 @@ def test_install_replaces_prior_managed_variant_render_without_replace_modified(
 
 
 def test_plugin_tree_matches_marker_accepts_only_marker_consistent_trees() -> None:
-    from yoetz.adapters.integrations.codex_plugin import (
+    from finishup.adapters.integrations.codex_plugin import (
         plugin_tree_matches_marker,
         render_plugin_install_tree,
     )
@@ -429,7 +440,7 @@ def test_install_restores_previous_plugin_when_swap_fails(
     _enable_supported_profile(monkeypatch, resources)
     target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
     install_plugin(target, resource_source=resources)
-    destination = tmp_path / ".agents/plugins/yoetz"
+    destination = tmp_path / ".agents/plugins/finishup"
     marker_path = destination / ".yoetz-plugin-install.json"
     original_marker = marker_path.read_bytes()
     real_replace = plugin_mod.os.replace
@@ -457,3 +468,251 @@ def test_inspect_absent_and_trust_not_observable(tmp_path: Path) -> None:
     assert inspection.presence is PluginHookPresence.ABSENT
     assert inspection.trust_observable is False
     assert "codex_hook_trust_not_observable_from_installation_state" in inspection.notes
+
+
+def _legacy_tree(root: Path, members: Mapping[str, bytes]) -> Path:
+    """Write a Yoetz-era plugin tree: same marker name and schema, legacy directory name."""
+
+    legacy = root / ".agents/plugins/yoetz"
+    for relative, data in members.items():
+        path = legacy / relative
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(data)
+    return legacy
+
+
+def test_install_keeps_a_marker_consistent_legacy_tree_for_the_activation_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy Codex activation may still read ``.agents/plugins/yoetz`` (ADR-048).
+
+    Plugin install alone never deletes it; only the digest-bound activation migration does,
+    after the legacy tables and document that read it are gone.
+    """
+
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        render_plugin_install_tree,
+    )
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = _legacy_tree(tmp_path, render_plugin_install_tree(resource_source=resources))
+    before = inspect_plugin(target, resource_source=resources)
+    assert before.presence is PluginHookPresence.ABSENT
+    assert "legacy_plugin_tree_present" in before.notes
+    digest = legacy_plugin_tree_digest(target)
+
+    after = install_plugin(target, resource_source=resources)
+
+    assert after.presence is PluginHookPresence.INSTALLED
+    assert legacy.is_dir()
+    assert legacy_plugin_tree_digest(target) == digest
+    assert "legacy_plugin_tree_present" in after.notes
+
+
+def test_legacy_tree_removal_is_bound_to_the_approved_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        remove_legacy_plugin_tree,
+        render_plugin_install_tree,
+    )
+    from finishup.ports.integrations import IntegrationError, IntegrationReason
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = _legacy_tree(tmp_path, render_plugin_install_tree(resource_source=resources))
+    digest = legacy_plugin_tree_digest(target)
+    assert digest is not None
+
+    with pytest.raises(IntegrationError) as stale:
+        remove_legacy_plugin_tree(target, "sha256:" + "0" * 64)
+    assert stale.value.reason is IntegrationReason.PREVIEW_STALE
+    assert legacy.is_dir()
+
+    remove_legacy_plugin_tree(target, digest)
+    assert not legacy.exists()
+    assert not any(path.name.startswith(".yoetz.") for path in legacy.parent.iterdir())
+    # An earlier interrupted run already removed it: nothing left to do.
+    remove_legacy_plugin_tree(target, digest)
+
+
+def test_a_modified_legacy_tree_has_no_removal_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        render_plugin_install_tree,
+    )
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    members = dict(render_plugin_install_tree(resource_source=resources))
+    members["hooks/hooks.json"] += b"# owner edit\n"
+    _legacy_tree(tmp_path, members)
+
+    assert legacy_plugin_tree_digest(target) is None
+
+
+def test_install_never_removes_a_modified_legacy_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    members = dict(render_plugin_install_tree(resource_source=resources))
+    members["hooks/hooks.json"] += b"# owner edit\n"
+    legacy = _legacy_tree(tmp_path, members)
+
+    after = install_plugin(target, resource_source=resources)
+
+    assert after.presence is PluginHookPresence.INSTALLED
+    assert (legacy / "hooks/hooks.json").read_bytes().endswith(b"# owner edit\n")
+    assert "legacy_plugin_tree_retained" in after.notes
+
+
+def test_portable_plugin_mcp_stays_a_bare_command_when_a_launcher_is_proven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repository generation must not bake a machine path into the committed plugin."""
+
+    from finishup.adapters.integrations import codex_mcp
+
+    monkeypatch.setattr(
+        codex_mcp,
+        "installed_launcher",
+        lambda name="finishup": ("/opt/pinned/bin/finishup", "sha256:" + "ab" * 32),
+    )
+    tree = render_plugin_tree(resource_source=_resources())
+    entry = json_mcp(tree[".mcp.json"])
+    assert entry["command"] == "finishup"
+    assert entry["args"] == ["mcp", "serve", "--host", "codex"]
+    assert "env" not in entry
+    assert "/opt/pinned/bin/finishup" not in tree[".mcp.json"].decode("utf-8")
+
+
+def test_activation_cache_mcp_uses_the_pinned_launcher_not_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A foreign ``finishup`` earlier on PATH is not the plugin command Codex launches."""
+
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import (
+        activation_cache_members,
+        plugin_tree_matches_marker,
+    )
+
+    foreign = "/opt/foreign/bin/finishup"
+    pinned = "/opt/pinned/bin/finishup"
+    root = "/opt/pinned/root"
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        return foreign
+
+    monkeypatch.setenv("PATH", "/opt/foreign/bin:/usr/bin")
+    monkeypatch.setattr(shutil, "which", path_which)
+    monkeypatch.setattr(
+        codex_mcp,
+        "installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: foreign)
+    monkeypatch.setattr(codex_mcp, "isolated_root", lambda: Path(root))
+    legacy = {
+        ".mcp.json": (
+            b'{"mcpServers":{"yoetz":{"args":["mcp","serve","--host","codex"],'
+            b'"command":"yoetz"}}}\n'
+        ),
+        "hooks/hooks.json": b'{"hooks":{"Stop":[]}}\n',
+    }
+
+    bound = activation_cache_members(legacy)
+    again = activation_cache_members(bound)
+
+    assert again == bound
+    assert plugin_tree_matches_marker(bound)
+    entry = json_mcp(bound[".mcp.json"])
+    assert entry["command"] == pinned
+    assert entry["args"] == ["mcp", "serve", "--host", "codex"]
+    assert entry["env"] == {
+        "FINISHUP_ISOLATED_ROOT": root,
+        "YOETZ_ISOLATED_ROOT": root,
+    }
+    rendered = bound[".mcp.json"].decode("utf-8")
+    assert foreign not in rendered
+    assert '"yoetz"' not in rendered
+    assert bound["hooks/hooks.json"] == legacy["hooks/hooks.json"]
+
+
+def test_activation_cache_refuses_a_bare_command_when_no_launcher_is_proven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An embed with neither an installed RECORD nor an invoking launcher must not write PATH."""
+
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import activation_cache_members
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        raise AssertionError("PATH was consulted")
+
+    monkeypatch.setattr(codex_mcp, "installed_launcher", lambda name="finishup": None)
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: None)
+    monkeypatch.setattr(shutil, "which", path_which)
+    original = {".mcp.json": b'{"mcpServers":{}}\n', "hooks/hooks.json": b"{}\n"}
+
+    with pytest.raises(IntegrationError) as caught:
+        activation_cache_members(original)
+
+    assert caught.value.reason is IntegrationReason.SOURCE_INVALID
+    assert caught.value.safe_details.get("detail") == "launcher_unproven"
+    assert original[".mcp.json"] == b'{"mcpServers":{}}\n'
+
+
+def test_an_unproven_launcher_is_not_replaced_from_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    from finishup.adapters.integrations import codex_mcp
+    from finishup.adapters.integrations.codex_plugin import activation_cache_members
+
+    foreign = "/opt/foreign/bin/finishup"
+
+    def path_which(cmd: str, mode: int = 0, path: str | None = None) -> str:
+        del cmd, mode, path
+        return foreign
+
+    monkeypatch.setattr(codex_mcp, "installed_launcher", lambda name="finishup": None)
+    monkeypatch.setattr(codex_mcp, "invoking_launcher", lambda: foreign)
+    monkeypatch.setattr(shutil, "which", path_which)
+
+    with pytest.raises(IntegrationError) as caught:
+        activation_cache_members({".mcp.json": b"{}\n"})
+
+    assert caught.value.reason is IntegrationReason.SOURCE_INVALID
+    assert caught.value.safe_details.get("detail") == "launcher_unproven"
+
+
+def json_mcp(raw: bytes) -> dict[str, object]:
+    import json
+    from typing import cast
+
+    parsed = cast("dict[str, dict[str, dict[str, object]]]", json.loads(raw))
+    servers = parsed["mcpServers"]
+    assert list(servers) == ["finishup"]
+    return servers["finishup"]

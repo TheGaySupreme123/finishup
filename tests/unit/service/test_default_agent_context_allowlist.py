@@ -10,15 +10,15 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.privacy.catalog import CatalogPrivacyPolicyStore
-from yoetz.domain.privacy import (
+from finishup.adapters.privacy.catalog import CatalogPrivacyPolicyStore
+from finishup.domain.privacy import (
     AuthorizationScope,
     DataCategory,
     DataClass,
     PolicyOverlay,
     PrivacyPolicy,
 )
-from yoetz.service import ready_composition as ready_composition_module
+from finishup.service import ready_composition as ready_composition_module
 
 _INSTALLATION = "ins_00000000-0000-4000-8000-000000000001"
 _POLICY_ID = "pvy_00000000-0000-4000-8000-000000000001"
@@ -76,7 +76,7 @@ class _RecordingStore:
 
 
 def test_default_local_only_allows_receipt_projection_categories() -> None:
-    from yoetz.domain.privacy import EgressChannel
+    from finishup.domain.privacy import EgressChannel
 
     policy = _current_default()
     assert DataCategory.FINDING_SUMMARY in policy.agent_context_categories

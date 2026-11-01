@@ -11,9 +11,9 @@ import pytest
 
 from builders.privacy_policies import INSTALLATION_ID, minimal_external_policy
 from builders.privacy_widenings import llm_channel
-from yoetz.adapters.providers.openai_responses import owner_declared_data_use_profile
-from yoetz.application.egress import PrivacyCoordinator, SemanticEgressBlocked
-from yoetz.domain.privacy import (
+from finishup.adapters.providers.openai_responses import owner_declared_data_use_profile
+from finishup.application.egress import PrivacyCoordinator, SemanticEgressBlocked
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -29,9 +29,9 @@ from yoetz.domain.privacy import (
     ProviderBinding,
     ProviderDataUseProfile,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     MinimizedDisclosure,
@@ -41,10 +41,10 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 8, 3, tzinfo=UTC)
 

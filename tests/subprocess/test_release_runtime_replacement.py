@@ -21,11 +21,11 @@ from typing import Any
 
 import pytest
 
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _REPO = Path(__file__).resolve().parents[2]
 _PROVISION = _REPO / "scripts/provision_test_instance.py"
-_URI = "yoetz://guidance/workflow.md"
+_URI = "finishup://guidance/workflow.md"
 _MARKER = "P822_NEXT_ARTIFACT_GUIDANCE"
 
 
@@ -36,7 +36,7 @@ def installation() -> Generator[tuple[Path, Path, dict[str, str]]]:
     base_parent = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".yz-rr"
     base_parent.mkdir(mode=0o700, exist_ok=True)
     base = Path(tempfile.mkdtemp(prefix="t", dir=base_parent))
-    env = {key: value for key, value in os.environ.items() if not key.startswith("YOETZ_")}
+    env = {key: value for key, value in os.environ.items() if not key.startswith("FINISHUP_")}
     env.pop("PYTHONPATH", None)
     command = [sys.executable, str(_PROVISION)]
     created = subprocess.run(  # noqa: S603 - fixed private test-instance provisioning
@@ -69,7 +69,7 @@ def installation() -> Generator[tuple[Path, Path, dict[str, str]]]:
     finally:
         # Every bridge is closed by the test before disposal; prune never kills one to free it.
         pruned = subprocess.run(  # noqa: S603 - the exact test installation only
-            [str(runtime / "bin/yoetz"), "upgrade", "--prune-runtimes"],
+            [str(runtime / "bin/finishup"), "upgrade", "--prune-runtimes"],
             env=env,
             capture_output=True,
             timeout=30,
@@ -90,7 +90,7 @@ def installation() -> Generator[tuple[Path, Path, dict[str, str]]]:
 class _Bridge:
     def __init__(self, runtime: Path, env: dict[str, str]) -> None:
         self.process = subprocess.Popen(  # noqa: S603 - exact pinned test launcher
-            [str(runtime / "bin/yoetz"), "mcp", "serve", "--semantic", "off"],
+            [str(runtime / "bin/finishup"), "mcp", "serve", "--semantic", "off"],
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -163,7 +163,7 @@ def _replacement_wheel(source: Path, destination: Path) -> Path:
 
     with zipfile.ZipFile(source) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
-    root = "yoetz/resources/"
+    root = "finishup/resources/"
     guidance = "guidance/workflow.md"
     members[root + guidance] += f"\n{_MARKER}\n".encode()
     manifest = json.loads(members[root + "manifest.json"])
@@ -244,7 +244,7 @@ def test_installed_bridge_keeps_old_guidance_and_new_bridge_selects_replacement(
         )
         assert "result" in started, started
         status = subprocess.run(  # noqa: S603 - exact instance status, never an ambient launcher
-            [str(runtime / "bin/yoetz"), "service", "status", "--json"],
+            [str(runtime / "bin/finishup"), "service", "status", "--json"],
             env=env,
             capture_output=True,
             timeout=20,
@@ -278,7 +278,7 @@ def test_installed_bridge_keeps_old_guidance_and_new_bridge_selects_replacement(
         assert old.guidance() == original
         assert (identity.read_bytes(), pin.read_bytes()) == before
         pruned = subprocess.run(  # noqa: S603 - exact pinned runtime's bounded cleanup
-            [str(runtime / "bin/yoetz"), "upgrade", "--prune-runtimes"],
+            [str(runtime / "bin/finishup"), "upgrade", "--prune-runtimes"],
             env=env,
             capture_output=True,
             timeout=30,

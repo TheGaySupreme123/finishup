@@ -8,11 +8,11 @@ from dataclasses import replace
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite import connection as connection_module
-from yoetz.adapters.sqlite import migrations as migrations_module
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite import connection as connection_module
+from finishup.adapters.sqlite import migrations as migrations_module
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationControlCommand,
     ObservationCursor,
@@ -24,19 +24,19 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _WORKSPACE = "hmac-sha256:" + "1" * 64
 _SESSION = "hmac-sha256:" + "2" * 64
 _SOURCE = "hmac-sha256:" + "3" * 64
 _TIME = Timestamp("2026-07-22T21:10:00.000Z")
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-_YOETZ_SESSION = "ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+_FINISHUP_SESSION = "ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 
 def _store() -> SqliteObservationStore:
@@ -103,7 +103,7 @@ def test_capture_ticket_staging_round_trip_and_revocation() -> None:
     ticket = ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id=_YOETZ_SESSION,
+        finishup_session_id=_FINISHUP_SESSION,
         session_commitment=_SESSION,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity="hook:ticket-1",
@@ -135,7 +135,7 @@ def test_capture_ticket_quota_counts_only_active_handoffs() -> None:
     base = ObservationCaptureTicket(
         workspace_commitment=_WORKSPACE,
         task_id=_TASK,
-        yoetz_session_id=_YOETZ_SESSION,
+        finishup_session_id=_FINISHUP_SESSION,
         session_commitment=_SESSION,
         source=ObservationSource.CLAUDE_HOOK,
         source_identity="hook:quota-0",
@@ -429,14 +429,58 @@ def test_session_status_clears_current_gap_without_clearing_other_sessions() -> 
     asyncio.run(run())
 
 
+def test_sqlite_standing_gaps_do_not_degrade_current_lifecycle() -> None:
+    """Coverage-only gaps remain visible without becoming false health failures (#974)."""
+
+    async def run() -> None:
+        store = _store()
+        store.grant_consent(_WORKSPACE, _TIME)
+        store.bind_session(_WORKSPACE, _SESSION)
+        standing = tuple(
+            sorted(
+                (
+                    ObservationGapCode.UNPAIRED_EVENT.value,
+                    ObservationGapCode.TRUNCATED_PAYLOAD.value,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                    "pending_attempt_expired",
+                    ObservationGapCode.CONTENT_UNSELECTED.value,
+                ),
+                key=str.encode,
+            )
+        )
+        accepted = await store.ingest(
+            _session_envelope(_SESSION, "hook:standing", 1, gaps=standing)
+        )
+        assert accepted.disposition is ObservationIngestDisposition.ACCEPTED
+
+        status = await store.status_for_session(_WORKSPACE, _SESSION)
+        assert set(standing) <= set(status.gaps)
+        assert status.lifecycle is ObservationLifecycle.ACTIVE
+
+        material = await store.ingest(
+            _session_envelope(
+                _SESSION,
+                "hook:material",
+                2,
+                gaps=(ObservationGapCode.SOURCE_LAG.value,),
+            )
+        )
+        assert material.disposition is ObservationIngestDisposition.ACCEPTED
+        assert (
+            await store.status_for_session(_WORKSPACE, _SESSION)
+        ).lifecycle is ObservationLifecycle.DEGRADED
+
+    asyncio.run(run())
+
+
 def test_codex_session_commitment_for_session_recovers_historical_route() -> None:
     store = _store()
     store.grant_consent(_WORKSPACE, _TIME)
     store.record_workspace_session_route(
         workspace=_WORKSPACE,
-        yoetz_session_id="ses_10000000-0000-4000-8000-000000000001",
-        yoetz_task_id="tsk_10000000-0000-4000-8000-000000000001",
-        yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000001",
+        finishup_session_id="ses_10000000-0000-4000-8000-000000000001",
+        finishup_task_id="tsk_10000000-0000-4000-8000-000000000001",
+        finishup_writer_id="wtr_10000000-0000-4000-8000-000000000001",
         codex_session_commitment=_SESSION,
         bound_at=_TIME,
     )
@@ -444,26 +488,27 @@ def test_codex_session_commitment_for_session_recovers_historical_route() -> Non
     # lanes remain available for recovery and concurrent verification.
     store.record_workspace_session_route(
         workspace=_WORKSPACE,
-        yoetz_session_id="ses_10000000-0000-4000-8000-000000000002",
-        yoetz_task_id="tsk_10000000-0000-4000-8000-000000000002",
-        yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000002",
+        finishup_session_id="ses_10000000-0000-4000-8000-000000000002",
+        finishup_task_id="tsk_10000000-0000-4000-8000-000000000002",
+        finishup_writer_id="wtr_10000000-0000-4000-8000-000000000002",
         codex_session_commitment=_SESSION_B,
         bound_at=_TIME,
     )
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id="ses_10000000-0000-4000-8000-000000000001",
+            finishup_session_id="ses_10000000-0000-4000-8000-000000000001",
         )
         == _SESSION
     )
     assert (
-        store.workspace_for_yoetz_session("ses_10000000-0000-4000-8000-000000000001") == _WORKSPACE
+        store.workspace_for_finishup_session("ses_10000000-0000-4000-8000-000000000001")
+        == _WORKSPACE
     )
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id="ses_10000000-0000-4000-8000-000000000002",
+            finishup_session_id="ses_10000000-0000-4000-8000-000000000002",
         )
         == _SESSION_B
     )
@@ -472,13 +517,13 @@ def test_codex_session_commitment_for_session_recovers_historical_route() -> Non
 def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     store = _store()
     store.grant_consent(_WORKSPACE, _TIME)
-    yoetz_session = "ses_10000000-0000-4000-8000-000000000003"
+    finishup_session = "ses_10000000-0000-4000-8000-000000000003"
     assert (
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=yoetz_session,
-            yoetz_task_id=_TASK,
-            yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000003",
+            finishup_session_id=finishup_session,
+            finishup_task_id=_TASK,
+            finishup_writer_id="wtr_10000000-0000-4000-8000-000000000003",
             codex_session_commitment=_SESSION,
             bound_at=_TIME,
         )
@@ -489,9 +534,9 @@ def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     assert (
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=yoetz_session,
-            yoetz_task_id=_TASK,
-            yoetz_writer_id="wtr_10000000-0000-4000-8000-000000000004",
+            finishup_session_id=finishup_session,
+            finishup_task_id=_TASK,
+            finishup_writer_id="wtr_10000000-0000-4000-8000-000000000004",
             codex_session_commitment=_SESSION_B,
             bound_at=_TIME,
         )
@@ -500,7 +545,7 @@ def test_workspace_session_route_commitment_is_first_writer_fence() -> None:
     assert (
         store.codex_session_commitment_for_session(
             workspace=_WORKSPACE,
-            yoetz_session_id=yoetz_session,
+            finishup_session_id=finishup_session,
         )
         == _SESSION
     )
@@ -511,7 +556,7 @@ def test_workspace_routes_keep_unrelated_sessions_active() -> None:
 
     store = _store()
     store.grant_consent(_WORKSPACE, _TIME)
-    for yoetz_session, session, task, writer in (
+    for finishup_session, session, task, writer in (
         (
             "ses_10000000-0000-4000-8000-000000000001",
             _SESSION,
@@ -527,9 +572,9 @@ def test_workspace_routes_keep_unrelated_sessions_active() -> None:
     ):
         store.record_workspace_session_route(
             workspace=_WORKSPACE,
-            yoetz_session_id=yoetz_session,
-            yoetz_task_id=task,
-            yoetz_writer_id=writer,
+            finishup_session_id=finishup_session,
+            finishup_task_id=task,
+            finishup_writer_id=writer,
             codex_session_commitment=session,
             bound_at=_TIME,
         )
@@ -565,5 +610,60 @@ def test_bounded_envelope_window_filters_session_before_selecting_latest_rows() 
         ]
         with pytest.raises(ValueError, match="observation_envelope_limit_invalid"):
             store.list_envelopes_for_session(_WORKSPACE, _SESSION, limit=257)
+
+    asyncio.run(run())
+
+
+def test_content_ref_lookup_survives_real_retention_and_keeps_session_fence() -> None:
+    """Real ingest must keep provenance after routine events roll over the ring."""
+
+    async def run() -> None:
+        store = _store()
+        store.grant_consent(_WORKSPACE, _TIME)
+        store.bind_session(_WORKSPACE, _SESSION)
+        store.bind_session(_WORKSPACE, _SESSION_B)
+        early_object = "obj_00000000-0000-4000-8000-000000000883"
+        early = replace(
+            _session_envelope(_SESSION, "hook:early-edit", 1),
+            content_object_refs=(early_object,),
+        )
+        assert (await store.ingest(early)).disposition is ObservationIngestDisposition.ACCEPTED
+        for ordinal in range(2, 302):
+            await store.ingest(_session_envelope(_SESSION, f"hook:later-{ordinal}", ordinal))
+        await store.ingest(
+            replace(
+                _session_envelope(_SESSION_B, "hook:other-session", 1),
+                content_object_refs=(early_object,),
+            )
+        )
+        assert len(store.list_envelopes(_WORKSPACE)) == 256
+        found = store.list_envelopes_for_content_refs(_WORKSPACE, _SESSION, (early_object,))
+        assert [item.source_identity for item in found] == ["hook:early-edit"]
+        assert store.list_envelopes_for_content_refs(_WORKSPACE, _SESSION, ()) == ()
+        with pytest.raises(ValueError, match="observation_envelope_limit_invalid"):
+            store.list_envelopes_for_content_refs(_WORKSPACE, _SESSION, (early_object,), limit=0)
+
+    asyncio.run(run())
+
+
+def test_capture_retention_reservation_is_bounded_and_keeps_recent_structure() -> None:
+    async def run() -> None:
+        store = _store()
+        store.grant_consent(_WORKSPACE, _TIME)
+        store.bind_session(_WORKSPACE, _SESSION)
+        for ordinal in range(1, 301):
+            await store.ingest(
+                replace(
+                    _session_envelope(_SESSION, f"hook:capture-{ordinal}", ordinal),
+                    content_object_refs=(f"obj_00000000-0000-4000-8000-{ordinal:012d}",),
+                )
+            )
+        for ordinal in range(301, 601):
+            await store.ingest(_session_envelope(_SESSION, f"hook:recent-{ordinal}", ordinal))
+        retained = store.list_envelopes(_WORKSPACE)
+        assert len(retained) == 256
+        assert sum(bool(item.content_object_refs) for item in retained) == 64
+        assert retained[-1].source_identity == "hook:recent-600"
+        assert retained[0].source_identity == "hook:capture-237"
 
     asyncio.run(run())

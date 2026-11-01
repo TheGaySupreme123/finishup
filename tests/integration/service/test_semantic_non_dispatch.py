@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics_module
-import yoetz.service.ready_composition as ready_composition_module
+import finishup.observability.diagnostics as diagnostics_module
+import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import (
     FixedClock,
     append_command,
@@ -25,15 +25,16 @@ from builders.policy_cases import (
     clm,
     evd,
     evidence_record,
+    evt,
     make_case,
     obl,
     obligation_record,
     plan_record,
     record,
 )
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import (
     CheckScope,
     FinalSemanticEvaluation,
     allocate_findings,
@@ -41,15 +42,15 @@ from yoetz.application.check import (
     run_deterministic_policies,
     semantic_coverage_gap_code,
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     PrivacyCoordinator,
     RepositoryGrantAdmission,
     SemanticEgressAwaitingHuman,
     SemanticEgressBlocked,
     SemanticEgressProviderOutcome,
 )
-from yoetz.application.semantic_content import CapturedContentResolution
-from yoetz.domain.events import (
+from finishup.application.semantic_content import CapturedContentResolution
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -58,15 +59,15 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     SamplingParams,
     SemanticDispatchKind,
     SemanticFailureClass,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.privacy import (
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -81,19 +82,19 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
 )
-from yoetz.domain.values import EvidenceId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import CaseGap
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import CheckPhase, FrozenCase, OperationLease
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
-from yoetz.ports.privacy import (
+from finishup.domain.values import EvidenceId, timestamp_from_string
+from finishup.kernel.deterministic_checks import CaseGap, FindingBasisRef
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import CheckPhase, FrozenCase, OperationLease
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     OutboundGatewayPort,
     PrivacyAuditPort,
@@ -101,18 +102,19 @@ from yoetz.ports.privacy import (
     PrivacyPolicyStorePort,
     RepositoryPrivacyAuthority,
 )
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
-from yoetz.ports.start_catalog import (
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
+from finishup.ports.start_catalog import (
     SessionBinding,
     StartCatalogPort,
     TaskRoute,
     TaskRouteState,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.service.semantic_ceiling import ChannelAdmission
 
 _TASK = "tsk_53000000-0000-4000-8000-000000000001"
 _SESSION = "ses_53000000-0000-4000-8000-000000000001"
@@ -436,35 +438,35 @@ class _RoutedObservation:
         self.session_id = session_id
         self.route_task = task_id if route_task is None else route_task
 
-    def workspace_for_yoetz_session(self, session_id: str) -> str | None:
+    def workspace_for_finishup_session(self, session_id: str) -> str | None:
         assert session_id == self.session_id
         return _OBSERVATION_WORKSPACE
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool] | None:
         assert workspace == _OBSERVATION_WORKSPACE
-        assert yoetz_session_id == self.session_id
+        assert finishup_session_id == self.session_id
         return (_OBSERVATION_SESSION, self.route_task, True)
 
 
 class _AmbiguousObservation:
-    def workspace_for_yoetz_session(self, _session: str) -> object:
+    def workspace_for_finishup_session(self, _session: str) -> object:
         return (_OBSERVATION_WORKSPACE, "hmac-sha256:" + "d" * 64)
 
     def observation_route_for_session(
-        self, *, workspace: str, yoetz_session_id: str
+        self, *, workspace: str, finishup_session_id: str
     ) -> tuple[str, str, bool]:
-        del workspace, yoetz_session_id
+        del workspace, finishup_session_id
         return (_OBSERVATION_SESSION, _TASK, True)
 
 
 class _MissingRouteObservation:
-    def workspace_for_yoetz_session(self, _session: str) -> str:
+    def workspace_for_finishup_session(self, _session: str) -> str:
         return _OBSERVATION_WORKSPACE
 
-    def observation_route_for_session(self, *, workspace: str, yoetz_session_id: str) -> None:
-        del workspace, yoetz_session_id
+    def observation_route_for_session(self, *, workspace: str, finishup_session_id: str) -> None:
+        del workspace, finishup_session_id
         return None
 
 
@@ -528,7 +530,9 @@ def test_ready_semantic_content_binding_fails_closed_for_ambiguous_or_mismatched
 async def test_ready_semantic_content_resolution_and_fence_use_observation_workspace(
     monkeypatch: pytest.MonkeyPatch,
     fence_allowed: bool,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     adapter = memory_adapter(append_command())
     frozen, runtime = await _durable_semantic_case(adapter)
     runtime = replace(
@@ -600,6 +604,21 @@ async def test_ready_semantic_content_resolution_and_fence_use_observation_works
         for call in local_fence.calls
     )
     assert privacy.calls == (3 if fence_allowed else 0)
+    records = [
+        json.loads(line)
+        for line in diagnostics_module.diagnostic_log_path(root=tmp_path).read_text().splitlines()
+    ]
+    built = [row for row in records if row["operation"] == "semantic_case_built"]
+    assert len(built) == 1
+    assert built[0]["semantic_capture_parts_resolved"] == 0
+    assert built[0]["semantic_diff_parts_resolved"] == 0
+    assert built[0]["semantic_diff_excerpts_selected"] == 0
+    assert built[0]["semantic_excerpt_bytes_selected"] >= 0
+    # The approved Assisted limits ride beside the selection counts (issue #907 Phase 1b).
+    assert built[0]["semantic_excerpt_count_approved"] == 16
+    assert built[0]["semantic_excerpt_byte_approved"] == 131_072
+    assert built[0]["semantic_excerpt_count_limit"] == 16
+    assert built[0]["semantic_excerpt_byte_limit"] == 131_072
 
 
 async def _durable_semantic_case(
@@ -715,7 +734,7 @@ def _records(tmp_path: Path) -> tuple[Mapping[str, object], ...]:
 
 
 def _assert_record(tmp_path: Path, operation: str, reason: SemanticReason) -> None:
-    records = _records(tmp_path)
+    records = tuple(row for row in _records(tmp_path) if row["operation"] != "semantic_case_built")
     assert records == (
         {
             "timestamp": records[0]["timestamp"],
@@ -754,7 +773,7 @@ async def test_missing_repository_grant_suspends_same_request_before_provider_re
     )
     assert result.continuation is not None
     assert result.continuation.kind == "repository_privacy_setup"
-    assert result.continuation.command == ("yoetz", "--privacy")
+    assert result.continuation.command == ("finishup", "--privacy")
     assert result.continuation.request_id == _REQUEST
     assert provider_resolutions == 0
     assert privacy.calls == 0
@@ -1156,7 +1175,8 @@ async def test_provider_binding_is_re_resolved_without_rebuilding_evaluator(
     )
     assert privacy.calls == 1
     assert [record["operation"] for record in _records(tmp_path)] == [
-        "semantic_not_dispatched_credential_unavailable"
+        "semantic_not_dispatched_credential_unavailable",
+        "semantic_case_built",
     ]
 
 
@@ -1284,7 +1304,7 @@ async def test_required_packet_capacity_refuses_before_job_and_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.application.semantic_case as semantic_case_module
+    import finishup.application.semantic_case as semantic_case_module
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 1)
@@ -1320,7 +1340,7 @@ async def test_required_packet_capacity_refuses_before_job_and_provider(
 async def test_dispatch_and_mapping_failures_keep_original_check_join(
     stage: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.observability.semantic_context import semantic_check_request
+    from finishup.observability.semantic_context import semantic_check_request
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     adapter = memory_adapter(append_command())
@@ -1363,7 +1383,7 @@ async def test_dispatch_and_mapping_failures_keep_original_check_join(
 async def test_lineage_capacity_refuses_before_job_and_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.application.semantic_case import LineageSemanticCapacityExceeded
+    from finishup.application.semantic_case import LineageSemanticCapacityExceeded
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
 
@@ -1404,7 +1424,9 @@ class _FindingIds:
         return new_id(kind)
 
 
-def _wide_frozen(width: int) -> tuple[FrozenCase, tuple[Finding, ...]]:
+def _wide_frozen(
+    width: int, extra_refs: tuple[FindingBasisRef, ...] = ()
+) -> tuple[FrozenCase, tuple[Finding, ...]]:
     """Ordinary task material plus one gap naming ``width`` subjects (issue #858 shape).
 
     The work-integrity pack turns the gap into one ``ledger_stale_or_incomplete`` finding whose
@@ -1446,11 +1468,11 @@ def _wide_frozen(width: int) -> tuple[FrozenCase, tuple[Finding, ...]]:
         obligations={obl(1): obligation},
         claims={clm(1): claim},
         evidence=evidence,
-        extra_refs=(clm(1), obl(1), evd(1)),
+        extra_refs=(clm(1), obl(1), evd(1), *extra_refs),
         gaps=(CaseGap("missing_ref:bulk", "missing_ref", subjects),),
     )
     assessments, _ = run_deterministic_policies(
-        case, CheckScope((), ()), ("research-evidence/0.1.0", "work-integrity/0.1.0")
+        case, CheckScope((), ()), ("research-evidence/0.2.0", "work-integrity/0.3.0")
     )
     findings = allocate_findings(
         _FindingIds(),
@@ -1475,6 +1497,41 @@ def _wide_frozen(width: int) -> tuple[FrozenCase, tuple[Finding, ...]]:
         ),
     )
     return frozen, findings
+
+
+@pytest.mark.anyio
+async def test_a_reduced_case_records_no_included_references_it_did_not_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #904: only what a sent packet carried is recorded, never the builder's closure.
+
+    The case's reference closure names refs that were only mentioned, linked or omitted. A review
+    that never produced a result sent nothing the check may credit, so the final evaluation carries
+    no included references even though its scope was reduced.
+    """
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    unrelated = tuple(evt(900 + number) for number in range(4))
+    frozen, findings = _wide_frozen(17, unrelated)
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(frozen, findings)
+
+    [candidate] = privacy.candidates
+    envelopes: list[dict[str, Any]] = []
+    for item in candidate.items:
+        if b'"frontier_refs"' not in item.plaintext:
+            continue
+        parsed: object = json.loads(item.plaintext)
+        if isinstance(parsed, dict) and "frontier_refs" in parsed:
+            envelopes.append(cast(dict[str, Any], parsed))
+    [envelope] = envelopes
+    assert int(cast(str, envelope["omitted_reference_count"])) >= len(unrelated)
+    assert cast(list[str], envelope["frontier_refs"]), "the closure names references"
+    assert result.status is SemanticStatus.UNAVAILABLE
+    assert result.case_reference_scope_reduced is True
+    assert result.case_included_refs is None
 
 
 @pytest.mark.anyio
@@ -1520,3 +1577,477 @@ async def test_wide_finding_prose_dispatches_one_bounded_case(
     envelope = next(item.plaintext for item in candidate.items if item.item_id == "review-packet")
     assert wide_ref in envelope
     assert SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP.encode("ascii") in envelope
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("approval", ["current", "predates_section"])
+async def test_task_statement_gap_or_item_reaches_the_final_evaluation(
+    approval: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criteria 1 and 7 (issue #908) through the real composition.
+
+    A recorded statement travels as its own ``task_description`` candidate only under a policy
+    that names the section; an approval that predates the section sends no statement at all and
+    the final evaluation carries ``task_statement_unavailable`` with ``not_authorized``.
+    """
+
+    from finishup.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.values import event_id
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    if approval == "predates_section":
+        store = privacy.policy_application.policy_store
+        effective = store._effective  # pyright: ignore[reportPrivateUsage]
+        legacy = replace(
+            effective.policy,
+            review_selection=ReviewSelectionPolicy.for_profile(
+                ReviewContextProfile.EXPANDED, preset_version="1.1.0"
+            ),
+        )
+        store._effective = replace(effective, policy=legacy)  # pyright: ignore[reportPrivateUsage]
+    statement_event = event_id("evt_53000000-0000-4000-8000-000000000908")
+    statement = "Under Ascii, Style.Truncate returns plain text without tail."
+    base = _frozen()
+    case = replace(
+        make_case(extra_refs=(statement_event,)),
+        task_statement=RecordedTaskStatement(statement, statement_event, "session_opened", 1),
+        task_title="termenv",
+    )
+    frozen = replace(base, case=case)
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(frozen, ())
+
+    assert privacy.calls == 1
+    [candidate] = privacy.candidates
+    carried = [item for item in candidate.items if item.item_id == "task-statement"]
+    if approval == "current":
+        assert [item.category for item in carried] == [DataCategory.TASK_DESCRIPTION]
+        assert statement.encode() in carried[0].plaintext
+        assert not {gap for gap in result.case_content_gaps if gap.startswith("task_statement")}
+    else:
+        assert carried == []
+        assert all(statement.encode() not in item.plaintext for item in candidate.items)
+        assert {"task_statement_not_authorized", "task_statement_unavailable"} <= set(
+            result.case_content_gaps
+        )
+
+
+def _excerpt_heavy_frozen(count: int, description: str) -> FrozenCase:
+    """A frozen case whose completion claim cites ``count`` evidence records (issue #907)."""
+
+    from finishup.protocol.coverage import EvidenceImmutability
+
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    for index in range(1, count + 1):
+        evidence[evd(index)] = evidence_record(
+            EvidenceRecordedPayload(
+                evidence_id=evd(index),
+                evidence_kind=EvidenceKind.TEST_RESULT,
+                strength=EvidenceImmutability.METADATA_ONLY,
+                observed_at=timestamp_from_string("2026-07-01T00:00:00.000Z"),
+                description=description,
+            ),
+            index + 3,
+        )
+    claim = record(
+        ClaimRecordedPayload(
+            clm(1), ClaimKind.COMPLETION, "Work is complete", tuple(evidence), obligation_refs=()
+        ),
+        3,
+    )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Ship it", ()), 1)},
+        claims={clm(1): claim},
+        evidence=evidence,
+        extra_refs=(clm(1), *evidence),
+    )
+    return replace(_frozen(), case=case)
+
+
+def _with_channel_ceiling(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    """Stand in for an enabled channel's ceiling; the fixture policy keeps its channel off.
+
+    ``channel_prepared_limit`` itself is covered in ``tests/unit/service/test_semantic_ceiling.py``.
+    """
+
+    import finishup.service.semantic_ceiling as semantic_ceiling_module
+
+    def fixed_limit(policy: object, *, route_bytes: int = 0) -> int:
+        del policy, route_bytes
+        return limit
+
+    monkeypatch.setattr(semantic_ceiling_module, "channel_prepared_limit", fixed_limit)
+    _with_full_admission(monkeypatch)
+
+
+def _with_full_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for an enabled channel that releases every category it is offered."""
+
+    def every_category(
+        policy: object, bindings: Iterable[ProviderBinding | None]
+    ) -> ChannelAdmission:
+        del policy, bindings
+        return ChannelAdmission(
+            frozenset(DataCategory),
+            frozenset(DataClass) - {DataClass.SECRET_OR_CRYPTOGRAPHIC},
+        )
+
+    monkeypatch.setattr(ready_composition_module, "channel_admission", every_category)
+
+
+def _prepared_size(candidate: CandidateContext) -> int:
+    from finishup.application.semantic_case import assemble_filtered_review_packet
+    from finishup.protocol.canonical import strict_json_parse
+
+    envelope = next(item.plaintext for item in candidate.items if item.item_id == "review-packet")
+    return len(
+        assemble_filtered_review_packet(
+            cast(dict[str, object], strict_json_parse(envelope)),
+            content_by_id={item.item_id: item.plaintext for item in candidate.items},
+            included_item_ids={item.item_id for item in candidate.items},
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_expanded_1_2_0_counters_show_the_protocol_maximum_not_16(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #907 Phase 1b: 40 small items are all selected; the count limit reads 64."""
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    _with_channel_ceiling(monkeypatch, 262_144)
+
+    await _evaluator(privacy, lambda: _PROVIDER, _route())(
+        _excerpt_heavy_frozen(40, "test run: 12 passed, 0 failed"), ()
+    )
+
+    assert privacy.calls == 1
+    [built] = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
+    assert built["semantic_excerpts_selected"] == 40
+    assert built["semantic_excerpt_count_limit"] == 64
+    assert built["semantic_excerpt_byte_limit"] == 131_072
+    assert built["semantic_excerpt_ceiling_rounds"] == 0
+    assert built["semantic_excerpt_count_cut_for_case_bound"] == 0
+    # #1245 (D22): nothing was narrowed, so no narrowing record is written.
+    assert not [row for row in _records(tmp_path) if row["operation"] == "semantic_case_narrowed"]
+
+
+@pytest.mark.anyio
+async def test_a_case_over_the_channel_ceiling_is_planned_below_it_and_disclosed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #907 Phase 1b: more excerpts must not turn a runnable review into a denied one.
+
+    Quote-heavy excerpts cost about twice their bytes once escaped in the packet, and twice again
+    in the reviewer exchange that carries it (#1118), so 64 selectable excerpts would prepare a
+    disclosure over 262,144 bytes that egress refuses whole. The case is rebuilt with
+    a smaller excerpt byte budget instead, the dropped excerpts are disclosed as
+    ``content_unselected``, and a replay builds the identical case.
+    """
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    # About 8 KB per excerpt once escaped: excerpts carry their approved bytes rather than a 4 KiB
+    # structural clip since #907 Phase 1a, so the fixture carries 4 KB of quotes itself.
+    frozen = _excerpt_heavy_frozen(64, '"' * 4_000)
+    digests: list[str] = []
+    for _attempt in range(2):
+        privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+        privacy.terminal_provider_result = True
+        _with_channel_ceiling(monkeypatch, 262_144)
+
+        result = await _evaluator(privacy, lambda: _PROVIDER, _route())(frozen, ())
+
+        assert privacy.calls == 1
+        [candidate] = privacy.candidates
+        assert _prepared_size(candidate) <= 262_144
+        assert "content_unselected" in result.case_content_gaps
+        digests.append(str(candidate.subject_digest))
+    built = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
+    assert len(built) == 2
+    assert all(1 <= cast(int, row["semantic_excerpt_ceiling_rounds"]) <= 4 for row in built)
+    # #1245 (D22): a narrowing record says which sections went; the goal did, the claim row the
+    # case carries did not.
+    narrowed = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_narrowed"]
+    assert len(narrowed) == 2
+    for row in narrowed:
+        assert row["semantic_section_dropped_goal"] == 1
+        assert row["semantic_section_dropped_claims"] == 0
+        assert row["semantic_section_dropped_obligations"] == 0
+        assert row["semantic_claim_rows_selected"] == 1
+        assert row["semantic_excerpt_ceiling_rounds"] == built[0]["semantic_excerpt_ceiling_rounds"]
+    # #1118: a quote costs four bytes once the packet is a JSON string in the reviewer exchange,
+    # so the planner measures that exchange and keeps fewer of these 4 KB quote runs (13 today)
+    # than the 17+ the packet-only estimate kept, which the real coordinator could not disclose.
+    assert all(0 < cast(int, row["semantic_excerpts_selected"]) < 64 for row in built)
+    # Consent approved 64 excerpts and 128 KiB; the planner, not the owner, set the narrower
+    # effective byte limit, and the diagnostics keep the two apart (R944-03).
+    assert all(row["semantic_excerpt_count_approved"] == 64 for row in built)
+    assert all(row["semantic_excerpt_byte_approved"] == 131_072 for row in built)
+    assert all(cast(int, row["semantic_excerpt_byte_limit"]) < 131_072 for row in built)
+    assert digests[0] == digests[1]
+
+
+def _prose_heavy_frozen(
+    excerpts: int, unsupported_claims: int
+) -> tuple[FrozenCase, tuple[Finding, ...]]:
+    """Unsupported claims whose findings carry 4 KiB clipped summary and detail prose, beside one
+    claim that ``excerpts`` 2,000-byte evidence rows support (the R944-01 trigger)."""
+
+    from finishup.protocol.coverage import EvidenceImmutability
+
+    evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
+    for index in range(1, excerpts + 1):
+        evidence[evd(index)] = evidence_record(
+            EvidenceRecordedPayload(
+                evidence_id=evd(index),
+                evidence_kind=EvidenceKind.TEST_RESULT,
+                strength=EvidenceImmutability.METADATA_ONLY,
+                observed_at=timestamp_from_string("2026-07-01T00:00:00.000Z"),
+                description="e" * 2_000,
+            ),
+            index + 30,
+        )
+    claims = {
+        clm(1): record(
+            ClaimRecordedPayload(
+                clm(1),
+                ClaimKind.COMPLETION,
+                "Work is complete",
+                tuple(evidence),
+                obligation_refs=(),
+            ),
+            3,
+        )
+    }
+    for number in range(2, unsupported_claims + 2):
+        claims[clm(number)] = record(
+            ClaimRecordedPayload(
+                clm(number), ClaimKind.COMPLETION, f"Claim {number}", (), obligation_refs=()
+            ),
+            number + 3,
+        )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Ship it", ()), 1)},
+        claims=claims,
+        evidence=evidence,
+        extra_refs=(*claims, *evidence),
+    )
+    assessments, _ = run_deterministic_policies(
+        case, CheckScope((), ()), ("research-evidence/0.2.0", "work-integrity/0.3.0")
+    )
+    findings = tuple(
+        replace(finding, summary="s" * 8_192, detail="d" * 8_192)
+        for finding in allocate_findings(
+            _FindingIds(),
+            tuple(item.candidate for item in assessments),
+            prior_finding_ids(case.projection),
+        )
+    )
+    return replace(_frozen(), case=case), findings
+
+
+@pytest.mark.anyio
+async def test_excerpts_cut_for_the_case_bound_are_their_own_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R944-01: the cut is reported apart from consent (approved) and planning (rounds, limit)."""
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    _with_channel_ceiling(monkeypatch, 262_144)
+    frozen, findings = _prose_heavy_frozen(64, 18)
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(frozen, findings)
+
+    assert result.reason is not SemanticReason.COORDINATOR_FAILURE
+    assert privacy.calls == 1
+    assert "content_unselected" in result.case_content_gaps
+    [built] = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
+    assert built["semantic_excerpt_count_approved"] == 64
+    assert cast(int, built["semantic_excerpt_count_cut_for_case_bound"]) > 0
+
+
+@pytest.mark.anyio
+async def test_fixed_material_over_the_case_bound_is_a_capacity_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without excerpts to cut, 32 findings' prose over the case bound is a typed refusal."""
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    _with_channel_ceiling(monkeypatch, 262_144)
+    # The completion claim has no evidence either, so 31 unsupported claims give 32 findings.
+    frozen, findings = _prose_heavy_frozen(0, 31)
+    assert len(findings) == 32
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(frozen, findings)
+
+    assert (result.status, result.reason) == (
+        SemanticStatus.FAILED,
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+    assert privacy.calls == 0
+    _assert_record(
+        tmp_path,
+        "semantic_not_dispatched_case_capacity",
+        SemanticReason.CASE_CAPACITY_EXCEEDED,
+    )
+
+
+@pytest.mark.anyio
+async def test_the_planner_sizes_only_what_the_channel_releases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R944-02: excerpts the channel withholds cannot push the case over its ceiling.
+
+    The same quote-heavy case that is planned down above is left whole when the channel releases
+    only structural metadata: local minimization removes the excerpt bytes before egress, so they
+    must not be traded away to fit a ceiling they never reach.
+    """
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    _with_channel_ceiling(monkeypatch, 262_144)
+    seen: list[tuple[ProviderBinding | None, ...]] = []
+
+    def structural_only(
+        policy: object, bindings: Iterable[ProviderBinding | None]
+    ) -> ChannelAdmission:
+        del policy
+        seen.append(tuple(bindings))
+        return ChannelAdmission(
+            frozenset({DataCategory.BOUNDED_STRUCTURAL_METADATA}),
+            frozenset({DataClass.PUBLIC_STRUCTURAL}),
+        )
+
+    monkeypatch.setattr(ready_composition_module, "channel_admission", structural_only)
+
+    await _evaluator(privacy, lambda: _PROVIDER, _route())(
+        _excerpt_heavy_frozen(64, '"' * 8_000), ()
+    )
+
+    assert privacy.calls == 1
+    # The admission is taken for the destinations the case can be dispatched to.
+    assert seen == [(_PROVIDER, None)]
+    [built] = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
+    assert built["semantic_excerpt_ceiling_rounds"] == 0
+    assert built["semantic_excerpt_byte_limit"] == built["semantic_excerpt_byte_approved"]
+
+
+@pytest.mark.anyio
+async def test_an_unset_custom_ceiling_still_plans_below_the_disclosure_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #907 Phase 1b: zero ``max_bytes``/``max_tokens`` mean unset, not unbounded.
+
+    Without a bound the planner left a 64-excerpt case over the 262,144-byte disclosure limit,
+    and preparing it failed as a coordinator error instead of a planned, disclosed review.
+    """
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    store = privacy.policy_application.policy_store
+    effective = store._effective  # pyright: ignore[reportPrivateUsage]
+    custom = replace(effective.policy, review_context_profile=ReviewContextProfile.CUSTOM)
+    assert all(
+        (channel.max_bytes, channel.max_tokens) == (0, 0)
+        for channel in custom.channel_policies
+        if channel.channel is EgressChannel.LLM_INFERENCE
+    )
+    store._effective = replace(effective, policy=custom)  # pyright: ignore[reportPrivateUsage]
+    # The fixture's channel is off; an unset ceiling is about an enabled one.
+    _with_full_admission(monkeypatch)
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(
+        _excerpt_heavy_frozen(64, '"' * 8_000), ()
+    )
+
+    assert result.reason is not SemanticReason.COORDINATOR_FAILURE
+    assert privacy.calls == 1
+    [candidate] = privacy.candidates
+    assert _prepared_size(candidate) <= 262_144
+    assert "content_unselected" in result.case_content_gaps
+    [built] = [row for row in _records(tmp_path) if row["operation"] == "semantic_case_built"]
+    assert cast(int, built["semantic_excerpt_ceiling_rounds"]) >= 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recorded", ["statement", "title_only"])
+async def test_a_channel_that_withholds_task_description_says_the_statement_was_not_sent(
+    recorded: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #908: the section is selected but the LLM channel will not let task_description out.
+
+    The statement (or the title standing in) would be built and then filtered at egress, so a
+    review could succeed without the user's request and say only that some context was withheld.
+    The packet and the final evaluation name it instead: ``task_statement_unavailable`` with
+    ``task_statement_not_authorized``, and no statement item is offered at all.
+    """
+
+    from builders.privacy_policies import minimal_external_policy
+    from finishup.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.values import event_id
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
+    privacy.terminal_provider_result = True
+    store = privacy.policy_application.policy_store
+    effective = store._effective  # pyright: ignore[reportPrivateUsage]
+    base = minimal_external_policy()
+    blocked = replace(
+        base,
+        review_context_profile=ReviewContextProfile.EXPANDED,
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
+        effective_scope=effective.policy.effective_scope,
+        channel_policies=tuple(
+            replace(
+                channel,
+                allowed_categories=tuple(
+                    item
+                    for item in channel.allowed_categories
+                    if item is not DataCategory.TASK_DESCRIPTION
+                ),
+            )
+            if channel.channel is EgressChannel.LLM_INFERENCE
+            else channel
+            for channel in base.channel_policies
+        ),
+    )
+    assert "task_statement" in blocked.review_selection.sections
+    assert DataCategory.TASK_DESCRIPTION in blocked.withheld_review_categories
+    store._effective = EffectivePrivacyPolicy(  # pyright: ignore[reportPrivateUsage]
+        blocked, effective.generation, blocked.policy_digest
+    )
+    statement_event = event_id("evt_53000000-0000-4000-8000-000000000909")
+    statement = "Under Ascii, Style.Truncate returns plain text without tail."
+    case = replace(
+        make_case(extra_refs=(statement_event,)),
+        task_statement=(
+            RecordedTaskStatement(statement, statement_event, "session_opened", 1)
+            if recorded == "statement"
+            else None
+        ),
+        task_title="termenv",
+    )
+
+    result = await _evaluator(privacy, lambda: _PROVIDER, _route())(
+        replace(_frozen(), case=case), ()
+    )
+
+    assert privacy.calls == 1
+    [candidate] = privacy.candidates
+    assert [item for item in candidate.items if item.item_id == "task-statement"] == []
+    assert {"task_statement_unavailable", "task_statement_not_authorized"} <= set(
+        result.case_content_gaps
+    )
+    assert "task_statement_not_supplied" not in result.case_content_gaps
+    envelope = next(item.plaintext for item in candidate.items if item.item_id == "review-packet")
+    assert b"task_statement_not_authorized" in envelope

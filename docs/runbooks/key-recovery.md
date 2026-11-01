@@ -16,7 +16,7 @@ artifact** together let you unwrap a BMK on a different machine.
 
 An **installation recovery set** is different: it seals the installation vault authority and, in
 self-contained mode, a consistent encrypted snapshot of the catalog, vault, bundles, and objects.
-It is provisioned only while the vault is ready and restored only through `yoetz service recovery`.
+It is provisioned only while the vault is ready and restored only through `finishup service recovery`.
 See ADR-024. A bundle portable-recovery artifact cannot be used as an installation set.
 
 A raw BMK or any derived key is **never** shown, exported, or logged. Attacks against a compromised
@@ -35,14 +35,14 @@ Run the operation that failed with `--json` and read its bounded reason code bef
 | `key_id_mismatch` / `recovered_key_cannot_decrypt` | Wrong bundle/key, or corruption | Quarantine and stop; see [`quarantine-recovery.md`](quarantine-recovery.md). |
 | `recovery_secret_wrong` | Secret entered incorrectly | Re-enter it safely; this is distinct from artifact tamper. |
 | `recovery_artifact_tampered` / `format_unsupported` | Artifact itself is bad | Stop and use another verified artifact/package; never hand-edit its KDF, nonce, or header. |
-| `recovery_material_required` | Ordinary installation unlock paths are gone and a recovery generation was provisioned | Run `yoetz service recovery` in the protected local-human flow. |
+| `recovery_material_required` | Ordinary installation unlock paths are gone and a recovery generation was provisioned | Run `finishup service recovery` in the protected local-human flow. |
 | `permanently_unrecoverable` | No ordinary key or valid provisioned installation recovery generation exists | Preserve the old encrypted state; do not initialize over it. |
 
 ## 3. `key_locked`
 
 The key exists but access is currently denied (for example, the OS keyring session is locked).
 Unlock or authorize the verified backend through its normal platform mechanism, then retry the exact
-same Yoetz operation. Never create a replacement key entry to work around a locked backend.
+same FinishUP operation. Never create a replacement key entry to work around a locked backend.
 
 ## 4. `key_missing` / backend unavailable
 
@@ -94,38 +94,38 @@ KDF, backend, or platform change.
 ## 8. Key and recovery custody
 
 Separate the custody of backup ciphertext, the recovery artifact, and the recovery secret according
-to your own threat model — Yoetz does not prescribe one storage policy. A checksum detects
+to your own threat model — FinishUP does not prescribe one storage policy. A checksum detects
 accidental change; it is not a signature and not a secret. Never store a secret beside its artifact
-in a Yoetz configuration file or a repository.
+in a FinishUP configuration file or a repository.
 
 ## 9. Installation-vault access recovery
 
 Provision compact and/or self-contained recovery while the service is ready:
 
-1. Run `yoetz service recovery provision` locally and choose set mode and secret form.
+1. Run `finishup service recovery provision` locally and choose set mode and secret form.
 2. Review the digest-bound plan, member counts/bytes, compatibility cells, and destination class.
 3. Enter/confirm an Argon2id passphrase or record the generated recovery code from the protected
    prompt. The create-only `.yirs` destination is selected locally before mutation; its path never
    reaches the service. Keep the secret separate from the set.
-4. Let Yoetz finish its reopen/replay/check/receipt drill. An incomplete set is not recovery
+4. Let FinishUP finish its reopen/replay/check/receipt drill. An incomplete set is not recovery
    material. If the final file write fails after the generation commits, rerun
-   `yoetz service recovery export` and choose a new destination; do not reprovision.
+   `finishup service recovery export` and choose a new destination; do not reprovision.
 5. Re-run the clean-profile drill after rotation or a recovery-format/platform change.
 
-After unlock loss, run `yoetz service recovery status`. If the set is external, stop the daemon and
-run `yoetz service recovery import`. An imported archive is only *staged*: its header is not
+After unlock loss, run `finishup service recovery status`. If the set is external, stop the daemon and
+run `finishup service recovery import`. An imported archive is only *staged*: its header is not
 authenticated, so it never becomes the active generation on import and whatever generation was
 already in force stays usable if the import turns out to be the wrong one.
 
-Then run the exact reported `yoetz service recovery restore` command. Select the set only in an
+Then run the exact reported `finishup service recovery restore` command. Select the set only in an
 allowlisted native picker when that platform cell exists, otherwise in the trusted terminal.
 
 Restoring into a clean profile takes two invocations, because its phases need opposite things:
 
-1. With the daemon still stopped, `yoetz service recovery restore` installs the encrypted snapshot
+1. With the daemon still stopped, `finishup service recovery restore` installs the encrypted snapshot
    into the empty profile. This step holds the service's singleton exclusion, so no daemon may be
-   running, and Yoetz never starts one for you. It reports `snapshot_installed` and stops there.
-2. Start the service (`yoetz service run`), then run `yoetz service recovery restore` again. This
+   running, and FinishUP never starts one for you. It reports `snapshot_installed` and stops there.
+2. Start the service (`finishup service run`), then run `finishup service recovery restore` again. This
    invocation finds the installed marker, skips straight to the ceremony, and is where you enter
    the recovery secret and a distinct new vault passphrase.
 
@@ -142,7 +142,7 @@ recoverable.
 ## 10. Permanent loss and honest next steps
 
 If the BMK and every valid portable-recovery path are unavailable, the encrypted object content is
-**not recoverable by Yoetz**. Preserve the catalog, bundle, backup, and structural evidence — do not
+**not recoverable by FinishUP**. Preserve the catalog, bundle, backup, and structural evidence — do not
 promise recovery, do not attempt brute force, and do not reset a key over the existing bundle. A new
 task/key may be created only as a clearly separate history after you accept the loss and its
 limitations; it can never validate or replace the old receipts.

@@ -14,16 +14,16 @@ import anyio
 import pytest
 from anyio.to_thread import run_sync
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import host_startup_advisory as advisory
-from yoetz.cli import observe_hooks
-from yoetz.cli.hooks import ServiceConnector
-from yoetz.domain.observation_profiles import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import host_startup_advisory as advisory
+from finishup.cli import observe_hooks
+from finishup.cli.hooks import ServiceConnector
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import ControlClientKind
+from finishup.domain.values import JsonObject
+from finishup.ports.control import ControlClientKind
 
 
 class GrantClient:
@@ -76,8 +76,8 @@ def test_notice_reports_grant_without_inferring_route_or_host_approval(
     client = GrantClient(GRANTED)
     before = set(tmp_path.rglob("*"))
     result = notice(tmp_path, client, host=host)
-    assert result.startswith("existing context At session start, Yoetz read a repository grant")
-    assert f"yoetz integrate {host} admission grant" in result
+    assert result.startswith("existing context At session start, FinishUP read a repository grant")
+    assert f"finishup integrate {host} admission grant" in result
     assert "Route and host approval remain unconfirmed" in result
     assert "preserve the exact request" in result
     assert "route: policy" not in result and "retry" not in result
@@ -219,7 +219,11 @@ def test_admission_reads_repository_root_when_hook_starts_in_subdirectory(tmp_pa
     settings.mkdir()
     (settings / "settings.local.json").write_text(
         json.dumps(
-            {"permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check", "mcp__yoetz__check"]}}
+            {
+                "permissions": {
+                    "allow": ["mcp__plugin_finishup_finishup__check", "mcp__finishup__check"]
+                }
+            }
         )
     )
     child = tmp_path / "child"
@@ -277,6 +281,6 @@ def test_real_hook_ingress_delivers_only_on_supported_context_channel(
         if host == "cursor"
         else result["hookSpecificOutput"]["additionalContext"]
     )
-    assert (f"yoetz integrate {host} admission grant" in text) is not skip_service
+    assert (f"finishup integrate {host} admission grant" in text) is not skip_service
     assert "permissionDecision" not in result and "systemMessage" not in result
     assert client.reads == (0 if skip_service else 1)

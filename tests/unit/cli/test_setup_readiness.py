@@ -11,11 +11,110 @@ import pytest
 from pydantic import ValidationError
 from tests.builders.privacy_policies import local_only_policy
 
-from yoetz.cli import setup
-from yoetz.cli import setup_readiness as module
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.protocol.setup_readiness import SetupReadiness
+from finishup.cli import setup
+from finishup.cli import setup_readiness as module
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.setup_readiness import SetupReadiness
+
+
+@pytest.fixture(autouse=True)
+def _folders_resolve(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    # Hermetic: the up-front folder check never reads the real user directories here. The
+    # refusal tests below restore the real resolver against private XDG roots.
+    monkeypatch.setattr(module, "installation_folders", lambda: "finishup")
+
+
+def _private_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from finishup.cli.service_installation import installation_folders
+
+    monkeypatch.setattr(module, "installation_folders", installation_folders)
+    base = tmp_path / "xdg"
+    for name in ("data", "config", "cache", "state", "runtime"):
+        (base / name).mkdir(mode=0o700, parents=True)
+    for variable, name in (
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+    ):
+        monkeypatch.setenv(variable, str(base / name))
+    monkeypatch.delenv("FINISHUP_ISOLATED_ROOT", raising=False)
+    monkeypatch.delenv("YOETZ_ISOLATED_ROOT", raising=False)
+    return base
+
+
+@pytest.mark.parametrize("operation", ["local", "review", "connection"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_ambiguous_folders_name_the_token_instead_of_an_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+    json_output: bool,
+) -> None:
+    # The reviewed failure: a Yoetz-era catalog plus a hand-made FinishUP settings file.
+    base = _private_xdg(tmp_path, monkeypatch)
+    (base / "data" / "yoetz").mkdir(mode=0o700)
+    (base / "data" / "yoetz" / "catalog.sqlite3").write_bytes(b"")
+    (base / "config" / "finishup").mkdir(mode=0o700)
+    (base / "config" / "finishup" / "config.toml").write_bytes(b"")
+
+    async def forbidden(*_args: object) -> None:
+        raise AssertionError("no service probe once the folders are ambiguous")
+
+    monkeypatch.setattr(module, "installation_readiness", forbidden)
+
+    code = module.setup_next(
+        operation=operation,  # type: ignore[arg-type]
+        host=None,
+        executable=None,
+        config_root=None,
+        project=tmp_path,
+        route="strict",
+        json_output=json_output,
+    )
+
+    assert code == 20
+    captured = capsys.readouterr()
+    assert captured.err.startswith("installation_root_ambiguous: ")
+    assert "Continuation: local_state_repair" in captured.err
+    assert "internal_error" not in captured.err
+    assert str(tmp_path) not in captured.err
+    if json_output:
+        payload = json.loads(captured.out)
+        assert payload["reason"] == "installation_root_ambiguous"
+        assert payload["retryable"] is False
+    else:
+        assert captured.out == ""
+    assert sorted(path.name for path in (base / "state").iterdir()) == []
+
+
+def test_two_isolation_root_spellings_name_their_own_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _private_xdg(tmp_path, monkeypatch)
+    for name, leaf in (("FINISHUP_ISOLATED_ROOT", "ra"), ("YOETZ_ISOLATED_ROOT", "rb")):
+        (tmp_path / leaf).mkdir(mode=0o700)
+        monkeypatch.setenv(name, str(tmp_path / leaf))
+
+    code = module.setup_next(
+        operation="local",
+        host=None,
+        executable=None,
+        config_root=None,
+        project=tmp_path,
+        route="strict",
+        json_output=False,
+    )
+
+    assert code == 20
+    err = capsys.readouterr().err
+    assert err.startswith("isolation_root_env_conflict: ")
+    assert "Continuation: config_correction_required" in err
 
 
 @pytest.mark.anyio
@@ -108,7 +207,7 @@ def test_continuation_quotes_and_pins_runtime_project_and_isolation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    launcher = tmp_path / "bin with space" / "yoetz"
+    launcher = tmp_path / "bin with space" / "finishup"
     launcher.parent.mkdir()
     launcher.write_text("#!/bin/sh\n")
     launcher.chmod(0o700)
@@ -122,6 +221,7 @@ def test_continuation_quotes_and_pins_runtime_project_and_isolation(
         str(project),
         "&&",
         "env",
+        f"FINISHUP_ISOLATED_ROOT={root}",
         f"YOETZ_ISOLATED_ROOT={root}",
         str(launcher.resolve()),
         "service",
@@ -160,8 +260,8 @@ def test_vault_setup_continuation_is_storage_only_and_reports_selected_host(
 ) -> None:
     from typing import cast
 
-    from yoetz.adapters.integrations.host_discovery import HostInstallation, SetupHost
-    from yoetz.cli import host_connection
+    from finishup.adapters.integrations.host_discovery import HostInstallation, SetupHost
+    from finishup.cli import host_connection
 
     selected = HostInstallation(
         cast(SetupHost, host), tmp_path / host, "1.0.0", tmp_path / "home", host
@@ -199,7 +299,7 @@ async def test_storage_only_ceremony_stops_before_provider_selection(
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("storage-only setup must never configure a provider")
 
-    monkeypatch.setattr("yoetz.cli.provider_binding.prompt_provider_endpoint_binding", forbidden)
+    monkeypatch.setattr("finishup.cli.provider_binding.prompt_provider_endpoint_binding", forbidden)
     service: dict[str, JsonValue] = {
         "reachable": True,
         "state": "ready",
@@ -214,6 +314,49 @@ async def test_storage_only_ceremony_stops_before_provider_selection(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("custody", "line"),
+    [
+        ("owner_file", "a file only your account can read"),
+        ("platform_store", "the platform credential store"),
+    ],
+)
+async def test_unlocking_an_existing_vault_names_its_custody(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    custody: str,
+    line: str,
+) -> None:
+    """Review round 2 of #1119: the unlock line names where the key actually lives."""
+
+    unlocked: list[bytes] = []
+
+    class Store:
+        def __init__(self, _bundle: object) -> None:
+            self.custody = custody
+
+        def load(self) -> bytearray:
+            return bytearray(b"g" * 64)
+
+    async def unlock(passphrase: bytearray | None = None) -> None:
+        unlocked.append(bytes(passphrase or b""))
+
+    async def ready() -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "ready", "vault_mode": "passphrase"}
+
+    monkeypatch.setattr("finishup.adapters.keys.os_keyring.AutoUnlockPassphraseStore", Store)
+    monkeypatch.setattr("finishup.cli.unlock.unlock_vault", unlock)
+    monkeypatch.setattr(setup, "_service_reachability", ready)
+    observed, _provider = await setup._interactive_provider_setup(  # pyright: ignore[reportPrivateUsage]
+        {"reachable": True, "state": "locked", "vault_mode": "passphrase"},
+        storage_only=True,
+    )
+    assert observed["state"] == "ready"
+    assert unlocked == [b"g" * 64]
+    assert line in capsys.readouterr().out
+
+
+@pytest.mark.anyio
 async def test_storage_only_keyring_unlock_uses_existing_confidential_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,7 +368,7 @@ async def test_storage_only_keyring_unlock_uses_existing_confidential_path(
     async def ready() -> dict[str, JsonValue]:
         return {"reachable": True, "state": "ready", "vault_mode": "os_keyring"}
 
-    monkeypatch.setattr("yoetz.cli.unlock.retry_keyring", unlock)
+    monkeypatch.setattr("finishup.cli.unlock.retry_keyring", unlock)
     monkeypatch.setattr(setup, "_service_reachability", ready)
     observed, _provider = await setup._interactive_provider_setup(  # pyright: ignore[reportPrivateUsage]
         {"reachable": True, "state": "locked", "vault_mode": "os_keyring"},
@@ -248,17 +391,183 @@ async def test_storage_only_command_refuses_noninteractive_before_service_probe(
     assert await setup.run_vault_setup() == 2
 
 
+@pytest.mark.anyio
+async def test_local_only_setup_creates_the_vault_before_privacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1119: a local-only answer ends with a ready vault, created with no question."""
+
+    order: list[str] = []
+
+    async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def vault_ready() -> setup.VaultReadiness:
+        order.append("vault")
+        return setup.VaultReadiness(True, None, "owner_file", {"state": "ready"})
+
+    async def privacy(**_kwargs: object) -> SimpleNamespace:
+        order.append("privacy")
+        return SimpleNamespace(outcome="configured", reason=None)
+
+    monkeypatch.setattr(setup, "_service_reachability", reachable)
+    monkeypatch.setattr(setup, "ensure_vault_ready", vault_ready)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", privacy)
+
+    assert await setup._run_local_only_privacy_setup(None) == 0  # pyright: ignore[reportPrivateUsage]
+    assert order == ["vault", "privacy"]
+
+
+@pytest.mark.anyio
+async def test_local_only_setup_stops_when_the_vault_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reachable(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def vault_blocked() -> setup.VaultReadiness:
+        return setup.VaultReadiness(False, "auto_unlock_entry_exists", "unknown", {})
+
+    async def privacy(**_kwargs: object) -> SimpleNamespace:
+        raise AssertionError("privacy must not run without a ready vault")
+
+    monkeypatch.setattr(setup, "_service_reachability", reachable)
+    monkeypatch.setattr(setup, "ensure_vault_ready", vault_blocked)
+    monkeypatch.setattr("finishup.cli.privacy_setup.run_privacy_setup", privacy)
+
+    assert await setup._run_local_only_privacy_setup(None) == 20  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
+async def test_vault_passphrase_option_uses_the_human_ceremony_only_for_a_new_vault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(setup, "_is_interactive_terminal", lambda: True)
+
+    async def uninitialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def human_ceremony(passphrase: bytearray | None = None) -> object:
+        calls.append("human" if passphrase is None else "supplied")
+        return SimpleNamespace(state="ready", reason="succeeded")
+
+    async def automatic(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("--passphrase must not generate or store a passphrase")
+
+    monkeypatch.setattr(setup, "_service_reachability", uninitialized)
+    monkeypatch.setattr("finishup.cli.unlock.initialize_passphrase_vault", human_ceremony)
+    monkeypatch.setattr(setup, "_interactive_provider_setup", automatic)
+    assert await setup.run_vault_setup(passphrase=True) == 0
+    assert calls == ["human"]
+
+    async def initialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "ready", "vault_mode": "passphrase"}
+
+    monkeypatch.setattr(setup, "_service_reachability", initialized)
+    assert await setup.run_vault_setup(passphrase=True) == 2
+    assert calls == ["human"]
+
+
+@pytest.mark.anyio
+async def test_vault_passphrase_option_reports_a_failed_ceremony(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ceremony that returns a locked state is not "Vault ready" (review of #1119)."""
+
+    monkeypatch.setattr(setup, "_is_interactive_terminal", lambda: True)
+
+    async def uninitialized(**_kwargs: object) -> dict[str, JsonValue]:
+        return {"reachable": True, "state": "locked", "vault_mode": "uninitialized"}
+
+    async def failed(passphrase: bytearray | None = None) -> object:
+        return SimpleNamespace(state="locked", reason="unlock_failed")
+
+    monkeypatch.setattr(setup, "_service_reachability", uninitialized)
+    monkeypatch.setattr("finishup.cli.unlock.initialize_passphrase_vault", failed)
+    assert await setup.run_vault_setup(passphrase=True) == 20
+
+
 def test_module_continuation_preserves_venv_interpreter_spelling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     interpreter = str(tmp_path / "venv" / "bin" / "python")
-    monkeypatch.setattr(module, "invoking_launcher", lambda: (interpreter, "-m", "yoetz"))
+    monkeypatch.setattr(module, "invoking_launcher", lambda: (interpreter, "-m", "finishup"))
     monkeypatch.setattr(module, "isolated_root", lambda: None)
     assert shlex.split(module.continuation(["setup", "vault"])) == [
         interpreter,
         "-m",
-        "yoetz",
+        "finishup",
         "setup",
         "vault",
     ]
+
+
+def test_alias_continuation_names_the_finishup_script_of_the_same_installation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run through the deprecated ``yoetz`` alias continues with ``finishup`` (ADR-048)."""
+
+    import sys
+
+    scripts = tmp_path / "tools" / "yoetz" / "bin"
+    scripts.mkdir(parents=True)
+    for name in ("yoetz", "finishup"):
+        (scripts / name).write_text("#!/bin/sh\n")
+        (scripts / name).chmod(0o700)
+    monkeypatch.setattr(sys, "argv", [str(scripts / "yoetz"), "setup"])
+    monkeypatch.setattr(module, "isolated_root", lambda: None)
+
+    assert shlex.split(module.continuation(["setup", "vault"])) == [
+        str((scripts / "finishup").resolve()),
+        "setup",
+        "vault",
+    ]
+
+
+@pytest.mark.parametrize("json_output", [True, False])
+def test_setup_status_next_names_the_background_advice_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+) -> None:
+    """Issue #888: setup status shows the effective background-advice state and its reason."""
+
+    from finishup.config import load as config_load
+    from finishup.config.models import FinishUpConfig
+
+    async def ready(_project: Path, _operation: str) -> dict[str, JsonValue]:
+        return {"service": {"reachable": True, "state": "ready", "vault_mode": "passphrase"}}
+
+    monkeypatch.setattr(module, "installation_readiness", ready)
+    monkeypatch.setattr(module, "isolated_root", lambda: None)
+
+    def _load(*_args: object) -> FinishUpConfig:
+        return FinishUpConfig()
+
+    monkeypatch.setattr(config_load, "load_config", _load)
+    module.setup_next(
+        operation="review",
+        host=None,
+        executable=None,
+        config_root=None,
+        project=tmp_path,
+        route="policy",
+        json_output=json_output,
+    )
+    output = capsys.readouterr().out
+    if json_output:
+        report = json.loads(output)
+        validate_schema_instance("setup-readiness", "1.0.0", report)
+        assert report["facts"]["background_advice"] == {
+            "enabled": True,
+            "reason": "default_enabled",
+        }
+    else:
+        assert "Background AI-powered advice: on by default" in output
+        # The reverse switch is named; the turn-on hint belongs only to an owner's ``false``.
+        assert "semantic_advice_enabled = false" in output
+        assert "= true" not in output

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.hook_spool import HookSpool
-from yoetz.protocol.canonical import canonical_encode
+from finishup.adapters.integrations.hook_spool import HookSpool
+from finishup.protocol.canonical import canonical_encode
 
 
 def _spool(tmp_path: Path) -> tuple[HookSpool, str, str]:

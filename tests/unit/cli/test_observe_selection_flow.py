@@ -9,6 +9,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -18,23 +19,24 @@ from builders.codex_rollout import (
     function_call_output,
     session_meta,
 )
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
+from finishup.adapters.integrations.codex_session_stream import (
     CodexSessionStreamLocator,
     reconcile_session_stream,
 )
-from yoetz.adapters.integrations.observation_admission import (
+from finishup.adapters.integrations.observation_admission import (
     ROUTINE_SUMMARY_INVALID_GAP,
     AdmissionBuffer,
     build_routine_read_summary,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.cli.observe import _selection_preview_plan
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.observe import _selection_preview_plan
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationIngestRequest,
@@ -42,10 +44,10 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import ObservationMode
-from yoetz.domain.observation_settings import ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.domain.observation_budget import AdmissionLossCause, ObservationMode
+from finishup.domain.observation_settings import ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 TASK = "tsk_17607d01-2f55-4b28-82b6-8659242a1267"
 SESSION = "ses_6201a23d-a03a-46a5-bda9-d16a7a261ee0"
@@ -65,12 +67,12 @@ def setup_store(tmp_path: Path) -> tuple[LocalObservationStore, Path, Path, str,
     return store, root, workspace, commitment, session
 
 
-# Every shape a real host post can carry its proven success in. Codex states
-# its result under ``tool_response`` and Claude's native post hook may state no
-# outcome fact at all, so only the first row is the shape the top-level
-# structural copy ever retained (issue #753).
+# Every shape a Codex hook post can carry its proven success in: its result
+# under ``tool_response``, so only the last row is the shape the top-level
+# structural copy ever retained (issue #753). A Codex post that states no
+# outcome fact is not a success (it fires for a non-zero exit too, n7 RC1);
+# Claude Code's native post fallback is pinned by the classifier tests.
 NATIVE_POST_SUCCESS_SHAPES: dict[str, dict[str, JsonValue]] = {
-    "native_post_fallback": {},
     "nested_exit_code": {"tool_response": {"exit_code": 0}},
     "nested_is_error": {"tool_response": {"is_error": False}},
     "nested_status": {"tool_response": {"status": "ok"}},
@@ -253,6 +255,36 @@ def test_buffered_promotion_retains_native_identity_and_reports_missing_content(
     )
 
 
+def test_promotion_beside_a_refused_buffered_success_demotes_it_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    """Review round 3: an input an older build buffered as a success may no longer summarize.
+
+    Promotion builds the rest of the lane the way the flush does: the refused group is delivered
+    demoted with its gap and counted as a refusal, and the promoted call is still queued.
+    """
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "older-read")
+    hook(root, workspace, "PostToolUse", "older-read")
+    poisoned = _poison_buffered_post(store, commitment)
+    hook(root, workspace, "PreToolUse", "promoted-read")
+    hook(root, workspace, "PostToolUse", "promoted-read")
+    inputs = store._load(commitment).admission_buffer.inputs
+    assert len(inputs) == 4
+    assert inputs[1].envelope == poisoned
+    target = inputs[-1].envelope
+    result = store.promote_buffered_observation(commitment, target.source_identity)
+    assert result["outcome"] == "queued_individual"
+    rows = store.list_pending_outbox_rows(commitment)
+    demoted = next(row for row in rows if row.envelope.source_identity == poisoned.source_identity)
+    assert ROUTINE_SUMMARY_INVALID_GAP in demoted.envelope.gap_codes
+    assert [refusal["reason"] for refusal in store.summary_refusals(commitment)] == [
+        "invalid_event_value_type"
+    ]
+    assert store.selection_accounting(commitment)["buffered_input_count"] == 0
+
+
 def test_loss_history_survives_recovery_without_retargeting_another_task(tmp_path: Path) -> None:
     store, root, workspace, commitment, _ = setup_store(tmp_path)
     hook(root, workspace, "PreToolUse", "original")
@@ -286,7 +318,186 @@ def test_loss_history_survives_recovery_without_retargeting_another_task(tmp_pat
     rows = reopened.list_pending_outbox_rows(commitment)
     assert rows[-1].envelope.event_kind == "RoutineReadSummary"
     batch = materialize_observation_envelope(rows[-1].envelope, task_id=TASK)
-    assert "observation_input_loss" in batch.coverage.known_gaps
+    # The lost input belonged to call "original"; an unrelated later call is
+    # not marked by it (tb4n1 B3). The lane's loss is still reported once.
+    assert "observation_input_loss" not in batch.coverage.known_gaps
+    assert reopened.pending_selection_losses(commitment)
+
+
+_WIRE_LOSS_RANGE_FIELDS = frozenset(
+    {
+        "lane",
+        "source",
+        "session",
+        "source_generation",
+        "route",
+        "first_identity",
+        "last_identity",
+        "first_position",
+        "last_position",
+        "count",
+        "identity_extent",
+    }
+)
+
+
+def _loss_envelope_factory(
+    store: LocalObservationStore, root: Path, workspace: Path, commitment: str
+):
+    """Build routed hook envelopes at chosen positions for distinct host calls."""
+
+    hook(root, workspace, "PreToolUse", "template-call")
+    template = store._load(commitment).admission_buffer.inputs[-1].envelope
+    assert template.structural_payload.get("selection_task_id") == TASK
+
+    def at(position: int, call: str, *, parent: str | None = None) -> ObservationEnvelope:
+        payload: dict[str, JsonValue] = {**template.structural_payload, "tool_call_id": call}
+        if parent is not None:
+            payload["parent_tool_call_id"] = parent
+        return replace(
+            template,
+            # The identity never spells the host call id, so the persisted
+            # state can be checked for a leaked call id below.
+            source_identity=f"hook:loss-test-{position}-{sum(map(ord, call))}",
+            cursor=replace(template.cursor, event_position=position),
+            structural_payload=JsonObject(payload),
+        )
+
+    return at
+
+
+def _state_path(root: Path) -> Path:
+    return next((root / "observation" / "workspaces").glob("*.json"))
+
+
+def test_one_startup_loss_marks_only_inputs_of_the_lost_call(tmp_path: Path) -> None:
+    """tb4n1 music-harmony: one refusal at position 8 marked 133 later results."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    lost_pre = at(8, "lost-call")
+    assert store.record_admission_loss(
+        commitment, lost_pre, cause=AdmissionLossCause.CAPTURE_SCOPE_UNKNOWN
+    )
+
+    reopened = LocalObservationStore(_state=root)
+    loss = ("observation_input_loss",)
+    # Every later input of other calls is unaffected by the lost pre.
+    for position in range(9, 240):
+        assert reopened.selection_history_gaps(commitment, at(position, f"call-{position}")) == ()
+    # Its pairing partner and a call it spawned inherit the loss.
+    assert reopened.selection_history_gaps(commitment, at(10, "lost-call")) == loss
+    assert reopened.selection_history_gaps(commitment, at(11, "child", parent="lost-call")) == loss
+    # The lane is still reported to the task once, with its closed cause.
+    assert reopened.pending_selection_losses(commitment)
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
+    assert cause["causes"] == {"capture_scope_unknown": 1}
+    assert cause["inherit_scope"] == "paired_inputs"
+    assert reopened.admission_loss_cause(commitment, lost_pre) is (
+        AdmissionLossCause.CAPTURE_SCOPE_UNKNOWN
+    )
+    # The wire-shaped range is unchanged and no host call id is persisted.
+    accounting = reopened.selection_accounting(commitment)
+    ranges = cast(tuple[Mapping[str, JsonValue], ...], accounting["loss_ranges"])
+    assert set(ranges[0]) == _WIRE_LOSS_RANGE_FIELDS
+    assert "lost-call" not in _state_path(root).read_text(encoding="utf-8")
+
+
+def test_loss_lane_with_too_many_lost_calls_falls_back_to_route_wide(tmp_path: Path) -> None:
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    for index in range(17):
+        store.record_admission_loss(
+            commitment, at(20 + index, f"lost-{index}"), cause=AdmissionLossCause.QUEUE_BYTES
+        )
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    assert cause["causes"] == {"queue_bytes": 17}
+    assert store.selection_history_gaps(commitment, at(500, "unrelated")) == (
+        "observation_input_loss",
+    )
+
+
+@pytest.mark.parametrize(
+    "legacy_edit",
+    ["details_absent", "details_count_stale", "details_malformed"],
+)
+def test_legacy_loss_range_keeps_route_wide_inheritance(tmp_path: Path, legacy_edit: str) -> None:
+    """A range written before causes existed (or advanced by an older writer)."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    at = _loss_envelope_factory(store, root, workspace, commitment)
+    store.record_admission_loss(commitment, at(8, "lost-call"))
+    path = _state_path(root)
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert set(state["selection_loss_ranges"][0]) == _WIRE_LOSS_RANGE_FIELDS
+    if legacy_edit == "details_absent":
+        state.pop("selection_loss_details")
+    elif legacy_edit == "details_count_stale":
+        state["selection_loss_ranges"][0]["count"] = 2
+    else:
+        state["selection_loss_details"][0]["pairings"] = ["not-a-digest"]
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    reopened = LocalObservationStore(_state=root)
+    assert reopened.selection_history_gaps(commitment, at(300, "unrelated")) == (
+        "observation_input_loss",
+    )
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    if legacy_edit != "details_count_stale":
+        assert cause["cause"] == "unknown"
+    # A later loss on a legacy lane cannot narrow its earlier history.
+    reopened.record_admission_loss(
+        commitment, at(301, "second-loss"), cause=AdmissionLossCause.SESSION_FAIR_SHARE
+    )
+    (cause,) = reopened.selection_loss_causes(commitment)
+    assert cause["inherit_scope"] == "route"
+    assert cause["cause"] == "session_fair_share"
+    assert reopened.selection_history_gaps(commitment, at(302, "unrelated-2")) == (
+        "observation_input_loss",
+    )
+
+
+def test_unknown_capture_scope_refusal_records_its_cause_and_diagnostic(
+    tmp_path: Path,
+) -> None:
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "before")
+    store.mark_capture_backlog_scope_unknown(commitment)
+    hook(root, workspace, "PreToolUse", "refused-call")
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
+    assert cause["inherit_scope"] == "paired_inputs"
+    reasons = cast(Mapping[str, JsonValue], hook_diagnostic_summary(_state=root)["reasons"])
+    assert "outbox_overflow" in reasons
+    assert "admission_loss_capture_scope_unknown" in reasons
+
+
+def test_unconfirmed_capture_reservation_does_not_refuse_native_input(
+    tmp_path: Path,
+) -> None:
+    """tb4n1 music-harmony: a hook ran 28 ms after a 1.4 s reservation hold."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    store.bootstrap_capture_reservations(
+        commitment,
+        {},
+        observed_at=Timestamp("2026-09-10T00:00:00.000Z"),
+        complete=True,
+    )
+    store.reserve_capture_ticket(commitment, "sha256:" + "a" * 64, TASK, 4_096)
+    assert store._load(commitment).capture_reservations
+    hook(root, workspace, "PreToolUse", "during-reservation")
+    hook(root, workspace, "PostToolUse", "during-reservation")
+    assert store.selection_loss_causes(commitment) == ()
+    assert store.selection_accounting(commitment)["unrecoverable_input_count"] == 0
+    # An unproven inventory still refuses, and now says why.
+    store.mark_capture_backlog_scope_unknown(commitment)
+    hook(root, workspace, "PreToolUse", "after-unknown")
+    (cause,) = store.selection_loss_causes(commitment)
+    assert cause["cause"] == "capture_scope_unknown"
 
 
 def test_selected_admission_exception_rolls_back_ingest_for_exact_retry(
@@ -424,6 +635,25 @@ def test_every_proven_post_shape_buffers_and_flushes_repeatedly(tmp_path: Path, 
     assert ROUTINE_SUMMARY_INVALID_GAP not in store.status(ObservationStatusQuery(commitment)).gaps
 
 
+def test_a_codex_post_without_an_outcome_fact_is_not_buffered_as_a_success(
+    tmp_path: Path,
+) -> None:
+    """n7 RC1 (#1105): the bare Codex post event never proves a routine read."""
+
+    store, root, workspace, commitment, _ = setup_store(tmp_path)
+    hook(root, workspace, "PreToolUse", "bare-read", outcome={})
+    hook(root, workspace, "PostToolUse", "bare-read", outcome={})
+    assert store.selection_accounting(commitment)["buffered_input_count"] == 0
+    posts = [
+        envelope
+        for envelope in store.list_envelopes(commitment)
+        if envelope.event_kind == "PostToolUse"
+    ]
+    assert len(posts) == 1
+    assert posts[0].structural_payload.get("action") != "routine_read"
+    assert "success" not in posts[0].structural_payload
+
+
 def _poison_buffered_post(store: LocalObservationStore, commitment: str) -> ObservationEnvelope:
     """Contradict one buffered success so the summary builder must refuse it."""
 
@@ -548,3 +778,111 @@ async def test_refused_summary_drains_its_lane_and_ingestion_continues(
         ] != []
     finally:
         sweeper.close()
+
+
+def test_pressure_that_withholds_detail_is_disclosed_on_check_coverage_and_spares_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#883 body ask 3: a pressure downgrade never silently thins what a check reviews.
+
+    Optional routine detail withheld under pressure carries its own gap from the envelope, through
+    materialized ledger coverage, into the check's folded coverage. Native edit content is never
+    optional, so the same pressure still captures it; the check-time change (ADR-031) is read by
+    the service at check time and is independent of observation pressure altogether.
+    """
+
+    from builders.policy_cases import act, make_case
+    from finishup.domain.observation_budget import PressureEvaluation
+    from finishup.kernel.deterministic_checks import case_coverage
+
+    store, root, workspace, commitment, session = setup_store(tmp_path)
+    store.set_session_selection(
+        commitment, session, ObservationSelection(detail=ObservationMode.DETAILED)
+    )
+    original = LocalObservationStore.update_selection_pressure
+
+    def pressured(
+        self: LocalObservationStore, workspace_commitment: str, session_commitment: str
+    ) -> PressureEvaluation:
+        evaluation = original(self, workspace_commitment, session_commitment)
+        return replace(evaluation, content_allowed=False)
+
+    captures: list[str] = []
+
+    def capture(phase: str, *args: object, **kwargs: object):
+        captures.append(phase)
+        return (), False
+
+    monkeypatch.setattr(LocalObservationStore, "update_selection_pressure", pressured)
+    monkeypatch.setattr(observe_hooks, "_visible_content_chunks", capture)
+    hook(root, workspace, "PreToolUse", "pressured-read")
+    hook(root, workspace, "PostToolUse", "pressured-read")
+
+    assert captures == []
+    post = store.list_pending_outbox_rows(commitment)[-1].envelope
+    assert "optional_observation_detail_omitted" in post.gap_codes
+    batch = materialize_observation_envelope(post, task_id=TASK)
+    assert "optional_observation_detail_omitted" in batch.coverage.known_gaps
+    case = make_case(extra_refs=(act(1),), coverage_overrides={act(1): batch.coverage})
+    assert "optional_observation_detail_omitted" in case_coverage(case, semantic=True).known_gaps
+
+    patch = "*** Begin Patch\n*** Update File: app.py\n@@\n-old\n+new\n*** End Patch\n"
+    for phase in ("PreToolUse", "PostToolUse"):
+        payload: dict[str, JsonValue] = {
+            "session_id": HOST,
+            "hook_event_name": phase,
+            "tool_name": "apply_patch",
+            "tool_use_id": "pressured-edit",
+            "tool_input": {"command": patch},
+        }
+        if phase == "PostToolUse":
+            payload["tool_response"] = "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess."
+        assert (
+            observe_hooks.handle_observe(
+                event_name=phase,
+                stdin_bytes=canonical_encode(payload),
+                stdout=io.BytesIO(),
+                workspace=str(workspace),
+                _state=root,
+                skip_service=True,
+            )
+            == 0
+        )
+    assert captures == ["PreToolUse", "PostToolUse"]
+
+
+@pytest.mark.parametrize(
+    ("lost_event", "lost_extra", "scope"),
+    [
+        (
+            "PostToolUse",
+            {"tool_name": "Bash", "tool_use_id": "call-1", "exit_status": 0},
+            "paired_inputs",
+        ),
+        # Names no host call: every later input of the lane may depend on it.
+        ("UserPromptSubmit", {}, "route"),
+        # Names only its spawning call: bounded to that call and its children.
+        ("SubagentStart", {"parent_tool_call_id": "spawn-9", "subagent_id": "a1"}, "paired_inputs"),
+    ],
+)
+def test_a_lost_input_without_a_call_id_keeps_route_wide_inheritance(
+    tmp_path: Path, lost_event: str, lost_extra: dict[str, JsonValue], scope: str
+) -> None:
+    """Review of #998: a bounded scope needs a call to bound to, or it under-reports the loss."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    store.bind_codex_session(workspace, "lost-scope")
+    lost = observe_hooks.map_hook_payload_to_envelope(
+        lost_event,
+        {"session_id": "lost-scope", "hook_event_name": lost_event, **lost_extra},
+        session_commitment=store.session_commitment("lost-scope"),
+        event_ordinal=1,
+        key_material=store.key_material(),
+        source=ObservationSource.CODEX_HOOK,
+    )
+    store.record_admission_loss(workspace, lost, cause=AdmissionLossCause.QUEUE_BYTES)
+    (lane,) = store.selection_loss_causes(workspace)
+    assert lane["inherit_scope"] == scope
+    assert lane["cause"] == AdmissionLossCause.QUEUE_BYTES.value

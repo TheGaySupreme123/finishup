@@ -6,8 +6,8 @@ independent threat review before the first non-alpha release (maintainer decisio
 and no public surface claims a reviewed design.
 **Implemented by:** `docs/adr/ADR-008-local-service-vault-trust-boundary.md`,
 `docs/adr/ADR-024-installation-vault-recovery.md`,
-`src/yoetz/service/vault.py`, `src/yoetz/service/unlock.py`,
-`src/yoetz/ports/keys.py`, the key adapters, and the key-recovery runbook.
+`src/finishup/service/vault.py`, `src/finishup/service/unlock.py`,
+`src/finishup/ports/keys.py`, the key adapters, and the key-recovery runbook.
 
 ## Threat model
 
@@ -18,7 +18,7 @@ sharing of an application-data copy. It does not protect against a compromised a
 malicious root, inspection of the ready service's memory, or side channels. Structural metadata
 (bounded IDs, sizes, enums, versions, and timings) is deliberately visible.
 
-The per-user Yoetz service is trusted. CLI, MCP bridges, agents, LLMs, future UI renderers,
+The per-user FinishUP service is trusted. CLI, MCP bridges, agents, LLMs, future UI renderers,
 provider adapters, repositories, and imported transcripts are outside the vault boundary. A future
 trusted desktop unlock prompt may be added as a narrowly scoped vault client; that does not make
 ordinary UI content trusted.
@@ -35,6 +35,12 @@ ordinary UI content trusted.
    an existing vault saves a passphrase only after the foreground confidential unlock ceremony
    proves it against the current envelope. This preserves powered-off/copy-at-rest protection but
    deliberately does not claim protection from code already executing as the active logged-in UID.
+   Amended 2026-10-19 (issue #1119, owner decision): where no platform store is usable, that
+   passphrase instead lives in owner-only files inside the service bundle (ADR-008 amendment of
+   the same date). On those machines a copy of the bundle carries everything needed to open the
+   vault, so neither copy-at-rest protection nor protection from the same UID is claimed; only
+   other accounts are kept out by file ownership and mode. `setup vault --passphrase` keeps the
+   original passphrase-only property for an owner who chooses it.
    A separately provisioned ADR-024 installation-recovery artifact may wrap this exact IVK for a
    protected local-human recovery ceremony. Forward revocation stages a new IVK and re-encrypts the
    vault before switching; it never resets or overwrites the inaccessible vault in place.
@@ -83,6 +89,28 @@ ordinary UI content trusted.
 7. **Size policy:** plaintext cap 4 MiB (`MAX_OBJECT_PLAINTEXT_BYTES`). Larger artifacts are not
    chunked in v0.1; only their digest and metadata may be recorded, with
    `evidence_immutability = content_digest` coverage.
+
+   **Amended 2026-10-21 (#1159):** internal `CHECK_RESUME` checkpoints may span up to 64
+   encrypted objects of at most 4 MiB each (256 MiB total), referenced by one encrypted
+   `yoetz.check-resume-pages/1` manifest. This exception preserves the complete frozen local
+   case; it does not permit larger captured artifacts, change retention or disclosure authority,
+   or enlarge a provider packet. The ordered manifest binds each page's object ID, envelope
+   digest, keyed commitment and exact size, plus the reconstructed bytes' digest and total size.
+   Page kind, media type, task and creation time must match before reconstruction; the original
+   canonical-case, dependency, frontier and request bindings are revalidated afterwards.
+   Children finalize before the manifest; SQLite inventories all pages with the admitted
+   operation in one transaction so backups and orphan sweeps retain them. Failed admission
+   leaves no page roots. Existing inline checkpoints remain readable. Aggregate overflow is
+   `LIMIT_EXCEEDED/check_resume_capacity_exceeded`; an oversized local-result checkpoint is
+   `LIMIT_EXCEEDED/check_result_capacity_exceeded`. Both carry `check_capacity_handoff`, never
+   provider repair or unchanged same/new-ID retry advice. A resume overflow before admission
+   records no operation. When an already admitted check outgrows the cap while its parked
+   review-input case is rebuilt, the overflow closes that operation with the stored error.
+   An oversized result does the same. Status and exact replay then agree.
+   Superseded or unadmitted checkpoint generations are not yet reclaimed (#1179). A build from
+   before this amendment fails closed on a paged root: a pending check holding one reports
+   storage corruption for that operation. This is a downgrade-only gap, and no explicit
+   version gate exists yet (#1180).
 
 Wrapped BMKs and encrypted objects are ciphertext, not an alternate plaintext key store. Plaintext
 IVKs, BMKs, derived keys (including installation MAC keys), DEKs, provider credentials, and
@@ -232,14 +260,14 @@ activation remains fenced. A pristine headless installation cannot auto-create k
 passphrase auto-unlock entry unless its exact release cell carries the applicable verified setup
 authority; otherwise it remains setup-required.
 **Scoped exception (ADR-015/016, amended 2026-07-31; chat-user authorize 2026-08-09):** elevated
-vault initialization and console `yoetz consent review` for provider credential set/rotate require
+vault initialization and console `finishup consent review` for provider credential set/rotate require
 independently verified action-bound OS user presence before the foreground console opens. The
 current runtime has no production presence adapter and fails closed with
 `human_authority_unavailable` before pending claim on that path. Initialization uses a
 helper-generated, credential-store-verified secret. Issue #164 adds a narrow agent-attested path:
-after one retention warning and an explicit current-chat instruction, `yoetz consent authorize`
+after one retention warning and an explicit current-chat instruction, `finishup consent authorize`
 may deliver a one-shot provider credential through stdin into the existing YZS1/vault ceremony
-for an exact prepared pending target. Yoetz binds and consumes the assertion but cannot
+for an exact prepared pending target. FinishUP binds and consumes the assertion but cannot
 independently authenticate its chat provenance; a compromised agent can forge it, which is an
 accepted risk of this opt-in path. Secret bytes still never enter structural tables, logs, errors,
 status, receipts, or agent-visible echoes. This is not generic headless unlock and does not unlock

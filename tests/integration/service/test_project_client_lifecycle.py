@@ -15,43 +15,43 @@ from typing import Any, cast
 import pytest
 
 from builders.multi_agent import INSTANCE_ID, multi_agent_service
-from yoetz.adapters.control.unix_socket import AuthenticatedUnixStream
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.application.coordination import CoordinationRuntime
-from yoetz.application.start import StartInternalResult
-from yoetz.cli.hooks import bind_start_mapping_outcome
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe
-from yoetz.domain.observation import (
+from finishup.adapters.control.unix_socket import AuthenticatedUnixStream
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.coordination import CoordinationRuntime
+from finishup.application.start import StartInternalResult
+from finishup.cli.hooks import bind_start_mapping_outcome
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe
+from finishup.domain.observation import (
     ObservationIngestDisposition,
     ObservationIngestRequest,
     ObservationSource,
     observation_ingest_request_to_json,
     observation_ingest_result_from_json,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlClientKind,
     ProjectionRenderMode,
     RepositoryPrivacyContext,
     WorkspaceLocator,
 )
-from yoetz.ports.keys import MacKeyPurpose
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import CheckRequest, StartRequest, StatusRequest
-from yoetz.service.client import (
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import CheckRequest, StartRequest, StatusRequest
+from finishup.service.client import (
     _connected_client,  # pyright: ignore[reportPrivateUsage]
     prepare_project_request,
 )
-from yoetz.service.control_protocol import client_handshake
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.elevated_bootstrap import (
+from finishup.service.control_protocol import client_handshake
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.elevated_bootstrap import (
     load_pending,
     record_project_coordination_authorization,
 )
-from yoetz.service.lifecycle import ServiceLifecycle
+from finishup.service.lifecycle import ServiceLifecycle
 
 pytestmark = pytest.mark.anyio
 
@@ -256,9 +256,9 @@ async def test_project_lifecycle_uses_real_ready_client_and_exact_grant_retries(
             [
                 "git",
                 "-c",
-                "user.name=Yoetz Test",
+                "user.name=FinishUP Test",
                 "-c",
-                "user.email=test@yoetz.invalid",
+                "user.email=test@finishup.invalid",
                 "-c",
                 "core.hooksPath=/dev/null",
                 "-c",
@@ -327,7 +327,7 @@ async def test_project_lifecycle_uses_real_ready_client_and_exact_grant_retries(
         client = None
         client_b = None
         try:
-            from yoetz.service.control_protocol import client_handshake
+            from finishup.service.control_protocol import client_handshake
 
             session = await client_handshake(
                 client_stream,
@@ -567,7 +567,14 @@ async def test_project_lifecycle_uses_real_ready_client_and_exact_grant_retries(
             assert isinstance(advice_first_page, dict)
             advice_first_items = _wire_rows(cast(object, advice_first_page["items"]))
             assert len(advice_first_items) == 1
-            assert advice_first_items[0]["coordination_resource_paths"] == ["src/shared.py"]
+            # ADR-009 round 3: a human-readable render on a controlling terminal is a
+            # presentation fact an agent's pseudo-terminal reproduces, so it no longer selects
+            # the owner's view. Both clients get the agent-facing projection.
+            assert advice_first_items[0]["coordination_resource_paths"] == {
+                "omitted": True,
+                "category": "repository_excerpt",
+                "reason": "local_disclosure_not_authorized",
+            }
             advice_second_body = {
                 **advice_body,
                 "request_id": new_id(IdKind.REQUEST),
@@ -714,9 +721,9 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
         [
             "git",
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=test@yoetz.invalid",
+            "user.email=test@finishup.invalid",
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
@@ -735,9 +742,9 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
         [
             "git",
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=test@yoetz.invalid",
+            "user.email=test@finishup.invalid",
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
@@ -759,7 +766,7 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
     async with multi_agent_service(tmp_path / "state") as service:
         # READY composition stores its synthetic installation under ``service.root`` while
         # lifecycle mapping resolution follows the isolated-root contract.
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(service.root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(service.root))
         lookup = service.vault.installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
         repository = await resolve_repository_privacy_context(
             WorkspaceLocator(str(workspace)), lookup
@@ -778,7 +785,7 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
             bind_start_mapping_outcome(
                 {
                     "session_id": claude_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": task.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -790,7 +797,7 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
             bind_start_mapping_outcome(
                 {
                     "session_id": cursor_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": task.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -850,7 +857,7 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
                             "hook_event_name": "PostToolUse",
                             "session_id": "ready-observation",
                             "claude_code_version": "2.1.241",
-                            "tool_name": "mcp__plugin_yoetz_yoetz__check",
+                            "tool_name": "mcp__plugin_finishup_finishup__check",
                             "tool_use_id": "claude-observation-call",
                         }
                     ),
@@ -870,7 +877,7 @@ async def test_ready_service_client_admits_claude_and_cursor_observation_wire(
                             "conversation_id": "ready-observation",
                             "cursor_version": "3.17.8",
                             "generation_id": "cursor-generation-1",
-                            "tool_name": "mcp__yoetz__respond",
+                            "tool_name": "mcp__finishup__respond",
                             "tool_call_id": "cursor-observation-call",
                         }
                     ),

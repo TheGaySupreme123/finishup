@@ -9,14 +9,14 @@ from datetime import UTC, datetime
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.maintenance import (
+from finishup.adapters.sqlite.maintenance import (
     SqliteMaintenance,
     _AuthorityFacts,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
-from yoetz.domain.values import Frontier, request_id, session_id, task_id
-from yoetz.ports.keys import RecoverySecret
-from yoetz.ports.maintenance import (
+from finishup.adapters.sqlite.migrations import initialize_bundle, initialize_catalog
+from finishup.domain.values import Frontier, request_id, session_id, task_id
+from finishup.ports.keys import RecoverySecret
+from finishup.ports.maintenance import (
     BackupCommand,
     BackupMode,
     BackupPlan,
@@ -30,9 +30,9 @@ from yoetz.ports.maintenance import (
     RestoreCommand,
     RestorePlan,
 )
-from yoetz.ports.privacy import PrivacyAuditObjectRoots
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.ports.privacy import PrivacyAuditObjectRoots
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 @pytest.fixture

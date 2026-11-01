@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable
 from statistics import median
 
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 # Measured on this document: the regressed implementation ran 37-48x stdlib,
 # the current one 11-13x. The fence sits above the current ratio with margin

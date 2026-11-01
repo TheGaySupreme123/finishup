@@ -8,13 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from yoetz.adapters import workspace_inspect as workspace_inspect_module
-from yoetz.adapters.workspace_inspect import (
+from finishup.adapters import workspace_inspect as workspace_inspect_module
+from finishup.adapters.workspace_inspect import (
     LocalWorkspaceInspectAdapter,
     open_inspect_workspace,
 )
-from yoetz.ports.subject_state import LocalWorkspaceHandle
-from yoetz.ports.workspace_inspect import (
+from finishup.ports.subject_state import LocalWorkspaceHandle
+from finishup.ports.workspace_inspect import (
     WorkspaceInspectCommand,
     WorkspaceInspectLimitation,
     WorkspaceInspectStatus,

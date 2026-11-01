@@ -9,16 +9,16 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
+from finishup.domain.events import EVENT_FAMILIES
+from finishup.ports.ledger import ProjectionQuery
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import StatusHistoryItemModel
+from finishup.protocol.schemas import schema_document_for
 from integration.storage.test_append_and_replay import (
     command_from_records,
     file_sqlite_for,
     memory_for,
 )
-from yoetz.domain.events import EVENT_FAMILIES
-from yoetz.ports.ledger import ProjectionQuery
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import StatusHistoryItemModel
-from yoetz.protocol.schemas import schema_document_for
 
 
 @pytest.fixture

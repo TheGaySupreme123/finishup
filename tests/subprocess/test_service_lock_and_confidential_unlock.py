@@ -21,7 +21,7 @@ _CEREMONY_CANARY = b"ceremony-secret-canary-2026"
 
 _HUMAN_FRAME_PROBE = r"""
 import json, os, sys
-from yoetz.service.confidential_protocol import ConfidentialProtocolError, decode_human_frame
+from finishup.service.confidential_protocol import ConfidentialProtocolError, decode_human_frame
 
 frame = bytearray(sys.stdin.buffer.read())
 secret = bytes(frame).split(b'"secret":"', 1)[1].split(b'"', 1)[0]
@@ -41,12 +41,12 @@ _VAULT_PROBE = r"""
 import asyncio, hashlib, json, os, sys
 from datetime import UTC, datetime
 from pathlib import Path
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore, VaultRecordKind
-from yoetz.adapters.keys.os_keyring import KeyringInitializationBinding
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.keys import KeyStoreError, MacKeyPurpose
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore, VaultRecordKind
+from finishup.adapters.keys.os_keyring import KeyringInitializationBinding
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.keys import KeyStoreError, MacKeyPurpose
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.service.vault import VaultMode, VaultService
 
 class Clock:
     def now_utc(self): return datetime(2026, 7, 19, tzinfo=UTC)

@@ -22,8 +22,8 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.ports.secret_memory import UserPresenceCapability
-from yoetz.protocol.canonical import canonical_digest
+from finishup.ports.secret_memory import UserPresenceCapability
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 

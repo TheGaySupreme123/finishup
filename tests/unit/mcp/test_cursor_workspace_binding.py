@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from mcp import types
 
-import yoetz.mcp.server as server
-from yoetz.ports.control import WorkspaceLocator
+import finishup.mcp.server as server
+from finishup.ports.control import WorkspaceLocator
 
-_LAUNCHER = ("/opt/yoetz/bin/yoetz",)
+_LAUNCHER = ("/opt/finishup/bin/finishup",)
 
 
 def _directory(path: Path) -> Path:
@@ -49,8 +49,8 @@ def _write_project_registration(
         ],
     }
     if isolation_root is not None:
-        entry["env"] = {"YOETZ_ISOLATED_ROOT": str(isolation_root)}
-    config.write_text(json.dumps({"mcpServers": {"yoetz": entry}}) + "\n", encoding="utf-8")
+        entry["env"] = {"FINISHUP_ISOLATED_ROOT": str(isolation_root)}
+    config.write_text(json.dumps({"mcpServers": {"finishup": entry}}) + "\n", encoding="utf-8")
     config.chmod(0o600)
     return config
 
@@ -172,20 +172,49 @@ def test_runtime_recovers_exact_console_or_module_launcher_prefix(
     assert server._runtime_launcher_from_argv() == (
         executable,
         "-m",
-        "yoetz",
+        "finishup",
         "--entrypoint",
     )
+
+
+def test_runtime_keeps_the_pre_rename_module_launcher_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``python -m yoetz`` registration runs the transitional shim beside this package (ADR-048)."""
+
+    import sys
+
+    site = tmp_path / "site-packages"
+    for module in ("finishup", "yoetz"):
+        (site / module).mkdir(parents=True)
+        (site / module / "__main__.py").write_text("", encoding="utf-8")
+    (site / "finishup" / "mcp").mkdir()
+    monkeypatch.setattr(server, "__file__", str(site / "finishup" / "mcp" / "server.py"))
+    executable = str(Path(sys.executable).resolve(strict=True))
+    for module in ("finishup", "yoetz"):
+        monkeypatch.setattr(
+            server.sys,
+            "argv",
+            [str(site / module / "__main__.py"), "mcp", "serve", "--host", "cursor"],
+        )
+        assert server._runtime_launcher_from_argv() == (executable, "-m", module)
+    # Any other ``__main__.py`` is an ordinary file launcher, never a module spelling.
+    other = site / "other" / "__main__.py"
+    other.parent.mkdir()
+    other.write_text("", encoding="utf-8")
+    monkeypatch.setattr(server.sys, "argv", [str(other), "mcp", "serve", "--host", "cursor"])
+    assert server._runtime_launcher_from_argv() == (str(other.resolve()),)
 
 
 def test_symlinked_console_launcher_is_normalized_like_the_project_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations.launcher import resolve_yoetz_launcher
+    from finishup.adapters.integrations.launcher import resolve_finishup_launcher
 
-    real = tmp_path / "yoetz"
+    real = tmp_path / "finishup"
     real.write_text("#!/bin/sh\n", encoding="utf-8")
     real.chmod(0o700)
-    linked = tmp_path / "cursor-yoetz"
+    linked = tmp_path / "cursor-finishup"
     linked.symlink_to(real)
     monkeypatch.setattr(
         server.sys,
@@ -195,7 +224,7 @@ def test_symlinked_console_launcher_is_normalized_like_the_project_writer(
 
     expected = (str(real),)
     assert server._runtime_launcher_from_argv() == expected
-    assert resolve_yoetz_launcher(linked) == expected
+    assert resolve_finishup_launcher(linked) == expected
 
 
 @pytest.mark.anyio
@@ -320,9 +349,9 @@ async def test_project_registration_must_be_exact_before_roots_or_service(
     if mode != "missing":
         config = _write_project_registration(project)
         document = json.loads(config.read_text(encoding="utf-8"))
-        entry = document["mcpServers"]["yoetz"]
+        entry = document["mcpServers"]["finishup"]
         if mode == "foreign":
-            entry["command"] = "/foreign/yoetz"
+            entry["command"] = "/foreign/finishup"
         else:
             entry["args"].append("--semantic")
             entry["args"].append("off")
@@ -371,7 +400,8 @@ async def test_project_registration_edit_retires_binding_before_second_dispatch(
     assert dispatches == ["status"]
 
     config.write_text(
-        config.read_text(encoding="utf-8").replace(_LAUNCHER[0], "/other/yoetz"), encoding="utf-8"
+        config.read_text(encoding="utf-8").replace(_LAUNCHER[0], "/other/finishup"),
+        encoding="utf-8",
     )
     config.chmod(0o600)
     second = await server._handle_call_tool_request(request, runtime, session=session)
@@ -485,7 +515,7 @@ async def test_project_registration_removal_retires_an_existing_binding(
 def _write_cli_registration(project: Path) -> Path:
     config = _write_project_registration(project)
     document = json.loads(config.read_text())
-    entry = document["mcpServers"]["yoetz"]
+    entry = document["mcpServers"]["finishup"]
     entry["args"][-1] = str(project)
     entry["args"].extend(["--project-binding", "registered-project"])
     config.write_text(json.dumps(document))
@@ -537,13 +567,13 @@ async def test_cli_binding_retires_on_registration_or_directory_changes(
     if mutation == "missing":
         config.unlink()
     elif mutation == "foreign_launcher":
-        document["mcpServers"]["yoetz"]["command"] = "/foreign/yoetz"
+        document["mcpServers"]["finishup"]["command"] = "/foreign/finishup"
         config.write_text(json.dumps(document))
     elif mutation == "mode_removed":
-        document["mcpServers"]["yoetz"]["args"] = document["mcpServers"]["yoetz"]["args"][:-2]
+        document["mcpServers"]["finishup"]["args"] = document["mcpServers"]["finishup"]["args"][:-2]
         config.write_text(json.dumps(document))
     elif mutation == "root_mismatch":
-        document["mcpServers"]["yoetz"]["args"][-3] = str(tmp_path)
+        document["mcpServers"]["finishup"]["args"][-3] = str(tmp_path)
         config.write_text(json.dumps(document))
     elif mutation == "symlink":
         moved = tmp_path / "moved"
@@ -567,7 +597,7 @@ def test_cli_binding_requires_an_explicit_cursor_project(
 ) -> None:
     from typing import cast
 
-    from yoetz.ports.control import McpHostProfile
+    from finishup.ports.control import McpHostProfile
 
     root = _directory(tmp_path / "project")
     with pytest.raises(ValueError, match="mcp_project_binding_invalid"):

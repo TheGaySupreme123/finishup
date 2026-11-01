@@ -11,48 +11,48 @@ the machine on its own, authenticate the report author, or upgrade a digest into
 
 ## 1. Isolation and authority
 
-- Use a disposable worktree, an isolated Codex executable/home, an isolated Yoetz installation and
+- Use a disposable worktree, an isolated Codex executable/home, an isolated FinishUP installation and
   state directory, and a candidate wheel built from the recorded source ref.
-- Yoetz isolation uses exactly one supported contract (ADR-026, issue #518): provision one
+- FinishUP isolation uses exactly one supported contract (ADR-026, issue #518): provision one
   owner-only (0700), symlink-free private directory outside shared temp and any repository, and
-  export `YOETZ_ISOLATED_ROOT` to it for **every** tested process — the launcher, the MCP server
-  entry, hook commands, and every `yoetz` control command the run executes. Config, storage
+  export `FINISHUP_ISOLATED_ROOT` to it for **every** tested process — the launcher, the MCP server
+  entry, hook commands, and every `finishup` control command the run executes. Config, storage
   bundle, state (service lock/generation), control endpoints, cache, and logs all derive from
   that root, so the isolated runtime structurally cannot reach the normal singleton. Do not treat
-  `YOETZ_STORAGE_DATA_DIR` alone as isolation (it relocates only storage), and do not rely on a
-  bare `yoetz` child command resolving ambient identity. A set but unusable root fails closed
+  `FINISHUP_STORAGE_DATA_DIR` alone as isolation (it relocates only storage), and do not rely on a
+  bare `finishup` child command resolving ambient identity. A set but unusable root fails closed
   (`isolation_root_invalid` or the precise path-safety reason) instead of falling back to the
   normal install.
 - Prove, never assume, the isolation mode with two connection-free snapshots. First run the normal
-  target's exact `yoetz service isolation --json` without the isolation variable; then run the
+  target's exact `finishup service isolation --json` without the isolation variable; then run the
   candidate executable with the exact launch environment. Compare the two exact reports. Platform
   defaults are not a substitute because the normal target may relocate its config or storage.
 - The isolation report's `path_identity` digests (`*_path_digest`) bind which path a root or
   file resolves to, not the file's bytes. An in-place or atomic edit of a config leaves its path
   digest unchanged, so never read equal path digests as "the config did not change". Byte
-  evidence comes only from content observations: `yoetz service isolation --json
-  --content-digests` for the selected Yoetz config, and `--observe` (section 6) for normal-target
+  evidence comes only from content observations: `finishup service isolation --json
+  --content-digests` for the selected FinishUP config, and `--observe` (section 6) for normal-target
   files. Each carries SHA-256, size, existence, and observation time — never content.
-- Rollback of Yoetz state is deleting the isolation root: every artifact of the isolated runtime
+- Rollback of FinishUP state is deleting the isolation root: every artifact of the isolated runtime
   lives beneath it. Stop only processes the runner started, then remove the root. An instance
   provisioned by `scripts/provision_test_instance.py` (ADR-028) is pinned to its root and disposed
   with that script's `dispose`, which stops only the holder of that root's singleton; see
   [`test-instances.md`](test-instances.md).
 - Two Codex homes have different lifetimes. The **host** Codex home (the one carrying the plugin,
   MCP activation, and hooks under test) is per run and lives beneath the run directory. The
-  **evaluator** home bound by `yoetz provider codex-subscription setup --codex-home <dir>` holds
-  Codex-owned ChatGPT OAuth state and no Yoetz identity, so it may be a stable owner-private
+  **evaluator** home bound by `finishup provider codex-subscription setup --codex-home <dir>` holds
+  Codex-owned ChatGPT OAuth state and no FinishUP identity, so it may be a stable owner-private
   directory outside the isolation root that later runs pass again; `setup` then reuses the
   existing sign-in (`login_reused: true`) instead of opening a new challenge. Record it through
   its `codex_home_digest`; never use the ambient user Codex home or the host home for it, and log
-  it out with `yoetz provider codex-subscription disconnect`, not by deleting the root. Without an
+  it out with `finishup provider codex-subscription disconnect`, not by deleting the root. Without an
   explicit `--codex-home`, the default evaluator home resolves beneath the isolation root and is
   therefore fresh — and asks for sign-in — on every run.
 - The exact worktree passed to Codex is also passed to plugin status, observation status, consent,
   mapping, drain, and session-stream reconciliation. Never substitute the primary checkout.
 - Observation consent is independent trusted-local authority. Do not copy its database row, reuse
   primary-checkout consent, symlink state, or grant it through MCP/chat. When missing, stop and show
-  the local `yoetz observe grant --workspace <exact-worktree>` continuation.
+  the local `finishup observe grant --workspace <exact-worktree>` continuation.
 - Activation decisions are exact-target and digest bound. Do not reuse an acceptance/decline from
   another executable/home or earlier cache state. `installed_not_activated` fails preflight.
 - Snapshot the normal Codex target before the run (section 3). Test-owned mutations must be
@@ -75,7 +75,7 @@ Resolve and verify, rather than merely accept, these inputs:
 | `launcher_digest` | Exact launcher bytes that start the tested Codex process. |
 | `route_profile` | Registered `strict` or `policy` route actually observed for that isolated target. |
 | `worktree_digest` | SHA-256 over the canonical tested Git-root identity; do not publish the path. |
-| `yoetz_isolation` | `mode` and the five candidate `path_identity` digests from the exact launch report, plus `normal_mode` and the five `normal_*_path_digest` fields copied from the exact normal-target report: state, endpoint, storage, config, and Yoetz executable. They are path identities only. |
+| `finishup_isolation` | `mode` and the five candidate `path_identity` digests from the exact launch report, plus `normal_mode` and the five `normal_*_path_digest` fields copied from the exact normal-target report: state, endpoint, storage, config, and FinishUP executable. They are path identities only. |
 
 The source ref, wheel digest, executable digest/version, and launcher digest must agree with the
 actual launch inputs. A clean working tree is not a substitute for the exact source ref, and an
@@ -86,14 +86,14 @@ installed package version is not a substitute for the wheel digest.
 Run each status command from the isolated runtime, with the exact selectors filled in:
 
 ```text
-<normal-yoetz> service isolation --json --content-digests
-YOETZ_ISOLATED_ROOT=<exact-root> <candidate-yoetz> service isolation --json
+<normal-finishup> service isolation --json --content-digests
+FINISHUP_ISOLATED_ROOT=<exact-root> <candidate-finishup> service isolation --json
 uv run python scripts/check_codex_dogfood_parity.py --observe <normal-codex-home>/config.toml [--observe <other-normal-target-file> ...]
-yoetz recommend list --codex-path <exact-executable> --codex-home <exact-home> --json
-yoetz integrate codex plugin status --project-root <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
-CODEX_HOME=<exact-home> CODEX_TESTING_HOME=<exact-home> yoetz integrate codex mcp status --codex-path <exact-executable> --json
+finishup recommend list --codex-path <exact-executable> --codex-home <exact-home> --json
+finishup integrate codex plugin status --project-root <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
+CODEX_HOME=<exact-home> CODEX_TESTING_HOME=<exact-home> finishup integrate codex mcp status --codex-path <exact-executable> --json
 python scripts/capture_codex_mcp_surface.py --codex-binary <exact-executable> --codex-testing-home <exact-home> --output <capture-outside-worktree.json>
-yoetz observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
+finishup observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
 ```
 
 The report has one row for every preflight facet. A `pass` row has an evidence digest and no reason
@@ -106,7 +106,7 @@ bounded reason token, an optional evidence digest, and a closed next action.
 | `package_identity` | Installed candidate is the recorded package digest. |
 | `service_isolation` | The exact normal report has mode `ambient`, the exact launch report has mode `isolated`, and every state/endpoint/storage/config/executable digest differs. Shared, relocated, ambient, or unknown identity cannot pass. |
 | `mcp_child_isolation` | MCP status is `yoetz_owned` with `isolation_binding=isolated_exact`, and the pre-model app-server capture starts the registered server successfully. This combines the exact reviewed binding, ADR-026 root derivation, and the installed Codex propagation regression; a bare, missing, different, foreign, failed, or unverifiable child cannot pass. |
-| `workspace_binding` | Codex and every Yoetz control use the same exact worktree. |
+| `workspace_binding` | Codex and every FinishUP control use the same exact worktree. |
 | `observation_consent` | Consent is `active` for that worktree commitment. |
 | `plugin_source` | Exact managed source is present in that worktree. |
 | `plugin_installation` | The selected target reports the intended installed plugin. |
@@ -120,16 +120,16 @@ bounded reason token, an optional evidence digest, and a closed next action.
 
 The `--observe` rows are the `before` observations of the report's optional `normal_target`
 lane. Give each observed file one stable `slot` token (for example `codex_config`); copy the
-normal Yoetz report's `config_content` into a slot too when the normal Yoetz config is part of the
+normal FinishUP report's `config_content` into a slot too when the normal FinishUP config is part of the
 unchanged proof. The lane is optional (`normal_target: null`), but without it
 `normal_target_unchanged` rests on the operator's own comparison, and the gate cannot tell a
 path-stable byte change from an unchanged target.
 
 If isolation is not proven — the command fails, reports `ambient`, or any identity digest equals
 its normal-target counterpart — record the non-pass `service_isolation` row with the
-`provision_isolated_yoetz_root` continuation, provision a fresh isolation root, re-export
-`YOETZ_ISOLATED_ROOT`, and rebuild the report from fresh status. Never launch over shared,
-ambient, or unknown Yoetz identity.
+`provision_isolated_finishup_root` continuation, provision a fresh isolation root, re-export
+`FINISHUP_ISOLATED_ROOT`, and rebuild the report from fresh status. Never launch over shared,
+ambient, or unknown FinishUP identity.
 
 If the MCP registration is not `yoetz_owned` or its binding is not `isolated_exact`, record the
 non-pass `mcp_child_isolation` row with the `reregister_isolated_mcp` continuation. Re-run the
@@ -145,9 +145,9 @@ starts. The capture starts the registered child without a model task; inventory 
 evidence, not proof that a model received or used a tool.
 
 If consent is missing, record `blocked / observation_consent_missing /
-yoetz_observe_grant_exact_worktree`, show the trusted local command, and stop. If activation is
+finishup_observe_grant_exact_worktree`, show the trusted local command, and stop. If activation is
 `installed_not_activated`, record `fail / installed_not_activated /
-yoetz_recommend_list_exact_target`, run the exact-target recommendation flow locally, and rebuild
+finishup_recommend_list_exact_target`, run the exact-target recommendation flow locally, and rebuild
 the report from fresh status. Foreign, modified, or ambiguous activation uses
 `manual_activation_review`; there is no force path.
 
@@ -167,15 +167,15 @@ of the following cells:
 
 | Facet | Required evidence |
 |---|---|
-| `skill_delivery` | Fresh process receives the installed Yoetz skill/instructions. |
-| `mcp_runtime` | The exact isolated launcher starts the intended Yoetz MCP runtime. |
-| `model_mcp_call` | A correlated model-issued Yoetz MCP operation succeeds or returns its typed product result. |
+| `skill_delivery` | Fresh process receives the installed FinishUP skill/instructions. |
+| `mcp_runtime` | The exact isolated launcher starts the intended FinishUP MCP runtime. |
+| `model_mcp_call` | A correlated model-issued FinishUP MCP operation succeeds or returns its typed product result. |
 | `semantic_dispatch` | Every in-scope `semantic_required` check reaches a terminal typed status. |
 | `semantic_provenance` | Provenance matches the AI-powered review result under the AI-powered review dogfood gate. |
 | `receipt` | Receipt conclusion and coverage match the recorded frontier and limitations. |
 | `corrective_influence` | Scored only when the influence runbook put it in scope; otherwise `not_run`. |
 
-Host authorization permits the in-scope tool call only. Yoetz still independently enforces
+Host authorization permits the in-scope tool call only. FinishUP still independently enforces
 repository, privacy, provider, disclosure, credential, and exact-request gates.
 
 ## 5. Observation and session stream
@@ -184,9 +184,9 @@ For a profile advertising hooks, exercise its advertised lifecycle events in the
 then run status and drain for the exact worktree:
 
 ```text
-yoetz observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
-yoetz observe drain --workspace <exact-worktree> --json
-yoetz observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
+finishup observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
+finishup observe drain --workspace <exact-worktree> --json
+finishup observe status --workspace <exact-worktree> --codex-path <exact-executable> --codex-home <exact-home> --json
 ```
 
 `hook_lifecycle`, `mapping`, `accepted_envelopes`, `diagnostics`, and `drain` pass separately.
@@ -195,7 +195,7 @@ diagnostics with no unexplained failure, a successful drain, and zero unexplaine
 The drain must report `terminal: drained` and `pending_after: 0`; it repeats passes while rows
 resolve and never sleeps, so `retry_pending` is a real cause (read `reasons`), not a timing
 artifact. Expect no outbox rows for the workflow's own `status`/`receipt`/`read_guidance` calls or
-for any Yoetz pre-event (issue #564); a row per `start`/`check`/`respond`/`publish_work` post-event
+for any FinishUP pre-event (issue #564); a row per `start`/`check`/`respond`/`publish_work` post-event
 is the proportional volume.
 Primary-checkout consent cannot satisfy this cell; the permanent regression fixture is
 `tests/fixtures/codex-dogfood/worktree-without-exact-consent.json`.
@@ -250,13 +250,13 @@ invalidates the report.
 ## 7. Report shape and statuses
 
 The top-level keys are exactly `schema`, `identity`, `scope`, `observed`, `normal_target`, and
-`facets`; the current schema is `yoetz.codex-dogfood-parity/4` (version 1 lacked Yoetz isolation
+`facets`; the current schema is `yoetz.codex-dogfood-parity/4` (version 1 lacked FinishUP isolation
 identity; version 2 lacked host-child binding proof; version 3 named path-identity digests
 ambiguously as `*_digest` and had no byte-content lane; none is accepted). `normal_target` is
 `null` or `{"files": [...]}` with 1–32 entries of exactly `slot`, `before`, and `after`; each
 observation has exactly `path_digest`, `presence`, `content_digest`, `size_bytes`, and
 `observed_at`, and only a `present` observation carries a digest and size. `observed` retains only closed states/counts:
-activation state, Yoetz isolation state (`isolated|shared|ambient|unknown`), MCP registration state,
+activation state, FinishUP isolation state (`isolated|shared|ambient|unknown`), MCP registration state,
 MCP isolation binding, MCP child state (`ready|failed|unknown`), exact/primary consent states,
 workspace-match boolean, mapping presence, accepted envelope count, undelivered count, drain
 success, hook coverage, and stream coverage. The validator rejects a passing

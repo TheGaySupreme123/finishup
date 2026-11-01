@@ -8,10 +8,10 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
+from finishup.ports.ledger import ProjectionQuery
+from finishup.protocol.models import StatusVersionSliceModel
+from finishup.version import build_status_version_slice_facts
 from integration.storage.test_append_and_replay import command_from_records, memory_for
-from yoetz.ports.ledger import ProjectionQuery
-from yoetz.protocol.models import StatusVersionSliceModel
-from yoetz.version import build_status_version_slice_facts
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ async def test_versions_projection_matches_version_producer_not_historical_liter
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.version._runtime_components",
+        "finishup.version._runtime_components",
         lambda: (
             MappingProxyType({"status": "present", "version": "9.9.9.9"}),
             MappingProxyType({"status": "present", "version": "9.9.9"}),

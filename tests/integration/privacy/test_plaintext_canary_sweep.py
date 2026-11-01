@@ -26,14 +26,14 @@ import apsw
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.privacy.catalog import CatalogPrivacyAudit, CatalogPrivacyPolicyStore
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.adapters.sqlite.migrations import CATALOG_MIGRATIONS
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.config.models import LoggingConfig
-from yoetz.domain.privacy import (
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.privacy.catalog import CatalogPrivacyAudit, CatalogPrivacyPolicyStore
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.adapters.sqlite.migrations import CATALOG_MIGRATIONS
+from finishup.application.egress import PrivacyCoordinator
+from finishup.config.models import LoggingConfig
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -46,25 +46,26 @@ from yoetz.domain.privacy import (
     LocalDisclosureSink,
     PrivacyPolicy,
     PrivacyProfile,
+    ReceiptSecretScanStage,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import parse_rfc3339_millis
-from yoetz.observability.logging import LogMode, configure_logging, get_logger
-from yoetz.observability.privacy import DiagnosticRedactionProfile as RedactionProfile
-from yoetz.observability.privacy import (
+from finishup.domain.values import parse_rfc3339_millis
+from finishup.observability.logging import LogMode, configure_logging, get_logger
+from finishup.observability.privacy import DiagnosticRedactionProfile as RedactionProfile
+from finishup.observability.privacy import (
     build_diagnostic_manifest,
     scan_for_sensitive_content,
 )
-from yoetz.ports.control import (
+from finishup.ports.control import (
     ControlClientKind,
     RepositoryPrivacyContext,
     ServiceState,
     ServiceStatus,
     WorkspaceLocator,
 )
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
@@ -72,13 +73,13 @@ from yoetz.ports.objects import (
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.secret_memory import SecretConsumer, SecretMemoryCapability, SecretPurpose
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
-from yoetz.service.control_protocol import client_handshake, server_handshake
+from finishup.ports.secret_memory import SecretConsumer, SecretMemoryCapability, SecretPurpose
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
+from finishup.service.control_protocol import client_handshake, server_handshake
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _INSTALLATION = "ins_50000000-0000-4000-8000-000000000001"
 _TASK = "tsk_50000000-0000-4000-8000-000000000002"
@@ -390,10 +391,10 @@ def _service_status() -> ServiceStatus:
 
 
 def test_canaries_absent_from_structural_surfaces(tmp_path: Path) -> None:
-    retained_root = os.environ.get("YOETZ_RUNTIME_CANARY_ROOT")
-    canary_file = os.environ.get("YOETZ_RUNTIME_CANARY_FILE")
+    retained_root = os.environ.get("FINISHUP_RUNTIME_CANARY_ROOT")
+    canary_file = os.environ.get("FINISHUP_RUNTIME_CANARY_FILE")
     assert bool(retained_root) is bool(canary_file), (
-        "YOETZ_RUNTIME_CANARY_ROOT and YOETZ_RUNTIME_CANARY_FILE must be set together"
+        "FINISHUP_RUNTIME_CANARY_ROOT and FINISHUP_RUNTIME_CANARY_FILE must be set together"
     )
     root = Path(retained_root) if retained_root else tmp_path
     root.mkdir(parents=True, exist_ok=not retained_root)
@@ -451,6 +452,31 @@ def test_canaries_absent_from_structural_surfaces(tmp_path: Path) -> None:
 
     manifest = build_diagnostic_manifest(RedactionProfile.SUPPORT, {"message": canary.decode()})
     assert canary.decode() not in repr(manifest)
+
+
+def test_local_policy_denial_records_candidate_scan_without_false_not_run(tmp_path: Path) -> None:
+    """Classification runs before local policy denial, so the receipt names its candidate scan."""
+
+    env = _Env(tmp_path)
+
+    async def run() -> object:
+        await env.policies.seed_if_absent(_policy())
+        return await env.coordinator.prepare_local_disclosure(
+            _candidate(
+                _REQUEST,
+                "item-denied",
+                DataCategory.FINDING_SUMMARY,
+                "note:ordinary",
+                b"ordinary content",
+            )
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is LocalDisclosureBlocked
+    assert result.receipt.secret_scan.stage is ReceiptSecretScanStage.CANDIDATE
+    assert result.receipt.secret_scan.passed is True
+    assert result.receipt.secret_scan.match_count == 0
+    assert result.receipt.secret_scan.not_run_reason is None
 
 
 @pytest.mark.anyio

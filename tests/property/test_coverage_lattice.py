@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ARTIFACT_OBSERVATION_ORDER,
     AUTHORSHIP_ASSURANCE_ORDER,
     EVIDENCE_IMMUTABILITY_ORDER,

@@ -1,4 +1,4 @@
-"""Privacy/redaction property checks for ``yoetz.observability.privacy``.
+"""Privacy/redaction property checks for ``finishup.observability.privacy``.
 
 Searches the privacy diagnostic helpers (never the policy/gateway machinery, which have their own
 dedicated suites) for accidental leakage, instability, or reversible redaction.
@@ -8,20 +8,32 @@ from __future__ import annotations
 
 import hashlib
 import hmac as hmac_module
+import json
+import re
+import string
 
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from yoetz.observability.privacy import (
+from finishup.observability.privacy import (
+    EGRESS_CREDENTIAL_PLACEHOLDER,
     PrivacyFenceError,
     assert_plaintext_safe,
+    prepare_persisted_plaintext,
+    redact_before_cut,
     redact_diagnostic_record,
     redact_diagnostic_value,
+    redact_encoded_heuristic_spans,
+    redact_heuristic_spans,
+    redact_high_confidence_content,
+    redact_sensitive_content,
     scan_for_sensitive_content,
+    semantic_egress_forms,
     session_id_hash,
 )
-from yoetz.protocol.ids import IdKind, validate_id
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import IdKind, validate_id
 
 _ALWAYS_OMITTED_FIELDS = (
     "message",
@@ -166,3 +178,181 @@ def test_canary_absence_is_not_a_false_positive(clean: bytes) -> None:
 def test_redact_diagnostic_value_never_echoes_an_unknown_field() -> None:
     assert redact_diagnostic_value("totally_unknown_field", "super-secret-value") is None
     assert redact_diagnostic_value("message", "super-secret-value") is None
+
+
+# #1248 P2 (owner decision P-D3): values end at line breaks, and at tabs (the 2026-10-06 rule),
+# raw or JSON-encoded, and no redaction pass removes a byte outside its own match. Each generated
+# text is lines of benign settings and credential-like assignments, some with a tab and more text
+# after the value; after any pass, at any JSON escaping depth up to three, every line break and
+# every benign line is intact, and an assignment line is either untouched or keeps its name,
+# separator and post-tab text with exactly one fixed marker where its whole value was.
+
+_SECRET_NAMES = ("DB_PASSWORD", "api_key", "client_secret", "password", "AWS_SECRET_ACCESS_KEY")
+_BENIGN_NAMES = ("user", "host", "port", "role", "mode", "DB_NAME")
+_LINE_PREFIXES = ("", "  ", "    ", "+", "-", " ")
+_SEPARATORS = ("=", ": ", " = ")
+_MARKERS = (EGRESS_CREDENTIAL_PLACEHOLDER.decode(), "[REDACTED]")
+_AFTER_VALUE = ("", "\t", "\t# note", "\tport=5432")
+# Value bytes include backslashes; a backslash run before ``n``/``r``/``t`` is excluded because
+# the value deliberately ends there (the accepted P-D3 cost, covered by a unit test).
+_VALUE_ALPHABET = string.ascii_letters + string.digits + "-_./:!%^&*+~?#\\"
+_VALUE_END_ESCAPE = re.compile(r"\\+[nrt]")
+
+
+@st.composite
+def _secret_value(draw: st.DrawFn) -> str:
+    head = draw(st.sampled_from(string.ascii_letters))
+    body = draw(st.text(alphabet=_VALUE_ALPHABET, min_size=4, max_size=40))
+    value = head + body + "9"
+    assume(_VALUE_END_ESCAPE.search(value) is None)
+    return value
+
+
+@st.composite
+def _setting_line(draw: st.DrawFn) -> tuple[str, tuple[str, str] | None]:
+    """``(line, kept)``: the bytes around the value a pass may replace; ``None`` when benign."""
+
+    kind = draw(st.sampled_from(("secret", "empty", "benign", "blank", "comment")))
+    if kind == "blank":
+        return "", None
+    if kind == "empty":
+        # ``KEY=`` with no value: it ends at the line break, so nothing on it or after it is read
+        # as its value (#1248 owner decision; YAML ``key:`` blocks are P3's).
+        prefix = draw(st.sampled_from(_LINE_PREFIXES))
+        return prefix + draw(st.sampled_from(_SECRET_NAMES)) + draw(
+            st.sampled_from(("=", " ="))
+        ), None
+    if kind == "comment":
+        return "# note", None
+    prefix = draw(st.sampled_from(_LINE_PREFIXES))
+    separator = draw(st.sampled_from(_SEPARATORS))
+    if kind == "benign":
+        name = draw(st.sampled_from(_BENIGN_NAMES))
+        value = draw(
+            st.text(
+                alphabet=string.ascii_lowercase + string.digits + "-._/", min_size=1, max_size=12
+            )
+        )
+        return prefix + name + separator + value, None
+    name = draw(st.sampled_from(_SECRET_NAMES))
+    after = draw(st.sampled_from(_AFTER_VALUE))
+    head = prefix + name + separator
+    return head + draw(_secret_value()) + after, (head, after)
+
+
+def _nest(text: str, depth: int) -> bytes:
+    data = text.encode()
+    for _ in range(depth):
+        data = canonical_encode(data.decode())
+    return data
+
+
+def _unnest(data: bytes, depth: int) -> str:
+    text = data.decode()
+    for _ in range(depth):
+        decoded = json.loads(text)
+        assert type(decoded) is str
+        text = decoded
+    return text
+
+
+def _assert_only_values_replaced(
+    lines: list[tuple[str, tuple[str, str] | None]], ending: str, output: str
+) -> None:
+    out_lines = output.split(ending)
+    assert len(out_lines) == len(lines) + 1 and out_lines[-1] == ""
+    for (line, kept), out in zip(lines, out_lines, strict=False):
+        if kept is None:
+            assert out == line
+        else:
+            head, after = kept
+            assert out == line or out in {head + marker + after for marker in _MARKERS}
+
+
+@given(
+    st.lists(_setting_line(), min_size=1, max_size=8),
+    st.sampled_from(("\n", "\r\n")),
+    st.integers(min_value=0, max_value=3),
+)
+def test_no_redaction_pass_removes_bytes_past_its_match(
+    lines: list[tuple[str, tuple[str, str] | None]], ending: str, depth: int
+) -> None:
+    text = "".join(line + ending for line, _ in lines)
+    nested = _nest(text, depth)
+
+    for redacted in (
+        redact_heuristic_spans(nested)[0],
+        redact_sensitive_content(nested)[0],
+        redact_sensitive_content(nested, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER)[0],
+        redact_high_confidence_content(nested)[0],
+        prepare_persisted_plaintext(nested).content,
+    ):
+        _assert_only_values_replaced(lines, ending, _unnest(redacted, depth))
+
+    if depth:
+        return
+    # The item-text passes of egress minimization and case composition.
+    encoded_pass = redact_encoded_heuristic_spans(nested)
+    cut_source = redact_before_cut(nested)
+    for output in (
+        *semantic_egress_forms(nested),
+        *(() if encoded_pass is None else (encoded_pass[0],)),
+        *(() if cut_source is None else (cut_source,)),
+    ):
+        _assert_only_values_replaced(lines, ending, output.decode())
+
+
+# #1248 P3 (P1 finding, #1271): an assignment straight after the closing quote of the one before
+# it, or opening the line after a line break or tab that encoding turned into an escape, starts a
+# fresh match. Every such secret line is replaced, at every escaping depth up to three, and only
+# its values are.
+
+_QUOTES = ('"', "'")
+
+
+@st.composite
+def _secret_assignment_line(draw: st.DrawFn) -> tuple[str, str, list[str]]:
+    """``(line, kept, values)``: ``kept`` is the line with each value removed."""
+
+    prefix = draw(st.sampled_from(("", "  ", "\t", "+")))
+    count = draw(st.integers(min_value=1, max_value=3))
+    quote = draw(st.sampled_from(_QUOTES))
+    pieces: list[tuple[str, str]] = []
+    values: list[str] = []
+    for _ in range(count):
+        name = draw(st.sampled_from(_SECRET_NAMES))
+        separator = draw(st.sampled_from(_SEPARATORS))
+        value = draw(_secret_value()).replace("\\", "").replace(quote, "")
+        values.append(value)
+        if count == 1 and draw(st.booleans()):
+            pieces.append((name + separator, value))
+        else:
+            # Glued: each quoted value runs straight into the next name.
+            pieces.append((name + separator + quote, value + quote))
+    line = prefix + "".join(head + value for head, value in pieces)
+    kept = prefix + "".join(
+        head + value[len(raw) :] for (head, value), raw in zip(pieces, values, strict=True)
+    )
+    return line, kept, values
+
+
+@given(
+    st.lists(_secret_assignment_line(), min_size=1, max_size=6),
+    st.sampled_from(("\n", "\r\n")),
+    st.integers(min_value=0, max_value=3),
+)
+def test_every_secret_assignment_is_replaced_after_a_quote_or_an_encoded_break(
+    lines: list[tuple[str, str, list[str]]], ending: str, depth: int
+) -> None:
+    text = "".join(line + ending for line, _kept, _values in lines)
+    nested = _nest(text, depth)
+
+    for redacted in (
+        redact_heuristic_spans(nested)[0],
+        redact_sensitive_content(nested, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER)[0],
+    ):
+        out_lines = _unnest(redacted, depth).split(ending)
+        assert len(out_lines) == len(lines) + 1 and out_lines[-1] == ""
+        for (_line, kept, values), out in zip(lines, out_lines, strict=False):
+            assert out.count(_MARKERS[0]) == len(values)
+            assert out.replace(_MARKERS[0], "") == kept

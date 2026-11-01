@@ -11,18 +11,18 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.privacy_policy import PrivacyPolicyApplication
-from yoetz.domain.privacy import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.privacy_policy import PrivacyPolicyApplication
+from finishup.domain.privacy import (
     ConsentSource,
     DisclosureProposal,
     HumanPrivacyDecision,
     LocalDisclosureSink,
 )
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.models import DataCategory
-from yoetz.service.confidential_protocol import (
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.models import DataCategory
+from finishup.service.confidential_protocol import (
     ClientOpenEnvelope,
     HumanCeremonyKind,
     PrivacyDecisionResult,
@@ -30,8 +30,8 @@ from yoetz.service.confidential_protocol import (
     PrivacyPendingTarget,
     ProviderCredentialTarget,
 )
-from yoetz.service.daemon import _LockedHumanEffects, _PrivacyPolicyAppRelay
-from yoetz.service.human_control import HumanControlError
+from finishup.service.daemon import _LockedHumanEffects, _PrivacyPolicyAppRelay
+from finishup.service.human_control import HumanControlError
 
 _NOW = datetime(2026, 8, 5, 12, tzinfo=UTC)
 _REQUEST_ID = "req_30000000-0000-4000-8000-000000000001"
@@ -276,7 +276,7 @@ async def test_disclosure_excerpt_drops_only_a_trailing_partial_utf8_sequence() 
 async def test_keyring_mode_can_preview_and_decide_a_bounded_disclosure() -> None:
     """Keyring is the ordinary production vault mode.
 
-    The passphrase gate made `yoetz privacy decide-disclosure` return kind_forbidden on
+    The passphrase gate made `finishup privacy decide-disclosure` return kind_forbidden on
     every keyring installation, so the confirm_every_request posture had no way to be
     answered at all. Recording an already-bounded disclosure grants no new authority.
     """
@@ -379,7 +379,7 @@ async def test_credential_probe_uses_the_ceremonys_trusted_repository_scope(
 
     monkeypatch.setattr(PrivacyCoordinator, "activate_repository", activate)
     monkeypatch.setattr(PrivacyCoordinator, "evaluate_semantic", evaluate)
-    monkeypatch.setattr("yoetz.config.load.load_config", load_config)
+    monkeypatch.setattr("finishup.config.load.load_config", load_config)
 
     refused = await effects._provider_credential_refused(target, object())
 
@@ -390,3 +390,77 @@ async def test_credential_probe_uses_the_ceremonys_trusted_repository_scope(
     candidate = observed[1]
     assert candidate.scope == scope  # type: ignore[attr-defined]
     assert candidate.items[0].source_scope == scope  # type: ignore[attr-defined]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("ready", "stored"), [(False, True), (True, False), (True, True)])
+async def test_remove_effects_refuse_locked_or_missing_and_bind_the_exact_target(
+    ready: bool,
+    stored: bool,
+) -> None:
+    from finishup.ports.secret_memory import HumanAuthorizationProof
+    from finishup.service.confidential_protocol import (
+        ProviderCredentialRemovePreview,
+        ProviderCredentialRemoveResult,
+    )
+    from finishup.service.vault import (
+        ProviderCredentialBinding,
+        provider_credential_profile_binding,
+    )
+
+    binding = provider_credential_profile_binding("openai", "gpt-5", "responses", "1")
+    target = ProviderCredentialTarget(
+        "remove",
+        binding.provider_id,
+        binding.model_id,
+        binding.endpoint_profile_id,
+        binding.endpoint_profile_version,
+        binding.purpose,
+        binding.authorization_scope_digest,
+        binding.purpose_digest,
+    )
+    events: list[str] = []
+
+    class Vault(_Vault):
+        async def has_provider_credential(self, actual: ProviderCredentialBinding) -> bool:
+            assert actual == binding
+            events.append("presence")
+            return stored
+
+        async def remove_provider_credential(
+            self,
+            actual: ProviderCredentialBinding,
+            proof: HumanAuthorizationProof,
+            now_monotonic: float,
+            *,
+            target_digest: str,
+        ) -> None:
+            assert actual == binding and target_digest == target.target_digest()
+            proof.consume("provider_credential_remove", target_digest, 7, 3, None, now_monotonic)
+            events.append("remove")
+
+    vault = Vault()
+    vault.ready = ready
+    # An unbound privacy relay proves neither preparation nor removal reads/writes policy.
+    effects = _LockedHumanEffects(
+        cast(object, SimpleNamespace()), cast(object, vault), _PrivacyPolicyAppRelay()
+    )
+    request = ClientOpenEnvelope("d" * 64, HumanCeremonyKind.PROVIDER_CREDENTIAL_REMOVE, target)
+    if not ready or not stored:
+        with pytest.raises(
+            HumanControlError, match="vault_locked" if not ready else "record_missing"
+        ):
+            await effects.prepare(request)
+        assert events == ([] if not ready else ["presence"])
+        return
+    preview, digest, generation = await effects.prepare(request)
+    assert preview == ProviderCredentialRemovePreview(target)
+    assert digest == target.target_digest() and generation is None
+    proof = HumanAuthorizationProof(
+        "remove-proof", "provider_credential_remove", digest, 7, 3, None, 0.0, 20.0
+    )
+    assert (
+        await effects.remove_provider_credential(target, proof, 1.0)
+        == ProviderCredentialRemoveResult()
+    )
+    assert events == ["presence", "remove"]

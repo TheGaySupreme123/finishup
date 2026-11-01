@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.host_discovery import HostInstallation
-from yoetz.cli import host_connection as cli
+from finishup.adapters.integrations.host_discovery import HostInstallation
+from finishup.cli import host_connection as cli
 
 
 def _bare_entry() -> dict[str, object]:
     return {
         "mcpServers": {
-            "yoetz": {
+            "finishup": {
                 "args": ["mcp", "serve", "--host", "claude"],
-                "command": "yoetz",
+                "command": "finishup",
                 "type": "stdio",
             }
         }
@@ -73,7 +73,7 @@ def test_an_unreadable_claude_posture_is_none_not_a_failure(
     def broken(**_kwargs: object) -> object:
         raise failure
 
-    import yoetz.adapters.integrations.claude_code_integration as adapter
+    import finishup.adapters.integrations.claude_code_integration as adapter
 
     monkeypatch.setattr(adapter, "observe_claude_code_activation_cues", broken)
     rows = cli.installation_rows(tmp_path)

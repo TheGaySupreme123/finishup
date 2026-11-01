@@ -5,12 +5,14 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from yoetz.ports.diagnostics import StartupCheckOutcome
-from yoetz.protocol.schemas import load_schema_catalog, request_result_schema_versions
-from yoetz.version import (
+from finishup.ports.diagnostics import StartupCheckOutcome
+from finishup.protocol.schemas import load_schema_catalog, request_result_schema_versions
+from finishup.version import (
+    PLATFORM_CELL_UNTESTED,
     REVIEWED_RESOURCE_COUNT,
     ResourceIntegrityError,
     build_version_manifest,
+    platform_cell,
     read_verified_resource,
     verify_resource_manifest,
     version_manifest_json,
@@ -25,18 +27,28 @@ def test_development_manifest_is_truthful_and_complete() -> None:
     assert manifest.codex_capability_profiles == ()
     assert manifest.service_capabilities == ()
     assert dict(manifest.subject_state_capabilities) == {"status": "absent"}
-    assert manifest.limitations == (
-        "development_unverified",
-        "mcp_capability_unverified",
+    # The host's own cell decides the platform limitation; the older-python CI lane and any
+    # 3.14 patch but 3.14.6 run as an untested cell (issue #1119).
+    platform_limitation = () if platform_cell().certified else (PLATFORM_CELL_UNTESTED,)
+    assert manifest.limitations == tuple(
+        sorted(
+            ("development_unverified", "mcp_capability_unverified", *platform_limitation),
+            key=str.encode,
+        )
     )
-    assert len(manifest.request_result_schema_versions) == 51
+    # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role); 55 with
+    # reviewer-reply 1.0.0 (#1118 unit 2); 57 with the host-connection-batch report and
+    # ai-status (issue #1119).
+    assert len(manifest.request_result_schema_versions) == 57
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
     assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions) == dict(
         request_result_schema_versions(load_schema_catalog())
     )
-    assert len(manifest.event_schema_versions) == 29
+    assert len(manifest.event_schema_versions) == 30  # #1239 contact_expectation_declared
+    assert dict(manifest.event_schema_versions)["check_recorded"] == "1.6.0"
+    assert dict(manifest.event_schema_versions)["finding_recorded"] == "1.4.0"
     counts = dict(manifest.resource_counts)
     assert len(manifest.resources) == REVIEWED_RESOURCE_COUNT == int(counts["total"])
     assert set(counts) == {
@@ -79,9 +91,9 @@ def test_guidance_and_skill_source_package_bytes_are_identical() -> None:
         "guidance/coverage-and-receipts.md",
         "guidance/publication-policy.md",
         "guidance/workflow.md",
-        "skills/codex/yoetz/SKILL.md",
-        "skills/codex/yoetz/manifest.json",
-        "skills/portable/yoetz/SKILL.md",
+        "skills/codex/finishup/SKILL.md",
+        "skills/codex/finishup/manifest.json",
+        "skills/portable/finishup/SKILL.md",
         "support/agent-plugins/1.0.0/mcp.schema.json",
         "support/agent-plugins/1.0.0/plugin.schema.json",
         "support/runtime-support.json",
@@ -92,7 +104,7 @@ def test_guidance_and_skill_source_package_bytes_are_identical() -> None:
 
 
 def test_skill_does_not_advertise_parser_only_rollout_evidence() -> None:
-    document = json.loads(read_verified_resource("skills/codex/yoetz/manifest.json"))
+    document = json.loads(read_verified_resource("skills/codex/finishup/manifest.json"))
 
     assert document["codex_version_bounds"] == {
         "denied": [],

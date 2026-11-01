@@ -9,8 +9,8 @@ from typing import Literal, Protocol, cast
 import apsw
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
-from yoetz.adapters.sqlite.connection import (
+import finishup.adapters.sqlite.connection as connection_module
+from finishup.adapters.sqlite.connection import (
     REQUIRED_APSW_VERSION,
     REQUIRED_SQLITE_SOURCE_ID,
     REQUIRED_SQLITE_VERSION,
@@ -18,15 +18,15 @@ from yoetz.adapters.sqlite.connection import (
     open_read_only,
     verify_sqlite_build,
 )
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 
 class _SupportPolicyFactory(Protocol):

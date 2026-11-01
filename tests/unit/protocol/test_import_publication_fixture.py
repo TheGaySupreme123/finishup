@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.consent import ImportPublicationPreviewModel
 from fixture_loader import FixtureLoader
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.consent import ImportPublicationPreviewModel
 
 
 def test_import_publication_target_fixture_is_exact_and_content_free(

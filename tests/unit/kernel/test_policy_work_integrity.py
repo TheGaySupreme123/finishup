@@ -23,12 +23,13 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    DecisionRecordedPayload,
     EvidenceKind,
     EvidenceRecordedPayload,
     ObligationChange,
@@ -39,32 +40,62 @@ from yoetz.domain.events import (
     PlanRevisedPayload,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseDisposition,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
+    SamplingParams,
+    SemanticDispatchKind,
+    SemanticProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     SubjectStateRef,
+    actor_id,
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
+    REQUESTED_OUTPUT_ABSENT_FACT,
     CaseGap,
+    DeterministicCase,
+    render_deterministic_finding_text,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
-from yoetz.kernel.projections import ContradictionKey, ContradictionRecord
-from yoetz.protocol.coverage import EvidenceImmutability
+from finishup.kernel.policies.work_integrity import (
+    WORK_INTEGRITY_POLICY_PACK,
+    reportable_absent_outputs,
+    work_integrity_findings,
+)
+from finishup.kernel.projections import (
+    ContradictionKey,
+    ContradictionRecord,
+    DecisionProjectionRecord,
+)
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _NOW = timestamp_from_string("2026-01-01T00:00:00.000Z")
 _DIGEST_A = "sha256:" + "1" * 64
 _DIGEST_B = "sha256:" + "2" * 64
+
+
+def _decision_record(payload: DecisionRecordedPayload) -> DecisionProjectionRecord:
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
+
+    return DecisionProjectionRecord(
+        payload=payload,
+        payload_digest=canonical_digest(encode_payload(payload)),
+        redacted=False,
+        source_event_id=evt(50),
+        source_frontier=4,
+    )
 
 
 def _kinds(case: object) -> tuple[FindingKind, ...]:
@@ -157,12 +188,31 @@ def test_completion_with_open_obligations_and_waiver_nontrigger() -> None:
     assert FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS not in _kinds(waived)
 
 
+def _unrelated_action(number: int, obligation: int | None = None) -> ActionRecordedPayload:
+    """A published action that attempts a different item, optionally scoped to an obligation.
+
+    tb4n2 E4 (P1-7): "never attempted" needs work on *this* obligation. tb4n3 RC-5 (ADR-045): a
+    global action (no ``obligation_refs``) works only on the obligations whose items it names, so
+    tests that need work on one obligation scope the action to it; a global action that names
+    nothing of an obligation used to mark every obligation "acted on" (lake S).
+    """
+
+    return ActionRecordedPayload(
+        action_id=act(number),
+        action_kind=ActionKind.EDIT,
+        description="Work on the task",
+        obligation_refs=() if obligation is None else (obl(obligation),),
+        attempted_items=("other-item",),
+    )
+
+
 def test_requested_item_never_attempted_and_exact_attempt_nontrigger() -> None:
     obligation = _open_obligation(1, requested="item-1")
     plan = PlanPublishedPayload(1, "Plan", (obl(1),))
     trigger = make_case(
         plans={1: plan_record(plan, 1)},
         obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
     )
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(trigger)
     attempted = make_case(
@@ -171,6 +221,123 @@ def test_requested_item_never_attempted_and_exact_attempt_nontrigger() -> None:
         actions={act(1): record(_action(1, 1), 3)},
     )
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(attempted)
+
+
+def test_identical_requested_items_require_obligation_scoped_attempt() -> None:
+    first = _open_obligation(1, requested="shared-check")
+    second = _open_obligation(2, requested="shared-check")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1), obl(2)))
+    scoped = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.EDIT,
+        description="Attempt only the first obligation.",
+        obligation_refs=(obl(1),),
+        attempted_items=("shared-check",),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={
+            obl(1): obligation_record(first, 2),
+            obl(2): obligation_record(second, 3),
+        },
+        actions={act(1): record(scoped, 4)},
+    )
+
+    def findings(case: DeterministicCase) -> list[tuple[object, ...]]:
+        return [
+            assessment.candidate.subject_refs
+            for assessment in run_deterministic_policies(
+                case, WORK_INTEGRITY_POLICY_PACK
+            ).assessments
+            if assessment.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+        ]
+
+    # tb4n2 E4 (P1-7): work on the first obligation is not work on the second, so the second's
+    # item is not "never attempted" until a completion claim names it (no global "started").
+    assert findings(case) == []
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+        obligation_refs=(obl(1), obl(2)),
+    )
+    claimed = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={
+            obl(1): obligation_record(first, 2),
+            obl(2): obligation_record(second, 3),
+        },
+        actions={act(1): record(scoped, 4)},
+        claims={clm(1): record(claim, 5)},
+    )
+    assert findings(claimed) == [(obl(2),)]
+
+
+def test_input_role_items_are_never_reported_unattempted() -> None:
+    """tb4n2 E4 (P1-7): formal S ``/root/data``, interleaved D sample inputs.
+
+    An obligation whose only requested item is ``role: input`` is read by the task, never
+    delivered, so neither work on it nor a completion claim makes it "never attempted". An
+    output-role sibling on the same obligation still is.
+    """
+
+    reads = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Read the samples",
+        evidence_expectation="Typed evidence",
+        status=ObligationStatus.OPEN,
+        requested_items=(
+            RequestedItem(RequestedItemKind.FILE, "/root/data", RequestedItemRole.INPUT),
+        ),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    claim = ClaimRecordedPayload(
+        claim_id=clm(1),
+        claim_kind=ClaimKind.COMPLETION,
+        statement="Complete",
+        supporting_refs=(),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(reads, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+
+    mixed = replace(
+        reads,
+        requested_items=(
+            *reads.requested_items,
+            RequestedItem(RequestedItemKind.FILE, "/app/out.json", RequestedItemRole.OUTPUT),
+        ),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(mixed, 2)},
+        actions={act(9): record(_unrelated_action(9), 3)},
+        claims={clm(1): record(claim, 4)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
+
+
+def test_research_alone_never_reports_an_item_unattempted() -> None:
+    """tb4n2 E4 (P1-7): lake S got "no recorded attempt" after one research action."""
+
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    research = ActionRecordedPayload(
+        action_id=act(9),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the inputs",
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(research, 3)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
 
 
 def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:
@@ -186,9 +353,188 @@ def test_requested_item_on_carried_revision_uses_effective_plan_scope() -> None:
     case = make_case(
         plans={1: plan_record(initial, 1), 2: plan_record(revision, 2)},
         obligations={obl(2): obligation_record(obligation, 3)},
+        actions={act(9): record(_unrelated_action(9, 2), 4)},
     )
 
     assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in _kinds(case)
+
+
+def test_requested_item_is_not_reported_before_the_agent_starts_acting() -> None:
+    """TB4 tb4f1: 86% of all findings were this notice raised against a fresh plan (#977)."""
+
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    plan_only = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(plan_only)
+
+
+def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> None:
+    """atrx-vep-crispr: naming the report in attempted_items never wrote it (#977)."""
+
+    obligation = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    named = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.OTHER,
+        description="Attempted the report",
+        obligation_refs=(obl(1),),
+        attempted_items=("out/report.json",),
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(1): record(named, 3)},
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+    assessments = work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    found = [
+        item
+        for item in assessments
+        if item.candidate.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
+    ]
+    assert len(found) == 1
+    facts = {fact.fact_code for fact in found[0].basis.observed_facts}
+    assert REQUESTED_OUTPUT_ABSENT_FACT in facts
+    assert found[0].basis.required_but_missing_facts == ()
+    detail = found[0].candidate.detail
+    assert "best-effort artifact" in detail
+    # Writing the file is the default repair; revising the obligation is never offered as one
+    # (ADR-033 decision 3). The one plan correction is narrow and named (tb4n5 amendment): a file
+    # the request asks for only under a condition the final state does not meet.
+    assert "revise its obligation" not in detail.lower()
+    assert detail.index("Write each requested file") < detail.index("only under a condition")
+    assert "Never write an empty or placeholder file" in detail
+    assert "A file the request asks for unconditionally stays required:" in detail
+    assert "stays requested on the superseded obligation" in detail
+
+
+def test_pre_work_check_reports_no_absent_requested_output() -> None:
+    """tb4n1 E4: the guided pre-work check found every requested output absent.
+
+    48 of 68 first findings were this variant, 42 of them before any edit: after the plan, before
+    work, the file obviously does not exist yet. A research action is still investigation, and an
+    action on another obligation is not work on this one.
+    """
+
+    report = ObligationPublishedPayload(
+        obligation_id=obl(1),
+        description="Write the report",
+        evidence_expectation="The file",
+        status=ObligationStatus.OPEN,
+        requested_items=(RequestedItem(RequestedItemKind.FILE, "out/report.json"),),
+    )
+    other = ObligationPublishedPayload(
+        obligation_id=obl(2),
+        description="Fix the parser",
+        evidence_expectation="Tests",
+        status=ObligationStatus.OPEN,
+    )
+    plan = PlanPublishedPayload(1, "Plan", (obl(1), obl(2)))
+    research = ActionRecordedPayload(
+        action_id=act(1),
+        action_kind=ActionKind.RESEARCH,
+        description="Read the task inputs",
+        obligation_refs=(obl(1),),
+        attempted_items=("out/report.json",),
+    )
+    parser_edit = ActionRecordedPayload(
+        action_id=act(2),
+        action_kind=ActionKind.EDIT,
+        description="Edited the parser",
+        obligation_refs=(obl(2),),
+    )
+    absent = frozenset({(obl(1), 0)})
+    obligations = {obl(1): obligation_record(report, 2), obl(2): obligation_record(other, 3)}
+
+    plan_only = make_case(plans={1: plan_record(plan, 1)}, obligations=obligations)
+    assert reportable_absent_outputs(plan_only, absent) == frozenset()
+    assert not work_integrity_findings(plan_only, absent_outputs=absent)
+
+    investigating = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={act(1): record(research, 4), act(2): record(parser_edit, 5)},
+    )
+    assert reportable_absent_outputs(investigating, absent) == frozenset()
+    assert not any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(investigating, absent_outputs=absent)
+    )
+
+    # Work on the report obligation begins: the absent file is now a finding.
+    report_edit = ActionRecordedPayload(
+        action_id=act(3),
+        action_kind=ActionKind.EDIT,
+        description="Started the report",
+        obligation_refs=(obl(1),),
+    )
+    working = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations=obligations,
+        actions={
+            act(1): record(research, 4),
+            act(2): record(parser_edit, 5),
+            act(3): record(report_edit, 6),
+        },
+    )
+    assert reportable_absent_outputs(working, absent) == absent
+    assert any(
+        REQUESTED_OUTPUT_ABSENT_FACT in {fact.fact_code for fact in item.basis.observed_facts}
+        for item in work_integrity_findings(working, absent_outputs=absent)
+    )
+
+
+def test_blocked_obligation_raises_no_requested_item_finding() -> None:
+    obligation = _open_obligation(1, requested="item-1")
+    plan = PlanPublishedPayload(1, "Plan", (obl(1),))
+    blocker = DecisionRecordedPayload(
+        statement="finishup-blocker:credential",
+        rationale="The registry token is the operator's.",
+        authority=actor_id("agt_codex"),
+        affected_obligation_ids=(obl(1),),
+    )
+    case = make_case(
+        plans={1: plan_record(plan, 1)},
+        obligations={obl(1): obligation_record(obligation, 2)},
+        actions={act(9): record(_unrelated_action(9, 1), 3)},
+    )
+    case = replace(
+        case,
+        projection=replace(
+            case.projection,
+            decisions={evt(50): _decision_record(blocker)},
+        ),
+    )
+    # #985: the claimed blocker alone suppresses nothing; it is still the agent's work.
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED in {
+        item.candidate.kind
+        for item in work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    }
+    # A confirmed blocker reaches the case as its task-fact marker, derived with the batches.
+    case = replace(
+        case,
+        gaps=(
+            CaseGap(
+                f"obligation_blocked_outside_agent_control:{obl(1)}",
+                "obligation_blocked_outside_agent_control",
+                (obl(1),),
+            ),
+        ),
+    )
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in _kinds(case)
+    absent = work_integrity_findings(case, absent_outputs=frozenset({(obl(1), 0)}))
+    assert FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED not in {
+        item.candidate.kind for item in absent
+    }
 
 
 def test_failed_work_omitted_and_exact_disclosure_nontrigger() -> None:
@@ -346,6 +692,82 @@ def test_action_without_result_requires_later_disjoint_work() -> None:
     assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(latest_only)
 
 
+def _subsequent_work(case: DeterministicCase) -> tuple[tuple[str, ...], ...]:
+    result = run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK)
+    return tuple(
+        tuple(str(ref) for ref in fact.subject_refs)
+        for assessment in result.assessments
+        if assessment.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+        for fact in assessment.basis.observed_facts
+        if fact.fact_code == "subsequent_unrelated_work_present"
+    )
+
+
+def test_a_sibling_action_of_the_same_batch_is_not_later_work() -> None:
+    """tb4n5 medical S L95 (owner decision 2026-10-13): one ``publish_work`` batch recorded an
+    edit action, a command action and evidence; the next check raised ``action_without_result``
+    on the edit only because its sibling had a later sequence. 8 of 15 tb4n5 findings were this
+    shape. A sibling in the same batch is never "subsequent unrelated work"."""
+
+    batch = make_case(
+        actions={act(1): record(_action(1, 1), 1), act(2): record(_action(2, 2), 2)},
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+    )
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batch)  # separate batches: the old rule
+    same = replace(batch, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(same)
+
+
+def test_an_unaccounted_action_is_still_raised_once_a_later_batch_moves_on() -> None:
+    """The negative: the result is still owed. The next batch's unrelated work raises it, and
+    the sibling is never named as that later work."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={
+            res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3),
+            res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5),
+        },
+        extra_refs=(evt(4),),
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert _subsequent_work(batched) == ((str(act(1)), str(act(3))),)
+    # Both siblings unpaired: each is raised by the later batch, never by the other.
+    unpaired = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5)},
+    )
+    assert _subsequent_work(replace(unpaired, action_batches=((evt(1), evt(2)),))) == (
+        (str(act(1)), str(act(3))),
+        (str(act(2)), str(act(3))),
+    )
+
+
+def test_an_unrelated_result_in_the_batch_never_counts_as_the_actions_outcome() -> None:
+    """Evidence, a decision or another action's result in the same batch says nothing about
+    this action: only a result whose ``action_id`` names it links it."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 6),
+        },
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+        evidence={evd(1): evidence_record(_evidence(1, None), 4)},
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batched)
+
+
 @pytest.mark.parametrize(
     ("left_obligations", "left_items", "right_obligations", "right_items", "expected"),
     [
@@ -488,28 +910,101 @@ def test_ledger_stale_or_incomplete_requires_a_nonrootless_gap() -> None:
     assert FindingKind.LEDGER_STALE_OR_INCOMPLETE not in _kinds(make_case(gaps=(rootless,)))
 
 
-def test_ledger_stale_or_incomplete_names_the_gap_and_its_resolution_path() -> None:
-    gap = CaseGap(
-        f"evidence_content_digest_only:{evt(9)}",
-        "evidence_content_digest_only",
-        (evt(9),),
+@pytest.mark.parametrize("code", ("evidence_content_digest_only", "evidence_content_withheld"))
+def test_caller_digest_provenance_is_a_label_not_a_ledger_finding(code: str) -> None:
+    """Issue #912: an unverified caller digest raises no finding; the case keeps the gap.
+
+    Nothing an agent can publish turns ``caller_asserted`` bytes into captured content, so a
+    finding would only invite answers and further digest-only publications. The exact gap still
+    rides on the case and on every ref it roots, so the receipt keeps disclosing it.
+    """
+
+    gaps = tuple(CaseGap(f"{code}:{evt(n)}", code, (evt(n),)) for n in (9, 10, 11))
+    limited = replace(BASE_COVERAGE, known_gaps=(code,))
+    case = make_case(
+        gaps=gaps,
+        extra_refs=(evt(9), evt(10), evt(11)),
+        coverage_overrides={evt(9): limited, evt(10): limited, evt(11): limited},
     )
-    digest_only = replace(BASE_COVERAGE, known_gaps=("evidence_content_digest_only",))
-    trigger = make_case(
-        gaps=(gap,),
-        extra_refs=(evt(9),),
-        coverage_overrides={evt(9): digest_only},
+    assert FindingKind.LEDGER_STALE_OR_INCOMPLETE not in _kinds(case)
+    assert {gap.code for gap in case.gaps} == {code}
+    assert case.coverage_by_ref[evt(9)].known_gaps == (code,)
+
+    # A real ledger defect beside it still fires, and never names the caller digest roots.
+    unknown = CaseGap(f"unknown_event:{evt(12)}:future_event@2.0.0", "unknown_event", (evt(12),))
+    mixed = make_case(
+        gaps=(*gaps, unknown),
+        extra_refs=(evt(9), evt(10), evt(11), evt(12)),
+        coverage_overrides={evt(9): limited, evt(10): limited, evt(11): limited},
     )
+    result = run_deterministic_policies(mixed, WORK_INTEGRITY_POLICY_PACK)
+    ledger = [
+        item
+        for item in result.assessments
+        if item.candidate.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
+    ]
+    assert len(ledger) == 1
+    assert ledger[0].candidate.subject_refs == (evt(12),)
+
+
+def test_legacy_digest_finding_names_only_actions_an_agent_can_take() -> None:
+    code = "evidence_digest_subject_legacy_unknown"
+    gap = CaseGap(f"{code}:{evt(9)}", code, (evt(9),))
+    legacy = replace(BASE_COVERAGE, known_gaps=(code,))
+    trigger = make_case(gaps=(gap,), extra_refs=(evt(9),), coverage_overrides={evt(9): legacy})
     result = run_deterministic_policies(trigger, WORK_INTEGRITY_POLICY_PACK)
     finding = next(
         item
         for item in result.assessments
         if item.candidate.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
     )
+    detail = finding.candidate.detail
     # The detail names the concrete gap and says a response cannot resolve it, so an agent is
-    # never steered into acknowledging its way out of a coverage gap (issue #186).
-    assert "evidence_content_digest_only" in finding.candidate.detail
-    assert "not resolved by a finding response" in finding.candidate.detail
+    # never steered into acknowledging its way out of a coverage gap (issue #186) ...
+    assert code in detail
+    assert "no finding response, recheck, or further digest-only publication changes it" in detail
+    assert "it needs no repair or recheck; one acknowledged response answers it" in detail
+    # ... and it no longer promises a remedy ordinary publication cannot perform (issue #912).
+    assert "content-bearing" not in detail
+    assert "filter.strength immutable_snapshot" in detail
+    assert "typed digest_binding" in detail
+
+
+def test_mixed_legacy_digest_finding_does_not_claim_acknowledgement_resolves_it() -> None:
+    """Greptile P1 on #912: provenance advice must not cover a finding's other, current gaps.
+
+    A legacy digest beside an unknown event (or beside a rootless-coded subject such as a
+    command-attempt obligation) keeps the finding current after any acknowledgement, so the text
+    must say so instead of "one acknowledged response answers it".
+    """
+
+    code = "evidence_digest_subject_legacy_unknown"
+    legacy = replace(BASE_COVERAGE, known_gaps=(code,))
+    unknown = CaseGap(f"unknown_event:{evt(12)}:future_event@2.0.0", "unknown_event", (evt(12),))
+    mixed = make_case(
+        gaps=(CaseGap(f"{code}:{evt(9)}", code, (evt(9),)), unknown),
+        extra_refs=(evt(9), evt(12)),
+        coverage_overrides={evt(9): legacy},
+    )
+    result = run_deterministic_policies(mixed, WORK_INTEGRITY_POLICY_PACK)
+    detail = next(
+        item.candidate.detail
+        for item in result.assessments
+        if item.candidate.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
+    )
+    assert "one acknowledged response answers it" not in detail
+    assert "needs no repair or recheck" not in detail
+    assert "an acknowledgement answers this finding but does not resolve it" in detail
+    assert "until a qualifying check proves those other gaps absent" in detail
+
+    # Same wording when the other subject is an obligation whose gap code is not listed.
+    _, rendered = render_deterministic_finding_text(
+        FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+        (evt(9), obl(1)),
+        (code,),
+    )
+    assert "one acknowledged response answers it" not in rendered
+    assert "does not resolve it" in rendered
 
 
 def _recorded_finding() -> Finding:
@@ -604,6 +1099,70 @@ def test_provenance_dispute_does_not_trigger_weak_response_penalty() -> None:
     assert FindingKind.WEAK_OR_STALE_RESPONSE not in _kinds(case)
 
 
+def test_ai_origin_rejection_without_evidence_mints_no_weak_response() -> None:
+    """Rejecting an AI-powered false positive must not add a local blocking finding (#905).
+
+    termenv shape: the reviewer asked for a tail the task text explicitly excludes, and the agent
+    rejected it by quoting the task, with no evidence ref. research-evidence already skipped
+    non-local findings; work integrity now applies the same origin filter, stale or not. The
+    local-origin trigger above is unchanged.
+    """
+
+    semantic = replace(
+        _recorded_finding(),
+        kind=FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
+        policy_id="research-evidence",
+        origin=FindingOrigin.SEMANTIC_MODEL_DERIVED,
+        summary="Ascii Style.Truncate discards the requested tail",
+        detail="Please pass the stripped tail through the Ascii branch.",
+        provenance=_semantic_provenance(),
+    )
+    rejected = ResponseRecordedPayload(
+        finding_id=fnd(1),
+        finding_frontier=FRONTIER,
+        disposition=ResponseDisposition.REJECTED,
+        reason=(
+            "The user explicitly requires Ascii Style.Truncate to return plain text without a "
+            "tail; adding the tail would violate the task."
+        ),
+    )
+    for response in (
+        rejected,
+        replace(rejected, finding_frontier=replace(FRONTIER, sequence=FRONTIER.sequence - 1)),
+    ):
+        case = make_case(
+            findings={fnd(1): record(semantic, 1)},
+            responses={fnd(1): record(response, 2)},
+            extra_refs=(evt(99),),
+        )
+        assert FindingKind.WEAK_OR_STALE_RESPONSE not in _kinds(case)
+
+
+def _semantic_provenance() -> SemanticProvenance:
+    digest = "sha256:" + "1" * 64
+    return SemanticProvenance(
+        provider="fake",
+        endpoint_profile_id="fake",
+        endpoint_profile_version="1.0.0",
+        model="fake/model",
+        sdk_version="1.0.0",
+        prompt_digest=digest,
+        schema_digest=digest,
+        policy_digest=digest,
+        privacy_policy_digest=digest,
+        sampling_params=SamplingParams(128),
+        latency_ms=1,
+        semantic_attempt_id="att_00000000-0000-4000-8000-000000000001",
+        dispatch_kind=SemanticDispatchKind.EXTERNAL,
+        privacy_receipt_id="egr_00000000-0000-4000-8000-000000000001",
+        status=SemanticStatus.SUCCEEDED,
+        reason=SemanticReason.SEMANTIC_COMPLETED,
+        provider_request_id="fake-1",
+        egress_authorization_id="aut_00000000-0000-4000-8000-000000000001",
+        request_commitment="hmac-sha256:" + "b" * 64,
+    )
+
+
 def test_supported_rejection_at_the_findings_own_frontier_is_not_stale() -> None:
     """respond requires a frontier that already carries the finding_recorded event, so the
     frontier that validates necessarily follows the subject the check tested. Only a response
@@ -658,3 +1217,53 @@ def test_finding_coverage_adds_only_engine_and_deterministic_dimensions() -> Non
     assert coverage.artifact_observation is BASE_COVERAGE.artifact_observation
     assert coverage.evidence_immutability is BASE_COVERAGE.evidence_immutability
     assert coverage.ledger_freshness is BASE_COVERAGE.ledger_freshness
+
+
+def _ledger(case: object) -> list[object]:
+    result = run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK)  # type: ignore[arg-type]
+    return [
+        item
+        for item in result.assessments
+        if item.candidate.kind is FindingKind.LEDGER_STALE_OR_INCOMPLETE
+    ]
+
+
+def test_ledger_incomplete_skips_planned_work_at_a_plan_only_check() -> None:
+    """#1241 D11: before any action or result, planned work cannot be stale."""
+
+    gap = CaseGap(
+        f"planned_verification_unobserved:{obl(1)}", "planned_verification_unobserved", (obl(1),)
+    )
+    obligations = {obl(1): obligation_record(_open_obligation(1), 3)}
+    assert not _ledger(make_case(obligations=obligations, gaps=(gap,)))
+    worked = make_case(
+        obligations=obligations,
+        actions={act(1): record(_action(1, 1), 4)},
+        gaps=(gap,),
+    )
+    (finding,) = _ledger(worked)
+    detail = finding.candidate.detail  # type: ignore[attr-defined]
+    # Never raised without named gaps: the text names the gap code or the gap class.
+    assert "Gaps: " in detail
+
+
+def test_ledger_incomplete_retires_an_obligation_that_has_evidence() -> None:
+    gap = CaseGap(
+        f"planned_verification_unobserved:{obl(1)}", "planned_verification_unobserved", (obl(1),)
+    )
+    evidenced = replace(
+        _open_obligation(1), status=ObligationStatus.RESOLVED, resolution_evidence_refs=(evd(1),)
+    )
+    case = make_case(
+        obligations={obl(1): obligation_record(evidenced, 3)},
+        actions={act(1): record(_action(1, 1), 4)},
+        gaps=(gap,),
+        extra_refs=(evd(1),),
+    )
+    assert not _ledger(case)
+
+
+def test_ledger_incomplete_names_its_gap_classes_without_a_coverage_code() -> None:
+    gap = CaseGap(f"unknown_event:{evt(9)}:future_event@2.0.0", "unknown_event", (evt(9),))
+    (finding,) = _ledger(make_case(gaps=(gap,), extra_refs=(evt(9),)))
+    assert "Gaps: an event this build cannot read." in finding.candidate.detail  # type: ignore[attr-defined]

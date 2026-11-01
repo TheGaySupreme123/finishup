@@ -11,11 +11,19 @@ from __future__ import annotations
 from dataclasses import replace
 
 from builders.policy_cases import evt, finding_record, fnd, obl
-from yoetz.application.check import prior_finding_ids
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
-from yoetz.domain.values import Frontier
-from yoetz.kernel.projections import empty_projection_state
-from yoetz.protocol.coverage import (
+from finishup.application.check import prior_finding_ids
+from finishup.domain.findings import (
+    FINDING_KIND_TRAITS,
+    Finding,
+    FindingKind,
+    FindingOrigin,
+    SemanticDispatchKind,
+    SemanticProvenance,
+)
+from finishup.domain.values import Frontier
+from finishup.kernel.projections import empty_projection_state
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -24,6 +32,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "1" * 64
 
@@ -68,3 +77,47 @@ def test_resolved_rows_are_not_offered_for_id_reuse() -> None:
     )
     prior = prior_finding_ids(state)
     assert prior == {(live.kind, live.policy_id, live.subject_refs): fnd(1)}
+
+
+def _provenance() -> SemanticProvenance:
+    return SemanticProvenance(
+        provider="fake",
+        endpoint_profile_id="fake",
+        endpoint_profile_version="1.0.0",
+        model="fake/model",
+        sdk_version="1.0.0",
+        prompt_digest=_DIGEST,
+        schema_digest=_DIGEST,
+        policy_digest=_DIGEST,
+        privacy_policy_digest=_DIGEST,
+        sampling_params=SamplingParams(128),
+        latency_ms=1,
+        semantic_attempt_id="att_00000000-0000-4000-8000-000000000001",
+        dispatch_kind=SemanticDispatchKind.EXTERNAL,
+        privacy_receipt_id="egr_00000000-0000-4000-8000-000000000001",
+        status=SemanticStatus.SUCCEEDED,
+        reason=SemanticReason.SEMANTIC_COMPLETED,
+        provider_request_id="fake-1",
+        egress_authorization_id="aut_00000000-0000-4000-8000-000000000001",
+        request_commitment="hmac-sha256:" + "b" * 64,
+    )
+
+
+def test_semantic_rows_never_lend_their_id_to_a_local_rederivation() -> None:
+    """Issue #884: a local re-derivation must not take over a same-subject AI-powered row."""
+
+    live = _finding(1)
+    semantic = replace(
+        _finding(1),
+        finding_id=fnd(2),
+        origin=FindingOrigin.SEMANTIC_MODEL_DERIVED,
+        provenance=_provenance(),
+    )
+    state = replace(
+        empty_projection_state(),
+        frontier=9,
+        head_digest=_DIGEST,
+        findings={fnd(1): finding_record(live, 4), fnd(2): finding_record(semantic, 5)},
+        freshness=LedgerFreshness.CURRENT,
+    )
+    assert prior_finding_ids(state) == {(live.kind, live.policy_id, live.subject_refs): fnd(1)}

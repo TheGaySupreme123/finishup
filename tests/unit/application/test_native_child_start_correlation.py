@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import ObservationEnvelope
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import ObservationEnvelope
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +33,7 @@ def _callback() -> tuple[dict[str, JsonValue], dict[str, str]]:
         "subagent_id": "worker",
         "tool_use_id": "attach-call",
         "parent_tool_call_id": "spawn-call",
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {"ok": True, "outcome": "attached", **ids},
     }, ids
 
@@ -216,8 +216,9 @@ def test_only_successful_owned_start_response_supplies_bridge_facts() -> None:
         # Swept or queued rows arrive after the lease they prove; they are offered with their
         # receipt time rather than dropped by delivery age.
         ("accepted", 61, False, "PostToolUse", True),
-        ("accepted", 86_460, False, "PostToolUse", True),
-        ("accepted", 86_461, False, "PostToolUse", False),
+        # The bound is the lease plus the longest contact-loss horizon, a week (#1239).
+        ("accepted", 604_860, False, "PostToolUse", True),
+        ("accepted", 604_861, False, "PostToolUse", False),
         ("accepted", -1, False, "PostToolUse", False),
         ("rejected", 0, False, "PostToolUse", False),
         ("accepted", 0, True, "PostToolUse", False),
@@ -233,16 +234,19 @@ async def test_current_native_activity_is_offered_with_its_own_time(
     from dataclasses import replace
     from datetime import timedelta
 
-    from yoetz.application.observation_materialize import observation_writer_id
-    from yoetz.domain.observation import ObservationIngestDisposition
+    from finishup.application.observation_materialize import observation_writer_id
+    from finishup.domain.observation import ObservationIngestDisposition
 
     payload, ids = _callback()
     envelope = replace(_envelope(payload), event_kind=event_kind)
     hook = AsyncMock()
+    session_end = AsyncMock()
     coordinator = cast(
         ObservationCoordinator,
         SimpleNamespace(
             observed_activity_hook=hook,
+            # #1239: ``SessionEnd`` goes to its own hook and never renews contact.
+            observed_session_end_hook=session_end,
             observed_activity_max_age_seconds=ObservationCoordinator.observed_activity_max_age_seconds,
             clock=SimpleNamespace(
                 now_utc=lambda: envelope.receipt_time.as_datetime() + timedelta(seconds=age)
@@ -269,6 +273,7 @@ async def test_current_native_activity_is_offered_with_its_own_time(
         codex_session_id="native-correlation",
     )
     assert hook.await_count == int(expected)
+    assert session_end.await_count == int(event_kind == "SessionEnd")
     if expected:
         hook.assert_awaited_once_with(
             ids["task_id"],
@@ -282,8 +287,8 @@ async def test_current_native_activity_is_offered_with_its_own_time(
 def test_subagent_hook_conflicting_parent_alias_cannot_weaken_identity(
     parent_alias: JsonValue,
 ) -> None:
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.domain.host_lineage import host_lineage_from_envelope
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.domain.host_lineage import host_lineage_from_envelope
 
     payload, ids = _callback()
     payload["tool_use_id"] = parent_alias
@@ -304,11 +309,11 @@ def test_subagent_hook_conflicting_parent_alias_cannot_weaken_identity(
 def _child_header_envelope(*, with_identity: bool = True) -> ObservationEnvelope:
     """One v2 child rollout header as the child's own session observes it (issue #754)."""
 
-    from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-    from yoetz.adapters.integrations.codex_session_stream import envelope_from_stream_record
-    from yoetz.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
-    from yoetz.domain.observation import ObservationCursor
-    from yoetz.domain.values import JsonObject
+    from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+    from finishup.adapters.integrations.codex_session_stream import envelope_from_stream_record
+    from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
+    from finishup.domain.observation import ObservationCursor
+    from finishup.domain.values import JsonObject
 
     payload: dict[str, JsonValue] = {
         "agent_path": "/root/canary_review",
@@ -414,11 +419,11 @@ async def test_child_header_without_identity_annotates_nothing() -> None:
 async def test_parent_observed_subagent_activity_stays_on_the_ordinary_path() -> None:
     """A parent's own spawn item is filed against the observing parent task, unbound."""
 
-    from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-    from yoetz.adapters.integrations.codex_session_stream import envelope_from_stream_record
-    from yoetz.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
-    from yoetz.domain.observation import ObservationCursor
-    from yoetz.domain.values import JsonObject
+    from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+    from finishup.adapters.integrations.codex_session_stream import envelope_from_stream_record
+    from finishup.adapters.integrations.observation_local import STREAM_MAPPING_VERSION
+    from finishup.domain.observation import ObservationCursor
+    from finishup.domain.values import JsonObject
 
     coordinator, registry = _child_header_coordinator(parent_task_id=new_id(IdKind.TASK))
     envelope = envelope_from_stream_record(

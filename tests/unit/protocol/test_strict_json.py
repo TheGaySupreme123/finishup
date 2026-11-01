@@ -7,16 +7,16 @@ from typing import cast
 
 import pytest
 
-import yoetz.protocol.canonical as canonical_module
-from fixture_loader import JsonValue as FixtureJsonValue
-from fixture_loader import load_fixture_json
-from yoetz.protocol.canonical import (
+import finishup.protocol.canonical as canonical_module
+from finishup.protocol.canonical import (
     MAX_JSON_DEPTH,
     JsonValue,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
+from fixture_loader import JsonValue as FixtureJsonValue
+from fixture_loader import load_fixture_json
 
 
 def _fixture_dict(value: FixtureJsonValue) -> dict[str, FixtureJsonValue]:

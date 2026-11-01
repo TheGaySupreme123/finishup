@@ -4,7 +4,7 @@
   "claims": [
     {
       "claim_id": "mcp.host_declared_semantic_egress_ceiling",
-      "statement": "An MCP process launched as `yoetz mcp serve --semantic off` has an immutable strict route profile: Yoetz never requests AI-powered review runtime capability or dispatches an AI-powered evaluator for that process, AI-powered review requests are reported as blocked_by_policy with route_semantic_ceiling, and the result and receipt retain the resulting coverage gap.",
+      "statement": "An MCP process launched as `finishup mcp serve --semantic off` has an immutable strict route profile: FinishUP never requests AI-powered review runtime capability or dispatches an AI-powered evaluator for that process, AI-powered review requests are reported as blocked_by_policy with route_semantic_ceiling, and the result and receipt retain the resulting coverage gap.",
       "scope": {
         "operations": [
           "check",
@@ -46,7 +46,7 @@
     },
     {
       "claim_id": "ops.six_operation_parity",
-      "statement": "Yoetz exposes exactly six workflow operations (start, publish_work, check, respond, status, receipt) with identical request/result contracts across the CLI and MCP surfaces; MCP also registers one read-only guidance tool that is not a ledger operation. Everything else the CLI offers — import, review, backup, restore, migrate, version, service, mcp, state, setup, recommend, provider, privacy, consent/elevated-bootstrap, menu, and harness integration (integrate, hooks, observe) — is a bounded support command, never an additional workflow operation.",
+      "statement": "FinishUP exposes exactly six workflow operations (start, publish_work, check, respond, status, receipt) with identical request/result contracts across the CLI and MCP surfaces; MCP also registers one read-only guidance tool that is not a ledger operation. Everything else the CLI offers — import, review, backup, restore, migrate, version, service, mcp, state, setup, recommend, provider, privacy, consent/elevated-bootstrap, menu, and harness integration (integrate, hooks, observe) — is a bounded support command, never an additional workflow operation.",
       "scope": {
         "operations": [
           "start",
@@ -118,7 +118,7 @@
     },
     {
       "claim_id": "platform.advertised_runtime_cells",
-      "statement": "Yoetz advertises write support only for the exact tested platform/runtime cell (CPython 3.14.6, APSW 3.53.3.1, SQLite source ID 2026-06-26 d4c0e51e4aeb96955b99185ab9cde75c339e2c29c3f3f12428d364a10d782c62, macOS 11.0+ arm64 or glibc 2.28+ x86-64); any other combination is either read-only inspection or untested, never assumed supported.",
+      "statement": "FinishUP advertises write support only for the exact tested platform/runtime cell (CPython 3.14.6, APSW 3.53.3.1, SQLite source ID 2026-06-26 d4c0e51e4aeb96955b99185ab9cde75c339e2c29c3f3f12428d364a10d782c62, macOS 11.0+ arm64 or glibc 2.28+ x86-64); any other combination is either read-only inspection or untested, never assumed supported.",
       "scope": {
         "platforms": [
           "macosx_11_0_arm64",
@@ -154,7 +154,7 @@
     },
     {
       "claim_id": "privacy.agent_guided_user_controlled_setup",
-      "statement": "A capable Yoetz agent guides supported installation, setup, and settings changes in ordinary conversation, explains and recommends consequential options, and treats the explicit current user's supported product choice as final. When AI-powered review is the stated goal it recommends expanded_review first and explains assisted_review as the lower-disclosure AI-powered alternative. An exact expanded_review repository grant exposes and binds the complete substantive before/after policy diff, repository authority, provider/model/endpoint, policy digests, target, and expiry; repository, policy-generation, route, target, expiry, replay, denial, and unsupported-client failures make no policy or provider mutation.",
+      "statement": "A capable FinishUP agent guides supported installation, setup, and settings changes in ordinary conversation, explains and recommends consequential options, and treats the explicit current user's supported product choice as final. When AI-powered review is the stated goal it recommends expanded_review first and explains assisted_review as the lower-disclosure AI-powered alternative. An exact expanded_review repository grant exposes and binds the complete substantive before/after policy diff, repository authority, provider/model/endpoint, policy digests, target, and expiry; repository, policy-generation, route, target, expiry, replay, denial, and unsupported-client failures make no policy or provider mutation.",
       "scope": {
         "authority_clients": [
           "codex"
@@ -173,7 +173,7 @@
       "surfaces": [
         "docs/usage/privacy-and-semantic-review.md",
         "guidance/agent-instructions.md",
-        "skills/codex/yoetz/SKILL.md"
+        "skills/codex/finishup/SKILL.md"
       ],
       "requirements": [
         "ADR-009",
@@ -195,7 +195,7 @@
     },
     {
       "claim_id": "privacy.assisted_review_user_controlled",
-      "statement": "Every installation seeds zero-egress local_only for external LLM and task-content channels with no human prompt required. The machine policy is an installation ceiling, and ordinary in-policy checks and retries run without a repeated human prompt only after the exact repository has a granted row for the inspectable assisted_review recipe and an exact endpoint with a current data-use record stating training prohibited and retention none or bounded to at most 30 days. Repository identity is derived from the trusted session's canonical Git common root, never public workspace_ref; branches and linked worktrees share it while independent clones do not. Upgrade migration preserves accepted machine-policy bytes and may only narrow them onto bounded pre-upgrade route or one first-repository entitlement without reapproval. Provider human-access and exception facts remain visible, and the data-use record is recommendation evidence, never a technical proof of provider conduct.",
+      "statement": "Every installation seeds zero-egress local_only for external LLM and task-content channels with no human prompt required. The machine policy is an installation ceiling, and ordinary in-policy checks and retries run without a repeated human prompt only after the exact repository has a granted row for the inspectable assisted_review recipe and an exact endpoint with a current data-use record stating training prohibited and retention none or bounded to at most 30 days. Repository identity is derived from the trusted session's canonical Git common root, never public workspace_ref; branches and linked worktrees share it while independent clones do not. Upgrade migration preserves accepted machine-policy bytes and may only narrow them onto bounded pre-upgrade route or one first-repository entitlement without reapproval. Provider human-access and exception facts remain visible, and the data-use record is recommendation evidence, never a technical proof of provider conduct. Within such a grant, the owner's conversation_review setting decides whether each task starts with local checks only and who may turn AI-powered review on for one task; the first-run recommendation (local_agent_opt_in) lets the agent's recorded per-task switch run without a repeated human prompt, owner approval asks for each review, and local_only refuses the switch. A switch is a request that never widens what the grant allows.",
       "scope": {
         "profiles": [
           "local_only",
@@ -365,7 +365,7 @@
     },
     {
       "claim_id": "privacy.local_human_widening_only",
-      "statement": "Ordinary agent, MCP, provider, and import schemas cannot loosen privacy policy; tightening may apply immediately once the service proves it cannot widen. Every widening requires a reauthenticated decision by the user through one of two paths: the strong trusted local-human ceremony bound to the exact before/after diff and digest, or the user's explicit current-chat instruction for one exact prepared, previewed, expiring consent target relayed by a capable agent through the consent lane (assisted_review since issue #164, expanded_review since issue #542), which is an agent attestation Yoetz cannot independently authenticate. The consent lane admits only that closed prepared-target set; vault initialization, idle-relock weakening, and plugin artifact apply keep the trusted ceremony as sole authority; the never-send set is non-overridable under either path; and the exact foreground consent for one already-authorized confirm_every_request preview is separately limited and never itself a grant of policy authority.",
+      "statement": "Ordinary agent, MCP, provider, and import schemas cannot loosen privacy policy; tightening may apply immediately once the service proves it cannot widen. Every widening requires a reauthenticated decision by the user through one of two paths: the strong trusted local-human ceremony bound to the exact before/after diff and digest, or the user's explicit current-chat instruction for one exact prepared, previewed, expiring consent target relayed by a capable agent through the consent lane (assisted_review since issue #164, expanded_review since issue #542), which is an agent attestation FinishUP cannot independently authenticate. The consent lane admits only that closed prepared-target set; vault initialization, idle-relock weakening, and plugin artifact apply keep the trusted ceremony as sole authority; the never-send set is non-overridable under either path; and the exact foreground consent for one already-authorized confirm_every_request preview is separately limited and never itself a grant of policy authority.",
       "scope": {
         "surfaces": [
           "privacy_propose",
@@ -402,14 +402,14 @@
     },
     {
       "claim_id": "privacy.local_model_same_fences",
-      "statement": "A separately configured local AI-powered review model receives only an exact AF_UNIX disclosure path through the same classification, minimization, and never-send fence as any other sink; Yoetz never launches or downloads that runtime, and the separate process's own network authority is outside Yoetz's process claim.",
+      "statement": "A separately configured local AI-powered review model receives only an exact AF_UNIX disclosure path through the same classification, minimization, and never-send fence as any other sink; FinishUP never launches or downloads that runtime, and the separate process's own network authority is outside FinishUP's process claim.",
       "scope": {
         "sinks": [
           "local_model"
         ]
       },
       "limitations": [
-        "runtime_network_authority_not_yoetz_evidence"
+        "runtime_network_authority_not_finishup_evidence"
       ],
       "surfaces": [
         "docs/protocol/data-egress-and-privacy.md"
@@ -503,7 +503,7 @@
     },
     {
       "claim_id": "privacy.no_raw_traceback_capture",
-      "statement": "v0.1 diagnostics retain only bounded structural correlation and reason identity; Yoetz proves that raw exception messages, local variables, source or path excerpts, and full tracebacks are absent from every plaintext and encrypted diagnostic surface, not merely disabled by default, and a future encrypted diagnostic artifact would require a separate reviewed, privacy-authorized feature.",
+      "statement": "v0.1 diagnostics retain only bounded structural correlation and reason identity; FinishUP proves that raw exception messages, local variables, source or path excerpts, and full tracebacks are absent from every plaintext and encrypted diagnostic surface, not merely disabled by default, and a future encrypted diagnostic artifact would require a separate reviewed, privacy-authorized feature.",
       "scope": {
         "surfaces": [
           "logging",
@@ -556,6 +556,50 @@
       "evidence_kinds": [
         "capability_run",
         "integration_test"
+      ],
+      "release_status": "evidenced"
+    },
+    {
+      "claim_id": "privacy.per_task_review_mode",
+      "statement": "Under the recommended hybrid setting every task starts with local checks only; an agent turns on AI-powered review for its own task with one recorded decision_recorded 1.1.0 switch and can turn it back off. The switch never grants disclosure: what may be sent stays bounded by the owner's repository policy, the never-send set and the privacy gateway, owner approval makes each such review wait for the owner, and an explicit local_only setting, a strict host route, or a repository without AI-powered review set up keeps the task local with a stated reason. Each check records the mode it ran in, status reports the task's current mode, and a receipt names every switch by ledger sequence, event id and authority actor. Widening the setting requires the trusted decision; narrowing applies at once; a policy written before the setting existed keeps its bytes, digest and released check behaviour.",
+      "scope": {
+        "profiles": [
+          "local_only",
+          "confirm_every_request",
+          "minimal_external",
+          "trusted_provider"
+        ],
+        "review_context": [
+          "structural",
+          "assisted",
+          "expanded"
+        ]
+      },
+      "limitations": [
+        "availability_is_structural_not_a_live_provider_probe",
+        "background_advice_only_when_every_task_is_reviewed",
+        "status_reads_the_head_not_at_frontier"
+      ],
+      "surfaces": [
+        "docs/usage/privacy-and-semantic-review.md",
+        "docs/usage/receipts-and-coverage.md",
+        "guidance/review.md"
+      ],
+      "requirements": [
+        "ADR-009",
+        "ADR-049"
+      ],
+      "tests": [
+        "tests/integration/application/test_conversation_review_mode.py",
+        "tests/unit/application/test_check_review_mode.py",
+        "tests/unit/application/test_conversation_review_egress.py",
+        "tests/unit/cli/test_privacy_conversations.py",
+        "tests/unit/kernel/test_review_mode.py",
+        "tests/unit/privacy/test_conversation_review_policy.py"
+      ],
+      "evidence_kinds": [
+        "integration_test",
+        "unit_test"
       ],
       "release_status": "evidenced"
     },
@@ -655,7 +699,7 @@
     },
     {
       "claim_id": "privacy.v01_update_checks_only_non_llm_transport",
-      "statement": "Among the four non-LLM channels, v0.1 owns a production transport only for update_checks: an independently policy-gated, bounded allowlisted PyPI request carrying only the yoetz package identity and consuming only the latest version; it never carries task or user content and never auto-upgrades. On a fresh unconfigured installation, pre-policy advisory paths disable network use until first-run setup commits a policy; rerunning setup leaves an existing standing policy effective until a replacement commits. Product telemetry, crash upload, and capability testing have no production transport: setup rejects proposed enablement and stores no dormant consent, a forced or imported enabled row yields a pre-dispatch channel_unavailable decision with no authorization consumption, dispatch fields, request commitment, or network I/O, and later transport support requires a fresh local-human confirmation rather than silently activating an old draft or answer.",
+      "statement": "Among the four non-LLM channels, v0.1 owns a production transport only for update_checks: an independently policy-gated, bounded allowlisted PyPI request carrying only the installation's own package identity (finishup, or yoetz for an install from the transitional yoetz distribution) and consuming only the latest version; it never carries task or user content and never auto-upgrades. On a fresh unconfigured installation, pre-policy advisory paths disable network use until first-run setup commits a policy; rerunning setup leaves an existing standing policy effective until a replacement commits. Product telemetry, crash upload, and capability testing have no production transport: setup rejects proposed enablement and stores no dormant consent, a forced or imported enabled row yields a pre-dispatch channel_unavailable decision with no authorization consumption, dispatch fields, request commitment, or network I/O, and later transport support requires a fresh local-human confirmation rather than silently activating an old draft or answer.",
       "scope": {
         "channels": [
           "product_telemetry",
@@ -690,7 +734,7 @@
     },
     {
       "claim_id": "privacy.zero_network_configuration",
-      "statement": "With profile=local_only, network_egress_permitted=false, and all five channels disabled, Yoetz and its clients perform no AF_INET, AF_INET6, DNS, redirect, external-provider, telemetry, crash-upload, update-check, capability-test, or model-download traffic; the claim names the exact platform/release profile, the Yoetz-owned service/client/confidential-helper processes, the startup-through-locked-or-ready operation interval, and the allowlisted local IPC involved, and does not imply the ambient network authority of the OS credential agent or a separately running local-model process.",
+      "statement": "With profile=local_only, network_egress_permitted=false, and all five channels disabled, FinishUP and its clients perform no AF_INET, AF_INET6, DNS, redirect, external-provider, telemetry, crash-upload, update-check, capability-test, or model-download traffic; the claim names the exact platform/release profile, the FinishUP-owned service/client/confidential-helper processes, the startup-through-locked-or-ready operation interval, and the allowlisted local IPC involved, and does not imply the ambient network authority of the OS credential agent or a separately running local-model process.",
       "scope": {
         "profiles": [
           "local_only"
@@ -957,7 +1001,7 @@
     },
     {
       "claim_id": "storage.no_forensic_erasure_claim",
-      "statement": "Deleting or redacting an object removes it from ordinary logical access, but Yoetz makes no forensic-erasure claim: prior WAL pages, backups, snapshots, or storage-media remanence may still contain recoverable ciphertext.",
+      "statement": "Deleting or redacting an object removes it from ordinary logical access, but FinishUP makes no forensic-erasure claim: prior WAL pages, backups, snapshots, or storage-media remanence may still contain recoverable ciphertext.",
       "scope": {
         "surfaces": [
           "redaction_recorded",
@@ -987,7 +1031,7 @@
     },
     {
       "claim_id": "support.structural_subject_state_capture",
-      "statement": "For an exact passing Git/platform/artifact capability cell, yoetz state capture reads one explicitly named local worktree and returns only bounded versioned state digests and closed metadata, with no network access, ledger write, path or source or filename output, MCP exposure, or upgrade to a stronger provenance or verification claim; an unsupported or unsafe cell is not advertised and returns no state digest.",
+      "statement": "For an exact passing Git/platform/artifact capability cell, finishup state capture reads one explicitly named local worktree and returns only bounded versioned state digests and closed metadata, with no network access, ledger write, path or source or filename output, MCP exposure, or upgrade to a stronger provenance or verification claim; an unsupported or unsafe cell is not advertised and returns no state digest.",
       "scope": {
         "surfaces": [
           "state_capture"

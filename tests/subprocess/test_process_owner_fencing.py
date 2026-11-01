@@ -13,11 +13,11 @@ import time
 from pathlib import Path
 from typing import TypedDict, cast
 
-_SERVICE_PROBE = "from yoetz.service.daemon import main; main()"
+_SERVICE_PROBE = "from finishup.service.daemon import main; main()"
 _CLIENT_PROBE = r"""
 import anyio, json, sys
-from yoetz.ports.control import ControlClientKind
-from yoetz.service.client import connect_service
+from finishup.ports.control import ControlClientKind
+from finishup.service.client import connect_service
 
 async def run():
     client = await connect_service(ControlClientKind.CLI)
@@ -57,7 +57,7 @@ def isolated_environment(root: Path) -> dict[str, str]:
     del root  # callers pass tmp_path labels; private data cannot live there on Linux.
     runtime_parent = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tmp")
     runtime = Path(tempfile.mkdtemp(prefix="yzrt-", dir=runtime_parent))
-    base = Path.home() / ".cache" / "yoetz-subprocess-isolation"
+    base = Path.home() / ".cache" / "finishup-subprocess-isolation"
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     base.chmod(0o700)
     installation = Path(tempfile.mkdtemp(prefix="installation-", dir=base))
@@ -84,7 +84,7 @@ def isolated_environment(root: Path) -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
         "TZ": "UTC",
-        "_YOETZ_TEST_INSTALLATION": os.fspath(installation),
+        "_FINISHUP_TEST_INSTALLATION": os.fspath(installation),
     }
 
 
@@ -95,8 +95,8 @@ def cleanup_environment(environment: dict[str, str]) -> None:
     ):
         raise AssertionError("suite runtime ownership invalid")
     shutil.rmtree(runtime, ignore_errors=False)
-    installation = Path(environment["_YOETZ_TEST_INSTALLATION"])
-    base = Path.home() / ".cache" / "yoetz-subprocess-isolation"
+    installation = Path(environment["_FINISHUP_TEST_INSTALLATION"])
+    base = Path.home() / ".cache" / "finishup-subprocess-isolation"
     if installation.parent != base or not installation.name.startswith("installation-"):
         raise AssertionError("suite installation ownership invalid")
     shutil.rmtree(installation, ignore_errors=False)

@@ -9,13 +9,13 @@ can no longer fit together, so the fix cannot regress silently as the guidance g
 
 from __future__ import annotations
 
-from yoetz.mcp.descriptors import (
+from finishup.mcp.descriptors import (
     CLAUDE_CODE_INITIALIZE_INSTRUCTIONS,
     CLAUDE_CODE_INSTRUCTIONS_BUDGET,
     McpRouteProfile,
     server_instructions,
 )
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     MAX_DISCLOSURE_ENCODED_BYTES,
     SemanticDestinationDisclosure,

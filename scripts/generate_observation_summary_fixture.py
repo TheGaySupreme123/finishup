@@ -8,15 +8,15 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from yoetz.adapters.integrations.observation_admission import build_routine_read_summary
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_admission import build_routine_read_summary
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
     observation_envelope_to_json,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 
 _FIXTURE_RELATIVE = Path("fixtures/observations/routine-read-summary.case.json")
 _FIXTURE_MANIFEST_PATH = "observations/routine-read-summary.case.json"

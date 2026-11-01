@@ -12,7 +12,7 @@ and the privacy protocol own outbound data authorization.
 
 ## Context
 
-The earlier draft treated `yoetz mcp serve` as a long-lived application owner and allowed a
+The earlier draft treated `finishup mcp serve` as a long-lived application owner and allowed a
 standalone CLI command to open the same local state when MCP was absent. That made the integration
 surface the trust boundary, required each process to acquire keys, made safe passphrase operation
 through MCP impractical, and produced different behavior depending on which client started first.
@@ -21,7 +21,7 @@ through MCP impractical, and produced different behavior depending on which clie
 
 | Component | Trust and authority |
 |---|---|
-| Per-user local Yoetz service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, provider gateway, and application facade. |
+| Per-user local FinishUP service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, provider gateway, and application facade. |
 | Confidential human helper or future trusted desktop prompt | Narrowly trusted for one exact YZH1 ceremony and, when required, delivery of one YZS1 initialization, unlock, recovery, provider-credential, or reauthentication secret. It has no workflow, storage, provider-dispatch, policy, or long-lived key authority. |
 | CLI, MCP bridge, future ordinary UI | Untrusted control/rendering clients. They may submit validated requests and receive bounded results; they cannot open storage, access key handles, unlock the vault, or weaken policy. |
 | Agent, LLM, plugin, repository, imported transcript, provider | Untrusted content or external execution. Never receives an unlock secret or vault capability. |
@@ -113,7 +113,7 @@ setup already provisioned auto-unlock. It does **not** unlock after `explicit_lo
 for hard reasons (`passphrase_required`, `auto_unlock_*`, `vault_uninitialized`, `unlock_failed`,
 `keyring_locked` when the backend will not load), and never accepts a secret from MCP, ordinary
 control, argv, env, config, or stdin. The trusted foreground helper may also submit the scoped
-entry through the existing unlock ceremony so `yoetz service unlock` stays silent when that entry
+entry through the existing unlock ceremony so `finishup service unlock` stays silent when that entry
 is valid.
 
 `monitor_lost` is deliberately excluded (2026-08-05 correction). The three reasons above describe
@@ -187,7 +187,9 @@ Control failures are bounded reasons, not messages, and the reason must not misd
 state. A handler returning is the commit boundary: everything after it — projection binding,
 client projection, and success-body validation — only shapes the response. An unexpected failure
 there is reported as the retryable `response_projection_failed`, which states that the operation
-stands and that the caller resolves it by replaying the same `request_id`. Reporting it as the
+stands and that the caller resolves it by replaying the same `request_id` once; if that replay also
+fails the failure is deterministic and the caller reads `status view=operation` instead (ADR-043). The bridge's own text projection is not part of this window's failure modes: a
+text that cannot be built never fails the call. Reporting it as the
 generic non-retryable `internal_error` would assert something false about the ledger and steer a
 caller away from the idempotent replay that recovers it. Deliberate bounded failures raised in the
 same window — `privacy_projection_blocked`, `privacy_projection_unavailable`, and public
@@ -196,7 +198,7 @@ application errors — already describe real conditions and pass through unchang
 The service exposes three fixed owner-only same-UID endpoints: ordinary control; YZS1 one-secret
 ingress; and YZH1 multi-phase human control. YZH1 is the sole challenge/binding creator, returns
 bounded structural previews, supports zero-secret keyring retry, coordinates provider credential
-set/rotate, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
+set/rotate/remove, accepts typed privacy decisions, and owns the exact ceremony for changing or disabling
 idle relock. Durable policy widening, credential changes, and idle-security weakening
 require internal strong reauthentication; a `confirm_every_request` decision already inside the
 durable policy uses exact foreground digest-bound consent and creates no reusable authority. YZS1
@@ -230,23 +232,49 @@ Terminal ownership alone is not user-identity evidence. The helper rejects redir
 environment/config/argument input, and noninteractive execution; establishes a
 separately typed peer-authenticated connection; and erase mutable buffers best-effort after the
 service consumes them. No MCP registry, `ServiceClient`, or public application method can reach
-this channel. **Amendment (ADR-015/016, 2026-07-31):** `yoetz consent review` may use this
+this channel. **Amendment (ADR-015/016, 2026-07-31):** `finishup consent review` may use this
 trusted-console boundary for `vault_initialize`, `provider_credential_set`, and
 `provider_credential_rotate` only after independently authenticated, action-bound OS user
 presence. The current runtime has no production presence adapter and fails closed before console
 open or pending claim. Initialization accepts only its helper-generated,
 credential-store-verified passphrase; provider secrets are entered inside the confidential
 ceremony. **Amendment (issue #164, 2026-08-09):** after an explicit current-chat instruction, an
-allowlisted first-party agent may run `yoetz consent authorize` for exact prepared
+allowlisted first-party agent may run `finishup consent authorize` for exact prepared
 `vault_initialize`, `vault_passphrase_rotate`, `provider_credential_set|rotate`, and
 `repository_privacy_grant` without the
 trusted console. Vault initialization generates and credential-store-verifies its secret wholly
-inside Yoetz; the agent supplies no secret material. The
-agent assertion binds the pending digests but is not independently authenticated by Yoetz; a
+inside FinishUP; the agent supplies no secret material. The
+agent assertion binds the pending digests but is not independently authenticated by FinishUP; a
 compromised agent can forge it. One-shot provider credential bytes may enter the same YZS1 ingress
 from authorize stdin after warning acknowledgement and are overwritten best-effort. Provider
 credentials become opaque adapter-scoped handles in the service vault; provider adapters and
 normal clients never receive reusable credential bytes.
+
+**2026-10-19 credential-removal amendment (issue #1119).**
+`provider_credential_remove` is an owner-only YZH1 ceremony for one exact
+`ProviderCredentialTarget(action="remove")`, with a bounded preview and target digest binding.
+It starts at `AuthorizationRequiredPhase`, using the same scoped OS-presence or vault-secret
+reauthentication paths as rotation (`provider_reauthentication`); it then commits without a
+`provider_credential` secret phase. The helper always requires the trusted foreground terminal,
+even when scoped auto-unlock supplies reauthentication. The existing production presence scope
+is unchanged; a platform adapter outside that scope cannot authorize removal. Locked vaults and
+missing records refuse (`vault_locked`, `record_missing`). The vault consumes the exact single-use
+proof before deleting with `expected_generation`; only confirmed deletion returns
+`ProviderCredentialRemoveResult(status="removed")`. Matching unused provider handles are invalidated,
+including on an ambiguous deletion, so they cannot start a later request. Already-started requests
+cannot be recalled. The CLI confirms with default No; the full-screen interface hands over the
+terminal. Binding and privacy policy stay unchanged. This ceremony is deliberately absent from
+ADR-015 elevated bootstrap, `finishup consent`, delegated chat authorization and MCP.
+
+Known limit (review of #1119, accepted for this release). Where scoped auto-unlock supplies the
+reauthentication factor, the default for a generated-passphrase vault whose owner never learned
+the passphrase, a process that runs as the same user and controls a foreground pseudo-terminal can
+complete removal without a human. That is the same authority `provider_credential_set` and
+`provider_credential_rotate` already have with the same factor. Removal discloses nothing; its worst
+case is a deleted key that the owner enters again. Requiring an owner-entered factor or action-bound
+OS presence would leave removal unusable for the default vault until production OS presence covers
+credential ceremonies. That stricter rule should therefore land for set, rotate and remove together;
+it is a follow-up on #1119.
 
 `UnlockCoordinator` solely owns the persistent passphrase throttle: admission delay, in-progress
 reservation, failure charge, success reset, crash re-arm, and repair. It calls cryptographic vault
@@ -263,12 +291,12 @@ proof that automation is impossible, and public documentation must say so.
 ## Platform evidence and claim limits
 
 The selected boundary is grounded in platform capabilities, but the existence of an API is not by
-itself a Yoetz support claim:
+itself a FinishUP support claim:
 
 - Apple documents Keychain as storage for passwords, keys, certificates, and other small secret
   data protected by access controls and data-protection classes
   ([Apple Platform Security](https://support.apple.com/guide/security/keychain-data-protection-secb0694df1a/web)).
-  Yoetz still has to verify the exact backend, accessibility class, user-presence behavior, and
+  FinishUP still has to verify the exact backend, accessibility class, user-presence behavior, and
   locked-session behavior in each advertised macOS release cell.
 - The Freedesktop Secret Service protocol explicitly models locked items/collections and an
   implementation-specific prompt path for unlocking
@@ -322,7 +350,7 @@ repair. A pristine headless install cannot auto-select keyring mode or create pa
 auto-unlock without verified local setup authority.
 
 **Amendment (ADR-015/016, 2026-07-31):** elevated vault initialization and provider credential
-set/rotate require action-bound OS user presence before `yoetz consent review` may use
+set/rotate require action-bound OS user presence before `finishup consent review` may use
 `TrustedForegroundConsole`. The current runtime has no production presence adapter and returns
 `human_authority_unavailable` before pending claim. Vault initialization generates
 the high-entropy passphrase inside the helper and round-trips it through the scoped credential
@@ -416,6 +444,15 @@ crash recovery.
 Automatic pristine keyring initialization is therefore an artifact-gated convenience, not a
 keyring-only default. Any future admin secret, additional platform presence adapter, or migration
 that changes the resolved F-010 authority model requires an explicit ADR amendment.
+**Amendment (2026-10-14, issue #1073):** the packaged service on macOS now composes one
+`UserPresencePort` adapter, Apple LocalAuthentication through the fixed `/usr/bin/osascript`
+helper, and passes the same instance to `HumanControlService` and `VaultService`. It is scoped to
+the `owner_receipt_view` reauthentication (ADR-009 round 5, ADR-016 decision 4 amendment). It does
+not change the resolved F-010 authority: the vault remains the sole minter of
+`HumanAuthorizationProof` and accepts only an attestation that adapter issued for the exact
+challenge, keyring retry receives no capability, and pristine keyring initialization still needs
+a qualified `user_presence_cells` row, which the adapter's `unqualified` release cell never
+matches.
 
 ## External evaluator process amendment (2026-08-30, issue #404)
 
@@ -434,7 +471,58 @@ it spawned, escalates to a group kill when necessary, and verifies group disappe
 answer without verified cleanup is not success.
 
 Login/status/logout are separate content-free structural operations. Codex owns its dedicated
-home's credential file. Yoetz may create the exact nonsecret config and retain the home path, but
+home's credential file. FinishUP may create the exact nonsecret config and retain the home path, but
 must not read, parse, hash, copy, export, log, or place credential bytes in the vault. Rollback
-removes only the Yoetz binding; disconnect first requires Codex to confirm logout and otherwise
+removes only the FinishUP binding; disconnect first requires Codex to confirm logout and otherwise
 fails honestly.
+
+## Owner-only file custody where no platform store is usable (2026-10-19, issue #1119)
+
+**Owner decision (2026-10-19).** First-run setup must not ask a non-technical user to invent a vault
+passphrase. On machines without a usable platform credential store (WSL 2, headless Linux, a
+container), the generated auto-unlock passphrase is therefore kept in owner-only files instead.
+This replaces the earlier rule that no file fallback exists. The owner chose this knowing it
+weakens the at-rest boundary on those machines.
+
+- **Custody.** `AutoUnlockPassphraseStore` keeps its entries, slots and every staging, promotion
+  and proof-based recovery rule. Only the backend changes: `OwnerOnlyFileCredentialStore`
+  (`finishup.adapters.keys.owner_file_store`) stores each slot as one file named by its digest
+  account under `<bundle>/auto-unlock/` (directory `0700`, files `0600`).
+  - Every operation opens the custody directory once (`O_NOFOLLOW`), verifies that descriptor
+    (directory, euid-owned, `0700`), and resolves entry names against it, so a swapped path
+    component cannot redirect a read or write.
+  - Reads refuse anything that is not a regular, euid-owned, owner-only, single-link file.
+    Symlinks are refused (`O_NOFOLLOW`).
+  - Writes are atomic and complete: an exclusive temp file receives every byte, is fsynced,
+    renamed into place, and the directory is fsynced.
+  - Only the custody directory is created, and only inside an existing bundle root.
+  - Entry names are store-chosen digests; no user-controlled text reaches a path.
+- **Selection.** Existing file entries win, so an installation keeps its custody when a platform
+  store appears later. Otherwise an allowlisted platform store is used, including the first one
+  inside keyring's chainer wrapper. The file is used only when neither applies.
+  `service auto-unlock status` and `auto-unlock enable|repair` report
+  `custody: platform_store | owner_file`; setup and the terminal interface name the custody they
+  actually used, and the agent-chat `vault_initialize` and `vault_passphrase_rotate` danger texts
+  state both custodies and the same-user trade-off.
+- **Recovery snapshots never carry it.** ADR-024 self-contained snapshots skip
+  `<bundle>/auto-unlock/` (and the empty `auto-unlock-init.lock`) instead of refusing the bundle,
+  so recovery provisioning keeps working and an exported recovery set never holds the
+  passphrase beside the envelope it opens.
+- **What it protects.** The file custody protects the vault against other accounts on the
+  machine. It does **not** protect against software running as the same user, which can read the
+  file. On those machines the vault's at-rest protection is equivalent to the account's file
+  permissions. A backup or copy of the state folder includes the key. User docs say this plainly.
+- **Choice and reverse path.**
+  - `finishup setup vault --passphrase` creates a new vault from a passphrase the owner types,
+    and keeps no copy of it.
+  - For an existing vault, `service rotate-passphrase` changes the passphrase but still keeps the
+    new value in the current custody. The atomic delete-plus-rewrap `disable` ceremony this ADR
+    already requires stays unimplemented; a follow-up under issue #1119 owns it.
+- **Unchanged.**
+  - The vault-root key never uses this backend; `os_keyring` mode still requires an approved
+    platform store.
+  - Secrets still never travel through argv, environment, config, stdin, logs, ordinary control
+    or MCP.
+  - A pre-existing entry still blocks initialization rather than being adopted.
+  - The agent-chat `vault_initialize` lane (ADR-015) now succeeds on these machines through the
+    same helper-generated secret.

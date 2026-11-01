@@ -16,25 +16,25 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import multi_agent_service, relock_and_reopen_multi_agent_service
-from yoetz.adapters.integrations.codex_lifecycle import load_mapping, scoped_child_session_id
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.cli.hooks import bind_start_mapping_outcome
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.config.models import LineageSettings, YoetzConfig
-from yoetz.domain.coordination import WorkState
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_lifecycle import load_mapping, scoped_child_session_id
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.cli.hooks import bind_start_mapping_outcome
+from finishup.cli.observe_hooks import handle_observe
+from finishup.config.models import FinishUpConfig, LineageSettings
+from finishup.domain.coordination import WorkState
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationIngestRequest,
     observation_ingest_request_to_json,
     observation_ingest_result_from_json,
 )
-from yoetz.domain.values import finding_id
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.start_catalog import TaskRouteState
-from yoetz.protocol.coverage import (
+from finishup.domain.values import finding_id
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.start_catalog import TaskRouteState
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -43,9 +43,9 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -167,7 +167,7 @@ async def test_explicit_siblings_have_independent_public_checks_receipts_and_wor
                         "expected_frontier": task.frontier.model_dump(mode="json"),
                         "mode": "deterministic_only",
                         "max_findings": "10",
-                        "policy_packs": ["work-integrity/0.1.0"],
+                        "policy_packs": ["work-integrity/0.3.0"],
                     }
                 ),
                 repository_privacy_context=_REPOSITORY,
@@ -297,7 +297,7 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": parent.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -307,9 +307,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert parent_mapping is not None
         assert (
-            parent_mapping.yoetz_task_id,
-            parent_mapping.yoetz_session_id,
-            parent_mapping.yoetz_writer_id,
+            parent_mapping.finishup_task_id,
+            parent_mapping.finishup_session_id,
+            parent_mapping.finishup_writer_id,
             parent_mapping.last_frontier,
         ) == (
             parent.task_id,
@@ -333,7 +333,7 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": delegated.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -343,9 +343,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         delegated_parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert delegated_parent_mapping is not None
         assert (
-            delegated_parent_mapping.yoetz_task_id,
-            delegated_parent_mapping.yoetz_session_id,
-            delegated_parent_mapping.yoetz_writer_id,
+            delegated_parent_mapping.finishup_task_id,
+            delegated_parent_mapping.finishup_session_id,
+            delegated_parent_mapping.finishup_writer_id,
             delegated_parent_mapping.last_frontier,
         ) == (
             parent.task_id,
@@ -394,7 +394,7 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
             bind_start_mapping_outcome(
                 {
                     "session_id": child_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": attached.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -404,9 +404,9 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
         child_mapping = load_mapping(child_host_session, _state=lifecycle_state)
         assert child_mapping is not None
         assert (
-            child_mapping.yoetz_task_id,
-            child_mapping.yoetz_session_id,
-            child_mapping.yoetz_writer_id,
+            child_mapping.finishup_task_id,
+            child_mapping.finishup_session_id,
+            child_mapping.finishup_writer_id,
             child_mapping.last_frontier,
         ) == (
             attached.task_id,
@@ -452,7 +452,7 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
                     "expected_frontier": dict(publication.result_frontier.as_wire().items()),
                     "mode": "deterministic_only",
                     "max_findings": "10",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             ),
             repository_privacy_context=_REPOSITORY,
@@ -676,7 +676,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         # observation ingest resolves lifecycle mappings through the isolated-root contract,
         # so point that contract at this same test installation before exercising the public
         # ingest path.
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(service.root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(service.root))
         parent = await app.start(
             StartRequest.model_validate(
                 {
@@ -696,7 +696,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": parent.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -721,7 +721,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": delegated.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -730,7 +730,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         )
         parent_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert parent_mapping is not None
-        assert parent_mapping.yoetz_task_id == parent.task_id
+        assert parent_mapping.finishup_task_id == parent.task_id
 
         attached = await app.start(
             StartRequest.model_validate(
@@ -751,7 +751,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
                     # Codex sends the child attach result through the parent's host session.
                     "session_id": parent_host_session,
                     "agent_id": child_agent_id,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": attached.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -767,9 +767,9 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         child_mapping = load_mapping(child_host_lane, _state=lifecycle_state)
         assert child_mapping is not None
         assert (
-            child_mapping.yoetz_task_id,
-            child_mapping.yoetz_session_id,
-            child_mapping.yoetz_writer_id,
+            child_mapping.finishup_task_id,
+            child_mapping.finishup_session_id,
+            child_mapping.finishup_writer_id,
             child_mapping.last_frontier,
         ) == (
             attached.task_id,
@@ -784,7 +784,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         observation_store.grant_consent(workspace_commitment)
         observation_store.set_session_advice_snapshot(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             snapshot=AdviceSnapshot(
                 ranked_finding_ids=(finding_id("fnd_00000000-0000-4000-8000-000000000001"),),
                 evidence_basis_digest="sha256:" + "a" * 64,
@@ -804,7 +804,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         )
         parent_advice_before = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -881,7 +881,7 @@ async def test_codex_shared_host_child_alias_routes_observation_to_attached_chil
         assert parent_status.result_frontier == parent_status.subject_frontier
         parent_advice_after = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=parent.session_id,
+            finishup_session_id=parent.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -898,7 +898,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
     workspace = _workspace(tmp_path / "workspace")
     async with multi_agent_service(tmp_path / "state") as service:
         app = service.app
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(service.root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(service.root))
         parent = await app.start(
             StartRequest.model_validate(
                 {
@@ -918,7 +918,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": parent.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -970,7 +970,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
         initial_annotation = annotations[0]
 
         # Reattach the same parent task through the same host session.  The service rotates its
-        # Yoetz session/writer while retaining the host mapping and registry correlation.
+        # FinishUP session/writer while retaining the host mapping and registry correlation.
         resumed = await app.start(
             StartRequest.model_validate(
                 {
@@ -993,7 +993,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
             bind_start_mapping_outcome(
                 {
                     "session_id": parent_host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": resumed.as_wire()},
                 },
                 _state=lifecycle_state,
@@ -1002,7 +1002,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
         )
         rotated_mapping = load_mapping(parent_host_session, _state=lifecycle_state)
         assert rotated_mapping is not None
-        assert (rotated_mapping.yoetz_session_id, rotated_mapping.yoetz_writer_id) == (
+        assert (rotated_mapping.finishup_session_id, rotated_mapping.finishup_writer_id) == (
             resumed.session_id,
             resumed.writer_id,
         )
@@ -1084,7 +1084,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
         )
         delivery = observation_store.peek_advice_for_delivery(
             workspace_commitment,
-            yoetz_session_id=resumed.session_id,
+            finishup_session_id=resumed.session_id,
             allow_standing=False,
             session_commitment=observation_store.session_commitment(parent_host_session),
         )
@@ -1208,7 +1208,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
                     "expected_frontier": dict(current.head_frontier.as_wire().items()),
                     "mode": "deterministic_only",
                     "max_findings": "10",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             ),
             repository_privacy_context=_REPOSITORY,
@@ -1291,7 +1291,7 @@ async def test_ready_config_enforces_depth_and_fanout_bounds(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path / "workspace")
-    depth_config = YoetzConfig(lineage=LineageSettings(max_depth=0))
+    depth_config = FinishUpConfig(lineage=LineageSettings(max_depth=0))
     async with multi_agent_service(tmp_path / "depth-state", config=depth_config) as service:
         parent = await service.app.start(
             StartRequest.model_validate(
@@ -1321,7 +1321,7 @@ async def test_ready_config_enforces_depth_and_fanout_bounds(
             )
         assert depth_error.value.code is PublicErrorCode.LIMIT_EXCEEDED
 
-    fanout_config = YoetzConfig(lineage=LineageSettings(max_fanout=1))
+    fanout_config = FinishUpConfig(lineage=LineageSettings(max_fanout=1))
     async with multi_agent_service(tmp_path / "fanout-state", config=fanout_config) as service:
         parent = await service.app.start(
             StartRequest.model_validate(
@@ -1459,7 +1459,7 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
     workspace = _workspace(tmp_path / "workspace")
     async with multi_agent_service(tmp_path / "state") as service:
         app = service.app
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(service.root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(service.root))
         parent = await app.start(
             StartRequest.model_validate(
                 {
@@ -1479,7 +1479,7 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
             bind_start_mapping_outcome(
                 {
                     "session_id": host_session,
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "tool_response": {"structuredContent": parent.as_wire()},
                 },
                 _state=state,
@@ -1489,10 +1489,11 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
         local = LocalObservationStore(_state=state)
         workspace_commitment = local.workspace_commitment(str(workspace))
         local.grant_consent(workspace_commitment)
-        from yoetz.domain.values import timestamp_from_datetime
+        from finishup.domain.values import timestamp_from_datetime
 
         monkeypatch.setattr(
-            "yoetz.cli.observe_hooks._now", lambda: timestamp_from_datetime(service.clock.now_utc())
+            "finishup.cli.observe_hooks._now",
+            lambda: timestamp_from_datetime(service.clock.now_utc()),
         )
 
         async def ingest_hook(payload: Mapping[str, object]) -> ObservationIngestRequest:
@@ -1564,7 +1565,7 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
             "subagent_id": "native-worker",
             "parent_tool_call_id": "spawn-call",
             "tool_use_id": "attach-call",
-            "tool_name": "mcp__yoetz__start",
+            "tool_name": "mcp__finishup__start",
             "tool_response": {"structuredContent": attached.as_wire()},
         }
         assert bind_start_mapping_outcome(callback, _state=state) == "bound"
@@ -1586,14 +1587,14 @@ async def test_native_handle_attach_correlates_without_declared_host_ids(
         assert after_replay is not None
         assert after_replay.lease_expires_at == after_activity.lease_expires_at
         parent_mapping = load_mapping(host_session, _state=state)
-        assert parent_mapping is not None and parent_mapping.yoetz_task_id == parent.task_id
+        assert parent_mapping is not None and parent_mapping.finishup_task_id == parent.task_id
         if not observed_first:
             await ingest_hook(observed)
         await ingest_hook({**observed, "hook_event_name": "SubagentStop"})
         registry = app.host_lineage_registry
         assert registry is not None
         assert await registry.list_provisional_annotations(parent.task_id) == ()
-        from yoetz.domain.host_lineage import host_lineage_from_payload
+        from finishup.domain.host_lineage import host_lineage_from_payload
 
         signal = host_lineage_from_payload("codex", "SubagentStop", observed)
         assert signal is not None

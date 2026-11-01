@@ -16,8 +16,8 @@ from typing import Any, Literal, cast
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds
-from yoetz.adapters.memory.project_operations import InMemoryProjectOperationJournal
-from yoetz.application.projects import (
+from finishup.adapters.memory.project_operations import InMemoryProjectOperationJournal
+from finishup.application.projects import (
     CreateProjectCommand,
     InMemoryProjectCatalog,
     LinkProjectCommand,
@@ -28,18 +28,18 @@ from yoetz.application.projects import (
     ProjectGrantCommand,
     ProjectRevokeCommand,
 )
-from yoetz.domain.coordination import (
+from finishup.domain.coordination import (
     CoordinationErrorCode,
     MemberKind,
     ProjectDescriptor,
     ProjectMembership,
     ProjectTextRef,
 )
-from yoetz.domain.privacy import LocalDisclosureSink
-from yoetz.domain.values import JsonValue
-from yoetz.ports.start_catalog import TaskSourceProvenance
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.privacy import LocalDisclosureSink
+from finishup.domain.values import JsonValue
+from finishup.ports.start_catalog import TaskSourceProvenance
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _operation_digest(value: JsonValue) -> str:

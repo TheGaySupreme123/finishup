@@ -14,16 +14,16 @@ import pytest
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
-import yoetz.application.privacy_policy as privacy_policy
-import yoetz.cli.app as cli
-from yoetz.cli.agent_start import AGENT_START_GUIDE_URL, AGENT_START_HANDOFF
-from yoetz.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
-from yoetz.domain.privacy import PrivacyProfile, ReviewContextProfile
-from yoetz.mcp.descriptors import TOOL_DESCRIPTORS
-from yoetz.ports.control import ControlMethod
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.models import StartRequest, StartResult
+import finishup.application.privacy_policy as privacy_policy
+import finishup.cli.app as cli
+from finishup.cli.agent_start import AGENT_START_GUIDE_URL, AGENT_START_HANDOFF
+from finishup.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
+from finishup.domain.privacy import PrivacyProfile, ReviewContextProfile
+from finishup.mcp.descriptors import TOOL_DESCRIPTORS
+from finishup.ports.control import ControlMethod
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.models import StartRequest, StartResult
 
 _OPERATION_COMMANDS = ("start", "publish-work", "check", "respond", "status", "receipt")
 _SUPPORT_COMMANDS = (
@@ -153,7 +153,7 @@ def test_idle_relock_command_is_confidential_only() -> None:
         assert result.exit_code == 2, invalid
 
     # No ordinary control token or MCP descriptor exists for idle-relock: only the confidential
-    # human ceremony (``yoetz.cli.unlock.change_idle_relock_policy``) can apply it.
+    # human ceremony (``finishup.cli.unlock.change_idle_relock_policy``) can apply it.
     method_values = {method.value for method in ControlMethod}
     assert "idle_relock_policy_change" not in method_values
     assert not any("idle_relock" in method.value for method in ControlMethod)
@@ -211,10 +211,10 @@ def test_json_and_human_output_modes() -> None:
     monkeypatch = pytest.MonkeyPatch()
     try:
         monkeypatch.setattr(
-            "yoetz.cli.app.build_service_client",
+            "finishup.cli.app.build_service_client",
             cast(Callable[[], Awaitable[object]], build_failure),
         )
-        monkeypatch.setattr("yoetz.cli.app._request_model", request_model)
+        monkeypatch.setattr("finishup.cli.app._request_model", request_model)
 
         json_result = CliRunner().invoke(cli.app, ["start", "--request", "{}", "--json"])
         assert json_result.exit_code == exit_code_for(PublicErrorCode.INVALID_REQUEST)
@@ -241,7 +241,7 @@ def test_json_and_human_output_modes() -> None:
     assert json_version.exit_code == 0
     assert json_version.stderr == ""
     structured = cast(dict[str, JsonValue], json.loads(json_version.stdout))
-    assert structured["package_name"] == "yoetz"
+    assert structured["package_name"] == "finishup"
 
     plain_version = runner.invoke(cli.app, ["version"])
     assert plain_version.exit_code == 0

@@ -15,11 +15,11 @@ from builders.privacy_policies import (
     minimal_external_policy,
 )
 from builders.privacy_widenings import llm_channel, other_provider, with_llm
-from yoetz.application.privacy_policy import is_privacy_tightening, privacy_policy_changes
-from yoetz.cli.unlock import (
+from finishup.application.privacy_policy import is_privacy_tightening, privacy_policy_changes
+from finishup.cli.unlock import (
     _privacy_policy_change_text,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     PrivacyPolicy,
     PrivacyPolicyChangeValue,
     PrivacyProfile,
@@ -27,7 +27,7 @@ from yoetz.domain.privacy import (
     privacy_change_order,
     sort_privacy_changes,
 )
-from yoetz.service.confidential_protocol import PrivacyPolicyDecisionPreview
+from finishup.service.confidential_protocol import PrivacyPolicyDecisionPreview
 
 _DIGEST = "sha256:" + "b" * 64
 _IDENTITY = ("channel", "fallback_provider", "llm_inference")

@@ -16,20 +16,20 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite import connection as connection_module
-from yoetz.adapters.sqlite.migrations import initialize_bundle as initialize_schema
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_control import build_observation_support_handlers
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite import connection as connection_module
+from finishup.adapters.sqlite.migrations import initialize_bundle as initialize_schema
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_control import build_observation_support_handlers
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import (
     ObservationCaptureRecoveryOutcome,
     ObservationDrainAction,
     ObservationOutboxSweeper,
     route_observation_ingest,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     MATERIALIZATION_LEGACY_MAPPING_VERSIONS,
     MATERIALIZATION_MAPPING_VERSION,
     MaterializedObservationBatch,
@@ -40,8 +40,9 @@ from yoetz.application.observation_materialize import (
     observation_writer_id,
     stable_observation_id,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.observation import (
+from finishup.domain.events import AcceptedEvent
+from finishup.domain.findings import Finding
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
@@ -55,14 +56,14 @@ from yoetz.domain.observation import (
     observation_ingest_request_from_json,
     observation_ingest_request_to_json,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.values import Frontier, JsonObject, Timestamp, finding_id
-from yoetz.ports.ledger import CheckPhase, OperationKind, OperationRecord, OperationState
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.values import Frontier, JsonObject, Timestamp, finding_id
+from finishup.ports.ledger import CheckPhase, OperationKind, OperationRecord, OperationState
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 def initialize_bundle(db: apsw.Connection, seed: Mapping[str, str]) -> None:
@@ -188,9 +189,9 @@ def test_materialization_uses_ledger_mapping_independent_of_transport_cursor() -
 
     current = materialize_observation_envelope(envelope, task_id=task)
     current_from_stream = materialize_observation_envelope(stream_transport, task_id=task)
+    # A paired pre keys its pending action on the host call, like its post (#917).
     action_source = (
-        f"pre-event:codex:{envelope.session_commitment}:"
-        f"{envelope.cursor.source_generation}:{envelope.source_identity}"
+        f"pre:codex:{envelope.session_commitment}:{envelope.cursor.source_generation}:c1:command"
     )
     current_event = stable_observation_id(
         kind=IdKind.EVENT,
@@ -220,7 +221,7 @@ def test_materialization_uses_ledger_mapping_independent_of_transport_cursor() -
 
 
 def test_materialize_post_only_profiles_never_invent_a_pre_pair() -> None:
-    from yoetz.domain.events import ActionRecordedPayload
+    from finishup.domain.events import ActionRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'73' * 32}"
@@ -397,10 +398,10 @@ def test_materialize_post_consumes_host_outcome_semantics() -> None:
 
     from collections.abc import Mapping as _Mapping
 
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         HOST_OUTCOME_UNAVAILABLE_GAP,
     )
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'aa' * 32}"
@@ -454,7 +455,7 @@ def test_materialize_post_consumes_host_outcome_semantics() -> None:
 
 
 def test_stream_outcome_correction_links_canonical_action_without_rewriting_unknown() -> None:
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'ac' * 32}"
@@ -516,7 +517,7 @@ def test_stream_outcome_correction_links_canonical_action_without_rewriting_unkn
     success = materialize_observation_outcome_correction(success_stream, task_id=task)
     assert tuple(item.role for item in success.drafts) == ("result_correction_success_0",)
 
-    from yoetz.application.observation_materialize import observation_operation_digest
+    from finishup.application.observation_materialize import observation_operation_digest
 
     common = {
         "task_id": task,
@@ -555,7 +556,7 @@ def test_routine_read_coalescing_respects_result_status_failures() -> None:
 def test_statusless_routine_read_keeps_durable_result_and_capability_gap() -> None:
     """Missing host outcome semantics are not coalesced as a successful read."""
 
-    from yoetz.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
 
     task = _task_id()
     session = f"hmac-sha256:{'bb' * 32}"
@@ -676,7 +677,7 @@ async def test_live_upgrade_finds_legacy_mapping_under_legacy_writer(tmp_path: P
         replay_draft_role_sets=(replay_roles,),
     )
 
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     operation_id, digest, _append_result, mapping_version, roles = recovered
     assert operation_id == expected_operation_id
     assert digest == legacy_digest
@@ -783,7 +784,7 @@ async def test_existing_operation_reconstructs_frontier_motion_metadata(tmp_path
         batch,
     )
 
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     _operation_id, digest, append_result, mapping_version, roles = recovered
     assert digest == committed_digest
     assert mapping_version == MATERIALIZATION_MAPPING_VERSION
@@ -1702,7 +1703,7 @@ def test_local_store_lock_serializes_a_separate_process_writer(tmp_path: Path) -
     store.grant_consent(workspace)
     code = (
         "from pathlib import Path; "
-        "from yoetz.adapters.integrations.observation_local import LocalObservationStore; "
+        "from finishup.adapters.integrations.observation_local import LocalObservationStore; "
         f"store = LocalObservationStore(_state=Path({str(tmp_path)!r})); "
         f"print(store.pending_outbox_count({workspace!r}), flush=True); "
         f"store.note_coverage_gap({workspace!r}, 'service_unavailable'); "
@@ -1732,7 +1733,7 @@ def test_local_store_lock_serializes_a_separate_process_writer(tmp_path: Path) -
 def test_first_key_creation_is_identical_across_processes(tmp_path: Path) -> None:
     code = (
         "from pathlib import Path; "
-        "from yoetz.adapters.integrations.observation_local import LocalObservationStore; "
+        "from finishup.adapters.integrations.observation_local import LocalObservationStore; "
         f"print(LocalObservationStore(_state=Path({str(tmp_path)!r}))"
         f".workspace_commitment({str(tmp_path.resolve())!r}), flush=True)"
     )
@@ -1757,7 +1758,7 @@ def test_first_key_creation_is_identical_across_processes(tmp_path: Path) -> Non
 def test_enqueue_refuses_projected_oversize_without_losing_consent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1784,7 +1785,7 @@ def test_enqueue_refuses_projected_oversize_without_losing_consent(
 def test_size_save_preserves_distinct_same_source_rows_when_bound_cannot_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1827,7 +1828,7 @@ def test_monotonic_samples_fenced_across_simulated_reboot(tmp_path: Path) -> Non
     samples so status reports DEGRADED until fresh progress in the new epoch.
     """
 
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     # Boot 1: monotonic 1000, wall 5000 -> epoch 4000.
     boot1 = LocalObservationStore(_state=tmp_path, _monotonic=lambda: 1000.0, _wall=lambda: 5000.0)
@@ -1856,7 +1857,7 @@ def test_monotonic_samples_fenced_across_simulated_reboot(tmp_path: Path) -> Non
 
 
 def test_session_end_reports_stopped_and_persists(tmp_path: Path) -> None:
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1878,7 +1879,7 @@ def test_session_end_reports_stopped_and_persists(tmp_path: Path) -> None:
 
 
 def test_new_session_generation_resumes_and_stale_end_remains_fenced(tmp_path: Path) -> None:
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1937,7 +1938,7 @@ def test_local_outbox_quarantine_is_visible_and_durable(tmp_path: Path) -> None:
 def test_quarantine_eviction_retains_aggregate_loss_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     monkeypatch.setattr(local_mod, "_MAX_QUARANTINE", 2)
     # Wall clock pinned near the fixture receipt_time (2026-01-01) so only the
@@ -2064,7 +2065,7 @@ def test_reclaim_quarantine_empties_detail_and_records_the_drop(tmp_path: Path) 
 
 
 def test_local_outbox_overflow_records_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     monkeypatch.setattr(local_mod, "_MAX_OUTBOX", 2)
     store = LocalObservationStore(_state=tmp_path)
@@ -2290,9 +2291,9 @@ async def test_nonretryable_post_route_session_conflict_is_ledger_rejected(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -2394,9 +2395,9 @@ async def test_ledger_event_invalid_is_terminal_not_service_unavailable(tmp_path
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -2477,9 +2478,9 @@ async def test_storage_corrupt_blocks_session_for_coordinator_generation(tmp_pat
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_task_id(),
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_task_id=_task_id(),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
         last_frontier=None,
     )
     runtime = _CorruptRuntime()
@@ -2627,7 +2628,7 @@ def _obs(
 
 
 def test_hook_and_stream_copies_share_one_logical_operation() -> None:
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity,
         observation_operation_digest,
     )
@@ -2690,8 +2691,8 @@ def test_hook_and_stream_copies_share_one_logical_operation() -> None:
 def test_reused_call_id_isolated_by_source_session_and_generation() -> None:
     """A host call id is meaningful only inside its source generation lane."""
 
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.domain.events import ActionRecordedPayload, ResultRecordedPayload
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.domain.events import ActionRecordedPayload, ResultRecordedPayload
 
     task = "task_identity_scope"
     base = _envelope(
@@ -2769,7 +2770,7 @@ async def test_run_advice_persists_snapshot_with_real_datetime_clock(tmp_path: P
 
     import apsw
 
-    from yoetz.adapters.sqlite.migrations import initialize_bundle
+    from finishup.adapters.sqlite.migrations import initialize_bundle
 
     class _DatetimeClock:
         def now_utc(self) -> datetime:
@@ -2835,12 +2836,12 @@ async def test_advice_finding_materialization_uses_canonical_schema_and_envelope
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.ports.objects import ObjectRef
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.ports.objects import ObjectRef
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3030,12 +3031,12 @@ async def test_advice_finding_subject_refs_never_cite_unappended_drafts(
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.ports.objects import ObjectRef
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.ports.objects import ObjectRef
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3169,7 +3170,7 @@ async def test_advice_finding_subject_refs_never_cite_unappended_drafts(
 async def test_deferred_verification_uses_a_dedicated_runtime_lease(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from yoetz.application.observation_verification import ObservationVerificationSupervisor
+    from finishup.application.observation_verification import ObservationVerificationSupervisor
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3252,7 +3253,7 @@ async def test_rediscovery_drains_pending_repositories_for_every_bound_session(
 ) -> None:
     from types import SimpleNamespace
 
-    from yoetz.application.observation_verification import ObservationVerificationSupervisor
+    from finishup.application.observation_verification import ObservationVerificationSupervisor
 
     workspace = "hmac-sha256:" + "7" * 64
     task_ids = (_task_id(), _task_id())
@@ -3270,9 +3271,9 @@ async def test_rediscovery_drains_pending_repositories_for_every_bound_session(
         codex_id: LifecycleMapping(
             mapping_version=1,
             codex_session_id=codex_id,
-            yoetz_task_id=task_id,
-            yoetz_session_id=session_id,
-            yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+            finishup_task_id=task_id,
+            finishup_session_id=session_id,
+            finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
             last_frontier=None,
         )
         for codex_id, task_id, session_id in zip(codex_ids, task_ids, session_ids, strict=True)
@@ -3362,9 +3363,9 @@ async def test_advice_materialization_failure_does_not_advance_suppression_snaps
 
     from datetime import UTC, datetime
 
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.runtime import OwnershipFence, RuntimeCapability, TaskRuntime
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.runtime import OwnershipFence, RuntimeCapability, TaskRuntime
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3507,7 +3508,7 @@ async def test_duplicate_ingest_reconciles_ledger_instead_of_early_return(tmp_pa
     operation and refresh advice.
     """
 
-    from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
+    from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
 
     calls = {"append": 0, "advice": 0}
 
@@ -3572,9 +3573,9 @@ async def test_duplicate_ingest_reconciles_ledger_instead_of_early_return(tmp_pa
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_Runtime.task_id,
-        yoetz_session_id=_Runtime.session_id,
-        yoetz_writer_id=_Runtime.writer_id,
+        finishup_task_id=_Runtime.task_id,
+        finishup_session_id=_Runtime.session_id,
+        finishup_writer_id=_Runtime.writer_id,
         last_frontier=None,
     )
 
@@ -3619,8 +3620,8 @@ async def test_check_barrier_deferral_is_designed_backpressure(
 
     from types import SimpleNamespace
 
-    import yoetz.application.observation_coordinator as coordinator_module
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    import finishup.application.observation_coordinator as coordinator_module
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     recorded: list[str] = []
 
@@ -3652,9 +3653,9 @@ async def test_check_barrier_deferral_is_designed_backpressure(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_BarrierStore(),
     )
 
@@ -3716,7 +3717,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
     session_b = f"hmac-sha256:{'0b' * 32}"
     envelope_a = _envelope(session=session_a, kind="PostToolUse", identity="hook:a", exit_status=2)
     envelope_b = _envelope(session=session_b, kind="PostToolUse", identity="hook:b", exit_status=0)
-    yoetz_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
+    finishup_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
 
     class _Store:
         def list_envelopes(self, workspace: str) -> tuple[ObservationEnvelope, ...]:
@@ -3734,10 +3735,10 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
             )
 
         def codex_session_commitment_for_session(
-            self, *, workspace: str, yoetz_session_id: str
+            self, *, workspace: str, finishup_session_id: str
         ) -> str | None:
             del workspace
-            return session_b if yoetz_session_id == yoetz_session else None
+            return session_b if finishup_session_id == finishup_session else None
 
         def load_advice_snapshot(self, workspace: str) -> None:
             del workspace
@@ -3747,7 +3748,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
             raise AssertionError("mapped build must not read workspace-wide status")
 
         async def status_for_session(self, workspace: str, session_commitment: str) -> object:
-            from yoetz.domain.observation import ObservationLifecycle, ObservationStatus
+            from finishup.domain.observation import ObservationLifecycle, ObservationStatus
 
             del workspace
             return ObservationStatus(
@@ -3791,7 +3792,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
     )
     runtime = SimpleNamespace(
         task_id=_task_id(),
-        session_id=yoetz_session,
+        session_id=finishup_session,
         writer_id=None,
     )
 
@@ -3814,12 +3815,12 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
 def test_backpressure_reason_routes_to_retry_without_gap_projection() -> None:
     """#351: operation_pending is retryable, safe, and marked as expected."""
 
-    from yoetz.application.observation_drain import (
+    from finishup.application.observation_drain import (
         EXPECTED_OBSERVATION_BACKPRESSURE_REASONS,
         ObservationDrainAction,
         route_observation_ingest,
     )
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     decision = route_observation_ingest(
         ObservationIngestResult(
@@ -3838,7 +3839,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
     class _Port:
         async def ingest_request(self, request: ObservationIngestRequest):
             assert request.codex_session_id == "sess-control"
-            from yoetz.domain.observation import ObservationIngestResult
+            from finishup.domain.observation import ObservationIngestResult
 
             return ObservationIngestResult(
                 ObservationIngestDisposition.ACCEPTED,
@@ -3859,7 +3860,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
             raise AssertionError("unused")
 
     handlers = build_observation_support_handlers(_Port())  # type: ignore[arg-type]
-    from yoetz.ports.control import ControlMethod
+    from finishup.ports.control import ControlMethod
 
     session = f"hmac-sha256:{'33' * 32}"
     body = observation_ingest_request_to_json(
@@ -3873,7 +3874,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
 
 
 def test_materialization_phases_claim_distinct_role_scoped_identities() -> None:
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity,
         observation_claim_identity,
         observation_content_identity,
@@ -3929,9 +3930,9 @@ def _mapped_local(
     mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=codex_id,
-        yoetz_task_id=_task_id(),
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_task_id=_task_id(),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
         last_frontier=None,
     )
     return local, workspace, session, mapping
@@ -3952,12 +3953,12 @@ async def test_native_content_requires_matching_local_and_task_profile_grants(
     local.enable_content_capture(workspace, CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID)
 
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     task_store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=task_store,
     )
 
@@ -4006,7 +4007,7 @@ async def test_native_content_requires_matching_local_and_task_profile_grants(
     async def bootstrap(workspace: str, runtime: TaskRuntime, store: TaskObservationPort) -> bool:
         # This fixture owns exactly one task bundle. Capture authority still
         # needs a complete budget inventory independently of its profile grant.
-        assert runtime.task_id == mapping.yoetz_task_id
+        assert runtime.task_id == mapping.finishup_task_id
         assert store is task_store
         return local.bootstrap_capture_reservations(
             workspace,
@@ -4109,19 +4110,19 @@ async def test_duplicate_ingest_reconstructed_append_detects_same_task_rewind(
         to_sequence=221,
         head_digest=delivered_digest,
         observation_record_count=1,
-        task_id=mapping.yoetz_task_id,
+        task_id=mapping.finishup_task_id,
     )
     delivered = local.peek_frontier_motion(workspace, codex_id)
     assert delivered is not None
     local.commit_frontier_motion_delivery(workspace, codex_id, delivered.delivery_identity)
 
     envelope = _envelope(session=session, identity="hook:rewound-duplicate")
-    batch = materialize_observation_envelope(envelope, task_id=mapping.yoetz_task_id)
+    batch = materialize_observation_envelope(envelope, task_id=mapping.finishup_task_id)
     assert batch.drafts
-    writer_id = observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id)
+    writer_id = observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id)
     rewound_digest = "sha256:" + "d" * 64
     committed_digest = observation_operation_digest(
-        task_id=mapping.yoetz_task_id,
+        task_id=mapping.finishup_task_id,
         logical_identity=canonical_logical_identity(envelope),
         draft_roles=tuple(item.role for item in batch.drafts),
     )
@@ -4177,14 +4178,14 @@ async def test_duplicate_ingest_reconstructed_append_detects_same_task_rewind(
             return Frontier(5, rewound_digest)
 
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     observation = SqliteObservationStore(db)
     observation.grant_consent(workspace, Timestamp("2026-01-01T00:00:00.000Z"))
     observation.bind_session(workspace, session)
     assert (await observation.ingest(envelope)).disposition is ObservationIngestDisposition.ACCEPTED
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
         writer_id=writer_id,
         ledger=_Ledger(),
         observation=observation,
@@ -4250,21 +4251,21 @@ async def test_pre_post_and_stream_copies_claim_without_storage_corrupt(tmp_path
 
     import apsw
 
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity as _identity,
     )
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         observation_operation_digest as _digest,
     )
 
     local, _workspace, session, mapping = _mapped_local(tmp_path, "claim-repro-309")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
     )
 
@@ -4402,9 +4403,9 @@ async def test_post_only_replay_includes_historical_unpaired_role_set(tmp_path: 
             del kwargs
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -4529,22 +4530,22 @@ async def test_later_stream_failure_correction_projection_policy(
 
     import apsw
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.observation_materialize import (
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.observation_materialize import (
         canonical_logical_identity as _identity,
     )
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         observation_operation_digest as _digest,
     )
-    from yoetz.domain.events import ActionRecordedPayload, ResultRecordedPayload, encode_payload
-    from yoetz.kernel.projections import ProjectionRecord, empty_projection_state
-    from yoetz.ports.ledger import (
+    from finishup.domain.events import ActionRecordedPayload, ResultRecordedPayload, encode_payload
+    from finishup.kernel.projections import ProjectionRecord, empty_projection_state
+    from finishup.ports.ledger import (
         AcceptedEventSummary,
         AppendResult,
         ProjectionView,
         StoredProjection,
     )
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.protocol.canonical import canonical_digest
 
     local, _workspace, session, mapping = _mapped_local(tmp_path, "outcome-correction")
 
@@ -4559,7 +4560,7 @@ async def test_later_stream_failure_correction_projection_policy(
         _record_error,
     )
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     core_unknown: MaterializedObservationBatch | None = None
     appended_roles: list[tuple[str, ...]] = []
@@ -4574,7 +4575,7 @@ async def test_later_stream_failure_correction_projection_policy(
         async def load_projection(
             self, loaded_session: str, view: object
         ) -> StoredProjection | None:
-            assert loaded_session == mapping.yoetz_session_id
+            assert loaded_session == mapping.finishup_session_id
             assert view is ProjectionView.CANDIDATE_FINDINGS
             assert core_unknown is not None
             if projection_state[0] == "missing":
@@ -4620,9 +4621,9 @@ async def test_later_stream_failure_correction_projection_policy(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
         ledger=_Ledger(),
     )
@@ -4843,9 +4844,9 @@ async def test_identity_claim_conflict_rejects_one_envelope_without_latching(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_ConflictStore(),
     )
 
@@ -4944,14 +4945,14 @@ class _ReattachCell:
         import apsw
 
         from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-        from yoetz.adapters.memory.importer import MemoryImportState
-        from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-        from yoetz.ports.runtime import RuntimeCapability, TaskRuntime
+        from finishup.adapters.memory.importer import MemoryImportState
+        from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+        from finishup.ports.runtime import RuntimeCapability, TaskRuntime
 
         self.local, self.workspace, self.session, mapping = _mapped_local(tmp_path, codex_id)
         self.local_root = tmp_path
         self.codex_id = codex_id
-        self.task_id = mapping.yoetz_task_id
+        self.task_id = mapping.finishup_task_id
         self.mapping = mapping
         self.ids = FixedIds()
         self.objects = MemoryObjects(self.ids)
@@ -5033,9 +5034,9 @@ class _ReattachCell:
         self.mapping = LifecycleMapping(
             mapping_version=1,
             codex_session_id=self.codex_id,
-            yoetz_task_id=self.task_id,
-            yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-            yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+            finishup_task_id=self.task_id,
+            finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+            finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
             last_frontier=None,
         )
 
@@ -5059,7 +5060,7 @@ def _schema_eight_store() -> tuple[object, SqliteObservationStore]:
 
     import apsw
 
-    from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS
 
     db = apsw.Connection(":memory:")
     db.execute("PRAGMA foreign_keys = ON")
@@ -5082,7 +5083,7 @@ async def test_host_hook_row_refused_by_ledger_schema_quarantines_then_delivers_
     the service reported ready. After the bundle migrates, the identical envelope delivers.
     """
 
-    from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
 
     cell = _reattach_fixture(tmp_path, f"host-{source.value}")
     db, cell.store = _schema_eight_store()
@@ -5116,7 +5117,11 @@ async def test_host_hook_row_refused_by_ledger_schema_quarantines_then_delivers_
 _REATTACH_ENVELOPES: dict[str, dict[str, object]] = {
     "pre": {"kind": "PreToolUse", "tool": "shell", "corr": "call-560"},
     "paired_post": {"kind": "PostToolUse", "tool": "shell", "corr": "call-560", "exit_status": 0},
-    "yoetz_mcp_post": {"kind": "PostToolUse", "tool": "mcp__yoetz__status", "corr": "call-560-s"},
+    "finishup_mcp_post": {
+        "kind": "PostToolUse",
+        "tool": "mcp__finishup__status",
+        "corr": "call-560-s",
+    },
     "unpaired_post": {
         "kind": "PostToolUse",
         "tool": "shell",
@@ -5137,7 +5142,7 @@ async def test_repeated_observation_replays_committed_operation_across_reattach(
 
     The stable event ids depend on the task and the source identity only, so a
     replayed envelope after a lost acknowledgement, a service restart, or a
-    workflow reattach (which rotates the Yoetz session and writer) must find
+    workflow reattach (which rotates the FinishUP session and writer) must find
     the operation that already committed those ids instead of appending a
     second operation that the ledger rejects as a duplicate event.
     """
@@ -5187,9 +5192,16 @@ async def test_conflicting_reuse_of_a_stable_event_id_still_fails_closed(tmp_pat
     """#560: the same event id under a different structural identity is a conflict."""
 
     cell = _reattach_fixture(tmp_path, "reattach-conflict")
-    # A PreToolUse mints its action and event ids from the source identity, so
-    # the same identity under another host call reuses committed event ids.
-    committed = _envelope(session=cell.session, kind="PreToolUse", identity="hook:560:conflict")
+    # Unpaired evidence mints its event ids from the source identity, so the same
+    # identity under another host call reuses committed event ids. (A paired
+    # PreToolUse now keys its action on the host call itself, #917.)
+    committed = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:560:conflict",
+        exit_status=1,
+        gaps=(ObservationGapCode.UNPAIRED_EVENT.value,),
+    )
     first = await cell.ingest(committed)
     assert first.disposition is ObservationIngestDisposition.ACCEPTED, first.reason
     operations = cell.operation_count()
@@ -5200,15 +5212,514 @@ async def test_conflicting_reuse_of_a_stable_event_id_still_fails_closed(tmp_pat
     # committed operation.
     conflicting = _envelope(
         session=cell.session,
-        kind="PreToolUse",
+        kind="PostToolUse",
         identity="hook:560:conflict",
         corr="call-other",
+        exit_status=1,
+        gaps=(ObservationGapCode.UNPAIRED_EVENT.value,),
     )
     second = await cell.ingest(conflicting)
     assert second.disposition is ObservationIngestDisposition.REJECTED
     assert second.reason == ObservationGapCode.LEDGER_REJECTED.value
     assert route_observation_ingest(second).action is ObservationDrainAction.QUARANTINE
     assert cell.operation_count() == operations
+
+
+# --- issue #917: one ledger action per paired host call ---------------------
+
+
+def _schema_rows(cell: _ReattachCell, name: str) -> list[AcceptedEvent]:
+    from finishup.domain.events import AcceptedEvent as _Accepted
+
+    return [
+        row
+        for row in cell.ledger._state.records  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        if type(row) is _Accepted and row.schema.name == name
+    ]
+
+
+def _stream_copy(envelope: ObservationEnvelope, identity: str) -> ObservationEnvelope:
+    """The Codex session-stream observation of the same completed host call."""
+
+    return replace(
+        envelope,
+        source=ObservationSource.CODEX_SESSION_STREAM,
+        event_kind="function_call_output",
+        source_identity=identity,
+    )
+
+
+@pytest.mark.anyio
+async def test_one_failed_pair_keeps_one_finding_across_observer_copies_and_frontiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1160: real hook/stream delivery and advice caches reuse the durable concern."""
+
+    from types import SimpleNamespace
+
+    from finishup.domain.findings import FindingKind
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1160-restart")
+    failed = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:1160:failed",
+        exit_status=2,
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+
+    async def advise() -> None:
+        runtime = await cell.runtime_port.route(
+            SimpleNamespace(
+                session_id=cell.mapping.finishup_session_id,
+                writer_id=observation_writer_id(cell.task_id, cell.mapping.finishup_session_id),
+            )
+        )
+        await ObservationCoordinator._run_advice(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+            cell.coordinator,
+            cell.workspace,
+            runtime,
+            cell.store,
+            session_commitment=cell.session,
+        )
+
+    await advise()
+    findings = [
+        row
+        for row in _schema_rows(cell, "finding_recorded")
+        if type(row.payload) is Finding and row.payload.kind is FindingKind.FAILED_WORK_OMITTED
+    ]
+    assert len(findings) == 1
+    original = findings[0]
+    assert type(original.payload) is Finding
+
+    cell.coordinator = cell.build_coordinator()
+    stream = _stream_copy(failed, "stream:1160:failed")
+    assert (await cell.ingest(stream)).disposition in {
+        ObservationIngestDisposition.ACCEPTED,
+        ObservationIngestDisposition.DUPLICATE,
+    }
+    # The copies really map to the identical pair of ledger event IDs.
+    hook_ids = {
+        item.draft.event_id
+        for item in materialize_observation_envelope(failed, task_id=cell.task_id).drafts
+    }
+    stream_ids = {
+        item.draft.event_id
+        for item in materialize_observation_envelope(stream, task_id=cell.task_id).drafts
+    }
+    assert hook_ids == stream_ids and len(hook_ids) == 2
+    await advise()
+    event_scans = 0
+    load_events = cell.ledger.load_events
+
+    def counted_events(session_id: str, *, after: int = 0, through: int | None = None):
+        nonlocal event_scans
+        event_scans += 1
+        return load_events(session_id, after=after, through=through)
+
+    monkeypatch.setattr(cell.ledger, "load_events", counted_events)
+    await advise()  # A later advice frontier must not create another challenge either.
+    assert event_scans == 0, "the hot path must not rescan the event stream"
+    assert _schema_rows(cell, "finding_recorded") == [original]
+    persisted = cell.store.load_advice_snapshot(cell.workspace)
+    delivered = cell.local.advice_snapshot_for(cell.workspace)
+    assert persisted is not None and delivered is not None
+    assert (
+        persisted.ranked_finding_ids
+        == delivered.ranked_finding_ids
+        == (original.payload.finding_id,)
+    )
+
+    # A second failed invocation of the same command is another triggering pair.
+    other = replace(
+        failed,
+        source_identity="hook:1160:other",
+        structural_payload=JsonObject(
+            {
+                "tool_name": "shell",
+                "tool_call_id": "other",
+                "correlation_id": "other",
+                "exit_status": 2,
+            }
+        ),
+    )
+    assert (await cell.ingest(other)).disposition is ObservationIngestDisposition.ACCEPTED
+    await advise()
+    assert len(_schema_rows(cell, "finding_recorded")) == 2
+
+
+async def _advise_cell(cell: _ReattachCell) -> None:
+    """Run the production advice pass for the cell's mapped session (the stub skips it)."""
+
+    from types import SimpleNamespace
+
+    runtime = await cell.runtime_port.route(
+        SimpleNamespace(
+            session_id=cell.mapping.finishup_session_id,
+            writer_id=observation_writer_id(cell.task_id, cell.mapping.finishup_session_id),
+        )
+    )
+    await ObservationCoordinator._run_advice(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        cell.coordinator,
+        cell.workspace,
+        runtime,
+        cell.store,
+        session_commitment=cell.session,
+    )
+
+
+def _count_event_scans(cell: _ReattachCell, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count full event-log reads: the cost the advice binding cache exists to avoid."""
+
+    scans = [0]
+    load_events = cell.ledger.load_events
+
+    def counted_events(session_id: str, *, after: int = 0, through: int | None = None):
+        scans[0] += 1
+        return load_events(session_id, after=after, through=through)
+
+    monkeypatch.setattr(cell.ledger, "load_events", counted_events)
+    return scans
+
+
+def _failed_work_rows(cell: _ReattachCell) -> list[AcceptedEvent]:
+    from finishup.domain.findings import FindingKind
+
+    return [
+        row
+        for row in _schema_rows(cell, "finding_recorded")
+        if type(row.payload) is Finding and row.payload.kind is FindingKind.FAILED_WORK_OMITTED
+    ]
+
+
+@pytest.mark.anyio
+async def test_failed_command_beside_advice_only_rows_does_not_rescan_the_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: ``provider_not_ready`` never has a ledger finding to read back.
+
+    The binding cache required every ranked item to be a readable finding, so a snapshot of a
+    failed command plus that advice-only row re-read the whole event log on every hook pass.
+    """
+
+    from finishup.application.observation_advice import ObservationAdviceContextBuilder
+    from finishup.kernel.policies.observation_advice import ObservationCompositionFact
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-provider")
+    cell.coordinator.advice_context_builder = ObservationAdviceContextBuilder(
+        composition=ObservationCompositionFact(
+            semantic_configured=True,
+            semantic_ready=False,
+            provider_factory_ids=("provider-a",),
+            connected_provider_ids=(),
+        )
+    )
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:failed", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] >= 1
+    first = cell.store.load_advice_snapshot(cell.workspace)
+    assert first is not None
+    assert {item.rule_code for item in first.ranked_items} == {
+        "failed_command_unresolved",
+        "provider_not_ready",
+    }
+    findings = _failed_work_rows(cell)
+    assert len(findings) == 1
+
+    scans[0] = 0
+    await _advise_cell(cell)
+    assert scans[0] == 0, "an advice-only row must not force an event-log rescan"
+    assert _failed_work_rows(cell) == findings
+    later = cell.store.load_advice_snapshot(cell.workspace)
+    assert later is not None and later.ranked_finding_ids == first.ranked_finding_ids
+
+
+@pytest.mark.anyio
+async def test_changed_evidence_under_a_cached_binding_recomputes_instead_of_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: a cached failed-command ID whose evidence ref moved raised ``KeyError``.
+
+    The hook path must recompute the binding from the ledger instead, keep the one recorded
+    finding, and refresh the cache so the following pass is a hit again.
+    """
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-evidence")
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:evidence", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    findings = _failed_work_rows(cell)
+    assert len(findings) == 1
+    original = findings[0].payload
+    assert type(original) is Finding
+    cache = cell.coordinator._advice_binding_cache  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    assert cache
+    for key, items in tuple(cache.items()):
+        cache[key] = tuple(
+            replace(item, evidence_refs=("hook:probe:failed",))
+            if item.rule_code == "failed_command_unresolved"
+            else item
+            for item in items
+        )
+
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] >= 1, "a stale binding must be recomputed from the ledger"
+    assert _failed_work_rows(cell) == findings
+    persisted = cell.store.load_advice_snapshot(cell.workspace)
+    assert persisted is not None
+    (item,) = (
+        row for row in persisted.ranked_items if row.rule_code == "failed_command_unresolved"
+    )
+    assert item.finding_id == original.finding_id
+    assert item.evidence_refs == ("hook:1165:evidence",)
+
+    scans[0] = 0
+    await _advise_cell(cell)
+    assert scans[0] == 0
+
+
+@pytest.mark.anyio
+async def test_binding_cache_evicts_the_key_routine_passes_use_last(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1165 review: the bounded cache dropped the key routine passes look up first.
+
+    Eviction was first-in first-out and a hit did not refresh its key, so the long-lived key a
+    task hit on every pass was the oldest entry once other bindings arrived. A hit now moves
+    its key to the newest position, and overflow evicts the least recently used entries.
+    """
+
+    cell = _reattach_fixture(tmp_path, "dedupe-1165-eviction")
+    failed = _envelope(
+        session=cell.session, kind="PostToolUse", identity="hook:1165:eviction", exit_status=2
+    )
+    assert (await cell.ingest(failed)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    cache = cell.coordinator._advice_binding_cache  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    own = {key for key in cache if key[0] == cell.task_id}
+    assert own
+    for number in range(70):  # Other tasks' bindings arrive after this task's.
+        cache[f"tsk_other_{number}", ()] = ()
+    scans = _count_event_scans(cell, monkeypatch)
+    await _advise_cell(cell)
+    assert scans[0] == 0
+    hit = next(reversed(cache))
+    assert hit in own, "a hit must refresh its key"
+
+    # A new binding overflows the bound: the least recently used entries leave, not the hit.
+    other = replace(
+        failed,
+        source_identity="hook:1165:eviction-other",
+        structural_payload=JsonObject(
+            {"tool_name": "shell", "tool_call_id": "c2", "correlation_id": "c2", "exit_status": 2}
+        ),
+    )
+    assert (await cell.ingest(other)).disposition is ObservationIngestDisposition.ACCEPTED
+    await _advise_cell(cell)
+    assert len(cache) == 64
+    assert hit in cache
+    assert ("tsk_other_0", ()) not in cache
+
+
+@pytest.mark.anyio
+async def test_paired_pre_then_post_records_one_action_linked_to_its_result(
+    tmp_path: Path,
+) -> None:
+    """#917: an individually delivered pre and its post share one action.
+
+    Before the fix the pre minted ``pre-event:<source_identity>`` and the post a
+    second action keyed on the call id, so one call held two actions.
+    """
+
+    from finishup.domain.events import ActionRecordedPayload, ResultOutcome, ResultRecordedPayload
+
+    cell = _reattach_fixture(tmp_path, "paired-917")
+    pre = _envelope(session=cell.session, kind="PreToolUse", identity="hook:917:pre", corr="c917")
+    post = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:917:post",
+        corr="c917",
+        exit_status=2,
+    )
+    first = await cell.ingest(pre)
+    assert first.disposition is ObservationIngestDisposition.ACCEPTED, first.reason
+    pending = _schema_rows(cell, "action_recorded")
+    assert len(pending) == 1
+    second = await cell.ingest(post)
+    assert second.disposition is ObservationIngestDisposition.ACCEPTED, second.reason
+
+    actions = _schema_rows(cell, "action_recorded")
+    results = _schema_rows(cell, "result_recorded")
+    assert [row.event_id for row in actions] == [pending[0].event_id]
+    assert len(results) == 1
+    action = cast(ActionRecordedPayload, actions[0].payload)
+    result = cast(ResultRecordedPayload, results[0].payload)
+    assert "pending" in action.description
+    assert result.action_id == action.action_id
+    assert result.outcome is ResultOutcome.FAILURE and result.exit_status == 2
+    assert actions[0].event_id in results[0].causal_parents
+    assert cell.operation_count() == 2
+
+    # The session-stream copy of the same completed call links to the same
+    # action and resolves to the hook copy's operation instead of re-recording.
+    records = cell.record_count()
+    stream = await cell.ingest(_stream_copy(post, "stream:917:post"))
+    assert stream.disposition is ObservationIngestDisposition.ACCEPTED, stream.reason
+    assert cell.record_count() == records
+    assert cell.operation_count() == 2
+
+    # A lost acknowledgement, a service restart and a workflow reattach replay
+    # both phases to their committed operations; nothing is re-minted.
+    for lifecycle in ("dropped_ack", "restart", "reattach"):
+        if lifecycle == "restart":
+            cell.coordinator = cell.build_coordinator()
+        elif lifecycle == "reattach":
+            cell.reattach()
+        for envelope in (pre, post):
+            again = await cell.ingest(envelope)
+            assert again.disposition is ObservationIngestDisposition.DUPLICATE, lifecycle
+        assert cell.record_count() == records
+        assert cell.operation_count() == 2
+    assert not cell.local.list_quarantine(cell.workspace)
+
+
+@pytest.mark.anyio
+async def test_post_without_delivered_pre_still_records_its_action(tmp_path: Path) -> None:
+    """#917: a post whose pre never reached the ledger keeps its own action.
+
+    FinishUP-owned calls deliver only their post (#564); a post-first order must also
+    not strand a later copy of the pre as a ledger conflict.
+    """
+
+    cell = _reattach_fixture(tmp_path, "post-only-917")
+    post = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:917:finishup-post",
+        tool="mcp__finishup__publish_work",
+        corr="c917-finishup",
+    )
+    accepted = await cell.ingest(post)
+    assert accepted.disposition is ObservationIngestDisposition.ACCEPTED, accepted.reason
+    assert len(_schema_rows(cell, "action_recorded")) == 1
+    assert len(_schema_rows(cell, "result_recorded")) == 1
+    records = cell.record_count()
+    operations = cell.operation_count()
+
+    # A late copy of the pre (for example the session-stream call record) finds
+    # the action already recorded and appends nothing.
+    late_pre = replace(
+        _envelope(
+            session=cell.session,
+            kind="PreToolUse",
+            identity="stream:917:finishup-pre",
+            tool="mcp__finishup__publish_work",
+            corr="c917-finishup",
+        ),
+        source=ObservationSource.CODEX_SESSION_STREAM,
+    )
+    late = await cell.ingest(late_pre)
+    assert late.disposition is ObservationIngestDisposition.ACCEPTED, late.reason
+    assert cell.record_count() == records
+    assert cell.operation_count() == operations
+    assert not cell.local.list_quarantine(cell.workspace)
+
+
+@pytest.mark.anyio
+async def test_pre_committed_before_upgrade_is_never_rematerialized_as_a_third_action(
+    tmp_path: Path,
+) -> None:
+    """#917 lifecycle: a session spanning the upgrade keeps at most its historical double.
+
+    A pre committed by the older mapping (``pre-event:`` action identity) shares
+    the new pre's operation digest, so its redelivery replays the committed
+    operation instead of minting the new action. The post then records its own
+    action exactly as it did before the upgrade; no history is rewritten.
+    """
+
+    from types import SimpleNamespace
+
+    from finishup.application import observation_materialize as materialize_module
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.domain.values import action_id
+
+    cell = _reattach_fixture(tmp_path, "upgrade-917")
+    pre = _envelope(
+        session=cell.session, kind="PreToolUse", identity="hook:917:old-pre", corr="c9u"
+    )
+    current = materialize_observation_envelope(pre, task_id=cell.task_id)
+    legacy_source = (
+        f"pre-event:codex:{pre.session_commitment}:{pre.cursor.source_generation}:"
+        f"{pre.source_identity}"
+    )
+    payload = cast(ActionRecordedPayload, current.drafts[0].draft.payload)
+    legacy_draft = materialize_module._draft(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        event=stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=cell.task_id,
+            source_identity=legacy_source,
+            mapping_version=MATERIALIZATION_MAPPING_VERSION,
+            role="action_event",
+        ),
+        schema_name="action_recorded",
+        occurred_at=pre.receipt_time,
+        payload=replace(
+            payload,
+            action_id=action_id(
+                stable_observation_id(
+                    kind=IdKind.ACTION,
+                    task_id=cell.task_id,
+                    source_identity=legacy_source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action",
+                )
+            ),
+        ),
+        role="action",
+    )
+    session_id = cell.mapping.finishup_session_id
+    runtime = await cell.runtime_port.route(
+        SimpleNamespace(
+            session_id=session_id, writer_id=observation_writer_id(cell.task_id, session_id)
+        )
+    )
+    committed = await cell.coordinator._append_materialized(  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+        runtime, pre, replace(current, drafts=(legacy_draft,))
+    )
+    assert committed is not None
+    assert len(_schema_rows(cell, "action_recorded")) == 1
+
+    # Redelivery of the same pre after the upgrade resolves to the committed
+    # pre-upgrade operation instead of minting the new action identity.
+    replayed = await cell.ingest(pre)
+    assert replayed.disposition is ObservationIngestDisposition.ACCEPTED, replayed.reason
+    assert len(_schema_rows(cell, "action_recorded")) == 1
+
+    post = _envelope(
+        session=cell.session,
+        kind="PostToolUse",
+        identity="hook:917:new-post",
+        corr="c9u",
+        exit_status=0,
+    )
+    linked = await cell.ingest(post)
+    assert linked.disposition is ObservationIngestDisposition.ACCEPTED, linked.reason
+    assert len(_schema_rows(cell, "action_recorded")) == 2
+    assert len(_schema_rows(cell, "result_recorded")) == 1
+    assert not cell.local.list_quarantine(cell.workspace)
 
 
 @pytest.mark.anyio
@@ -5224,11 +5735,11 @@ async def test_advice_findings_reuse_operation_committed_by_predecessor_session(
 
     from types import SimpleNamespace
 
-    import yoetz.application.observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
+    import finishup.application.observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
 
     task_id = _task_id()
     successor_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -5395,7 +5906,7 @@ async def test_session_superseded_reroutes_ingest_and_persists_mapping(
     from builders.ledger_adapters import FixedClock
 
     cell = _reattach_fixture(tmp_path, "superseded-577")
-    predecessor_session = cell.mapping.yoetz_session_id
+    predecessor_session = cell.mapping.finishup_session_id
     successor_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
     successor_writer = PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4())
     stored = {"mapping": cell.mapping}
@@ -5443,8 +5954,8 @@ async def test_session_superseded_reroutes_ingest_and_persists_mapping(
     result = await cell.ingest(_envelope(session=cell.session, identity="hook:577", source=source))
     assert result.disposition is ObservationIngestDisposition.ACCEPTED, result.reason
     assert result.reason != ObservationGapCode.LEDGER_REJECTED.value
-    assert stored["mapping"].yoetz_session_id == successor_session
-    assert stored["mapping"].yoetz_writer_id == successor_writer
+    assert stored["mapping"].finishup_session_id == successor_session
+    assert stored["mapping"].finishup_writer_id == successor_writer
     assert cell.routed[-1][0] == successor_session
     assert cell.routed[-1][1] == observation_writer_id(cell.task_id, successor_session)
     assert not cell.local.list_quarantine(cell.workspace)
@@ -5524,8 +6035,8 @@ async def test_ingest_replays_legacy_operation_through_every_route_writer(
 
     cell = _reattach_fixture(tmp_path, f"legacy-replay-{hop_count}")
     predecessor = cell.mapping
-    sessions = [predecessor.yoetz_session_id]
-    cooperative_writers = [predecessor.yoetz_writer_id]
+    sessions = [predecessor.finishup_session_id]
+    cooperative_writers = [predecessor.finishup_writer_id]
     for _ in range(hop_count):
         sessions.append(PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()))
         cooperative_writers.append(PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()))
@@ -5652,7 +6163,7 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     from types import SimpleNamespace
 
     from builders.ledger_adapters import FixedClock
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         load_route_history,
         store_mapping,
@@ -5662,8 +6173,8 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     predecessor = cell.mapping
     successor = replace(
         predecessor,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
     )
     store_mapping(predecessor, _state=tmp_path)
     envelope = _envelope(
@@ -5675,13 +6186,15 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     batch = materialize_observation_envelope(envelope, task_id=cell.task_id)
     roles = tuple(item.role for item in batch.drafts)
     mapping_version = MATERIALIZATION_LEGACY_MAPPING_VERSIONS[0]
-    predecessor_derived_writer = observation_writer_id(cell.task_id, predecessor.yoetz_session_id)
+    predecessor_derived_writer = observation_writer_id(
+        cell.task_id, predecessor.finishup_session_id
+    )
     seeded_digest = observation_operation_digest(
         task_id=cell.task_id,
         logical_identity=canonical_logical_identity(envelope, mapping_version=mapping_version),
         draft_roles=roles,
         mapping_version=mapping_version,
-        session_id=predecessor.yoetz_session_id,
+        session_id=predecessor.finishup_session_id,
         writer_id=predecessor_derived_writer,
     )
     seeded_operation_id = ""
@@ -5700,8 +6213,8 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
 
     current_runtime = SimpleNamespace(
         task_id=cell.task_id,
-        session_id=successor.yoetz_session_id,
-        writer_id=observation_writer_id(cell.task_id, successor.yoetz_session_id),
+        session_id=successor.finishup_session_id,
+        writer_id=observation_writer_id(cell.task_id, successor.finishup_session_id),
         ledger=_Ledger(),
         observation=cell.store,
         objects=object(),
@@ -5710,7 +6223,7 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     class _RuntimePort:
         async def route(self, command: object) -> object:
             session_id = cast(str, getattr(command, "session_id"))
-            if session_id == predecessor.yoetz_session_id:
+            if session_id == predecessor.finishup_session_id:
                 raise PublicOperationError(
                     PublicErrorCode.SESSION_NOT_FOUND,
                     "The requested session was replaced.",
@@ -5718,11 +6231,11 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
                     safe_details={
                         "reason_code": "session_superseded",
                         "task_id": cell.task_id,
-                        "session_id": successor.yoetz_session_id,
-                        "writer_id": successor.yoetz_writer_id,
+                        "session_id": successor.finishup_session_id,
+                        "writer_id": successor.finishup_writer_id,
                     },
                 )
-            assert session_id == successor.yoetz_session_id
+            assert session_id == successor.finishup_session_id
             return current_runtime
 
         async def release(self, released: object) -> None:
@@ -5757,10 +6270,10 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     assert failed.reason == ObservationGapCode.SERVICE_UNAVAILABLE.value
     cached = load_mapping(cell.codex_id, _state=tmp_path)
     assert cached is not None
-    assert cached.yoetz_session_id == successor.yoetz_session_id
+    assert cached.finishup_session_id == successor.finishup_session_id
     history = load_route_history(cached, _state=tmp_path)
     assert history is not None
-    assert history.routes == ((predecessor.yoetz_session_id, predecessor.yoetz_writer_id),)
+    assert history.routes == ((predecessor.finishup_session_id, predecessor.finishup_writer_id),)
     assert history.truncated is False
 
     recovered = _Recovered(**common)  # type: ignore[arg-type]
@@ -5841,7 +6354,7 @@ async def test_truncated_route_history_uses_claim_or_rejects_without_reminting(
         replay_required=True,
         replay_claims=(claim,),
     )
-    assert recovered is not None
+    assert isinstance(recovered, tuple)
     assert recovered[0] == operation_id_for_claim
     assert recovered[1] == digest
     assert recovered[3] == mapping_version
@@ -5886,7 +6399,7 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
 
     from contextlib import ExitStack
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         acquire_session_lock,
         clear_mapping,
         load_mapping,
@@ -5897,8 +6410,8 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
     store_mapping(predecessor, _state=tmp_path)
     successor = replace(
         predecessor,
-        yoetz_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
-        yoetz_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
+        finishup_session_id=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        finishup_writer_id=PREFIX_BY_KIND[IdKind.WRITER] + str(uuid.uuid4()),
     )
     expected = predecessor
     routed_runtime = cast(TaskRuntime, object())
@@ -5907,14 +6420,14 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
         class _Runtime:
             async def route(self, command: object) -> TaskRuntime:
                 nonlocal expected
-                if getattr(command, "session_id") == successor.yoetz_session_id:
+                if getattr(command, "session_id") == successor.finishup_session_id:
                     return routed_runtime
                 if concurrent_change == "locked":
                     assert locks.enter_context(
                         acquire_session_lock(predecessor.codex_session_id, _state=tmp_path)
                     )
                 elif concurrent_change == "rebound":
-                    expected = replace(predecessor, yoetz_task_id=_task_id())
+                    expected = replace(predecessor, finishup_task_id=_task_id())
                     store_mapping(expected, _state=tmp_path)
                 elif concurrent_change == "frontier":
                     expected = replace(predecessor, last_frontier="99:sha256:" + "a" * 64)
@@ -5927,9 +6440,9 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
                     retryable=False,
                     safe_details={
                         "reason_code": "session_superseded",
-                        "task_id": predecessor.yoetz_task_id,
-                        "session_id": successor.yoetz_session_id,
-                        "writer_id": successor.yoetz_writer_id,
+                        "task_id": predecessor.finishup_task_id,
+                        "session_id": successor.finishup_session_id,
+                        "writer_id": successor.finishup_writer_id,
                     },
                 )
 
@@ -5962,12 +6475,12 @@ async def test_missing_subagent_identity_is_durable_without_annotation(
 
     local, workspace, session, mapping = _mapped_local(tmp_path, "missing-subagent")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     task_store = SqliteObservationStore(db)
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=task_store,
     )
 
@@ -6014,7 +6527,9 @@ async def test_missing_subagent_identity_is_durable_without_annotation(
     envelope = replace(
         _envelope(session=session, kind=event_kind, identity="hook:missing-subagent"),
         structural_payload=JsonObject(
-            {"lineage_child_task_id": mapping.yoetz_task_id} if event_kind == "PostToolUse" else {}
+            {"lineage_child_task_id": mapping.finishup_task_id}
+            if event_kind == "PostToolUse"
+            else {}
         ),
     )
     try:
@@ -6152,13 +6667,13 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
 
     local, workspace, session, mapping = _mapped_local(tmp_path, "native-activity-release")
     db = apsw.Connection(":memory:")
-    initialize_bundle(db, {"task_id": mapping.yoetz_task_id, "owner_generation": "1"})
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
     store = SqliteObservationStore(db)
     clock = FixedClock()
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=store,
     )
     released = asyncio.Event()
@@ -6194,7 +6709,7 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
         observed_activity_hook=renew,
         mapping_loader=lambda *_args, **_kwargs: mapping,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
     )
-    from yoetz.domain.values import timestamp_from_datetime
+    from finishup.domain.values import timestamp_from_datetime
 
     envelope = replace(
         _envelope(session=session, kind="SubagentStart", identity="hook:activity-release"),
@@ -6212,17 +6727,174 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=mapping.yoetz_session_id,
+                finishup_session_id=mapping.finishup_session_id,
             )
             == session
         )
-        assert calls == [(mapping.yoetz_task_id, mapping.yoetz_session_id, mapping.yoetz_writer_id)]
+        assert calls == [
+            (mapping.finishup_task_id, mapping.finishup_session_id, mapping.finishup_writer_id)
+        ]
         duplicate = await coordinator.ingest_request(request)
         assert duplicate.disposition is ObservationIngestDisposition.DUPLICATE
         # The duplicate re-offers the same evidence time; lineage applies it idempotently.
         assert len(calls) == 2 and calls[0] == calls[1]
     finally:
         db.close(force=True)
+
+
+@pytest.mark.anyio
+async def test_a_host_session_end_goes_to_the_session_end_hook_not_activity(tmp_path: Path) -> None:
+    """#1239: a delivered ``SessionEnd`` ends the bound session; it never renews contact."""
+
+    from types import SimpleNamespace
+
+    from builders.ledger_adapters import FixedClock
+    from finishup.domain.values import timestamp_from_datetime
+
+    local, _workspace, session, mapping = _mapped_local(tmp_path, "native-session-end")
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": mapping.finishup_task_id, "owner_generation": "1"})
+    store = SqliteObservationStore(db)
+    clock = FixedClock()
+    runtime = SimpleNamespace(
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
+        observation=store,
+    )
+    renewed: list[str] = []
+    ended: list[tuple[str, str, str, object]] = []
+
+    class RuntimePort:
+        async def route(self, command: object) -> object:
+            del command
+            return runtime
+
+        async def release(self, value: object) -> None:
+            assert value is runtime
+
+    async def renew(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        del session_id, writer_id, observed_at
+        renewed.append(task_id)
+
+    async def end(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        ended.append((task_id, session_id, writer_id, observed_at))
+
+    class Coordinator(ObservationCoordinator):
+        async def _run_advice(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+            pass
+
+    coordinator = Coordinator(
+        runtime=RuntimePort(),  # type: ignore[arg-type]
+        local=local,
+        clock=clock,
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+        observed_activity_hook=renew,
+        observed_session_end_hook=end,
+        mapping_loader=lambda *_args, **_kwargs: mapping,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
+    )
+    envelope = replace(
+        _envelope(session=session, kind="SessionEnd", identity="hook:session-end"),
+        structural_payload=JsonObject({}),
+        receipt_time=timestamp_from_datetime(clock.now_utc()),
+    )
+    try:
+        accepted = await coordinator.ingest_request(
+            ObservationIngestRequest(codex_session_id="native-session-end", envelope=envelope)
+        )
+        assert accepted.disposition is ObservationIngestDisposition.ACCEPTED
+        assert renewed == []
+        assert ended == [
+            (
+                mapping.finishup_task_id,
+                mapping.finishup_session_id,
+                mapping.finishup_writer_id,
+                clock.now_utc(),
+            )
+        ]
+    finally:
+        db.close(force=True)
+
+
+@pytest.mark.anyio
+async def test_an_announced_call_timeout_is_offered_as_an_implied_quiet_period(
+    tmp_path: Path,
+) -> None:
+    """#1239 (D6): only a pre-tool row carrying the call's own timeout implies a quiet period.
+
+    It is offered after the same row was offered as contact, under the same route fences, from
+    the row's receipt time, in whole seconds rounded up. A pre-tool row without a timeout, a
+    post-tool row, and a row routed to another session imply nothing.
+    """
+
+    from types import SimpleNamespace
+
+    from builders.ledger_adapters import FixedClock
+    from finishup.domain.values import timestamp_from_datetime
+
+    local, workspace, session, mapping = _mapped_local(tmp_path, "announced-call")
+    clock = FixedClock()
+    writer = observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id)
+    runtime = SimpleNamespace(
+        task_id=mapping.finishup_task_id, session_id=mapping.finishup_session_id, writer_id=writer
+    )
+    calls: list[tuple[str, ...]] = []
+
+    async def renew(task_id: str, session_id: str, writer_id: str, observed_at: object) -> None:
+        del task_id, session_id, writer_id, observed_at
+        calls.append(("contact",))
+
+    async def imply(
+        task_id: str, session_id: str, writer_id: str, observed_at: object, seconds: int
+    ) -> None:
+        assert observed_at == clock.now_utc()
+        calls.append(("quiet", task_id, session_id, writer_id, str(seconds)))
+
+    coordinator = ObservationCoordinator(
+        runtime=object(),  # type: ignore[arg-type]
+        local=local,
+        clock=clock,
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+        observed_activity_hook=renew,
+        observed_quiet_hook=imply,
+    )
+
+    async def offer(kind: str, *, routed_session: str | None = None, **facts: object) -> None:
+        envelope = replace(
+            _envelope(session=session, kind=kind, source=ObservationSource.CLAUDE_HOOK),
+            structural_payload=JsonObject({"tool_name": "Bash", "tool_call_id": "c1", **facts}),
+            receipt_time=timestamp_from_datetime(clock.now_utc()),
+        )
+        await coordinator._renew_observed_activity(  # pyright: ignore[reportPrivateUsage]
+            cast(TaskRuntime, runtime),
+            envelope,
+            disposition=ObservationIngestDisposition.ACCEPTED,
+            predecessor_session_id=routed_session or mapping.finishup_session_id,
+            predecessor_writer_id=writer,
+            route_bound=True,
+            workspace=workspace,
+            codex_session_id="announced-call",
+        )
+
+    await offer("PreToolUse", tool_timeout_ms=600_001)
+    assert calls == [
+        ("contact",),
+        ("quiet", mapping.finishup_task_id, mapping.finishup_session_id, writer, "601"),
+    ]
+    calls.clear()
+    await offer("PreToolUse")
+    await offer("PostToolUse", tool_timeout_ms=600_000)
+    assert calls == [("contact",), ("contact",)]
+    calls.clear()
+    # A row whose route changed under it is neither contact nor a quiet period for anyone.
+    await offer(
+        "PreToolUse",
+        routed_session=PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4()),
+        tool_timeout_ms=600_000,
+    )
+    assert calls == []
 
 
 @pytest.mark.anyio
@@ -6248,10 +6920,10 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
     predecessor_mapping = LifecycleMapping(
         mapping_version=1,
         codex_session_id=predecessor_codex_id,
-        yoetz_task_id=task,
+        finishup_task_id=task,
         # Lifecycle recovery rewrites the ended predecessor's mapping to this successor route.
-        yoetz_session_id=current_session_id,
-        yoetz_writer_id=current_writer_id,
+        finishup_session_id=current_session_id,
+        finishup_writer_id=current_writer_id,
         last_frontier=None,
     )
     current_mapping = replace(predecessor_mapping, codex_session_id=current_codex_id)
@@ -6335,7 +7007,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             is None
         )
@@ -6351,7 +7023,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             == current_commitment
         )
@@ -6370,7 +7042,7 @@ async def test_ended_predecessor_cannot_seed_successor_host_route(tmp_path: Path
         assert (
             store.codex_session_commitment_for_session(
                 workspace=workspace,
-                yoetz_session_id=current_session_id,
+                finishup_session_id=current_session_id,
             )
             == current_commitment
         )
@@ -6410,9 +7082,9 @@ async def test_ingest_releases_runtime_when_final_backlog_feedback_fails(
             )
 
     runtime = SimpleNamespace(
-        task_id=mapping.yoetz_task_id,
-        session_id=mapping.yoetz_session_id,
-        writer_id=observation_writer_id(mapping.yoetz_task_id, mapping.yoetz_session_id),
+        task_id=mapping.finishup_task_id,
+        session_id=mapping.finishup_session_id,
+        writer_id=observation_writer_id(mapping.finishup_task_id, mapping.finishup_session_id),
         observation=_Store(),
     )
 
@@ -6494,3 +7166,81 @@ async def test_ingest_releases_runtime_when_final_backlog_feedback_fails(
     release_gate.set()
     await asyncio.wait_for(release_finished.wait(), timeout=5)
     assert released_runtimes == [runtime]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("policy_bytes", [None, b"not = [valid"])
+async def test_verification_worker_records_no_capture_gap_for_an_absent_check_policy(
+    tmp_path: Path, policy_bytes: bytes | None
+) -> None:
+    """No `.finishup/checks.toml` is the ordinary opt-in state, not lost content capture (tb4v1).
+
+    A present-but-broken policy still records the conservative capture gap, so this test fails if
+    the absent branch is deleted or widened.
+    """
+
+    import base64
+    from types import SimpleNamespace
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subprocess.run(["git", "init", "-q", str(workspace_root)], check=True)
+    if policy_bytes is not None:
+        (workspace_root / ".finishup").mkdir()
+        (workspace_root / ".finishup" / "checks.toml").write_bytes(policy_bytes)
+    locator = canonical_encode(
+        {
+            "content_kind": "workspace_locator",
+            "content_b64": base64.b64encode(str(workspace_root).encode()).decode("ascii"),
+        }
+    )
+
+    class _Objects:
+        async def resolve_verified(self, *descriptor: object) -> object:
+            return descriptor
+
+        async def open_verified(self, _ref: object):
+            yield locator
+
+    noted: list[str] = []
+
+    class _Local:
+        def note_coverage_gap(self, _workspace: str, code: str) -> None:
+            noted.append(code)
+
+    def _unused(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("not reached before the policy gate")
+
+    def _descriptor(_workspace: str) -> tuple[str, str]:
+        return ("obj", "digest")
+
+    store = SimpleNamespace(
+        workspace_locator_descriptor=_descriptor,
+        verification_repository=_unused,
+        latest_verification_subject_digest=_unused,
+        policy_digest_is_trusted=_unused,
+        record_trusted_check_policy=_unused,
+    )
+    runtime = SimpleNamespace(
+        task_id=_task_id(), session_id="ses", writer_id="wri", objects=_Objects()
+    )
+    coordinator = ObservationCoordinator(
+        runtime=object(),  # type: ignore[arg-type]
+        local=_Local(),  # type: ignore[arg-type]
+        clock=object(),  # type: ignore[arg-type]
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+    )
+
+    worker = await coordinator._prepare_verification_worker(  # pyright: ignore[reportPrivateUsage]
+        cast(TaskRuntime, runtime),
+        "hmac-sha256:" + "8" * 64,
+        cast(TaskObservationPort, store),
+        _envelope(session=f"hmac-sha256:{'9' * 64}", kind="PostToolUse"),
+    )
+
+    assert worker is None
+    if policy_bytes is None:
+        assert noted == []
+    else:
+        assert noted == [ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value]

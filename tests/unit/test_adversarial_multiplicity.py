@@ -7,21 +7,21 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.codex_lifecycle import acquire_session_lock
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_verification import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.codex_lifecycle import acquire_session_lock
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_verification import (
     ObservationVerificationSupervisor,
     VerificationDrainHandle,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 def _envelope(*, session: str, identity: str, ordinal: int = 1) -> ObservationEnvelope:

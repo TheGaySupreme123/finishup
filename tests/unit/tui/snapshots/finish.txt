@@ -1,4 +1,4 @@
-✓ Yoetz is ready
+✓ FinishUP is ready
 
 Codex connection     verified
 Local service        ready
@@ -9,7 +9,7 @@ Privacy              local only
 
 Nothing is being sent to an external review model.
 
-To get started, ask Codex to use Yoetz on its next task or try one of
+To get started, ask Codex to use FinishUP on its next task or try one of
 these commands:
 /status
 /work

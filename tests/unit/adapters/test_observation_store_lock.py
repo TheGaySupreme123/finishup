@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local
+import finishup.adapters.integrations.observation_local as local
 
 
 @pytest.mark.skipif(local.fcntl is None, reason="POSIX flock is unavailable")

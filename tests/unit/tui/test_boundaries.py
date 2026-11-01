@@ -13,20 +13,20 @@ from typing import Final
 
 import pytest
 
-_TUI: Final = Path(__file__).resolve().parents[3] / "src" / "yoetz" / "tui"
+_TUI: Final = Path(__file__).resolve().parents[3] / "src" / "finishup" / "tui"
 
-# Modules that may legitimately reach into the rest of Yoetz.
+# Modules that may legitimately reach into the rest of FinishUP.
 _BRIDGES: Final = frozenset({"runtime.py", "app.py"})
 
 _INTERNAL_PREFIXES: Final = (
-    "yoetz.application",
-    "yoetz.service",
-    "yoetz.adapters",
-    "yoetz.kernel",
-    "yoetz.ports",
-    "yoetz.protocol",
-    "yoetz.config",
-    "yoetz.domain",
+    "finishup.application",
+    "finishup.service",
+    "finishup.adapters",
+    "finishup.kernel",
+    "finishup.ports",
+    "finishup.protocol",
+    "finishup.config",
+    "finishup.domain",
 )
 
 
@@ -90,7 +90,7 @@ def test_relative_imports_resolve_to_their_full_module_names() -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             resolved.update(_resolved_import_from(node, package))
-    assert resolved == {"yoetz.application", "yoetz.tui.widgets.style"}
+    assert resolved == {"finishup.application", "finishup.tui.widgets.style"}
 
 
 def test_rendering_stays_pure_text_with_no_rendering_framework() -> None:
@@ -137,4 +137,4 @@ def test_no_module_in_the_interface_reads_a_secret_directly() -> None:
 @pytest.mark.parametrize("module", ["render.py", "models.py", "commands.py", "text.py"])
 def test_the_pure_modules_import_nothing_from_the_widget_tree(module: str) -> None:
     imported = _imported_modules(_TUI / module)
-    assert not any(name.startswith("yoetz.tui.widgets") for name in imported)
+    assert not any(name.startswith("finishup.tui.widgets") for name in imported)

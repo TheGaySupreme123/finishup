@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     acquire_session_lock,
     load_mapping,
     mapping_from_start_ids,
@@ -16,12 +16,12 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_observe
-from yoetz.domain.observation import ObservationSource
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
+from finishup.cli.observe_hooks import handle_claude_observe, handle_observe
+from finishup.domain.observation import ObservationSource
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
 
 
 @pytest.fixture(autouse=True)
@@ -47,9 +47,9 @@ def test_attribution_gap_without_child_alias_never_peeks_parent_delivery(
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
-            yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=new_id(IdKind.SESSION),
-            yoetz_writer_id=new_id(IdKind.WRITER),
+            finishup_task_id=new_id(IdKind.TASK),
+            finishup_session_id=new_id(IdKind.SESSION),
+            finishup_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),
         _state=tmp_path,
@@ -67,7 +67,7 @@ def test_attribution_gap_without_child_alias_never_peeks_parent_delivery(
     payload = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__plugin_yoetz_yoetz__check",
+        "tool_name": "mcp__plugin_finishup_finishup__check",
         "tool_use_id": "child-check-call",
         "success": False,
     }
@@ -86,7 +86,9 @@ def test_attribution_gap_without_child_alias_never_peeks_parent_delivery(
         == 0
     )
 
-    assert peeks == ([] if attribution_gap else ["frontier", "advice"])
+    # The hook never peeks frontier motion any more: observation-only motion is not a
+    # notice (#915), so only the advice channel is consulted.
+    assert peeks == ([] if attribution_gap else ["advice"])
 
 
 @pytest.mark.parametrize("child_signal", ["unmapped_agent", "foreign_result", "failed_request"])
@@ -106,9 +108,9 @@ def test_unbound_child_callbacks_never_use_parent_delivery(
     store.bind_codex_session(workspace, parent_lane)
     parent = mapping_from_start_ids(
         codex_session_id=parent_lane,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
@@ -125,7 +127,7 @@ def test_unbound_child_callbacks_never_use_parent_delivery(
     payload: dict[str, object] = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "shell" if is_codex else "mcp__plugin_yoetz_yoetz__check",
+        "tool_name": "shell" if is_codex else "mcp__plugin_finishup_finishup__check",
         "tool_use_id": "unbound-child-call",
         "success": True,
     }
@@ -174,16 +176,16 @@ def test_standalone_start_in_child_preserves_parent_route(
     host_session = "standalone-shared-host"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
     next_task = new_id(IdKind.TASK)
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,
@@ -202,7 +204,7 @@ def test_standalone_start_in_child_preserves_parent_route(
     after = load_mapping(host_session, _state=tmp_path)
     if child_identity is None:
         assert outcome == "bound"
-        assert after is not None and after.yoetz_task_id == next_task
+        assert after is not None and after.finishup_task_id == next_task
     else:
         assert outcome in {"bound", "start_bind_child_lane_unbound"}
         assert after == parent
@@ -219,9 +221,9 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
     store.bind_codex_session(workspace, parent_lane)
     parent = mapping_from_start_ids(
         codex_session_id=parent_lane,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     store_mapping(parent, _state=tmp_path)
@@ -229,7 +231,7 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
     payload = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__plugin_yoetz_yoetz__start",
+        "tool_name": "mcp__plugin_finishup_finishup__start",
         "tool_use_id": "conflicting-child-start",
         "agent_id": "native-child-a",
         "tool_input": {"agent_id": "native-child-b"},
@@ -238,7 +240,7 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
                 "ok": True,
                 "outcome": "attached",
                 "task_id": child_task,
-                "parent_task_id": parent.yoetz_task_id,
+                "parent_task_id": parent.finishup_task_id,
                 "session_id": new_id(IdKind.SESSION),
                 "writer_id": new_id(IdKind.WRITER),
             }
@@ -274,16 +276,16 @@ def test_standalone_child_start_cannot_replace_a_locked_queued_parent(tmp_path: 
     host_session = "queued-standalone-shared-host"
     parent = mapping_from_start_ids(
         codex_session_id=host_session,
-        yoetz_task_id=new_id(IdKind.TASK),
-        yoetz_session_id=new_id(IdKind.SESSION),
-        yoetz_writer_id=new_id(IdKind.WRITER),
+        finishup_task_id=new_id(IdKind.TASK),
+        finishup_session_id=new_id(IdKind.SESSION),
+        finishup_writer_id=new_id(IdKind.WRITER),
         last_frontier="0:genesis",
     )
     queue_mapping_store(parent, _state=tmp_path)
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
         "agent_id": "queued-standalone-child",
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,

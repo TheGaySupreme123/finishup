@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,20 +27,39 @@ from tests.builders.privacy_receipts import (
     network_receipt_view,
 )
 
-from yoetz.application.privacy_control import build_privacy_support_handlers
-from yoetz.domain.privacy import _PURPOSE  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlMethod, ControlResult
-from yoetz.ports.privacy import (
+from finishup.application.privacy_control import build_privacy_support_handlers
+from finishup.domain.privacy import (
+    _PURPOSE,  # pyright: ignore[reportPrivateUsage]
+    MAX_RECEIPT_FINAL_BYTES,
+    MAX_RECEIPT_FINAL_BYTES_1_0,
+    ReceiptSecretScanStage,
+)
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlError, ControlMethod, ControlResult
+from finishup.ports.privacy import (
+    LocalDisclosureReceiptView,
+    NetworkEgressReceiptView,
     PrivacyReceiptAudience,
     PrivacyReceiptPage,
     PrivacyReceiptQuery,
     PrivacyReceiptView,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.client import ListPrivacyReceiptsRequest
-from yoetz.service.control_protocol import validate_result
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.client import (
+    ListPrivacyReceiptsRequest,
+    PrivacyReceiptFound,
+    _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
+    _receipt_page_from_wire,  # pyright: ignore[reportPrivateUsage]
+    _receipt_view_from_wire,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.service.control_protocol import (
+    decode_control_frame,
+    encode_control_frame,
+    parse_control_result,
+    public_error_code_for_control_reason,
+    validate_result,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -50,14 +70,20 @@ _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 
 
 class _Audit:
-    def __init__(self, *views: PrivacyReceiptView, next_cursor: str | None = None) -> None:
+    def __init__(
+        self,
+        *views: PrivacyReceiptView,
+        next_cursor: str | None = None,
+        undecodable: tuple[int, tuple[str, ...]] = (0, ()),
+    ) -> None:
         self._views = views
         self._next_cursor = next_cursor
+        self._undecodable = undecodable
 
     async def list_receipts(
         self, _query: PrivacyReceiptQuery, _audience: PrivacyReceiptAudience
     ) -> PrivacyReceiptPage:
-        return PrivacyReceiptPage(11, self._views, self._next_cursor)
+        return PrivacyReceiptPage(11, self._views, self._next_cursor, *self._undecodable)
 
     async def get_receipt(
         self, receipt_id: str, _audience: PrivacyReceiptAudience
@@ -71,9 +97,11 @@ class _App:
 
 
 def _handlers(
-    *views: PrivacyReceiptView, next_cursor: str | None = None
+    *views: PrivacyReceiptView,
+    next_cursor: str | None = None,
+    undecodable: tuple[int, tuple[str, ...]] = (0, ()),
 ) -> dict[ControlMethod, Any]:
-    app = _App(_Audit(*views, next_cursor=next_cursor))
+    app = _App(_Audit(*views, next_cursor=next_cursor, undecodable=undecodable))
     return dict(build_privacy_support_handlers(app))  # type: ignore[arg-type]
 
 
@@ -105,8 +133,9 @@ async def _list(
     *views: PrivacyReceiptView,
     next_cursor: str | None = None,
     cursor: str | None = None,
+    undecodable: tuple[int, tuple[str, ...]] = (0, ()),
 ) -> JsonObject:
-    handlers = _handlers(*views, next_cursor=next_cursor)
+    handlers = _handlers(*views, next_cursor=next_cursor, undecodable=undecodable)
     request = ListPrivacyReceiptsRequest(cursor=cursor)
     body = await handlers[ControlMethod.PRIVACY_RECEIPTS_LIST](
         dict(request._wire())  # pyright: ignore[reportPrivateUsage]
@@ -276,9 +305,186 @@ def test_the_wire_still_refuses_purposes_the_domain_refuses(purpose: str) -> Non
 
 
 def _plain(view: PrivacyReceiptView) -> dict[str, Any]:
-    from yoetz.application.privacy_control import encode_privacy_receipt_view
-    from yoetz.protocol.canonical import canonical_encode, strict_json_parse
+    from finishup.application.privacy_control import encode_privacy_receipt_view
+    from finishup.protocol.canonical import canonical_encode, strict_json_parse
 
     return cast(
         dict[str, Any], strict_json_parse(canonical_encode(encode_privacy_receipt_view(view)))
     )
+
+
+def test_released_v1_receipt_view_omits_additive_scan_and_withheld_fields() -> None:
+    wire = _plain(network_receipt_view())
+    receipt = cast(dict[str, Any], wire["receipt"])
+    scan = cast(dict[str, Any], receipt["secret_scan"])
+
+    assert "stage" not in scan
+    assert "not_run_reason" not in scan
+    assert "withheld_item_ids" not in receipt
+    assert "withheld_item_reason" not in receipt
+    validate_schema_instance("egress-receipt", "1.0.0", receipt)
+
+
+@pytest.mark.parametrize(
+    ("match_count", "passed"),
+    [(0, True), (0, False), (2, False)],
+    ids=["legacy_clean", "legacy_blocked_zero", "legacy_matches"],
+)
+def test_stage_less_receipts_preserve_legacy_scan_uncertainty(
+    match_count: int, passed: bool
+) -> None:
+    wire = _plain(network_receipt_view())
+    receipt = cast(dict[str, Any], wire["receipt"])
+    scan = cast(dict[str, Any], receipt["secret_scan"])
+    scan.pop("stage", None)
+    scan["match_count"] = str(match_count)
+    scan["passed"] = passed
+
+    decoded = _receipt_view_from_wire(cast(JsonObject, freeze_json(cast(Any, wire))))
+    assert decoded.receipt.secret_scan.stage is ReceiptSecretScanStage.LEGACY_UNKNOWN
+    assert decoded.receipt.secret_scan.match_count == match_count
+    assert decoded.receipt.secret_scan.passed is passed
+
+
+def _at_final_bytes(view: PrivacyReceiptView, final_bytes: int) -> PrivacyReceiptView:
+    receipt = view.receipt
+    counts = replace(receipt.counts, final_bytes=final_bytes)
+    if isinstance(view, NetworkEgressReceiptView):
+        return NetworkEgressReceiptView("network_egress", replace(view.receipt, counts=counts))
+    assert isinstance(view, LocalDisclosureReceiptView)
+    return LocalDisclosureReceiptView("local_disclosure", replace(view.receipt, counts=counts))
+
+
+@pytest.mark.parametrize(
+    ("version", "definition", "bound"),
+    [
+        ("1.0.0", "max_262144_decimal", MAX_RECEIPT_FINAL_BYTES_1_0),
+        # #1118: unreleased 1.1.0 widened in place to the outbound-document bound.
+        ("1.1.0", "max_524288_decimal", MAX_RECEIPT_FINAL_BYTES),
+    ],
+)
+def test_the_domain_final_bytes_bound_is_the_published_wire_bound(
+    version: str, definition: str, bound: int
+) -> None:
+    """Issue #921: the domain admitted 512 KiB while the wire stopped at 262,144."""
+
+    outbound = json.loads(
+        (_SCHEMA_ROOT / "privacy" / "outbound-case-1.0.0.schema.json").read_bytes()
+    )
+    egress = json.loads(
+        (_SCHEMA_ROOT / "privacy" / f"egress-receipt-{version}.schema.json").read_bytes()
+    )
+    wire = re.compile(outbound["$defs"][definition]["pattern"])
+
+    assert egress["$defs"]["counts"]["properties"]["final_bytes"] == {
+        "$ref": f"#/$defs/{definition}"
+    }
+    assert wire.fullmatch(str(bound)) is not None
+    assert wire.fullmatch(str(bound + 1)) is None
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        replace(local_receipt_view().receipt.counts, final_bytes=MAX_RECEIPT_FINAL_BYTES + 1)
+    # A released 1.0 receipt never carries more than its vocabulary admits.
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        _at_final_bytes(local_receipt_view(), MAX_RECEIPT_FINAL_BYTES_1_0 + 1)
+
+
+@pytest.mark.parametrize(
+    "view",
+    [local_receipt_view(), network_receipt_view()],
+    ids=["local", "network"],
+)
+async def test_a_receipt_at_the_final_bytes_maximum_round_trips(view: PrivacyReceiptView) -> None:
+    maximal = _at_final_bytes(view, MAX_RECEIPT_FINAL_BYTES_1_0)
+
+    fetched = await _get(maximal, maximal.receipt.receipt_id)
+    listed = await _list(maximal)
+
+    found = _receipt_get_from_wire(fetched)
+    assert isinstance(found, PrivacyReceiptFound)
+    # The released v1.0 shape has no stage field. Its reader therefore preserves the historical
+    # uncertainty marker rather than manufacturing PREPARED_CASE on the way back.
+    expected_scan = replace(
+        maximal.receipt.secret_scan, stage=ReceiptSecretScanStage.LEGACY_UNKNOWN
+    )
+    if isinstance(maximal, NetworkEgressReceiptView):
+        expected: PrivacyReceiptView = NetworkEgressReceiptView(
+            "network_egress", replace(maximal.receipt, secret_scan=expected_scan)
+        )
+    else:
+        expected = LocalDisclosureReceiptView(
+            "local_disclosure", replace(maximal.receipt, secret_scan=expected_scan)
+        )
+    assert found.receipt == expected
+    assert _receipt_page_from_wire(listed).receipts == (expected,)
+
+
+async def test_a_partial_page_passes_the_envelope_with_its_count_and_ids() -> None:
+    skipped = "egr_70000000-0000-4000-8000-00000000000b"
+
+    body = await _list(network_receipt_view(), local_receipt_view(), undecodable=(2, (skipped,)))
+
+    assert body["undecodable_count"] == "2"
+    assert body["undecodable_receipt_ids"] == (skipped,)
+    page = _receipt_page_from_wire(body)
+    assert (page.undecodable_count, page.undecodable_receipt_ids) == (2, (skipped,))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"undecodable_count": "1"},
+        {"undecodable_receipt_ids": []},
+        {"undecodable_count": "0", "undecodable_receipt_ids": []},
+        {"undecodable_count": "101", "undecodable_receipt_ids": []},
+        {
+            "undecodable_count": "1",
+            "undecodable_receipt_ids": ["req_70000000-0000-4000-8000-00000000000b"],
+        },
+    ],
+    ids=["count_alone", "ids_alone", "zero_count", "over_page", "not_a_receipt_id"],
+)
+def test_the_partial_page_fields_are_closed(extra: dict[str, Any]) -> None:
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance(
+            "control-result",
+            "2.9.0",
+            {
+                "protocol_version": "1.0",
+                "rpc_id": _RPC_ID,
+                "service_instance_id": _INSTANCE_ID,
+                "service_generation": "1",
+                "method": "privacy_receipts_list",
+                "outcome": "ok",
+                "body": {
+                    "schema_version": "1.0.0",
+                    "snapshot_generation": "3",
+                    "receipts": [],
+                    **extra,
+                },
+            },
+        )
+
+
+def test_the_store_side_reason_is_a_closed_non_retryable_wire_code() -> None:
+    correlation_id = "err_70000000-0000-4000-8000-00000000000c"
+    result = ControlResult(
+        protocol_version="1.0",
+        rpc_id=_RPC_ID,
+        service_instance_id=_INSTANCE_ID,
+        service_generation="1",
+        method=ControlMethod.PRIVACY_RECEIPTS_LIST,
+        outcome="error",
+        body=ControlError("privacy_audit_unreadable", correlation_id=correlation_id),
+    )
+
+    parsed = parse_control_result(decode_control_frame(encode_control_frame(result)))
+
+    assert isinstance(parsed.body, ControlError)
+    assert parsed.body.reason == "privacy_audit_unreadable"
+    assert parsed.body.retryable is False
+    assert parsed.body.correlation_id == correlation_id
+    assert public_error_code_for_control_reason("privacy_audit_unreadable") is (
+        PublicErrorCode.STORAGE_CORRUPT
+    )
+    with pytest.raises(ValueError, match="privacy_audit_unreadable_must_not_be_retryable"):
+        ControlError("privacy_audit_unreadable", retryable=True)

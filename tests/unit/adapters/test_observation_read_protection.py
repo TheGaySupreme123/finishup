@@ -6,19 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationCursor,
     ObservationEnvelope,
     ObservationRevokeCommand,
     ObservationSource,
 )
-from yoetz.domain.observation_read_protection import (
+from finishup.domain.observation_read_protection import (
     MAX_READ_PROTECTION_COUNT,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import ProtocolValueError
 
 _REFERENCE = "clm_00000000-0000-4000-8000-000000000001"
 _REFERENCE_TWO = "fnd_00000000-0000-4000-8000-000000000002"

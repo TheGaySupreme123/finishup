@@ -1,0 +1,29 @@
+{
+  "name": "yoetz",
+  "version": "0.3.0",
+  "description": "Deprecated name of the finishup launcher. Delegates to the transitional Python yoetz distribution via uv; installs nothing itself.",
+  "private": false,
+  "license": "Apache-2.0",
+  "author": "Shay Ben Shabtay",
+  "homepage": "https://finishup.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TheGaySupreme123/finishup.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TheGaySupreme123/finishup/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "yoetz": "./bin/yoetz.js"
+  },
+  "files": [
+    "bin/yoetz.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

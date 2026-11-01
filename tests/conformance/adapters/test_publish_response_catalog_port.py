@@ -11,14 +11,17 @@ import anyio
 import apsw
 import pytest
 
-from yoetz.adapters.memory.start_catalog import MemoryStartCatalogAdapter, MemoryStartCatalogState
-from yoetz.adapters.sqlite.migrations import initialize_catalog
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.domain.privacy import LocalDisclosureSink
-from yoetz.ports.publish_response_catalog import PublishResponseKey, StoredPublishResponse
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.adapters.memory.start_catalog import (
+    MemoryStartCatalogAdapter,
+    MemoryStartCatalogState,
+)
+from finishup.adapters.sqlite.migrations import initialize_catalog
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.domain.privacy import LocalDisclosureSink
+from finishup.ports.publish_response_catalog import PublishResponseKey, StoredPublishResponse
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
 
 
 class _Ids:

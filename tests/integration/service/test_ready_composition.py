@@ -15,47 +15,55 @@ from typing import Any, Protocol, cast
 import apsw
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
-import yoetz.adapters.sqlite.recovery as recovery_module
-import yoetz.service.ready_composition as ready_composition_module
+import finishup.adapters.sqlite.connection as connection_module
+import finishup.adapters.sqlite.recovery as recovery_module
+import finishup.service.ready_composition as ready_composition_module
 from builders.privacy_policies import local_only_policy, minimal_external_policy
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.sqlite.connection import open_catalog_writer
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.sqlite.connection import open_catalog_writer
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     CATALOG_MIGRATIONS,
     Migration,
     initialize_catalog,
 )
-from yoetz.application.service import ClientProjectionContext, ControlProjectionBinding
-from yoetz.config.models import VerificationConfig, YoetzConfig
-from yoetz.config.write import fireworks_provider
-from yoetz.domain.host_lineage import host_lineage_from_payload
-from yoetz.domain.observation import (
+from finishup.application.service import ClientProjectionContext, ControlProjectionBinding
+from finishup.config.models import FinishUpConfig, ObservationConfig, VerificationConfig
+from finishup.config.write import fireworks_provider
+from finishup.domain.host_lineage import host_lineage_from_payload
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestRequest,
     ObservationLifecycle,
     ObservationSource,
+    ObservationStatus,
+    ObservationStatusQuery,
     observation_ingest_request_to_json,
 )
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind
-from yoetz.domain.values import (
+from finishup.domain.privacy import (
+    AuthorizationScope,
+    AuthorizationScopeKind,
+    ConversationReview,
+    EgressChannel,
+    PrivacyPolicy,
+)
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     format_rfc3339_millis,
     task_id,
     timestamp_from_datetime,
 )
-from yoetz.kernel.policies.observation_advice import (
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     ObservationCompositionFact,
     observation_advice_findings,
 )
-from yoetz.ports.control import (
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlMethod,
@@ -63,10 +71,10 @@ from yoetz.ports.control import (
     RepositoryPrivacyContext,
     ServiceState,
 )
-from yoetz.ports.diagnostics import StartupCheckResult
-from yoetz.ports.keys import BundleKeys, WrapKeyHandle
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.privacy import (
+from finishup.ports.diagnostics import StartupCheckResult
+from finishup.ports.keys import BundleKeys, WrapKeyHandle
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     LocalDisclosureReceiptView,
@@ -74,16 +82,16 @@ from yoetz.ports.privacy import (
     PrivacyAuditObjectRoots,
     PrivacyReceiptAudience,
 )
-from yoetz.ports.runtime import (
+from finishup.ports.runtime import (
     BundleProvisionCommand,
     OwnershipFence,
     RouteAccess,
 )
-from yoetz.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
-from yoetz.ports.start_catalog import TaskRoute, TaskRouteState
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
+from finishup.ports.start_catalog import TaskRoute, TaskRouteState
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     CheckResult,
     CheckSuccessModel,
@@ -91,7 +99,7 @@ from yoetz.protocol.models import (
     StartRequest,
     StartResult,
 )
-from yoetz.service.bundle_upgrade import (
+from finishup.service.bundle_upgrade import (
     BUNDLE_UPGRADE_TARGET_VERSION,
     BackupEvidence,
     BundleIntegrity,
@@ -100,15 +108,15 @@ from yoetz.service.bundle_upgrade import (
     BundleUpgradeReport,
     BundleUpgradeTarget,
 )
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import (
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import (
     IdPort,
     build_privacy_coordinator,
     build_ready_application_factory,
     open_ready_catalog,
 )
-from yoetz.service.vault import VaultMode, VaultService, provider_credential_profile_binding
+from finishup.service.vault import VaultMode, VaultService, provider_credential_profile_binding
 
 _INSTALLATION_ID = "ins_00000000-0000-4000-8000-000000000001"
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000002"
@@ -714,7 +722,7 @@ def test_legacy_spool_replay_stops_at_one_bounded_batch(
             yield (SimpleNamespace(event_name="PostToolUse", payload={"session_id": "s"}),)
 
     monkeypatch.setattr(ready_composition_module, "HookSpool", _Spool)
-    import yoetz.cli.observe_hooks as observe_hooks_module
+    import finishup.cli.observe_hooks as observe_hooks_module
 
     def handle_observe(**_kwargs: object) -> int:
         return 0
@@ -778,10 +786,19 @@ async def test_open_ready_catalog_transactionally_migrates_v2_before_runtime_use
         ids=IdPort(),
     )
     try:
-        assert catalog._db.execute("PRAGMA user_version").fetchone() == (5,)  # pyright: ignore[reportPrivateUsage]
+        assert catalog._db.execute("PRAGMA user_version").fetchone() == (7,)  # pyright: ignore[reportPrivateUsage]
         assert catalog._db.execute(  # pyright: ignore[reportPrivateUsage]
             "SELECT value FROM catalog_meta WHERE key = 'storage_schema_version'"
-        ).fetchone() == ("5",)
+        ).fetchone() == ("7",)
+        # #1239: migration 6 adds the abandonment reason beside the lineage row's deadline and
+        # migration 7 the declared and the implied quiet period's ends.
+        assert (
+            catalog._db.execute(  # pyright: ignore[reportPrivateUsage]
+                "SELECT abandonment_reason, quiet_until, implied_quiet_until "
+                "FROM lineage_task_meta LIMIT 1"
+            ).fetchone()
+            is None
+        )
         assert (
             catalog._db.execute(  # pyright: ignore[reportPrivateUsage]
                 "SELECT repository_privacy_commitment FROM task_routes LIMIT 1"
@@ -910,8 +927,8 @@ async def test_open_ready_catalog_seeds_generation_property(tmp_path: Path) -> N
 
 def test_ready_factory_synchronizes_observation_gate_from_loaded_config(tmp_path: Path) -> None:
     paths = _Paths(tmp_path)
-    disabled = YoetzConfig().model_copy(
-        update={"observation": YoetzConfig().observation.model_copy(update={"enabled": False})}
+    disabled = FinishUpConfig().model_copy(
+        update={"observation": FinishUpConfig().observation.model_copy(update={"enabled": False})}
     )
     build_ready_application_factory(
         lifecycle=object(),  # type: ignore[arg-type]
@@ -927,7 +944,7 @@ def test_ready_factory_synchronizes_observation_gate_from_loaded_config(tmp_path
     build_ready_application_factory(
         lifecycle=object(),  # type: ignore[arg-type]
         vault=object(),  # type: ignore[arg-type]
-        config=YoetzConfig(),
+        config=FinishUpConfig(),
         paths=paths,
         clock=object(),  # type: ignore[arg-type]
         secret_memory=object(),
@@ -980,7 +997,7 @@ async def test_startup_bundle_upgrade_precedes_lineage_and_runtime_composition(
             2,
             lifecycle=_StartupLifecycle(),
             vault=_Vault(),  # type: ignore[arg-type]
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=_Clock(),
             secret_memory=object(),
@@ -988,6 +1005,65 @@ async def test_startup_bundle_upgrade_precedes_lineage_and_runtime_composition(
         )
 
     assert events == ["upgrade", "lineage"]
+
+
+@pytest.mark.anyio
+async def test_installation_key_is_registered_before_the_startup_bundle_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1104: the projection fold reads the installation key (a passing planned verification
+    retires earlier observed failed-command findings), so a startup upgrade that replays or
+    rebuilds a task projection folds it exactly as the ready service later does."""
+
+    from finishup.kernel.task_facts import (
+        command_identity_key_registered,
+        register_command_identity_key,
+    )
+
+    seen: list[bool] = []
+
+    class _DB:
+        def close(self, *, force: bool = False) -> None:
+            assert force
+
+    class _Catalog:
+        _db = _DB()
+
+    class _Vault:
+        ready = True
+        generation = 2
+        _installation_id = _INSTALLATION_ID
+
+        def installation_mac_handle(self, _purpose: object) -> _Lookup:
+            return _Lookup()
+
+    async def open_catalog(_path: Path, **_kwargs: object) -> _Catalog:
+        return _Catalog()
+
+    async def upgrade(**_kwargs: object) -> None:
+        seen.append(command_identity_key_registered())
+        raise RuntimeError("stop_after_upgrade_probe")
+
+    monkeypatch.setattr(ready_composition_module, "ensure_owner_only_dir", _accept_private_path)
+    monkeypatch.setattr(ready_composition_module, "open_ready_catalog", open_catalog)
+    register_command_identity_key(None)
+    try:
+        with pytest.raises(RuntimeError, match="stop_after_upgrade_probe"):
+            await ready_composition_module.provide_service_ready_context(
+                1,
+                2,
+                lifecycle=_StartupLifecycle(),  # type: ignore[arg-type]
+                vault=_Vault(),  # type: ignore[arg-type]
+                config=FinishUpConfig(),
+                paths=_Paths(tmp_path),
+                clock=_Clock(),
+                secret_memory=object(),
+                startup_bundle_upgrade=upgrade,
+            )
+    finally:
+        register_command_identity_key(None)
+
+    assert seen == [True]
 
 
 @pytest.mark.anyio
@@ -1041,7 +1117,7 @@ async def test_startup_bundle_upgrade_failure_closes_catalog_and_blocks_ready_gr
             2,
             lifecycle=_StartupLifecycle(),
             vault=_Vault(),  # type: ignore[arg-type]
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=_Clock(),
             secret_memory=object(),
@@ -1101,7 +1177,7 @@ async def test_startup_bundle_upgrade_retry_reenters_before_ready_composition(
                 2,
                 lifecycle=_StartupLifecycle(),
                 vault=_Vault(),  # type: ignore[arg-type]
-                config=YoetzConfig(),
+                config=FinishUpConfig(),
                 paths=_Paths(tmp_path),
                 clock=_Clock(),
                 secret_memory=object(),
@@ -1310,7 +1386,7 @@ async def test_default_startup_bundle_upgrade_runs_real_effects_on_isolated_v12_
         upgrade = builder(
             lifecycle=_StartupLifecycle(),
             vault=_Vault(),  # type: ignore[arg-type]
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             secret_memory=object(),
         )
@@ -1382,7 +1458,7 @@ async def test_ready_factory_starts_and_reads_repository_bound_setup(tmp_path: P
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -1589,7 +1665,7 @@ async def test_create_then_attach_same_service_generation_advances_owner_once(
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -1607,7 +1683,7 @@ async def test_create_then_attach_same_service_generation_advances_owner_once(
             },
             "requested_view": "compact",
             "task_title": "Resume ownership regression",
-            "workspace_ref": "https://github.com/example/yoetz-core.git",
+            "workspace_ref": "https://github.com/example/finishup-core.git",
             "external_ref": "plan/fix-resumption-ownership",
         }
         created = await app.start(
@@ -1687,7 +1763,7 @@ async def test_ready_lineage_bootstraps_exact_durable_host_session_route(
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -1705,7 +1781,7 @@ async def test_ready_lineage_bootstraps_exact_durable_host_session_route(
             },
             "requested_view": "compact",
             "task_title": "READY host session bootstrap regression",
-            "workspace_ref": "https://github.com/example/yoetz-core.git",
+            "workspace_ref": "https://github.com/example/finishup-core.git",
             "external_ref": "plan/ready-host-session-bootstrap",
         }
         first = await app.start(
@@ -1740,9 +1816,9 @@ async def test_ready_lineage_bootstraps_exact_durable_host_session_route(
         store_mapping(
             mapping_from_start_ids(
                 codex_session_id=host_session_id,
-                yoetz_task_id=second.task_id,
-                yoetz_session_id=second.session_id,
-                yoetz_writer_id=second.writer_id,
+                finishup_task_id=second.task_id,
+                finishup_session_id=second.session_id,
+                finishup_writer_id=second.writer_id,
                 last_frontier=None,
             ),
             _state=tmp_path / "state",
@@ -1785,7 +1861,7 @@ async def test_ready_lineage_bootstraps_exact_durable_host_session_route(
         recomposed_factory = build_ready_application_factory(
             lifecycle=recomposed_lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -1881,7 +1957,7 @@ async def test_attach_failure_before_ownership_commit_leaves_meta_and_runtime(
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -1899,7 +1975,7 @@ async def test_attach_failure_before_ownership_commit_leaves_meta_and_runtime(
             },
             "requested_view": "compact",
             "task_title": "Ownership failure atomicity",
-            "workspace_ref": "https://github.com/example/yoetz-core.git",
+            "workspace_ref": "https://github.com/example/finishup-core.git",
             "external_ref": "plan/ownership-failure-atomicity",
         }
         created = await app.start(
@@ -2010,7 +2086,7 @@ async def test_stale_recovery_state_cas_loser_mutates_nothing(tmp_path: Path) ->
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -2117,7 +2193,7 @@ async def test_ready_factory_completes_and_projects_deterministic_check(tmp_path
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -2264,7 +2340,7 @@ async def test_ready_factory_completes_and_projects_deterministic_check(tmp_path
                 },
                 "mode": "deterministic_only",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
         checked = await app.check(check_request)
@@ -2342,7 +2418,7 @@ async def test_daemon_unlock_installs_real_application_and_dispatches_start(
     factory = build_ready_application_factory(
         lifecycle=lifecycle,
         vault=vault,
-        config=YoetzConfig(),
+        config=FinishUpConfig(),
         paths=_Paths(tmp_path),
         clock=clock,
         secret_memory=memory,
@@ -2409,12 +2485,30 @@ async def test_daemon_unlock_installs_real_application_and_dispatches_start(
         await daemon.close()
 
 
+def _work_has_begun(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review paths below need a dispatching review; the sessions record no edit.
+
+    Issue #1046 defers the AI-powered review (with its grant and admission checks) until the first
+    material edit; that decision is locked by
+    ``tests/integration/application/test_tb4n4_review_before_first_edit.py``.
+    """
+
+    import finishup.application.check as check_module
+
+    def edited(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(check_module, "material_edit_recorded", edited)
+
+
 @pytest.mark.anyio
 async def test_ready_factory_deterministic_check_records_semantic_not_requested_gap(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Local-only checks under ready composition advertise the not-requested gap."""
 
+    _work_has_begun(monkeypatch)
     tmp_path.chmod(0o700)
     clock = _Clock()
     memory = LocalSecretMemory()
@@ -2442,7 +2536,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(tmp_path),
             clock=clock,
             secret_memory=memory,
@@ -2517,7 +2611,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "deterministic_only",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2544,7 +2638,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                         "head_digest": frontier.head_digest,
                     },
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2574,7 +2668,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "semantic_required",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2604,7 +2698,7 @@ async def test_ready_factory_deterministic_check_records_semantic_not_requested_
                     },
                     "mode": "deterministic_only",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )
@@ -2652,9 +2746,9 @@ async def test_ready_composition_reports_exact_configured_credential_presence(
     initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
     await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(profile="local-openai", provider=provider)
+    config = FinishUpConfig(profile="local-openai", provider=provider)
 
-    def application_factory(provider_config: YoetzConfig):
+    def application_factory(provider_config: FinishUpConfig):
         return build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
@@ -2700,9 +2794,29 @@ async def test_ready_composition_reports_exact_configured_credential_presence(
         app = None
 
         other_provider = fireworks_provider(model="accounts/fireworks/models/a-different-model")
-        other_config = YoetzConfig(profile="local-openai", provider=other_provider)
+        other_config = FinishUpConfig(profile="local-openai", provider=other_provider)
         app = await application_factory(other_config)(1, vault.generation)
         assert app.provider_credential_connected is False
+        await app.close()
+        app = None
+
+        removal = HumanAuthorizationProof(
+            "provider-proof-for-removal",
+            "provider_credential_remove",
+            credential_binding.target_digest("remove"),
+            1,
+            vault.generation,
+            None,
+            1.0,
+            60.0,
+        )
+        await vault.remove_provider_credential(credential_binding, removal, 3.0)
+        app = await application_factory(config)(1, vault.generation)
+        assert app.provider_credential_connected is False
+        assert config.provider == provider
+        await app.close()
+        app = None
+
     finally:
         if app is not None:
             await app.close()
@@ -2752,7 +2866,7 @@ async def test_observation_provider_fact_tracks_live_credential_within_one_gener
     initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
     await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai" if provider_bound else "strict-local",
         provider=provider if provider_bound else None,
         verification=VerificationConfig(semantic="required" if review_enabled else "disabled"),
@@ -2886,11 +3000,92 @@ async def test_observation_provider_fact_tracks_live_credential_within_one_gener
         await lifecycle.close()
 
 
+class _AdviceStore:
+    """The observation-store slice the advice builder and scheduler touch (#923)."""
+
+    def __init__(self, repository: object, workspace: str) -> None:
+        self.repository = repository
+        self.workspace = workspace
+        self.failures = 1
+
+    def list_envelopes(self, workspace: str) -> tuple[ObservationEnvelope, ...]:
+        assert workspace == self.workspace
+        return tuple(
+            ObservationEnvelope(
+                session_commitment=self.workspace,
+                event_kind="PostToolUse",
+                source_identity=f"hook:fail-{index}",
+                source=ObservationSource.CODEX_HOOK,
+                cursor=ObservationCursor(
+                    source_generation=1,
+                    byte_position=(index + 1) * 8,
+                    event_position=index + 1,
+                    last_source_commitment=self.workspace,
+                    mapping_version="codex-obs-hook/1.0.0",
+                ),
+                receipt_time=timestamp_from_datetime(_Clock().now_utc()),
+                structural_payload=JsonObject(
+                    {
+                        "tool_name": "shell",
+                        "exit_status": 1,
+                        "correlation_id": f"hook:fail-{index}",
+                    }
+                ),
+                content_object_refs=(),
+                gap_codes=(),
+            )
+            for index in range(self.failures)
+        )
+
+    async def status(self, query: ObservationStatusQuery) -> ObservationStatus:
+        assert query.workspace_commitment == self.workspace
+        return ObservationStatus(
+            ObservationLifecycle.ACTIVE,
+            self.workspace,
+            {},
+            timestamp_from_datetime(_Clock().now_utc()),
+            0,
+            (),
+            (),
+            None,
+        )
+
+    def load_advice_snapshot(self, workspace: str) -> None:
+        return None
+
+    def advice_semantic_repository(self) -> object:
+        return self.repository
+
+
 @pytest.mark.anyio
-async def test_ready_check_never_activates_provider_from_machine_policy_without_repository_grant(
+@pytest.mark.parametrize("provider_bound", [False, True])
+async def test_background_advice_is_admitted_only_while_a_provider_is_usable(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider_bound: bool,
 ) -> None:
-    """A configured provider and machine policy never outrun exact repository authority."""
+    """Arm B of #923: required review, no provider, no LLM egress wrote a row per candidate.
+
+    The real composition must write no advice row and report no pending gap while no provider
+    is usable, drain rows an older service queued without provider work, admit advice once the
+    provider, credential and channel are all live, and stop again when any one goes away, all
+    within one service generation.
+    """
+
+    from finishup.adapters.sqlite.migrations import initialize_bundle
+    from finishup.adapters.sqlite.observation_advice_semantic import (
+        SqliteObservationAdviceSemanticRepository,
+    )
+    from finishup.application.observation_advice import (
+        ADVICE_SEMANTIC_PENDING_GAP,
+        ADVICE_SEMANTIC_UNAVAILABLE_GAP,
+        ObservationAdviceContextBuilder,
+    )
+    from finishup.application.observation_advice_semantic import (
+        ObservationAdviceSemanticAttempt,
+        ObservationAdviceSemanticOutcome,
+        ObservationAdviceSemanticScheduler,
+    )
 
     tmp_path.chmod(0o700)
     clock = _Clock()
@@ -2915,7 +3110,593 @@ async def test_ready_check_never_activates_provider_from_machine_policy_without_
     initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
     await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(profile="local-openai", provider=provider)
+    # The benchmark's arm B: review required by default, nothing bound, local-only policy. The
+    # owner's explicit ``true`` keeps background advice on whatever the default (#888).
+    config = FinishUpConfig(
+        profile="local-openai" if provider_bound else "strict-local",
+        provider=provider if provider_bound else None,
+        verification=VerificationConfig(semantic="required"),
+        observation=ObservationConfig(semantic_advice_enabled=True),
+    )
+    factory = build_ready_application_factory(
+        lifecycle=lifecycle,
+        vault=vault,
+        config=config,
+        paths=_Paths(tmp_path),
+        clock=clock,
+        secret_memory=memory,
+        diagnostics=_Diagnostics(),
+    )
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": "tsk_advice", "owner_generation": "1"})
+    repository = SqliteObservationAdviceSemanticRepository(db)
+    workspace = "hmac-sha256:" + "a" * 64
+    session = "ses_00000000-0000-4000-8000-000000000923"
+    store = _AdviceStore(repository, workspace)
+
+    def rows() -> list[tuple[str, str | None]]:
+        return [
+            (str(row[0]), None if row[1] is None else str(row[1]))
+            for row in db.execute(
+                "SELECT status, failure_reason FROM observation_advice_semantic_attempts "
+                "ORDER BY state_token"
+            )
+        ]
+
+    app = None
+    try:
+        context = await factory.context_provider(1, vault.generation)
+        assert context.rediscover_pending_verification is not None
+        coordinator: object = getattr(context.rediscover_pending_verification, "__self__")
+        scheduler = getattr(coordinator, "advice_context_builder").semantic_scheduler
+        # The owner's switches still enable advice; readiness is what keeps it from running.
+        assert type(scheduler) is ObservationAdviceSemanticScheduler
+        dispatch = cast(
+            Callable[
+                [ObservationAdviceSemanticAttempt], Awaitable[ObservationAdviceSemanticOutcome]
+            ],
+            getattr(coordinator, "advice_semantic_dispatch"),
+        )
+        builder = ObservationAdviceContextBuilder(semantic_scheduler=scheduler)
+        app = await factory.open(context)
+
+        async def build(failures: int) -> tuple[str, ...]:
+            store.failures = failures
+            snapshot = await builder.build(workspace, store, finishup_session_id=session)  # type: ignore[arg-type]
+            assert snapshot is not None
+            return snapshot.confidence_coverage.known_gaps
+
+        # Arm B: many distinct advice candidates over a busy session.
+        for failures in range(1, 9):
+            gaps = await build(failures)
+            assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+            assert gaps.count(ADVICE_SEMANTIC_UNAVAILABLE_GAP) == 1
+        assert rows() == []
+
+        # A row an older service queued without a provider drains with no provider work (it
+        # would otherwise stop at the unresolved route as authorization_missing and retry).
+        legacy = repository.schedule(
+            workspace=workspace,
+            finishup_session_id=session,
+            basis_digest="legacy-identity",
+            subject_digest="sha256:" + "c" * 64,
+            coverage_gaps=(),
+            packet_json=b"{}",
+            enqueued_at="2026-07-21T17:00:00.000Z",
+            max_pending=16,
+        )
+        assert type(legacy) is ObservationAdviceSemanticAttempt
+        assert await dispatch(legacy) == ObservationAdviceSemanticOutcome(
+            status="unavailable", failure_reason="provider_unavailable"
+        )
+        db.execute("DELETE FROM observation_advice_semantic_attempts")
+
+        # The owner enables LLM inference and stores the credential in this same generation.
+        policy_app = app.privacy.policy_application
+        assert policy_app is not None
+        scope = AuthorizationScope(AuthorizationScopeKind.MACHINE, _INSTALLATION_ID)
+        current_policy = replace(minimal_external_policy(), effective_scope=scope)
+
+        async def effective_policy(
+            policy_store: object, requested: AuthorizationScope
+        ) -> EffectivePrivacyPolicy:
+            assert policy_store is policy_app.policy_store
+            assert requested == scope
+            return EffectivePrivacyPolicy(current_policy, 2, current_policy.policy_digest)
+
+        monkeypatch.setattr(type(policy_app.policy_store), "effective_policy", effective_policy)
+        credential_binding = provider_credential_profile_binding(
+            provider.provider_id,
+            provider.model,
+            provider.endpoint_profile_id,
+            provider.endpoint_profile_version,
+        )
+        proof = HumanAuthorizationProof(
+            "provider-proof-advice-readiness",
+            "provider_credential_set",
+            credential_binding.target_digest("set"),
+            1,
+            vault.generation,
+            None,
+            1.0,
+            60.0,
+        )
+        credential = memory.capture(
+            SecretPurpose.PROVIDER_CREDENTIAL, bytearray(b"test-provider-token-advice")
+        )
+        await vault.store_provider_credential("set", credential_binding, credential, proof, 2.0)
+
+        # The session has no task route yet, so nothing could reach a provider (route leg).
+        gaps = await build(9)
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+        assert rows() == []
+        if not provider_bound:
+            # Channel and credential alone never make an unbound install reach a provider.
+            return
+
+        # An ACTIVE route whose repository authority is not granted still reaches nothing.
+        commitment = "hmac-sha256:" + "b" * 64
+        route = replace(
+            _runtime_route(), session_id=session, repository_privacy_commitment=commitment
+        )
+        grant = "missing"
+
+        async def resolve_route(_catalog: object, session_id: str) -> TaskRoute | None:
+            return route if session_id == session else None
+
+        repository_policy: PrivacyPolicy | None = None
+
+        async def repository_authority(_store: object, requested: AuthorizationScope) -> object:
+            assert requested.kind is AuthorizationScopeKind.TASK
+            assert requested.workspace_ref_commitment == commitment
+            return SimpleNamespace(
+                grant_state=grant,
+                effective=SimpleNamespace(policy=repository_policy or current_policy),
+            )
+
+        monkeypatch.setattr(type(app.start_catalog), "resolve_route", resolve_route)
+        monkeypatch.setattr(
+            type(policy_app.policy_store), "repository_authority", repository_authority
+        )
+        gaps = await build(10)
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert rows() == []
+
+        grant = "granted"
+        # A granted repository authority whose LLM channel is open but does not name this exact
+        # provider binding, or does not allow the semantic-review purpose, would be refused by
+        # the egress gateway at dispatch; admission must refuse it too (#923 review 938-R1).
+        granted_llm = next(
+            item
+            for item in current_policy.channel_policies
+            if item.channel is EgressChannel.LLM_INFERENCE
+        )
+        assert granted_llm.provider_binding is not None
+        foreign_binding = replace(granted_llm.provider_binding, model_id="another-model")
+        for narrowed in (
+            replace(granted_llm, provider_binding=foreign_binding),
+            replace(granted_llm, allowed_purposes=("package-update-check",)),
+        ):
+            repository_policy = replace(
+                current_policy,
+                channel_policies=tuple(
+                    narrowed if item.channel is EgressChannel.LLM_INFERENCE else item
+                    for item in current_policy.channel_policies
+                ),
+            )
+            gaps = await build(21 if narrowed.provider_binding == foreign_binding else 22)
+            assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+            assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+            assert rows() == []
+        # ADR-049 review round 1: a repository whose tasks start local admits no advice either
+        # (the dispatch refuses it), so the hybrid writes no row that ends authorization_missing.
+        for setting in (ConversationReview.LOCAL_AGENT_OPT_IN, ConversationReview.LOCAL_ONLY):
+            repository_policy = replace(current_policy, conversation_review=setting)
+            gaps = await build(23 if setting is ConversationReview.LOCAL_ONLY else 24)
+            assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+            assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+            assert rows() == []
+        repository_policy = None
+
+        gaps = await build(11)
+        assert ADVICE_SEMANTIC_PENDING_GAP in gaps
+        assert ADVICE_SEMANTIC_UNAVAILABLE_GAP not in gaps
+        assert rows() == [("pending", None)]
+
+        # Disabling the channel stops admission at once; so does a discarded credential.
+        current_policy = replace(local_only_policy(), effective_scope=scope)
+        gaps = await build(12)
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+        current_policy = replace(minimal_external_policy(), effective_scope=scope)
+        await vault.discard_provider_credential(credential_binding)
+        gaps = await build(13)
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert rows() == [("pending", None)]
+    finally:
+        db.close()
+        if app is not None:
+            await app.close()
+        await vault.close()
+        memory.close()
+        await lifecycle.close()
+
+
+@pytest.mark.anyio
+async def test_background_advice_readiness_follows_the_primary_only_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background advice dispatches only to the primary binding, so admission reads only it.
+
+    Review 938-R2 of #923: with a declared fallback pairing (#582), an unusable primary and a
+    credentialed, authorized fallback, the explicit check may engage the fallback, but the
+    background dispatch never does. Admission must agree with that dispatch: no row, the
+    unavailable gap, and a queued row closing ``provider_unavailable`` with no provider work.
+    """
+
+    from finishup.adapters.providers.codex_app_server import codex_binding_from_config
+    from finishup.adapters.providers.openai_responses_factory import provider_binding_from_config
+    from finishup.adapters.sqlite.migrations import initialize_bundle
+    from finishup.adapters.sqlite.observation_advice_semantic import (
+        SqliteObservationAdviceSemanticRepository,
+    )
+    from finishup.application.observation_advice import (
+        ADVICE_SEMANTIC_PENDING_GAP,
+        ADVICE_SEMANTIC_UNAVAILABLE_GAP,
+        ObservationAdviceContextBuilder,
+    )
+    from finishup.application.observation_advice_semantic import (
+        ObservationAdviceSemanticAttempt,
+        ObservationAdviceSemanticOutcome,
+    )
+    from finishup.config.models import ObservationConfig, SemanticFallbackConfig
+    from finishup.config.write import codex_subscription_runtime
+
+    tmp_path.chmod(0o700)
+    clock = _Clock()
+    memory = LocalSecretMemory()
+    lifecycle = ServiceLifecycle(
+        clock,
+        generation_store=_GenerationStore(),
+        process_start_identity_commitment="sha256:" + "d" * 64,
+        instance_id=_INSTANCE_ID,
+    )
+    await lifecycle.acquire_singleton()
+    await lifecycle.transition(ServiceState.LOCKED)
+    vault = VaultService(
+        installation_id=_INSTALLATION_ID,
+        service_generation=1,
+        mode=VaultMode.UNINITIALIZED,
+        secret_memory=memory,
+        clock=clock,
+        vault_store_factory=lambda: EncryptedVaultStore(tmp_path / "vault"),
+        pristine_state_digest="sha256:" + "e" * 64,
+    )
+    initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
+    await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
+    digest = "sha256:" + "a" * 64
+    # The Codex subscription primary is structurally unusable here: its runtime home and
+    # executable do not exist, so no process or login is ever probed.
+    runtime = codex_subscription_runtime(
+        executable_path=str(tmp_path / "absent" / "codex"),
+        executable_sha256=digest,
+        runtime_version="0.150.1",
+        source_identity="openai-codex-npm-darwin-arm64-0.150.1",
+        app_server_schema_sha256=digest,
+        capability_cell_sha256=digest,
+        isolated_config_sha256=digest,
+        capability_profile="codex-evaluator/0.150.1/v1",
+        capability_evidence_expires_at="2026-11-30T00:00:00Z",
+        codex_home=str(tmp_path / "absent" / "codex-home"),
+        model="gpt-5.6-sol",
+        reasoning_effort="high",
+    )
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    config = FinishUpConfig(
+        profile="codex-subscription",
+        provider=provider,
+        external_runtime=runtime,
+        semantic_fallback=SemanticFallbackConfig(primary="codex_subscription"),
+        verification=VerificationConfig(semantic="required"),
+        # Explicit owner choice, so the test isolates readiness from the default switch.
+        observation=ObservationConfig(semantic_advice_enabled=True),
+    )
+    factory = build_ready_application_factory(
+        lifecycle=lifecycle,
+        vault=vault,
+        config=config,
+        paths=_Paths(tmp_path),
+        clock=clock,
+        secret_memory=memory,
+        diagnostics=_Diagnostics(),
+    )
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": "tsk_advice", "owner_generation": "1"})
+    repository = SqliteObservationAdviceSemanticRepository(db)
+    workspace = "hmac-sha256:" + "a" * 64
+    session = "ses_00000000-0000-4000-8000-000000000924"
+    store = _AdviceStore(repository, workspace)
+
+    def rows() -> list[tuple[str, str | None]]:
+        return [
+            (str(row[0]), None if row[1] is None else str(row[1]))
+            for row in db.execute(
+                "SELECT status, failure_reason FROM observation_advice_semantic_attempts "
+                "ORDER BY state_token"
+            )
+        ]
+
+    app = None
+    try:
+        context = await factory.context_provider(1, vault.generation)
+        assert context.rediscover_pending_verification is not None
+        coordinator: object = getattr(context.rediscover_pending_verification, "__self__")
+        scheduler = getattr(coordinator, "advice_context_builder").semantic_scheduler
+        dispatch = cast(
+            Callable[
+                [ObservationAdviceSemanticAttempt], Awaitable[ObservationAdviceSemanticOutcome]
+            ],
+            getattr(coordinator, "advice_semantic_dispatch"),
+        )
+        builder = ObservationAdviceContextBuilder(semantic_scheduler=scheduler)
+        app = await factory.open(context)
+
+        # Everything the fallback needs is in place: the machine and repository policies
+        # authorize the exact pairing for semantic review, and the fallback credential is stored.
+        policy_app = app.privacy.policy_application
+        assert policy_app is not None
+        scope = AuthorizationScope(AuthorizationScopeKind.MACHINE, _INSTALLATION_ID)
+        base = replace(minimal_external_policy(), effective_scope=scope)
+        llm = next(
+            item for item in base.channel_policies if item.channel is EgressChannel.LLM_INFERENCE
+        )
+        fallback_binding = provider_binding_from_config(provider)
+        paired = replace(
+            llm,
+            provider_binding=codex_binding_from_config(runtime),
+            fallback_provider_binding=fallback_binding,
+        )
+        policy = replace(
+            base,
+            channel_policies=tuple(
+                paired if item.channel is EgressChannel.LLM_INFERENCE else item
+                for item in base.channel_policies
+            ),
+        )
+
+        async def effective_policy(
+            policy_store: object, requested: AuthorizationScope
+        ) -> EffectivePrivacyPolicy:
+            assert requested == scope
+            return EffectivePrivacyPolicy(policy, 2, policy.policy_digest)
+
+        commitment = "hmac-sha256:" + "b" * 64
+        route = replace(
+            _runtime_route(), session_id=session, repository_privacy_commitment=commitment
+        )
+
+        async def resolve_route(_catalog: object, session_id: str) -> TaskRoute | None:
+            return route if session_id == session else None
+
+        async def repository_authority(_store: object, requested: AuthorizationScope) -> object:
+            return SimpleNamespace(grant_state="granted", effective=SimpleNamespace(policy=policy))
+
+        monkeypatch.setattr(type(policy_app.policy_store), "effective_policy", effective_policy)
+        monkeypatch.setattr(type(app.start_catalog), "resolve_route", resolve_route)
+        monkeypatch.setattr(
+            type(policy_app.policy_store), "repository_authority", repository_authority
+        )
+        credential_binding = provider_credential_profile_binding(
+            provider.provider_id,
+            provider.model,
+            provider.endpoint_profile_id,
+            provider.endpoint_profile_version,
+        )
+        proof = HumanAuthorizationProof(
+            "provider-proof-advice-fallback",
+            "provider_credential_set",
+            credential_binding.target_digest("set"),
+            1,
+            vault.generation,
+            None,
+            1.0,
+            60.0,
+        )
+        credential = memory.capture(
+            SecretPurpose.PROVIDER_CREDENTIAL, bytearray(b"test-provider-token-fallback")
+        )
+        await vault.store_provider_credential("set", credential_binding, credential, proof, 2.0)
+        assert await vault.has_provider_credential(credential_binding)
+
+        store.failures = 3
+        snapshot = await builder.build(workspace, store, finishup_session_id=session)  # type: ignore[arg-type]
+        assert snapshot is not None
+        gaps = snapshot.confidence_coverage.known_gaps
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert gaps.count(ADVICE_SEMANTIC_UNAVAILABLE_GAP) == 1
+        assert rows() == []
+
+        queued = repository.schedule(
+            workspace=workspace,
+            finishup_session_id=session,
+            basis_digest="queued-identity",
+            subject_digest="sha256:" + "c" * 64,
+            coverage_gaps=(),
+            packet_json=b"{}",
+            enqueued_at="2026-07-21T17:00:00.000Z",
+            max_pending=16,
+        )
+        assert type(queued) is ObservationAdviceSemanticAttempt
+        assert await dispatch(queued) == ObservationAdviceSemanticOutcome(
+            status="unavailable", failure_reason="provider_unavailable"
+        )
+    finally:
+        db.close()
+        if app is not None:
+            await app.close()
+        await vault.close()
+        memory.close()
+        await lifecycle.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("semantic", "chosen", "scheduled"),
+    [
+        ("required", None, True),
+        ("optional", None, True),
+        ("required", True, True),
+        ("required", False, False),
+        ("optional", False, False),
+    ],
+)
+async def test_background_advice_is_on_by_default_and_an_owner_false_turns_it_off(
+    tmp_path: Path,
+    semantic: str,
+    chosen: bool | None,
+    scheduled: bool,
+) -> None:
+    """Issue #888 (maintainer decision 2026-09-30): background advice is on by default.
+
+    Without an owner choice the composed service wires the background scheduler wherever
+    AI-powered review is configured; an explicit ``false`` wires neither the scheduler nor its
+    dispatch, even with a bound provider, and closes rows an earlier service left pending.
+    """
+
+    tmp_path.chmod(0o700)
+    clock = _Clock()
+    memory = LocalSecretMemory()
+    lifecycle = ServiceLifecycle(
+        clock,
+        generation_store=_GenerationStore(),
+        process_start_identity_commitment="sha256:" + "d" * 64,
+        instance_id=_INSTANCE_ID,
+    )
+    await lifecycle.acquire_singleton()
+    await lifecycle.transition(ServiceState.LOCKED)
+    vault = VaultService(
+        installation_id=_INSTALLATION_ID,
+        service_generation=1,
+        mode=VaultMode.UNINITIALIZED,
+        secret_memory=memory,
+        clock=clock,
+        vault_store_factory=lambda: EncryptedVaultStore(tmp_path / "vault"),
+        pristine_state_digest="sha256:" + "e" * 64,
+    )
+    initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
+    await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
+    config = FinishUpConfig(
+        profile="local-openai",
+        provider=fireworks_provider(model="accounts/fireworks/models/minimax-m3"),
+        verification=VerificationConfig(semantic=cast(Any, semantic)),
+        observation=ObservationConfig(semantic_advice_enabled=chosen),
+    )
+    factory = build_ready_application_factory(
+        lifecycle=lifecycle,
+        vault=vault,
+        config=config,
+        paths=_Paths(tmp_path),
+        clock=clock,
+        secret_memory=memory,
+        diagnostics=_Diagnostics(),
+    )
+    app = None
+    try:
+        context = await factory.context_provider(1, vault.generation)
+        assert context.rediscover_pending_verification is not None
+        coordinator: object = getattr(context.rediscover_pending_verification, "__self__")
+        scheduler = getattr(coordinator, "advice_context_builder").semantic_scheduler
+        dispatch = getattr(coordinator, "advice_semantic_dispatch")
+        app = await factory.open(context)
+        assert (scheduler is not None) is scheduled
+        if scheduled:
+            return
+        # Advice is off: a row an earlier service left pending is closed at startup drain as
+        # cancelled with no provider identity (nothing sent), never held for later replay.
+        from finishup.adapters.sqlite.migrations import initialize_bundle
+        from finishup.adapters.sqlite.observation_advice_semantic import (
+            SqliteObservationAdviceSemanticRepository,
+        )
+        from finishup.application.observation_advice_semantic import (
+            ObservationAdviceSemanticWorker,
+        )
+
+        db = apsw.Connection(":memory:")
+        try:
+            initialize_bundle(db, {"task_id": "tsk_advice", "owner_generation": "1"})
+            repository = SqliteObservationAdviceSemanticRepository(db)
+            repository.schedule(
+                workspace="hmac-sha256:" + "a" * 64,
+                finishup_session_id="ses_00000000-0000-4000-8000-000000000888",
+                basis_digest="queued-by-an-older-service",
+                subject_digest="sha256:" + "c" * 64,
+                coverage_gaps=(),
+                packet_json=b"{}",
+                enqueued_at="2026-07-21T17:00:00.000Z",
+                max_pending=16,
+            )
+            worker = ObservationAdviceSemanticWorker(
+                repository=repository,
+                dispatch=dispatch,
+                service_generation=1,
+                lease_owner="svc-1",
+                now=lambda: "2026-07-21T18:00:00.000Z",
+                lease_expires_at=lambda: "2026-07-21T18:02:00.000Z",
+            )
+            closed = await worker.run_once()
+            assert closed is not None
+            row = repository.lookup(
+                finishup_session_id="ses_00000000-0000-4000-8000-000000000888",
+                basis_digest="queued-by-an-older-service",
+            )
+            assert row is not None
+            assert (row.status, row.failure_reason) == ("cancelled", "cancelled")
+            assert (row.provider_identity, row.attempt_receipt) == (None, None)
+            assert repository.list_pending_workspaces() == ()
+        finally:
+            db.close()
+    finally:
+        if app is not None:
+            await app.close()
+        await vault.close()
+        memory.close()
+        await lifecycle.close()
+
+
+@pytest.mark.anyio
+async def test_ready_check_never_activates_provider_from_machine_policy_without_repository_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured provider and machine policy never outrun exact repository authority."""
+
+    _work_has_begun(monkeypatch)
+    tmp_path.chmod(0o700)
+    clock = _Clock()
+    memory = LocalSecretMemory()
+    lifecycle = ServiceLifecycle(
+        clock,
+        generation_store=_GenerationStore(),
+        process_start_identity_commitment="sha256:" + "d" * 64,
+        instance_id=_INSTANCE_ID,
+    )
+    await lifecycle.acquire_singleton()
+    await lifecycle.transition(ServiceState.LOCKED)
+    vault = VaultService(
+        installation_id=_INSTALLATION_ID,
+        service_generation=1,
+        mode=VaultMode.UNINITIALIZED,
+        secret_memory=memory,
+        clock=clock,
+        vault_store_factory=lambda: EncryptedVaultStore(tmp_path / "vault"),
+        pristine_state_digest="sha256:" + "e" * 64,
+    )
+    initialize = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
+    await vault.initialize_passphrase(initialize, "sha256:" + "f" * 64)
+    provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    config = FinishUpConfig(profile="local-openai", provider=provider)
     app = None
     try:
         factory = build_ready_application_factory(
@@ -2962,7 +3743,7 @@ async def test_ready_check_never_activates_provider_from_machine_policy_without_
                 },
                 "mode": "semantic_required",
                 "max_findings": "3",
-                "policy_packs": ["work-integrity/0.1.0"],
+                "policy_packs": ["work-integrity/0.3.0"],
             }
         )
         first = await app.check(original_request)
@@ -3038,7 +3819,7 @@ async def test_ready_check_never_activates_provider_from_machine_policy_without_
                     },
                     "mode": "semantic_required",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )

@@ -16,9 +16,9 @@ from typing import cast
 import pytest
 from mcp import types
 
-import yoetz.mcp.server as bridge
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+import finishup.mcp.server as bridge
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 _REQUEST = "req_00000000-0000-4000-8000-000000000065"
 _SESSION = "ses_00000000-0000-4000-8000-000000000001"

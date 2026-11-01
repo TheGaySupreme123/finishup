@@ -9,7 +9,7 @@ import pytest
 
 from builders.policy_cases import act, evt, make_case, obl, obligation_record, record
 from builders.replay import replay_records
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -23,11 +23,11 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import Actor, ActorType, actor_id
-from yoetz.kernel.command_attempts import command_attempts
-from yoetz.kernel.projections import projection_from_snapshot, projection_snapshot
-from yoetz.protocol.canonical import canonical_digest, entry_digest
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel
+from finishup.domain.values import Actor, ActorType, actor_id
+from finishup.kernel.command_attempts import command_attempts
+from finishup.kernel.projections import projection_from_snapshot, projection_snapshot
+from finishup.protocol.canonical import canonical_digest, entry_digest
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel
 
 
 def _event(
@@ -78,7 +78,7 @@ def _event(
     [
         ("pytest tests/a.py", "matching_observed_attempt"),
         ("pytest tests/b.py", "asserted_observed_mismatch"),
-        ("env -u YOETZ_ISOLATED_ROOT pytest tests/a.py", "asserted_observed_mismatch"),
+        ("env -u FINISHUP_ISOLATED_ROOT pytest tests/a.py", "asserted_observed_mismatch"),
         ("pytest  tests/a.py", "asserted_observed_mismatch"),
         ("omitted:structural", "unknown"),
     ],

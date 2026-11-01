@@ -15,8 +15,9 @@ from typing import TypeAliasType, cast
 
 import pytest
 
-import yoetz.protocol.errors as errors_module
-from yoetz.protocol.errors import (
+import finishup.protocol.errors as errors_module
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
     ProtocolValueError,
@@ -25,6 +26,7 @@ from yoetz.protocol.errors import (
     SafeDetailValue,
     normalize_safe_details,
 )
+from finishup.protocol.schemas import validate_schema_instance
 
 _VALID_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000000"
 _OTHER_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000001"
@@ -40,6 +42,11 @@ attach_handle_invalid
 attach_handle_reused
 attach_handle_revoked
 attach_result_invalid
+bridge_error_mapping_failed
+bridge_invoke_failed
+bridge_request_validation_failed
+bridge_result_validate_failed
+bridge_result_wire_failed
 byte_order_mark_forbidden
 catalog_busy
 catalog_maintenance_busy
@@ -47,6 +54,9 @@ check_admission_capture_pending
 check_admission_contended
 check_admission_import_pending
 check_admission_in_progress
+check_pipeline_failed
+check_result_capacity_exceeded
+check_resume_capacity_exceeded
 child_check_frontier_ahead_of_child
 child_check_frontier_missing
 child_check_frontier_without_check
@@ -58,6 +68,27 @@ child_frontier_missing
 child_gap_frontier_mismatch
 claim_revision_invalid
 claim_revision_mismatch
+closure_attempt_selection_required
+closure_claim_decision_required
+closure_command_revision_required
+closure_draft_invalid
+closure_evidence_unavailable
+closure_inventory_limit
+closure_item_omitted
+closure_item_unknown
+closure_obligation_content_unavailable
+closure_obligation_not_open
+closure_obligation_unknown
+closure_pagination_invalid
+closure_prepare_failed
+closure_resolution_decision_required
+closure_response_decision_required
+closure_result_too_large
+closure_result_unavailable
+closure_snapshot_unavailable
+closure_source_unknown
+closure_status_unavailable
+closure_unattempted_items
 commitment_only_object_kind
 coordination_admission_required
 coordination_consent_required
@@ -86,9 +117,20 @@ cursor_mcp_route_invalid
 cursor_project_mcp_command_invalid
 cursor_project_mcp_invalid
 cursor_project_mcp_preview_required
+delivery_cursor_expired
+delivery_cursor_invalid
+delivery_disclosure_changed
+delivery_redaction_recorded
 dependency_changed
+duplicate_has_duplicates
+duplicate_link_broken
 duplicate_object_key
 duplicate_set_member
+duplicate_target_different_issue
+duplicate_target_is_duplicate
+duplicate_target_not_earlier
+duplicate_target_same_finding
+duplicate_target_unknown
 empty_check_types
 empty_publication_channels
 empty_subject_state
@@ -107,8 +149,11 @@ evidence_strength_unsupported
 expected_frontier_required
 finding_actionable_mismatch
 finding_json_shape_invalid
+finding_not_proof_limited
+finding_not_rechecked
 finding_priority_mismatch
 finding_resolution_mismatch
+finding_terminal
 float_forbidden
 frame_invalid
 frame_too_large
@@ -125,6 +170,7 @@ id_wrong_prefix
 id_wrong_type
 implicit_project_requires_opt_out
 import_publication_authority_required
+import_publication_failed
 import_report_invalid
 input_not_bytes
 integer_out_of_safe_range
@@ -140,6 +186,7 @@ invalid_continuation_expiry
 invalid_continuation_kind
 invalid_continuation_pending_id
 invalid_continuation_repository_setup
+invalid_continuation_review_input
 invalid_cost_fields
 invalid_coverage_value
 invalid_digest
@@ -233,6 +280,7 @@ lineage_transition_conflict
 lineage_work_terminal
 lineage_work_transition
 lone_surrogate
+maintenance_state_unverified
 malformed_json
 method_forbidden
 missing_payload_field
@@ -247,12 +295,14 @@ obligation_change_invalid
 obligation_resolution_invalid
 obligation_resolution_mismatch
 observation_selection_session_limit
+opaque_item_id_invalid
 operation_recovery_unavailable
 ownership_contended
 payload_redaction_mismatch
 payload_too_large
 peer_untrusted
 plan_version_conflict
+privacy_audit_unreadable
 privacy_projection_unavailable
 privacy_receipt_not_durable
 project_dissolved
@@ -265,6 +315,7 @@ provider_attempt_provenance_is_not_final
 public_error_invalid_correlation_id
 public_error_invalid_message
 public_error_missing_correlation_id
+publish_repeat_unconfirmed
 read_projection_failed
 receipt_child_manifest_mismatch
 receipt_children_not_canonical
@@ -273,14 +324,18 @@ receipt_coverage_mismatch
 receipt_gap_not_in_coverage
 receipt_json_projection_blocked
 receipt_json_shape_invalid
+receipt_semantic_withheld_items_not_canonical
 redaction_target_required
 ref_mirror_mismatch
 repository_identity_mismatch
 repository_identity_required
 request_identity_conflict
 request_timeout
+requested_command_placeholder
+resolution_attempt_required
 response_fields_invalid
 response_projection_failed
+review_mode_parent_is_check
 runtime_attempt_evidence_json_shape_invalid
 runtime_opening_authority
 runtime_rebind_busy
@@ -305,10 +360,13 @@ schema_reference_unresolved
 schema_version_mismatch
 selector_conflict
 semantic_provenance_json_shape_invalid
+semantic_redacted_values_invalid
 service_draining
 service_generation_changed
+service_handshake_failed
 service_incompatible
 service_stamp_required
+service_start_failed
 service_unavailable
 session_lineage_fields_incomplete
 session_superseded
@@ -317,6 +375,7 @@ start_busy_retry_ready
 start_catalog_retry_ready
 start_lease_pending
 start_runtime_rebind_retry_ready
+start_state_inconsistent
 stored_result_shape_invalid
 timestamp_not_utc
 timestamp_out_of_range
@@ -327,7 +386,9 @@ unknown_payload_field
 unsorted_set_field
 unsupported_json_type
 unsupported_payload_type
-workspace_task_exists""".splitlines()
+verification_criterion_not_in_task
+workspace_task_exists
+""".splitlines()
 )
 
 
@@ -490,13 +551,13 @@ def test_public_error_code_membership() -> None:
     assert tuple(member.name for member in PublicErrorCode) == expected
     assert tuple(member.value for member in PublicErrorCode) == expected
     assert isinstance(SafeDetailValue, TypeAliasType)
-    assert SafeDetailValue.__value__ == str | int
+    assert SafeDetailValue.__value__ == str | int | tuple[str, ...]
 
 
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 298
+    assert len(source_values) == 356  # #1244 +4 delivery_*; #1190 review_mode_parent_is_check
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)
@@ -504,10 +565,10 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
     assert not hasattr(errors_module, "register_protocol_reason")
     before = PROTOCOL_REASON_CODES
     for name in (
-        "yoetz.protocol.canonical",
-        "yoetz.protocol.ids",
-        "yoetz.protocol.coverage",
-        "yoetz.protocol.schemas",
+        "finishup.protocol.canonical",
+        "finishup.protocol.ids",
+        "finishup.protocol.coverage",
+        "finishup.protocol.schemas",
     ):
         if importlib.util.find_spec(name) is not None:
             importlib.import_module(name)
@@ -520,16 +581,16 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
     consumers = tuple(
         name
         for name in (
-            "yoetz.protocol.canonical",
-            "yoetz.protocol.ids",
-            "yoetz.protocol.coverage",
-            "yoetz.protocol.schemas",
+            "finishup.protocol.canonical",
+            "finishup.protocol.ids",
+            "finishup.protocol.coverage",
+            "finishup.protocol.schemas",
         )
         if importlib.util.find_spec(name) is not None
     )
-    orders = [("yoetz.protocol.errors", *consumers)]
+    orders = [("finishup.protocol.errors", *consumers)]
     orders.extend(
-        (consumer, "yoetz.protocol.errors", *(name for name in consumers if name != consumer))
+        (consumer, "finishup.protocol.errors", *(name for name in consumers if name != consumer))
         for consumer in consumers
     )
     for order in dict.fromkeys(orders):
@@ -538,7 +599,7 @@ def test_protocol_reason_registry_is_exact_and_import_order_independent() -> Non
                 "import importlib",
                 f"order = {order!r}",
                 "for name in order: importlib.import_module(name)",
-                "import yoetz.protocol.errors as errors",
+                "import finishup.protocol.errors as errors",
                 f"expected = {_EXPECTED_REASON_CODES!r}",
                 "actual = tuple(sorted(errors.PROTOCOL_REASON_CODES, key=lambda value: value.encode('ascii')))",
                 "assert actual == expected",
@@ -568,7 +629,9 @@ def test_dependency_root_has_no_internal_imports() -> None:
             if node.module is not None:
                 imported_modules.append(node.module)
     assert relative_imports == 0
-    assert not any(module == "yoetz" or module.startswith("yoetz.") for module in imported_modules)
+    assert not any(
+        module == "finishup" or module.startswith("finishup.") for module in imported_modules
+    )
 
 
 def test_literal_protocol_refusals_use_registered_reasons() -> None:
@@ -754,6 +817,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
         "availability",
         "availability_inherited",
         "availability_request_id",
+        "blocking_reasons",
         "component",
         "continuation",
         "count",
@@ -819,7 +883,8 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     accepted = normalize_safe_details(
         {
             "actual_version": "1.0.0+local",
-            "authorize_command": "yoetz consent authorize",
+            "blocking_reasons": ("issue_returned_again",),
+            "authorize_command": "finishup consent authorize",
             "availability": "terminal_unavailable",
             "availability_inherited": True,
             "availability_request_id": "req_00000000-0000-4000-8000-000000000001",
@@ -837,12 +902,12 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
             "operation": _SafeEnum.READY,
             "pending_ttl_seconds": 900,
             "phase": _SafeEnum.READY,
-            "prepare_command": "yoetz consent prepare vault_initialize",
+            "prepare_command": "finishup consent prepare vault_initialize",
             "quarantine_code": "operation_lease_shape_invalid",
             "reason_code": "invalid_digest",
             "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
             "retry_after_ms": 1,
-            "review_command": "yoetz consent review",
+            "review_command": "finishup consent review",
             "schema_name": "accepted-event",
             "sequence": 5,
             "session_id": "ses_00000000-0000-4000-8000-000000000001",
@@ -855,7 +920,9 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     )
     assert tuple(accepted) == expected_keys
     assert accepted["component"] == "ready"
-    assert all(type(value) in {str, int, bool} for value in accepted.values())
+    assert normalize_safe_details({"phase": "projection"}) == {"phase": "projection"}
+    assert normalize_safe_details({"phase": "user_supplied_value"}) == {}
+    assert all(type(value) in {str, int, bool, tuple} for value in accepted.values())
     assert isinstance(accepted, MappingProxyType)
     hostile = _KnownKeyOnlyMapping()
     assert dict(normalize_safe_details(hostile)) == {"count": 3}
@@ -949,31 +1016,31 @@ def test_initialization_continuation_details_are_closed_literals() -> None:
 
     accepted = normalize_safe_details(
         {
-            "authorize_command": "yoetz consent authorize",
+            "authorize_command": "finishup consent authorize",
             "continuation": "vault_initialization_required",
             "pending_ttl_seconds": 900,
-            "prepare_command": "yoetz consent prepare vault_initialize",
+            "prepare_command": "finishup consent prepare vault_initialize",
             "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
-            "review_command": "yoetz consent review",
+            "review_command": "finishup consent review",
         }
     )
     assert dict(accepted) == {
-        "authorize_command": "yoetz consent authorize",
+        "authorize_command": "finishup consent authorize",
         "continuation": "vault_initialization_required",
         "pending_ttl_seconds": 900,
-        "prepare_command": "yoetz consent prepare vault_initialize",
+        "prepare_command": "finishup consent prepare vault_initialize",
         "replay_request_id": "req_00000000-0000-4000-8000-000000000001",
-        "review_command": "yoetz consent review",
+        "review_command": "finishup consent review",
     }
     hostile = (
         # A plausible near-miss of the admitted token, chosen so it stays unregistered: issue
         # #741 minted a real ``vault_unlock_required``, which is no longer hostile.
         ("continuation", "vault_initialization_optional"),
         ("continuation", "vault_initialization_required "),
-        ("prepare_command", "yoetz consent prepare vault_passphrase_rotate"),
-        ("prepare_command", "rm -rf /; yoetz consent prepare vault_initialize"),
-        ("review_command", "yoetz consent review --yolo"),
-        ("authorize_command", "yoetz consent authorize --warning-acknowledged"),
+        ("prepare_command", "finishup consent prepare vault_passphrase_rotate"),
+        ("prepare_command", "rm -rf /; finishup consent prepare vault_initialize"),
+        ("review_command", "finishup consent review --yolo"),
+        ("authorize_command", "finishup consent authorize --warning-acknowledged"),
         ("replay_request_id", "ses_00000000-0000-4000-8000-000000000001"),
         ("replay_request_id", "req_not_a_uuid"),
         ("pending_ttl_seconds", "900"),
@@ -1064,3 +1131,58 @@ def test_public_dict_shape_and_copy_are_exact() -> None:
         _VALID_CORRELATION_ID,
     ).as_public_dict()
     assert tuple(empty) == ("code", "message", "retryable", "correlation_id")
+
+
+def test_blocking_reasons_detail_admits_only_bounded_closed_tokens() -> None:
+    """Issue #1023: the self_verified refusal names its closed reason tokens, never prose."""
+
+    accepted = normalize_safe_details(
+        {
+            "reason_code": "finding_not_proof_limited",
+            "blocking_reasons": ("coverage:completion_plan_not_claimed", "issue_returned_again"),
+        }
+    )
+    assert accepted["blocking_reasons"] == (
+        "coverage:completion_plan_not_claimed",
+        "issue_returned_again",
+    )
+    for bad in (
+        (),
+        ("Fix the bug please",),
+        ("coverage:" + "a" * 97,),
+        tuple(f"reason_{index}" for index in range(33)),
+        "issue_returned_again",
+        (1,),
+    ):
+        assert "blocking_reasons" not in normalize_safe_details({"blocking_reasons": bad})
+    error = PublicOperationError(
+        PublicErrorCode.INVALID_REQUEST,
+        "refused",
+        False,
+        safe_details={"blocking_reasons": ("issue_returned_again",)},
+        correlation_id="err_00000000-0000-4000-8000-000000000001",
+    )
+    public = error.as_public_dict()
+    assert public["safe_details"] == {"blocking_reasons": ["issue_returned_again"]}
+    validate_schema_instance("public-error", "1.0.0", cast(JsonValue, public))
+
+
+@pytest.mark.parametrize(
+    ("key", "current"),
+    (
+        ("authorize_command", "finishup consent authorize"),
+        ("prepare_command", "finishup consent prepare vault_initialize"),
+        ("review_command", "finishup consent review"),
+    ),
+)
+def test_consent_command_details_render_the_current_launcher_for_either_head(
+    key: str, current: str
+) -> None:
+    """A pre-rename service named the ``yoetz`` alias; the detail names ``finishup`` (ADR-048)."""
+
+    legacy = "yoetz " + current.removeprefix("finishup ")
+    assert normalize_safe_details({key: current}) == {key: current}
+    assert normalize_safe_details({key: legacy}) == {key: current}
+    assert normalize_safe_details({key: "yoetzz " + legacy}) == {}
+    other = "review_command" if key != "review_command" else "authorize_command"
+    assert normalize_safe_details({other: legacy}) == {}

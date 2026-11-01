@@ -6,7 +6,7 @@ from pathlib import Path
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     Migration,
     current_schema_version,
@@ -49,6 +49,10 @@ def test_schema_three_upgrade_applies_0004_tables(tmp_path: Path) -> None:
         "0013",
         "0014",
         "0015",
+        "0016",
+        "0017",
+        "0018",
+        "0019",
     )
     expected = {
         "observation_inspection_snapshots",

@@ -15,7 +15,7 @@ from dataclasses import replace
 from typing import Final
 
 from builders.privacy_policies import local_only_policy, machine_scope, minimal_external_policy
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -26,7 +26,7 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.models import DataCategory
 
 __all__ = ["WIDENING_CASES", "llm_channel", "with_llm", "with_review"]
 

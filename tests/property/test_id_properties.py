@@ -8,19 +8,19 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from property.strategies.identifiers import (
-    strategy_invalid_ids,
-    strategy_request_id_dicts,
-    strategy_valid_ids,
-)
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.ids import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.ids import (
     IdKind,
     is_valid_id,
     new_id,
     safe_request_id_from,
     validate_actor_id,
     validate_id,
+)
+from property.strategies.identifiers import (
+    strategy_invalid_ids,
+    strategy_request_id_dicts,
+    strategy_valid_ids,
 )
 
 _VALID_REQUEST_ID = "req_00000000-0000-4000-8000-000000000001"

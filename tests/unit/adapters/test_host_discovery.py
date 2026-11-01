@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations import host_discovery as discovery
+from finishup.adapters.integrations import host_discovery as discovery
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])

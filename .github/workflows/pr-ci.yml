@@ -96,7 +96,7 @@ jobs:
       - name: Reject symlink/path escape in owned resource and release roots
         run: |
           set -euo pipefail
-          for root in schemas migrations fixtures skills; do
+          for root in schemas migrations fixtures skills release; do
             if [ -d "$root" ]; then
               found=$(find "$root" -type l -print)
               if [ -n "$found" ]; then
@@ -118,8 +118,24 @@ jobs:
       - name: Check dependency locks without modifying them
         run: uv sync --locked --all-extras --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: Verify generated schemas and packaged resources reached a fixed point
         run: uv run --locked python scripts/sync_resource_ripple.py --check
+
+      - name: Verify the transitional yoetz distributions build and stay in lockstep (ADR-048)
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/check_transitional_yoetz.py
+          uv build --no-sources release/transitional-yoetz/python \
+            --out-dir "${{ runner.temp }}/transitional-dist"
+          uv run --locked python scripts/check_transitional_yoetz.py \
+            --dist "${{ runner.temp }}/transitional-dist"
 
       - name: Verify CHECK continuation schemas are exact
         run: uv run --locked python scripts/sync_check_continuation_schemas.py --check
@@ -173,16 +189,51 @@ jobs:
       - name: Run public-boundary scanner over the checkout
         run: uv run --locked python scripts/scan_public_boundary.py --source-tree .
 
-      - name: Focused canonical/schema/protocol unit vectors (hash seed 0)
-        env:
-          PYTHONHASHSEED: "0"
-        run: |
-          uv run --locked pytest tests/unit/protocol tests/unit/kernel \
-            -m "not fault and not soak and not live" -q --timeout=120
+  # ---------------------------------------------------------------------------------------------
+  # hash-seed-vectors — canonical/schema/protocol unit vectors under two hash seeds. Each seed is
+  # about six minutes; run inside contracts-and-resources they left it two minutes inside its
+  # budget, so each seed is its own job.
+  # ---------------------------------------------------------------------------------------------
+  hash-seed-vectors:
+    name: hash-seed-vectors (seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ["0", "1"]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
 
-      - name: Focused canonical/schema/protocol unit vectors (hash seed 1)
+      - name: Install uv (locked version)
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: "3.14.6"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync --locked
+        run: uv sync --locked --all-extras --group dev
+
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Focused canonical/schema/protocol unit vectors (hash seed ${{ matrix.seed }})
         env:
-          PYTHONHASHSEED: "1"
+          PYTHONHASHSEED: ${{ matrix.seed }}
         run: |
           uv run --locked pytest tests/unit/protocol tests/unit/kernel \
             -m "not fault and not soak and not live" -q --timeout=120
@@ -215,6 +266,13 @@ jobs:
 
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
+
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
 
       - name: Install Node (locked major/patch)
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -266,9 +324,34 @@ jobs:
   # unit-and-conformance — pure unit, bounded property examples, adapter conformance.
   # ---------------------------------------------------------------------------------------------
   unit-and-conformance:
-    name: unit-and-conformance
+    name: unit-and-conformance (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The slice takes about 50 minutes in one process, past the job budget. Each shard is one
+        # pytest process over a disjoint path group, balanced by measured duration. The two
+        # --ignore shards take every unit or conformance directory the others do not name, so a
+        # new directory is never silently skipped.
+        shard:
+          - name: adapters
+            paths: tests/unit/adapters
+          - name: application
+            paths: tests/unit/application
+          - name: cli-domain
+            paths: tests/unit/cli tests/unit/domain tests/unit/config tests/unit/dogfood
+          - name: conformance-observation
+            paths: tests/conformance/observation
+          - name: protocol-property-conformance
+            paths: >-
+              tests/unit/protocol tests/property tests/conformance
+              --ignore=tests/conformance/observation
+          - name: unit-rest
+            paths: >-
+              tests/unit --ignore=tests/unit/adapters --ignore=tests/unit/application
+              --ignore=tests/unit/cli --ignore=tests/unit/domain --ignore=tests/unit/config
+              --ignore=tests/unit/dogfood --ignore=tests/unit/protocol
     permissions:
       contents: read
     env:
@@ -293,9 +376,16 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Use a private temporary root for runtime and storage tests
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        run: |
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -305,7 +395,86 @@ jobs:
 
       - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
         run: |
-          uv run --locked pytest tests/unit tests/property tests/conformance \
+          uv run --locked pytest ${{ matrix.shard.paths }} \
+            -m "not fault and not soak and not live" -q --timeout=120
+
+  # ---------------------------------------------------------------------------------------------
+  # older-python — the same bounded unit/conformance slice on every supported minor below the
+  # release cell (issue #1119). The release cell stays CPython 3.14.6 in unit-and-conformance.
+  # ---------------------------------------------------------------------------------------------
+  older-python:
+    name: older-python (${{ matrix.python }}, ${{ matrix.shard.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+        # The same shards as unit-and-conformance.
+        shard:
+          - name: adapters
+            paths: tests/unit/adapters
+          - name: application
+            paths: tests/unit/application
+          - name: cli-domain
+            paths: tests/unit/cli tests/unit/domain tests/unit/config tests/unit/dogfood
+          - name: conformance-observation
+            paths: tests/conformance/observation
+          - name: protocol-property-conformance
+            paths: >-
+              tests/unit/protocol tests/property tests/conformance
+              --ignore=tests/conformance/observation
+          - name: unit-rest
+            paths: >-
+              tests/unit --ignore=tests/unit/adapters --ignore=tests/unit/application
+              --ignore=tests/unit/cli --ignore=tests/unit/domain --ignore=tests/unit/config
+              --ignore=tests/unit/dogfood --ignore=tests/unit/protocol
+    permissions:
+      contents: read
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout (no persisted credentials)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Install uv (locked version)
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync --locked
+        run: uv sync --locked --all-extras --group dev
+
+      # The same private temporary root as unit-and-conformance: tests that build an isolated
+      # instance under tmp_path refuse the shared /tmp (path_shared_temp).
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        run: |
+          iso="${RUNNER_TEMP}/finishup-home"
+          mkdir -p "$iso"
+          echo "HOME=$iso" >> "$GITHUB_ENV"
+          echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
+          echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
+          echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
+
+      - name: Unit, property, and conformance (bounded, excludes fault/soak/live)
+        run: |
+          uv run --locked pytest ${{ matrix.shard.paths }} \
             -m "not fault and not soak and not live" -q --timeout=120
 
   # ---------------------------------------------------------------------------------------------
@@ -337,9 +506,16 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Use a private temporary root for runtime and storage tests
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        run: |
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -424,24 +600,31 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/subprocess-venv"
           uv pip install --python "${{ runner.temp }}/subprocess-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
           uv pip install --python "${{ runner.temp }}/subprocess-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${candidate_version}"
+            "finishup[semantic-openai,portable-recovery]==${candidate_version}"
           echo "${{ runner.temp }}/subprocess-venv/bin" >> "$GITHUB_PATH"
 
       - name: uv sync --locked (test runner tooling only)
         run: uv sync --locked --group dev
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Use a private temporary root for runtime and storage tests
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        run: |
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
           echo "XDG_CONFIG_HOME=$iso/.config" >> "$GITHUB_ENV"
           echo "XDG_CACHE_HOME=$iso/.cache" >> "$GITHUB_ENV"
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/subprocess-venv/bin/python" >> "$GITHUB_ENV"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/subprocess-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Bounded console/module/MCP subprocess cases (excludes full kill matrix)
         run: |
@@ -454,13 +637,59 @@ jobs:
           uv run --locked pytest tests/subprocess/test_mcp_stdout_purity.py \
             -m "not fault and not soak and not live" -q --timeout=120
 
+      # condaforge/miniforge3:24.9.2-0 is Ubuntu 20.04 (glibc 2.31, inside the certified glibc
+      # 2.28+ cell; Git 2.25, the documented minimum). There `finishup service run` exited 70 at
+      # startup, and once that was fixed every connection closed as soon as the vault was ready
+      # (#1040). Install the candidate with the documented uv command, then
+      # scripts/ci/service_image_smoke.sh records the system Git version, initializes a vault
+      # under an isolated root, and from inside a Git repository reads ready status, starts a task
+      # and runs a deterministic check whose change capture must succeed.
+      - name: Service runs in a conda image on glibc 2.31 and Git 2.25
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${{ runner.temp }}/dist:/dist:ro" \
+            -v "$(command -v uv):/usr/local/bin/uv:ro" \
+            -v "$PWD/scripts:/scripts:ro" \
+            condaforge/miniforge3:24.9.2-0@sha256:937dc1e8ab9ffc5f388f0d2a1ce5d24ba5b15850771571d7442fac1af53f3fad \
+            bash -euo pipefail -c '
+              if ! PATH=/bin:/usr/bin command -v git >/dev/null; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+              fi
+              uv tool install --managed-python --python 3.14.6 /dist/finishup-*.whl >/dev/null
+              export PATH="$HOME/.local/bin:$PATH"
+              EXPECT_GIT_SERIES=2.25 CEREMONY_PYTHON=/opt/conda/bin/python3 \
+                bash /scripts/ci/service_image_smoke.sh
+            '
+
   # ---------------------------------------------------------------------------------------------
   # package-and-boundary — clean build, artifact inspection, install/verify, boundary scan.
   # ---------------------------------------------------------------------------------------------
   package-and-boundary:
-    name: package-and-boundary
+    name: package-and-boundary (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The packaging suite took 14 to more than 20 minutes in one process; the resource-ripple
+        # cases, which copy a checkout and run the full ripple, are most of it. Three disjoint
+        # shards; the "not (...)" and --ignore selections keep every other case in some shard.
+        # The install, help, boundary-scan and negative-control steps run once, in "artifacts".
+        shard:
+          - name: ripple-write
+            args: >-
+              tests/packaging/test_resource_ripple.py
+              -k "write_converges or write_bootstraps or write_regenerates"
+            artifacts: false
+          - name: ripple-rest
+            args: >-
+              tests/packaging/test_resource_ripple.py
+              -k "not (write_converges or write_bootstraps or write_regenerates)"
+            artifacts: false
+          - name: artifacts
+            args: tests/packaging --ignore=tests/packaging/test_resource_ripple.py
+            artifacts: true
     permissions:
       contents: read
     steps:
@@ -483,6 +712,13 @@ jobs:
       - name: uv sync --locked
         run: uv sync --locked --all-extras --group dev
 
+      - name: Use a private temporary root for runtime and storage tests
+        run: |
+          test_tmp="${RUNNER_TEMP}/finishup-test-tmp"
+          mkdir -p "$test_tmp"
+          chmod 700 "$test_tmp"
+          echo "TMPDIR=$test_tmp" >> "$GITHUB_ENV"
+
       - name: uv build --no-sources (clean exported candidate)
         run: |
           rm -rf "${{ runner.temp }}/export"
@@ -492,20 +728,22 @@ jobs:
       - name: Inspect sdist/wheel allowlists, metadata, entry points, and resource bytes
         run: |
           uv run --locked python scripts/verify_resource_manifest.py --check
-          uv run --locked pytest tests/packaging \
+          uv run --locked pytest ${{ matrix.shard.args }} \
             -m "not fault and not soak and not live" -q --timeout=180
 
       - name: Install the wheel outside the checkout
+        if: matrix.shard.artifacts
         run: |
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/pkg-venv"
           uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "yoetz==${candidate_version}"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/pkg-venv/bin/python" "finishup==${candidate_version}"
 
-      - name: Isolate HOME/XDG/Yoetz app data inside job temp directory
+      - name: Isolate HOME/XDG/FinishUP app data inside job temp directory
+        if: matrix.shard.artifacts
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -514,24 +752,27 @@ jobs:
           echo "YZCI_DENY_NETWORK=1" >> "$GITHUB_ENV"
 
       - name: Run import, help, version --json, and strict-local vertical slice
+        if: matrix.shard.artifacts
         run: |
           cd "${{ runner.temp }}"
-          "${{ runner.temp }}/pkg-venv/bin/python" -c "import yoetz; print(yoetz.__name__)"
-          "${{ runner.temp }}/pkg-venv/bin/yoetz" --help
-          "${{ runner.temp }}/pkg-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/pkg-venv/bin/python" -c "import finishup; print(finishup.__name__)"
+          "${{ runner.temp }}/pkg-venv/bin/finishup" --help
+          "${{ runner.temp }}/pkg-venv/bin/finishup" version --json
 
       - name: Run public-boundary scanner over checkout, sdist, wheel, metadata
+        if: matrix.shard.artifacts
         run: |
           uv run --locked python scripts/scan_public_boundary.py --source-tree . \
             --artifact "${{ runner.temp }}"/dist/*.whl \
             --artifact "${{ runner.temp }}"/dist/*.tar.gz
 
       - name: Negative control — synthetic canary must be blocked and never logged
+        if: matrix.shard.artifacts
         run: |
           set -euo pipefail
           canary_dir="${{ runner.temp }}/negative-control"
           mkdir -p "$canary_dir"
-          canary="YOETZ_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
+          canary="FINISHUP_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
           canary_file="${{ runner.temp }}/negative-control.canary"
           printf '%s' "$canary" > "$canary_file"
           echo "$canary" > "$canary_dir/leak.txt"
@@ -554,8 +795,10 @@ jobs:
     needs:
       - trusted-console-boundary
       - contracts-and-resources
+      - hash-seed-vectors
       - format-lint-type
       - unit-and-conformance
+      - older-python
       - sqlite-integration
       - cli-mcp-subprocess
       - package-and-boundary
@@ -571,8 +814,10 @@ jobs:
           declare -A results=(
             [trusted-console-boundary]="${{ needs.trusted-console-boundary.result }}"
             [contracts-and-resources]="${{ needs.contracts-and-resources.result }}"
+            [hash-seed-vectors]="${{ needs.hash-seed-vectors.result }}"
             [format-lint-type]="${{ needs.format-lint-type.result }}"
             [unit-and-conformance]="${{ needs.unit-and-conformance.result }}"
+            [older-python]="${{ needs.older-python.result }}"
             [sqlite-integration]="${{ needs.sqlite-integration.result }}"
             [cli-mcp-subprocess]="${{ needs.cli-mcp-subprocess.result }}"
             [package-and-boundary]="${{ needs.package-and-boundary.result }}"

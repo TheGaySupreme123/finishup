@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conformance.adapters.test_ledger_port import ledger_command, memory_ledger
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.fixture

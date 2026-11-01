@@ -1,7 +1,7 @@
 """Parent/subagent attribution capability evidence.
 
 Non-live cells record that multi-agent claims remain unsupported while Codex capability profiles
-are unfrozen. Live coordination through real Codex subagents requires ``YOETZ_LIVE_CODEX=1``.
+are unfrozen. Live coordination through real Codex subagents requires ``FINISHUP_LIVE_CODEX=1``.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from yoetz.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
-from yoetz.protocol.canonical import canonical_digest
+from finishup.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"

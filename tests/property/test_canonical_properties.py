@@ -8,18 +8,18 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from property.strategies.json_values import (
-    strategy_invalid_json_bytes,
-    strategy_json_values,
-    strategy_unicode_edge_strings,
-)
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
+from property.strategies.json_values import (
+    strategy_invalid_json_bytes,
+    strategy_json_values,
+    strategy_unicode_edge_strings,
+)
 
 
 def _assert_reason(exc_info: pytest.ExceptionInfo[ProtocolValueError], reason: str) -> None:

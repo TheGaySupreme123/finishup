@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import fields, replace
 from typing import Any, cast
 
-from fixture_loader import load_fixture_json
-from yoetz.domain.events import (
+from finishup.domain.events import (
     PAYLOAD_TYPES,
     AcceptedEvent,
     EventSchema,
@@ -14,11 +14,15 @@ from yoetz.domain.events import (
     PayloadRef,
     ProjectionLocator,
     RedactionState,
+    SessionOpenedPayload,
     UnknownEvent,
     WriterChain,
+    accepted_record_digest_preimage,
+    compute_entry_digest,
     decode_payload,
+    encode_payload,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -31,13 +35,15 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     PublicationChannel,
     coverage_from_json,
 )
+from fixture_loader import load_fixture_json
 
 
 def _schema(row: dict[str, Any]) -> EventSchema:
@@ -155,3 +161,48 @@ def replay_records(name: str) -> tuple[LedgerRecord, ...]:
     raw_input = cast(dict[str, Any], document["input"])
     rows = cast(list[dict[str, Any]], raw_input["accepted_entries"])
     return tuple(_record(row) for row in rows)
+
+
+def genesis_session_opened() -> AcceptedEvent:
+    """The released ``session_opened`` 1.0.0 genesis record of the all-families fixture."""
+
+    record = replay_records("all-event-families")[0]
+    assert type(record) is AcceptedEvent
+    assert type(record.payload) is SessionOpenedPayload
+    return record
+
+
+def genesis_session_opened_variant(
+    *,
+    version: str,
+    statement: str | None,
+    redaction: RedactionState = RedactionState.PRESENT,
+) -> AcceptedEvent:
+    """The genesis ``session_opened`` re-minted at ``version`` with a valid entry digest."""
+
+    base = genesis_session_opened()
+    schema = EventSchema("session_opened", version)
+    readable = replace(cast(SessionOpenedPayload, base.payload), task_statement=statement)
+    payload = readable if redaction is RedactionState.PRESENT else None
+    values: dict[str, object] = {
+        field.name: getattr(base, field.name) for field in fields(AcceptedEvent) if field.init
+    }
+    values.update(
+        schema=schema,
+        payload=payload,
+        redaction=redaction,
+        projection_locator=replace(
+            base.projection_locator,
+            schema=schema,
+            canonical_payload_digest=canonical_digest(encode_payload(readable)),
+        ),
+    )
+    # The digest preimage is the record itself, so compute it over an unvalidated copy and then
+    # construct the real record, which re-validates every invariant including the digest.
+    unvalidated = object.__new__(AcceptedEvent)
+    for field in fields(AcceptedEvent):
+        object.__setattr__(
+            unvalidated, field.name, values.get(field.name, getattr(base, field.name))
+        )
+    values["entry_digest"] = compute_entry_digest(accepted_record_digest_preimage(unvalidated))
+    return AcceptedEvent(**values)  # type: ignore[arg-type]

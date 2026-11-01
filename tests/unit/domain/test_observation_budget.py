@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     BUDGET_VALIDATION_STATUS,
     CURRENT_SERIALIZATION_CAP_BYTES,
     LARGER_CAPACITY,
@@ -81,7 +81,7 @@ def test_mode_limits_are_separate_from_capacity_and_bounded_by_serialization() -
     assert mode_limits(ObservationMode.FOCUSED) == mode_limits(ObservationMode.FOCUSED)
 
 
-def test_worst_pressure_dimension_is_count_bytes_age_or_capture_backlog() -> None:
+def test_worst_pressure_dimension_is_count_bytes_or_capture_backlog() -> None:
     limits = BudgetLimits.for_profile(CapacityProfile.STANDARD)
 
     count = evaluate_pressure(
@@ -107,8 +107,9 @@ def test_worst_pressure_dimension_is_count_bytes_age_or_capture_backlog() -> Non
         ObservationMode.FOCUSED,
         limits=limits,
     )
-    assert age.state is PressureState.HIGH
-    assert age.dimension is PressureDimension.OLDEST_AGE
+    assert age.state is PressureState.HEALTHY
+    assert age.admission_allowed
+    assert age.content_allowed
 
     capture = evaluate_pressure(
         BudgetUsage(capture_bytes=120 * 1024 * 1024),
@@ -133,7 +134,7 @@ def test_high_pressure_temporarily_demotes_detailed_and_hard_blocks_admission() 
     assert high.content_allowed is False
     assert high.admission_allowed is True
 
-    hard_metrics = BudgetUsage(oldest_pending_age_ms=limits.max_pending_age_ms)
+    hard_metrics = BudgetUsage(queue_count=limits.queue_count)
     hard = evaluate_pressure(
         hard_metrics,
         ObservationMode.DETAILED,
@@ -240,7 +241,7 @@ def test_pressure_downgrade_transition_identity_is_bounded_and_not_per_event() -
     assert rising.transition is None
 
     degraded = evaluate_pressure(
-        BudgetUsage(oldest_pending_age_ms=limits.max_pending_age_ms),
+        BudgetUsage(queue_count=limits.queue_count),
         ObservationMode.DETAILED,
         rising.snapshot,
         4,
@@ -567,3 +568,20 @@ def test_for_capacity_routes_named_profiles_through_for_profile_seam(
     BudgetLimits.for_capacity(LARGER_CAPACITY)
     BudgetLimits.for_capacity(ObservationCapacity(1_024))
     assert calls == [CapacityProfile.LARGER]
+
+
+@pytest.mark.parametrize("age_ms", [60_000, 1_200_000, 86_400_000])
+def test_oldest_age_never_refuses_input_or_hides_a_real_capacity_limit(age_ms: int) -> None:
+    limits = BudgetLimits.for_profile(CapacityProfile.STANDARD)
+    usage = BudgetUsage(queue_count=10, oldest_pending_age_ms=age_ms)
+    pressure = evaluate_pressure(usage, ObservationMode.DETAILED, limits=limits)
+    assert pressure.state is PressureState.HEALTHY
+    assert pressure.effective_mode is ObservationMode.DETAILED
+    assert pressure.content_allowed and pressure.admission_allowed
+    assert evaluate_admission(usage, limits, AdmissionRequest(queue_count=1)).admitted
+    full = replace(usage, queue_bytes=limits.queue_bytes)
+    pressure = evaluate_pressure(full, ObservationMode.DETAILED, limits=limits)
+    assert pressure.state is PressureState.HARD_LIMIT
+    assert pressure.dimension is PressureDimension.BYTES
+    assert not pressure.admission_allowed
+    assert not evaluate_admission(full, limits, AdmissionRequest(queue_count=1)).admitted

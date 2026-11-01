@@ -14,17 +14,17 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import command_from_records, memory_for
-from yoetz.domain.events import accepted_record_digest_preimage
-from yoetz.domain.values import occurred_at_consistency, timestamp_from_string
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.ports.ledger import ProjectionQuery
-from yoetz.protocol.canonical import JsonValue, entry_digest
-from yoetz.protocol.models import (
+from finishup.domain.events import accepted_record_digest_preimage
+from finishup.domain.values import occurred_at_consistency, timestamp_from_string
+from finishup.mcp.descriptors import descriptor_for
+from finishup.ports.ledger import ProjectionQuery
+from finishup.protocol.canonical import JsonValue, entry_digest
+from finishup.protocol.models import (
     StatusHistoryItemModel,
     StatusHistoryPageModel,
     classify_result_leaf,
 )
+from integration.storage.test_append_and_replay import command_from_records, memory_for
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ def test_history_item_schema_requires_both_clocks() -> None:
 
 
 def test_event_draft_schema_describes_occurred_at_as_claim() -> None:
-    from yoetz.domain.events import OCCURRED_AT_DRAFT_DESCRIPTION
+    from finishup.domain.events import OCCURRED_AT_DRAFT_DESCRIPTION
 
     for relative in (
         "schemas/events/event-draft-1.0.0.schema.json",
@@ -256,7 +256,7 @@ def test_publish_and_status_descriptors_distinguish_clocks() -> None:
     assert "accepted_at" in status
     assert "forward-skew classification" in status
     assert "ingestion sequence" in status
-    # Must not instruct agents that Yoetz checked outside event time.
+    # Must not instruct agents that FinishUP checked outside event time.
     assert "verified" not in publish
     assert "verified" not in status
     # Must not claim receipt freshness comes from accepted_at wall-clock.

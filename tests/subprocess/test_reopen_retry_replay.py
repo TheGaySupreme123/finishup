@@ -18,8 +18,8 @@ from test_process_owner_fencing import (
 
 _DROP_CLIENT = r"""
 import anyio, os
-from yoetz.ports.control import ControlClientKind
-from yoetz.service.client import connect_service
+from finishup.ports.control import ControlClientKind
+from finishup.service.client import connect_service
 
 async def run():
     await connect_service(ControlClientKind.CLI)

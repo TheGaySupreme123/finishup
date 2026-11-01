@@ -8,10 +8,10 @@ import pytest
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-from yoetz.ports.control import ControlClientKind, ProjectionRenderMode, WorkspaceLocator
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import StartRequest, StartResult
+import finishup.cli.app as cli
+from finishup.ports.control import ControlClientKind, ProjectionRenderMode, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import StartRequest, StartResult
 
 _REQUEST = cast(StartRequest, object())
 _FAILURE_WIRE: dict[str, JsonValue] = {
@@ -92,7 +92,7 @@ def test_bare_privacy_setup_is_guided_not_a_malformed_support_request() -> None:
 def test_empty_privacy_show_request_uses_the_machine_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.domain.values import JsonObject
+    from finishup.domain.values import JsonObject
 
     observed: list[JsonObject] = []
 
@@ -128,7 +128,7 @@ def test_empty_privacy_show_request_uses_the_machine_scope(
         return scoped
 
     monkeypatch.setattr(
-        "yoetz.cli.provider_status.machine_scope_request",
+        "finishup.cli.provider_status.machine_scope_request",
         machine_scope,
     )
 
@@ -151,7 +151,7 @@ def test_privacy_show_machine_scope_failure_is_bounded_and_sends_no_request(
 
     from typing import NoReturn
 
-    from yoetz.cli.provider_status import MachineScopeError
+    from finishup.cli.provider_status import MachineScopeError
 
     connections: list[str] = []
 
@@ -164,14 +164,14 @@ def test_privacy_show_machine_scope_failure_is_bounded_and_sends_no_request(
     def failing_scope() -> NoReturn:
         raise MachineScopeError("installation_marker_missing")
 
-    monkeypatch.setattr("yoetz.cli.provider_status.machine_scope_request", failing_scope)
+    monkeypatch.setattr("finishup.cli.provider_status.machine_scope_request", failing_scope)
 
     result = CliRunner().invoke(cli.app, ["privacy", "show", "--json"])
 
     assert result.exit_code == 2
     assert connections == []
     assert "machine_scope_unavailable: installation_marker_missing" in result.stderr
-    assert "yoetz setup" in result.stderr
+    assert "finishup setup" in result.stderr
     assert "internal_error" not in result.output
     assert "Traceback" not in result.stderr
 
@@ -195,10 +195,10 @@ def test_workflow_uses_service_client_and_preserves_failure_envelope(
         return _FAILURE_WIRE
 
     monkeypatch.setattr(
-        "yoetz.cli.app.build_service_client", cast(Callable[[], Awaitable[object]], build)
+        "finishup.cli.app.build_service_client", cast(Callable[[], Awaitable[object]], build)
     )
-    monkeypatch.setattr("yoetz.cli.app._request_model", request_model)
-    monkeypatch.setattr("yoetz.cli.app.public_model_to_wire", result_wire)
+    monkeypatch.setattr("finishup.cli.app._request_model", request_model)
+    monkeypatch.setattr("finishup.cli.app.public_model_to_wire", result_wire)
     result = CliRunner().invoke(cli.app, ["start", "--request", "{}", "--json"])
     assert result.exit_code == 10
     assert result.stderr == ""

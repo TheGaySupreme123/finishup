@@ -16,22 +16,22 @@ from typing import Literal
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.privacy_setup as privacy_setup
-import yoetz.cli.provider_binding as provider_binding
-import yoetz.config.load as config_load
+import finishup.cli.privacy_setup as privacy_setup
+import finishup.cli.provider_binding as provider_binding
+import finishup.config.load as config_load
 from builders.privacy_policies import local_only_policy
-from unit.cli.test_privacy_setup import _answers  # pyright: ignore[reportPrivateUsage]
-from yoetz.cli.app import app
-from yoetz.cli.privacy_setup import build_candidate_policy
-from yoetz.cli.provider_binding import (
+from finishup.cli.app import app
+from finishup.cli.privacy_setup import build_candidate_policy
+from finishup.cli.provider_binding import (
     apply_provider_endpoint_choice,
     remove_semantic_fallback,
     set_semantic_fallback_primary,
 )
-from yoetz.config.load import validate_config_mapping
-from yoetz.config.models import ConfigError, SemanticFallbackConfig, YoetzConfig
-from yoetz.config.write import codex_subscription_runtime, write_config_toml
-from yoetz.domain.privacy import EgressChannel, ProviderBinding
+from finishup.config.load import validate_config_mapping
+from finishup.config.models import ConfigError, FinishUpConfig, SemanticFallbackConfig
+from finishup.config.write import codex_subscription_runtime, write_config_toml
+from finishup.domain.privacy import EgressChannel, ProviderBinding
+from unit.cli.test_privacy_setup import _answers  # pyright: ignore[reportPrivateUsage]
 
 _DIGEST = "sha256:" + "a" * 64
 _MODEL = "accounts/fireworks/models/minimax-m3"
@@ -48,7 +48,7 @@ def _runtime():  # noqa: ANN202 - builder return type is the config model
         isolated_config_sha256=_DIGEST,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/Yoetz Tools/codex-home",
+        codex_home="/opt/FinishUP Tools/codex-home",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
@@ -56,11 +56,11 @@ def _runtime():  # noqa: ANN202 - builder return type is the config model
 
 def _codex_only(path: Path) -> Path:
     return write_config_toml(
-        YoetzConfig(profile="codex-subscription", external_runtime=_runtime()), path=path
+        FinishUpConfig(profile="codex-subscription", external_runtime=_runtime()), path=path
     )
 
 
-def _loaded(path: Path) -> YoetzConfig:
+def _loaded(path: Path) -> FinishUpConfig:
     return validate_config_mapping(tomllib.loads(path.read_text()))
 
 
@@ -118,10 +118,10 @@ def test_remove_and_primary_writers_round_trip_on_disk(tmp_path: Path) -> None:
     assert caught.value.reason_code == "semantic_fallback_endpoint_missing"
 
 
-def _paired_config() -> YoetzConfig:
-    from yoetz.config.write import fireworks_provider
+def _paired_config() -> FinishUpConfig:
+    from finishup.config.write import fireworks_provider
 
-    return YoetzConfig(
+    return FinishUpConfig(
         profile="local-openai",
         provider=fireworks_provider(model=_MODEL),
         external_runtime=_runtime(),
@@ -134,9 +134,9 @@ def test_cli_fallback_remove_reports_the_remaining_primary(
 ) -> None:
     calls: list[object] = []
 
-    def fake_remove(*, path: Path | None = None) -> tuple[Path, YoetzConfig]:
+    def fake_remove(*, path: Path | None = None) -> tuple[Path, FinishUpConfig]:
         calls.append(path)
-        return tmp_path / "config.toml", YoetzConfig(
+        return tmp_path / "config.toml", FinishUpConfig(
             profile="local-openai", provider=_paired_config().provider
         )
 
@@ -150,7 +150,7 @@ def test_cli_fallback_remove_reports_the_remaining_primary(
     assert payload["fallback_endpoint"] is None
     assert payload["primary_endpoint"]["provider_id"] == "fireworks"
     assert payload["config_path"] == str(tmp_path / "config.toml")
-    assert "yoetz privacy setup" in result.stderr
+    assert "finishup privacy setup" in result.stderr
 
 
 def test_cli_fallback_primary_reports_both_endpoints_in_role_order(
@@ -160,7 +160,7 @@ def test_cli_fallback_primary_reports_both_endpoints_in_role_order(
 
     def fake_primary(
         primary: Literal["api_provider", "codex_subscription"], *, path: Path | None = None
-    ) -> tuple[Path, YoetzConfig]:
+    ) -> tuple[Path, FinishUpConfig]:
         chosen.append(primary)
         config = _paired_config().model_copy(
             update={
@@ -193,7 +193,7 @@ def test_cli_fallback_primary_reports_both_endpoints_in_role_order(
 def test_cli_fallback_primary_rejects_an_unknown_selector_before_any_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def explode(*_args: object, **_kwargs: object) -> tuple[Path, YoetzConfig]:
+    def explode(*_args: object, **_kwargs: object) -> tuple[Path, FinishUpConfig]:
         raise AssertionError("write_not_expected")
 
     monkeypatch.setattr(provider_binding, "set_semantic_fallback_primary", explode)
@@ -206,7 +206,7 @@ def test_cli_fallback_primary_rejects_an_unknown_selector_before_any_write(
 def test_cli_fallback_commands_surface_a_config_error_as_invalid_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def refuse(*_args: object, **_kwargs: object) -> tuple[Path, YoetzConfig]:
+    def refuse(*_args: object, **_kwargs: object) -> tuple[Path, FinishUpConfig]:
         raise ConfigError("semantic_fallback_endpoint_missing")
 
     monkeypatch.setattr(provider_binding, "remove_semantic_fallback", refuse)
@@ -252,7 +252,7 @@ def test_the_fallback_answer_flows_into_the_llm_channel(monkeypatch: pytest.Monk
 def test_configured_fallback_binding_reads_the_pairing_and_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _load_paired(*_args: object, **_kwargs: object) -> YoetzConfig:
+    def _load_paired(*_args: object, **_kwargs: object) -> FinishUpConfig:
         return _paired_config()
 
     monkeypatch.setattr(config_load, "load_config", _load_paired)
@@ -261,8 +261,8 @@ def test_configured_fallback_binding_reads_the_pairing_and_nothing_else(
     assert local is None
     assert external is not None and external.provider_id == "fireworks"
 
-    def _load_codex_only(*_args: object, **_kwargs: object) -> YoetzConfig:
-        return YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+    def _load_codex_only(*_args: object, **_kwargs: object) -> FinishUpConfig:
+        return FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
 
     monkeypatch.setattr(config_load, "load_config", _load_codex_only)
     assert privacy_setup.configured_fallback_binding() is None

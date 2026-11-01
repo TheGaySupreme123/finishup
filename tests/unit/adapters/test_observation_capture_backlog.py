@@ -8,10 +8,10 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.values import Timestamp
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.values import Timestamp
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 
 _OLDEST = Timestamp("2026-09-10T00:00:00.000Z")
 _OBSERVED = Timestamp("2026-09-10T00:00:05.000Z")

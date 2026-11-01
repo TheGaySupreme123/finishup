@@ -18,18 +18,20 @@ from typing import Any, cast
 import pytest
 from mcp import types
 
-import yoetz.cli.app as cli
-import yoetz.mcp.server as bridge
-from yoetz.cli.render import render_human_error
-from yoetz.mcp.errors import build_public_error_result
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+import finishup.cli.app as cli
+import finishup.mcp.server as bridge
+from finishup.cli.render import render_human_error
+from finishup.mcp.errors import build_public_error_result
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
+    CheckRequest,
     OperationFailureModel,
     PublishWorkResultModel,
     StartRequest,
 )
-from yoetz.protocol.recovery import RECOVERY_DIRECTIVES
+from finishup.protocol.recovery import RECOVERY_DIRECTIVES
 
 _REQUEST = "req_80d0cc7a-150f-4d7b-9aa3-a50312db0078"
 _CORRELATION = "err_2f56f4b8-2852-40b4-8052-9c5748fbf053"
@@ -96,7 +98,7 @@ class TestMalformedActorIdRegression:
         assert "Continuation: input_correction_new_identity." in text
         assert "NEW request_id" in text
         assert "codex:/root" not in text
-        assert len(text.encode("ascii")) <= 512
+        assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     def test_the_corrected_body_the_attempt_then_sent_validates(self) -> None:
         StartRequest.model_validate(_benchmark_start_body("codex:root"))
@@ -119,6 +121,8 @@ class TestTimeoutDirectivesFromTheBridgeMapper:
             ("start", "start_timeout_same_identity"),
             ("publish_work", "write_timeout_same_identity"),
             ("check", "write_timeout_same_identity"),
+            ("respond", "write_timeout_same_identity"),
+            ("receipt", "write_timeout_same_identity"),
             ("status", "read_timeout_new_identity"),
         ),
     )
@@ -132,7 +136,10 @@ class TestTimeoutDirectivesFromTheBridgeMapper:
         )
         error = _error_of(result)
         details = cast(dict[str, object], error["safe_details"])
-        assert details == {"continuation": token, "reason_code": "request_timeout"}
+        expected = {"continuation": token, "reason_code": "request_timeout"}
+        if operation in {"publish_work", "check", "respond", "receipt"}:
+            expected["replay_request_id"] = _REQUEST
+        assert details == expected
         text = _text(result)
         assert f"Continuation: {token}." in text
         assert RECOVERY_DIRECTIVES[token].directive in text
@@ -149,6 +156,163 @@ class TestTimeoutDirectivesFromTheBridgeMapper:
         assert "replay the exact same start body once with this same request_id" in text
         assert "view=operation" not in text
         assert "same request_id" in str(_error_of(result)["message"])
+
+
+_SESSION = "ses_00000000-0000-4000-8000-000000000001"
+_WRITER = "wri_00000000-0000-4000-8000-000000000001"
+
+
+def _check_body(mode: str) -> dict[str, object]:
+    return {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": _REQUEST,
+        "actor": {"actor_id": "harness:mcp", "actor_type": "harness"},
+        "client": {
+            "kind": "cooperative_agent",
+            "version": "0.1.0",
+            "integration": "cooperative_mcp",
+        },
+        "session_id": _SESSION,
+        "writer_id": _WRITER,
+        "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+        "mode": mode,
+    }
+
+
+class _TimingOutCheckClient:
+    """A service client whose ``check`` records its deadline, then fails as the daemon would."""
+
+    def __init__(self, failure: BaseException) -> None:
+        self.failure = failure
+        self.deadlines: list[int | None] = []
+
+    async def check(self, request: object, *, deadline_ms: int | None = None, **_: object) -> Any:
+        del request
+        self.deadlines.append(deadline_ms)
+        raise self.failure
+
+    async def close(self) -> None:
+        return None
+
+
+class TestAnInspectionFailsAsARead:
+    """Review of #1048: ``check`` ``mode: inspect`` records nothing (ADR-047).
+
+    The daemon already classified it read-only, but the bridge and the CLI classified by operation
+    name, so a timed-out inspection was told it "MAY already have committed", carried a
+    ``replay_request_id`` for an operation that never exists, and waited on the 280-second budget
+    of a check that may run an AI-powered review. A minting check keeps all of that.
+    """
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("mode", "deadline", "token"),
+        (
+            ("inspect", 30_000, "read_timeout_new_identity"),
+            ("deterministic_only", 280_000, "write_timeout_same_identity"),
+            ("semantic_required", 280_000, "write_timeout_same_identity"),
+        ),
+    )
+    async def test_a_timed_out_inspection_is_a_read_with_the_status_deadline(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str, deadline: int, token: str
+    ) -> None:
+        for name in ("", "_CHECK", "_STATUS"):
+            monkeypatch.delenv(f"FINISHUP_MCP_DEADLINE_MS{name}", raising=False)
+        client = _TimingOutCheckClient(
+            ControlError(
+                "request_timeout", retryable=True, correlation_id=_CORRELATION, phase="handler"
+            )
+        )
+
+        async def ensure(*_args: object, **_kwargs: object) -> _TimingOutCheckClient:
+            return client
+
+        monkeypatch.setattr(bridge, "ensure_service_client", ensure)
+        runtime = bridge.build_bridge_runtime()
+        try:
+            result = await bridge.dispatch_check(_check_body(mode), runtime)
+        finally:
+            await bridge.close_bridge_runtime(runtime)
+
+        # The RPC gets what remains of the one call deadline (review of #1226), never more.
+        (sent,) = client.deadlines
+        assert sent is not None and deadline - 1_000 < sent <= deadline
+        error = _error_of(result)
+        assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
+        assert error["retryable"] is True
+        details = cast(dict[str, object], error["safe_details"])
+        expected: dict[str, object] = {
+            "continuation": token,
+            "phase": "handler",
+            "reason_code": "request_timeout",
+        }
+        if mode != "inspect":
+            expected["replay_request_id"] = _REQUEST
+        assert details == expected
+        text = _text(result)
+        assert f"Continuation: {token}." in text
+        assert ("may still have committed" in str(error["message"])) is (mode != "inspect")
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("mode", "token"),
+        (
+            ("inspect", "read_timeout_new_identity"),
+            ("deterministic_only", "write_timeout_same_identity"),
+        ),
+    )
+    async def test_an_inspection_the_bridge_failed_to_send_is_repeated_as_a_read(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str, token: str
+    ) -> None:
+        client = _TimingOutCheckClient(RuntimeError("bridge fault"))
+
+        async def ensure(*_args: object, **_kwargs: object) -> _TimingOutCheckClient:
+            return client
+
+        monkeypatch.setattr(bridge, "ensure_service_client", ensure)
+        runtime = bridge.build_bridge_runtime()
+        try:
+            result = await bridge.dispatch_check(_check_body(mode), runtime)
+        finally:
+            await bridge.close_bridge_runtime(runtime)
+
+        error = _error_of(result)
+        details = cast(dict[str, object], error["safe_details"])
+        assert details == {"continuation": token, "reason_code": "bridge_invoke_failed"}
+        # The remedy never names an inspection among the writes to replay (PR #1054 review).
+        assert "check other than an inspection" in str(error["message"])
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("mode", "token"),
+        (
+            ("inspect", "read_timeout_new_identity"),
+            ("deterministic_only", "write_timeout_same_identity"),
+        ),
+    )
+    async def test_the_cli_names_a_timed_out_inspection_a_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        mode: str,
+        token: str,
+    ) -> None:
+        client = _TimingOutCheckClient(ControlError("request_timeout", retryable=True))
+
+        async def build(*_args: object, **_kwargs: object) -> _TimingOutCheckClient:
+            return client
+
+        monkeypatch.setattr(cli, "build_service_client", build)
+        code = await cli._call_workflow(  # pyright: ignore[reportPrivateUsage]
+            "check", CheckRequest, None, json.dumps(_check_body(mode)), False, 5_000
+        )
+        assert code != 0
+        # The CLI keeps the caller's explicit ``--deadline-ms`` for every mode.
+        assert client.deadlines == [5_000]
+        captured = capsys.readouterr().err
+        assert f"Continuation: {token}" in captured.splitlines()
+        assert RECOVERY_DIRECTIVES[token].directive in captured
 
 
 class TestReasonCodedProducersReachNativeText:
@@ -235,7 +399,7 @@ class TestCliSurfaces:
         assert lines[0] == "EVENT_INVALID: The event batch is invalid."
         assert "Continuation: sorted_set_required" in lines
         assert any(
-            line.startswith("Guidance: yoetz://guidance/publication-policy.md") for line in lines
+            line.startswith("Guidance: finishup://guidance/publication-policy.md") for line in lines
         )
 
     def test_lifecycle_refusal_line_carries_the_local_directive(self) -> None:
@@ -261,7 +425,7 @@ class TestCliSurfaces:
         assert lines[0].endswith(f"; correlation_id {_CORRELATION}")
         assert "Continuation: start_timeout_same_identity" in lines
         assert lines[-1] == RECOVERY_DIRECTIVES["start_timeout_same_identity"].nudge
-        assert "yoetz service run" not in captured
+        assert "finishup service run" not in captured
 
     def test_a_timeout_of_unknown_operation_keeps_the_generic_line(
         self, capsys: pytest.CaptureFixture[str]

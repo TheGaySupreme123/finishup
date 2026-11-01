@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import self_observation_deliverable
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation_selection import ObservationContentRole, classify_observation
+from finishup.adapters.integrations.observation_local import self_observation_deliverable
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation_selection import ObservationContentRole, classify_observation
 
 _KEY = b"k" * 32
 _SESSION = "hmac-sha256:" + "1" * 64
@@ -52,14 +52,14 @@ def test_structural_extraction_emits_only_typed_routine_marker() -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        "yoetz observe status",
-        "yoetz observe selection-status --workspace /exact/project",
-        "yoetz observe selection-preview --workspace /exact/project",
-        "yoetz closure-prepare --session-id session --writer-id writer",
+        "finishup observe status",
+        "finishup observe selection-status --workspace /exact/project",
+        "finishup observe selection-preview --workspace /exact/project",
+        "finishup closure-prepare --session-id session --writer-id writer",
     ],
 )
 def test_local_cli_self_reads_have_no_authenticated_launcher_reduction(command: str) -> None:
-    """A shell command cannot prove which Yoetz launcher actually executed it."""
+    """A shell command cannot prove which FinishUP launcher actually executed it."""
 
     payload = {
         "tool_name": "exec_command",
@@ -82,5 +82,5 @@ def test_local_cli_self_reads_have_no_authenticated_launcher_reduction(command: 
     assert classification.content_role is ObservationContentRole.BOTH
     assert "unknown_operation" in classification.reason_tokens
     assert "action" not in envelope.structural_payload
-    # ``exec_command`` is not an authenticated Yoetz MCP workflow spelling.
+    # ``exec_command`` is not an authenticated FinishUP MCP workflow spelling.
     assert self_observation_deliverable("PostToolUse", envelope.structural_payload) is True

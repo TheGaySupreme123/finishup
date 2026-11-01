@@ -15,17 +15,17 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.control import ServiceState
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.unlock import (
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.control import ServiceState
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.unlock import (
     UnlockCoordinator,
     UnlockError,
     UnlockThrottleStore,
 )
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.service.vault import VaultMode, VaultService
 
 _INSTALLATION_ID = "ins_00000000-0000-4000-8000-0000000000c1"
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-0000000000c2"

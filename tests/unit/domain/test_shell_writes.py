@@ -1,0 +1,994 @@
+"""The shell-write parser (ADR-045, tb4n3 RC-5, issue #1028): paths, scopes, bounds, honesty.
+
+Provenance: the independent Codex review of the round-3 lexer (``codex_review_4``) found four
+regressions and a set of inherited defects, each with an exact command. Every one of those
+commands is a vector in ``builders.shell_write_vectors`` with the paths and scopes the review
+named as right; the hook and Codex-stream callers read the same table in their own tests.
+A false write tells the agent its verification is stale and a missed write hides an edit made
+after it, so when the parser cannot be sure it names no write.
+"""
+
+from __future__ import annotations
+
+import shlex
+import time
+from collections.abc import Sequence
+
+import pytest
+
+from builders.shell_write_vectors import VECTORS, ShellWriteVector
+from finishup.domain import shell_writes
+from finishup.domain.observation import (
+    _MAX_OBSERVED_COMMAND_CHARS,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.domain.shell_writes import MAX_SHELL_WRITE_CHARS, shell_write_paths, shell_write_scope
+
+_DEADLINE_SECONDS = 2.0
+
+
+def _inside(path: str) -> bool:
+    return path == "/app" or path.startswith("/app/")
+
+
+def _ids(vectors: list[ShellWriteVector]) -> list[str]:
+    return [f"{index:03d}-{vector.source}" for index, vector in enumerate(vectors)]
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=_ids(VECTORS))
+def test_the_exact_commands_name_the_paths_the_review_calls_right(
+    vector: ShellWriteVector,
+) -> None:
+    assert shell_write_paths(vector.command) == vector.paths
+
+
+@pytest.mark.parametrize("vector", VECTORS, ids=_ids(VECTORS))
+def test_the_exact_commands_earn_the_scope_of_the_hook_and_of_the_stream(
+    vector: ShellWriteVector,
+) -> None:
+    hook = shell_write_scope(vector.command, workspace="/app", inside=_inside)
+    assert hook == vector.hook
+    stream = shell_write_scope(
+        vector.command, workspace=None, inside=lambda _path: False, relative_only=True
+    )
+    assert stream == vector.stream
+
+
+def test_the_cap_is_the_hooks_normalization_limit() -> None:
+    """``domain.observation`` cannot be imported for its private constant; this pins the copy."""
+
+    assert MAX_SHELL_WRITE_CHARS == _MAX_OBSERVED_COMMAND_CHARS == 16_384
+
+
+# --- bounds -----------------------------------------------------------------------------------
+
+
+def _timed(command: str) -> tuple[list[str], float]:
+    started = time.perf_counter()
+    paths = shell_write_paths(command)
+    return paths, time.perf_counter() - started
+
+
+def test_the_sed_in_place_backtracking_input_is_bounded_and_fast() -> None:
+    """Review 5: ``"sed -" + "i" * 64000 + "! solve.py"`` took 9 s in ``_SED_IN_PLACE``."""
+
+    for size in (32_000, 64_000):
+        paths, elapsed = _timed("sed -" + "i" * size + "! solve.py")
+        assert paths == []
+        assert elapsed < _DEADLINE_SECONDS
+    # Inside the cap the same shape is linear too, and the option is simply not in place.
+    paths, elapsed = _timed("sed -" + "i" * 16_000 + "! solve.py")
+    assert paths == []
+    assert elapsed < _DEADLINE_SECONDS
+
+
+def test_the_parser_never_reads_more_than_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The deterministic proof of the bound: no matter the input, the lexer sees at most the cap."""
+
+    seen: list[int] = []
+    real = shell_writes._lex  # pyright: ignore[reportPrivateUsage]
+
+    def spy(text: str, *, partial: bool) -> object:
+        seen.append(len(text))
+        return real(text, partial=partial)
+
+    monkeypatch.setattr(shell_writes, "_lex", spy)
+    shell_write_paths("echo x > a.txt\n" * 200_000)
+    shell_write_paths("cat > f <<'EOF'\n" + "line\n" * 100_000 + "EOF")
+    shell_write_paths("bash -lc '" + "echo x > a.txt; " * 5_000 + "'")
+    assert seen
+    assert max(seen) <= MAX_SHELL_WRITE_CHARS
+
+
+_ADVERSARIAL: list[tuple[str, str]] = [
+    ("nested substitutions", "echo " + "$(" * 8_000),
+    ("nested quoted substitutions", 'echo "' + "$(" * 2_500 + ")" * 2_500 + '"'),
+    ("many quotes", "echo " + "'a' " * 4_000),
+    ("many bangs", "! " * 8_000 + "cp a b"),
+    ("many wrapper options", "timeout " + "-v " * 5_000 + "cp a b"),
+    ("many words", "cp " + "a " * 8_000 + "b"),
+    ("many redirects", "echo x " + "> f ; " * 2_500),
+    ("many heredocs", "cat " + "<<A " * 3_000),
+    ("many backslashes", "echo " + "\\\\" * 8_000),
+    ("many arithmetic", "((" * 4_000),
+    ("nested arithmetic", "echo " + "$((" * 4_000),
+    ("many case words", "echo $(" + "case x " * 2_000),
+    ("continued heredoc", "cat <<EOF\n" + "x\\\n" * 5_000 + "EOF"),
+    ("many heredocs in a group", "echo $(" + "cat <<A\nx\nA\n" * 1_500 + ")"),
+    ("many comments in a group", "echo $(" + "# ) \n" * 3_000 + ")"),
+    ("deep wrappers", "bash -c " * 1_000),
+]
+
+
+@pytest.mark.parametrize(("name", "command"), _ADVERSARIAL, ids=[name for name, _ in _ADVERSARIAL])
+def test_adversarial_input_inside_and_beyond_the_cap_is_fast_and_never_raises(
+    name: str, command: str
+) -> None:
+    for text in (command[:MAX_SHELL_WRITE_CHARS], command * 8, command + "\n" + command):
+        paths, elapsed = _timed(text)
+        assert isinstance(paths, list), name
+        assert elapsed < _DEADLINE_SECONDS, name
+
+
+def test_a_megabyte_of_one_line_is_not_analysed_and_not_blocked() -> None:
+    paths, elapsed = _timed("echo " + "a" * (1 << 20) + " > f")
+    assert paths == []  # no complete line fits the cap: no guess
+    assert elapsed < _DEADLINE_SECONDS
+
+
+def test_a_long_heredoc_body_still_names_the_file_it_writes() -> None:
+    """8 of the 9 recorded commands over the cap are ``cat > solution <<'EOF'`` bodies."""
+
+    body = "x = 1\n" * 10_000
+    command = f"mkdir -p out && cat > out/solution.py <<'EOF'\n{body}EOF\n"
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == ["out/solution.py"]
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
+
+
+def test_a_long_heredoc_inside_the_recorded_bash_wrapper_still_names_its_file() -> None:
+    """Review round 1 (9): the rollout records ``/bin/bash -lc '<script>'``, so the cap cuts
+    inside the outer quoted argument; the stream must still see the write."""
+
+    body = "x\n" * 10_000
+    for script in (
+        "cat > solution.py <<'EOF'\n" + body + "EOF",
+        "cd /app && cat > /app/solution.py <<'EOF'\n" + body + "EOF",
+    ):
+        command = shlex.join(["/bin/bash", "-lc", script])
+        assert len(command) > MAX_SHELL_WRITE_CHARS
+        assert len(shell_write_paths(command)) == 1
+        assert shell_write_paths(command)[0].endswith("solution.py")
+        assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
+    relative = shlex.join(["/bin/bash", "-lc", "cat > solution.py <<'EOF'\n" + body + "EOF"])
+    scope = shell_write_scope(
+        relative, workspace=None, inside=lambda _path: False, relative_only=True
+    )
+    assert scope == "workspace"
+
+
+def test_a_write_after_the_cap_is_not_seen_and_a_cut_command_is_never_guessed() -> None:
+    padding = "# " + "p" * 80 + "\n"
+    command = padding * 300 + "echo done > late.txt\n"
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == []
+    # Whole lines before the cut are read; the line the cut interrupts is dropped, so a path can
+    # never be a truncated prefix of the real one.
+    head = "echo x > early.txt\n"
+    assert shell_write_paths(head + "echo y > " + "z" * MAX_SHELL_WRITE_CHARS) == ["early.txt"]
+    assert shell_write_paths(head + "echo y \\\n" + "z" * MAX_SHELL_WRITE_CHARS) == ["early.txt"]
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        # Review round 1 (10): a multi-line quote the cut leaves open erases nothing before it.
+        (": > early\nprintf 'hello\n" + "p" * 16_384 + "'", ["early"]),
+        (": > early\ncp src dest '\n" + "p" * 16_384 + "'", ["early"]),
+        (": > early\necho x > '\n" + "p" * 16_384 + "'", ["early"]),
+        (': > early\necho "a\n' + "p" * 16_384 + '"', ["early"]),
+        # A backslash in a comment, or an escaped backslash, continues no line.
+        (": > out; # \\\n" + "p" * 16_384, ["out"]),
+        (": > out \\\\\n" + "p" * 16_384, ["out"]),
+        # A line really continued past the cut is incomplete: its command is dropped.
+        (": > early\ncp src dest \\\n" + "p" * 16_384, ["early"]),
+        # An expansion the cut leaves open.
+        (": > early\necho $(cat <<EOF\n" + "p" * 16_384 + "\nEOF\n)", ["early"]),
+        # Review round 2 (1): a redirect of the command the cut interrupted is not a write either.
+        (": > ghost '\n" + "x" * 17_000, []),
+        (": > early\n: > ghost '\n" + "x" * 17_000, ["early"]),
+        (': > early\ncp a ghost "\n' + "x" * 17_000, ["early"]),
+    ],
+)
+def test_the_cut_keeps_what_precedes_it(command: str, paths: list[str]) -> None:
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    ("script", "paths"),
+    [
+        (": > ghost '\n" + "x" * 17_000, []),
+        (": > early\n: > ghost '\n" + "x" * 17_000, ["early"]),
+    ],
+)
+def test_the_cut_inside_the_recorded_bash_wrapper_keeps_what_precedes_it(
+    script: str, paths: list[str]
+) -> None:
+    command = shlex.join(["/bin/bash", "-lc", script])
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_write_paths(command) == paths
+
+
+def test_a_write_in_a_nested_shell_is_seen_through_the_recorded_wrapper_too() -> None:
+    """The rollout wraps the agent's own ``bash -c`` once more than the hook sees it."""
+
+    inner = shlex.join(["bash", "-c", shlex.join(["bash", "-c", "cat > solve.py"])])
+    assert shell_write_paths(inner) == ["solve.py"]
+    assert shell_write_paths(shlex.join(["/bin/bash", "-lc", inner])) == ["solve.py"]
+
+
+def test_wrapper_stripping_never_sees_more_than_a_constant_number_of_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``strip_wrappers`` shifts a list per wrapper option; the parser hands it a bounded head."""
+
+    seen: list[int] = []
+    real = shell_writes.strip_wrappers
+
+    def spy(words: Sequence[str]) -> list[str]:
+        seen.append(len(words))
+        return real(words)
+
+    monkeypatch.setattr(shell_writes, "strip_wrappers", spy)
+    assert shell_write_paths("env " + "- " * 8_000 + "touch out") == []  # too many to tell
+    assert shell_write_paths("timeout " + "-v " * 5_000 + "cp a b") == []
+    assert shell_write_paths("cp " + "a " * 8_000 + "b") == ["b"]
+    assert seen
+    assert max(seen) <= 128
+
+
+# --- honesty: no guessed write ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "$(',
+        "echo `",
+        "echo $'unterminated",
+        "echo ${",
+        "echo ((",
+        "echo \\",
+        "cat > ",
+        "cat <<",
+        ">",
+        "cp",
+        "cp a",
+        "sed -i",
+        "sed -i s/a/b/",
+        "tee",
+        "touch",
+        "dd of=",
+        "install -d",
+        "$(echo > a.txt)",
+        "echo x > $(echo a.txt)",
+        "echo x > `echo a.txt`",
+        "echo x > $'a.txt'",
+    ],
+)
+def test_a_command_the_parser_cannot_be_sure_of_names_no_write(command: str) -> None:
+    assert shell_write_paths(command) == []
+    assert shell_write_scope(command, workspace="/app", inside=_inside) is None
+
+
+def test_the_same_path_is_named_once_and_in_order() -> None:
+    assert shell_write_paths("echo a > b.txt; echo c >> b.txt; touch a.txt b.txt") == [
+        "b.txt",
+        "a.txt",
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "finishup_receipt.md",
+        "yoetz_receipt.md",
+        "/app/output/yoetz_receipt.json",
+        "YOETZ-export.txt",
+    ],
+)
+def test_a_receipt_saved_under_either_product_name_is_finishup_material(name: str) -> None:
+    """Agents guided before the rename save ``yoetz_receipt.md``; it is classified alike (ADR-048)."""
+
+    command = f": > {name}"
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "yoetz_owned"
+    if not name.startswith("/"):
+        assert (
+            shell_write_scope(
+                command, workspace=None, inside=lambda _path: False, relative_only=True
+            )
+            == "yoetz_owned"
+        )
+    # Two non-counting classes still count as an edit, whichever spelling names the receipt.
+    assert shell_write_scope(f": > NOTES.md; {command}", workspace="/app", inside=_inside) == (
+        "workspace"
+    )
+
+
+# --- n7 RC2(a): heredoc-fed patches name the files they write (#1106) --------------------------
+
+_DIFF = "--- a/src/x.py\n+++ b/src/x.py\n@@\n-it's\n+ok\n"
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        ("apply_patch <<'P'\n*** Begin Patch\n*** Update File: a.py\n*** End Patch\nP", ("a.py",)),
+        (
+            "applypatch <<'P'\n*** Add File: n.py\n*** Update File: o.py\n*** Move to: m.py\nP",
+            ("n.py", "o.py", "m.py"),
+        ),
+        (f"cd /app && git apply <<'EOF'\n{_DIFF}EOF\npytest -q", ("src/x.py",)),
+        (f"git apply -p1 --3way - <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"git apply -p0 <<'EOF'\n{_DIFF}EOF", ("b/src/x.py", "a/src/x.py")),
+        (f"patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"patch -p 0 -N <<'EOF'\n{_DIFF}EOF", ("b/src/x.py", "a/src/x.py")),
+        (f"patch <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        ("git apply <<'EOF'\n--- a/README.md\n+++ /dev/null\n@@\n-x\nEOF", ("README.md",)),
+        ("git apply <<'EOF'\n--- /dev/null\n+++ b/new.py\n@@\n+x\nEOF", ("new.py",)),
+        ("git apply <<'EOF'\n--- /tmp/a\t2026-01-01\n+++ /tmp/a\t2026-01-02\nEOF", ("tmp/a",)),
+        ("patch -p0 <<'EOF'\n--- /tmp/a\n+++ /tmp/a\nEOF", ("/tmp/a",)),
+        (
+            # A removed ``-- note`` and an added ``++ n`` body line are not file headers.
+            "git apply <<'EOF'\n--- a/q.sql\n+++ b/q.sql\n@@\n--- note\n+x\n+++ n\nEOF",
+            ("q.sql",),
+        ),
+    ],
+)
+def test_heredoc_patch_paths_reads_three_patch_forms(command: str, paths: tuple[str, ...]) -> None:
+    """n7 RC2(a): the patch's file headers are the write; the command's tokens show none."""
+
+    assert shell_writes.heredoc_patch_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git apply --check <<'EOF'\n{_DIFF}EOF",
+        f"git apply --stat <<'EOF'\n{_DIFF}EOF",
+        f"git apply --cached <<'EOF'\n{_DIFF}EOF",
+        f"git apply --directory=sub <<'EOF'\n{_DIFF}EOF",
+        f"git apply fix.patch <<'EOF'\n{_DIFF}EOF",
+        f"patch --dry-run -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -C -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 -i fix.patch <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 -o out.py <<'EOF'\n{_DIFF}EOF",
+        f"patch -d sub -p1 <<'EOF'\n{_DIFF}EOF",
+        f"patch -p1 src/x.py <<'EOF'\n{_DIFF}EOF",
+        f"cat <<'EOF'\n{_DIFF}EOF",
+        f"git apply <<'EOF'\n{_DIFF}",  # unterminated: not a complete edit
+        'git apply <<\'EOF\'\n--- "a/sp ace"\n+++ "b/sp ace"\nEOF',
+        f"git apply -p5 <<'EOF'\n{_DIFF}EOF",  # fewer components than the strip
+    ],
+)
+def test_heredoc_patch_paths_names_nothing_it_cannot_place(command: str) -> None:
+    assert shell_writes.heredoc_patch_paths(command) == ()
+
+
+@pytest.mark.parametrize(
+    ("command", "intercepted"),
+    [
+        ("apply_patch <<'EOF'\n*** Begin Patch\n*** End Patch\nEOF", True),
+        ("apply_patch <<'EOF'\n*** Begin Patch\n*** End Patch\nEOF\n", True),
+        ("applypatch <<EOF\n*** Begin Patch\n*** End Patch\nEOF", True),
+        ("cd /app && apply_patch <<'EOF'\n*** End Patch\nEOF", True),
+        ("cd '/my app' && apply_patch <<'EOF'\n*** End Patch\nEOF", True),
+        ("apply_patch <<'EOF'\n*** End Patch\nEOF\npytest -q", False),
+        ("apply_patch <<'EOF' && pytest -q\n*** End Patch\nEOF", False),
+        ("echo hi; apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("cd -P /app && apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("cd /app || apply_patch <<'EOF'\n*** End Patch\nEOF", False),
+        ("apply_patch x <<'EOF'\n*** End Patch\nEOF", False),
+        ("apply_patch <<'EOF'\n*** End Patch\n", False),
+        ("git apply <<'EOF'\n--- a/x\n+++ b/x\nEOF", False),
+    ],
+)
+def test_codex_intercepts_only_a_sole_shell_apply_patch(command: str, intercepted: bool) -> None:
+    """Codex 0.159 ``invocation.rs``: only a script that is that one statement is intercepted."""
+
+    assert shell_writes.codex_intercepts_shell_apply_patch(command) is intercepted
+
+
+# --- n7 RC2(c): a shell write of only project documentation is ``docs`` (#1106) ----------------
+
+
+@pytest.mark.parametrize(
+    ("command", "scope"),
+    [
+        ("cat > README.md <<'EOF'\n# Title\nEOF", "docs"),
+        ("echo '- fix' >> CHANGELOG.md", "docs"),
+        ("sed -i 's/a/b/' docs/guide.md", "docs"),
+        ("cat > README.md <<'EOF'\nx\nEOF\necho y > src/app.py", "workspace"),
+        ("echo x > README.md; echo y > NOTES.md", "workspace"),
+        ("cp a.md docs/", "workspace"),  # a directory destination is classified by location
+        ("echo x > tests/fixtures/expected.md", "workspace"),
+    ],
+)
+def test_a_shell_write_of_only_docs_is_docs(command: str, scope: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == scope
+
+
+def test_a_heredoc_patch_of_only_docs_is_docs() -> None:
+    command = "git apply <<'EOF'\n--- a/README.md\n+++ b/README.md\n@@\n-a\n+it's\nEOF"
+    assert shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=shell_writes.heredoc_patch_paths(command),
+    ) == ("docs")
+
+
+_PATCH = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+it's\n"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A long blank run between two separators before ``<<`` (quadratic under a regex search).
+        ";" + " " * 500_000 + ";git apply <<EOF\n" + _PATCH + "EOF\npytest -q\n",
+        "echo a;" + " " * 32_000 + ";git apply <<EOF\n" + _PATCH + "EOF\npytest -q\n",
+        "git apply " + "-v " * 200_000 + "<<EOF\n" + _PATCH + "EOF\n",
+        "<<  " * 100_000 + "\n",
+        "git apply <<'EOF'\n" + _PATCH * 20_000 + "EOF\npytest -q\n",
+    ],
+    ids=["blank-run", "blank-run-32k", "long-invocation", "many-heredoc-starts", "long-patch"],
+)
+def test_heredoc_patch_readers_are_linear(command: str) -> None:
+    """Every heredoc patch reader is fast on a megabyte-sized command (#1106 r1)."""
+
+    started = time.perf_counter()
+    shell_writes.heredoc_patch_paths(command)
+    shell_writes.codex_intercepts_shell_apply_patch(command)
+    assert time.perf_counter() - started < _DEADLINE_SECONDS
+
+
+def test_a_long_patch_past_the_token_bound_is_still_a_write() -> None:
+    command = "git apply <<'EOF'\n" + "+" * (MAX_SHELL_WRITE_CHARS + 10) + "\n" + _PATCH + "EOF\n"
+    assert shell_writes.heredoc_patch_paths(command) == ("x.py",)
+
+
+@pytest.mark.parametrize(
+    ("script", "paths"),
+    [
+        ("git apply <<'EOF'\n" + _PATCH + "EOF\npytest -q", ("x.py",)),
+        ("git apply <<EOF\n" + _PATCH + "EOF\npytest -q", ("x.py",)),
+        (
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.py\n@@\n-a\n+it's\n"
+            "*** End Patch\nEOF\npytest -q",
+            ("src/a.py",),
+        ),
+        ("patch -p1 <<'EOF'\n" + _PATCH + "EOF", ("x.py",)),
+    ],
+)
+def test_a_joined_native_argv_names_its_heredoc_patch(script: str, paths: tuple[str, ...]) -> None:
+    """A Codex ``CommandExecution`` command is ``['/bin/bash', '-lc', CMD]`` (#1106 r1)."""
+
+    for shell in ("/bin/bash", "bash", "/bin/zsh", "sh"):
+        joined = shlex.join([shell, "-lc", script])
+        assert shell_writes.heredoc_patch_paths(joined) == paths
+        assert (
+            shell_write_scope(
+                joined,
+                workspace=None,
+                inside=lambda _path: False,
+                relative_only=True,
+                also_written=shell_writes.heredoc_patch_paths(joined),
+            )
+            == "workspace"
+        )
+    # A quoted heredoc in an argument that is not a host shell's script stays unread.
+    assert shell_writes.heredoc_patch_paths(shlex.join(["echo", script])) == ()
+
+
+# --- #1106 r2: a relative write lands under the command's working directory --------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd tests/fixtures && cat > expected.md <<'EOF'\nnew\nEOF",
+        "cd tests && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: golden.md\n@@\n-a\n+b\n"
+        "*** End Patch\nEOF",
+        "cd tests/data && git apply <<'EOF'\n--- a/expected.md\n+++ b/expected.md\n@@\n-a\n+b\nEOF",
+        "cd /app/tests && echo x > golden.md",
+        "cd tests/fixtures && echo x > CHANGELOG.md",
+        # Any directory change but one leading literal ``cd`` cannot be placed.
+        "(cd docs && echo x > guide.md)",
+        "cd a && cd b && echo x > README.md",
+        "pushd docs && echo x > guide.md",
+        "cd ~/repo && echo x > README.md",
+        'cd "$DIR" && echo x > README.md',
+        "git -C docs apply <<'EOF'\n--- a/guide.md\n+++ b/guide.md\n@@\n-a\n+b\nEOF",
+    ],
+)
+def test_a_relative_doc_write_after_a_directory_change_is_placed_or_counts(command: str) -> None:
+    """correctness-r2-2: ``cd tests && cat > golden.md`` wrote a fixture that read as docs."""
+
+    assert (
+        shell_write_scope(
+            command,
+            workspace="/app",
+            inside=_inside,
+            also_written=shell_writes.heredoc_patch_paths(command),
+        )
+        == "workspace"
+    )
+    # The session stream knows no root: it never claims docs where the target lands unknown.
+    assert shell_write_scope(
+        command,
+        workspace=None,
+        inside=lambda _path: False,
+        relative_only=True,
+        also_written=shell_writes.heredoc_patch_paths(command),
+    ) in {None, "workspace"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd /app && echo x > README.md",
+        "cd docs && echo x > guide.md",
+        "cd /app/docs && cat > guide.md <<'EOF'\n# Guide\nEOF",
+    ],
+)
+def test_a_doc_write_placed_by_its_cd_stays_docs(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "docs"
+
+
+def test_a_working_directory_places_relative_writes() -> None:
+    assert (
+        shell_write_scope(
+            "echo x > README.md", workspace="/app", inside=_inside, working_directory="/app/tests"
+        )
+        == "workspace"
+    )
+    assert (
+        shell_write_scope(
+            "echo x > guide.md", workspace="/app", inside=_inside, working_directory="/app/docs"
+        )
+        == "docs"
+    )
+    assert (
+        shell_write_scope(
+            "cd fixtures && echo x > a.md",
+            workspace="/app",
+            inside=_inside,
+            working_directory="/app/docs",
+        )
+        == "workspace"
+    )
+    assert (
+        shell_write_scope("echo x > README.md", workspace="/app", inside=_inside, relocated=True)
+        == "workspace"
+    )
+    # The directory places documentation only: an ordinary write keeps its class.
+    assert (
+        shell_write_scope(
+            "echo x > a.py", workspace="/app", inside=_inside, working_directory="/app/src"
+        )
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("pytest -q", (None, False)),
+        ("cd /app && pytest -q", ("/app", False)),
+        ("cd ./docs/ && x", ("docs", False)),
+        ("cd /app && cd tests && x", (None, True)),
+        ("cd - && x", (None, True)),
+        ("ls; cd tests", (None, True)),
+        ("git -C sub status", (None, True)),
+        ("git -c a.b=c -C sub apply", (None, True)),
+        ("echo cdrom > x; abcd y", (None, False)),
+    ],
+)
+def test_command_working_directory(command: str, expected: tuple[str | None, bool]) -> None:
+    assert shell_writes.command_working_directory(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "paths"),
+    [
+        (f"git -C . apply <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"git -c core.x=y -C /app apply -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"sudo patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"sudo -n -u root git apply <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+        (f"env A=1 sudo -E patch -p1 <<'EOF'\n{_DIFF}EOF", ("src/x.py",)),
+    ],
+)
+def test_heredoc_patch_paths_reads_sudo_and_git_global_options(
+    command: str, paths: tuple[str, ...]
+) -> None:
+    """goal-r2-6: ``git -C <dir> apply`` and ``sudo patch`` are the patch tools too."""
+
+    assert shell_writes.heredoc_patch_paths(command) == paths
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"sudo -x patch -p1 <<'EOF'\n{_DIFF}EOF",  # an option sudo does not document here
+        f"sudo -u <<'EOF'\n{_DIFF}EOF",
+        f"git -C <<'EOF'\n{_DIFF}EOF",
+    ],
+)
+def test_heredoc_patch_paths_refuses_an_unknown_sudo_or_git_shape(command: str) -> None:
+    assert shell_writes.heredoc_patch_paths(command) == ()
+
+
+def test_a_long_heredoc_patch_in_a_native_argv_is_still_a_write() -> None:
+    """correctness-r2-4: a >16 KiB patch in ``["/bin/bash", "-lc", SCRIPT]`` named nothing once
+    joined, cut and re-split; the script is read from the argv itself."""
+
+    body = "".join(f"-old line {index}\n+new line {index}\n" for index in range(1500))
+    script = f"git apply <<'EOF'\n--- a/x.py\n+++ b/x.py\n@@\n{body}EOF\npytest -q"
+    assert len(script) > shell_writes.MAX_SHELL_WRITE_CHARS
+    argv = ["/bin/bash", "-lc", script]
+    text = shell_writes.shell_command_text(argv)
+    assert text == script
+    assert text is not None
+    assert shell_writes.heredoc_patch_paths(text) == ("x.py",)
+    assert (
+        shell_write_scope(
+            text,
+            workspace=None,
+            inside=lambda _path: False,
+            relative_only=True,
+            also_written=shell_writes.heredoc_patch_paths(text),
+        )
+        == "workspace"
+    )
+    assert shell_writes.shell_command_text(["pytest", "-q"]) == "pytest -q"
+    assert shell_writes.shell_command_text("ls") == "ls"
+    assert shell_writes.shell_command_text([1, 2]) is None
+
+
+# --- #1106 r3: a directory change inside a wrapped script, and heredoc bodies as data ----------
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("bash -c 'cd tests && echo x > golden.md'", ("tests", False)),
+        ('sh -c "cd tests/fixtures && printf x > expected.md"', ("tests/fixtures", False)),
+        ("bash -lc 'cd tests && cat > golden.md'", ("tests", False)),
+        ("/bin/bash -lc \"bash -c 'cd tests && echo x > a.md'\"", ("tests", False)),
+        ("cd tests && bash -c 'printf x > golden.md'", ("tests", False)),
+        ("sh -c 'cd tests; echo x > README.md'", (None, True)),
+        ("cd a && bash -c 'cd b && echo x > README.md'", (None, True)),
+        ("echo hi; bash -c 'cd tests && printf x > golden.md'", (None, True)),
+        ("env -C tests sh -c 'printf x > golden.md'", (None, True)),
+        ("env --chdir=tests sh -c 'printf x > README.md'", (None, True)),
+        ("env -iC tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo -D tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo --chdir=tests sh -c 'printf x > README.md'", (None, True)),
+        ("sudo -u app sh -c 'printf x > README.md'", (None, False)),
+        ("eval 'cd tests'; echo x > README.md", (None, True)),
+        ("echo $(cd tests && pwd) > README.md", (None, True)),
+        ("echo `cd tests` > README.md", (None, True)),
+        ("git -c a=b -C tests log > README.md", (None, True)),
+        ('bash -c "cd $D && echo x > README.md"', (None, True)),
+        ("cat > README.md <<'EOF'\n    cd repo && make\nThen cd into it.\nEOF", (None, False)),
+        (
+            "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: README.md\n@@\n"
+            "+    cd repo && make\n*** End Patch\nEOF",
+            (None, False),
+        ),
+        ("bash -lc 'cat > README.md <<EOF\n  cd repo\nEOF'", (None, False)),
+        ("echo 'unbalanced; cd tests && echo x > README.md", (None, True)),
+    ],
+)
+def test_the_working_directory_is_read_like_the_writes(
+    command: str, expected: tuple[str | None, bool]
+) -> None:
+    """correctness-r3-1, goal-r3-1, goal-r3-2: a ``cd`` inside a quoted ``sh -c`` script or behind
+    ``env -C`` was not seen while the script's write was, and a heredoc body that said ``cd`` made
+    a README unplaceable."""
+
+    assert shell_writes.command_working_directory(command) == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash -c 'cd tests && echo x > golden.md'",
+        'sh -c "cd tests/fixtures && printf x > expected.md"',
+        "bash -lc 'cd tests && cat > golden.md'",
+        "env -C tests sh -c 'printf x > golden.md'",
+        "env --chdir=tests sh -c 'printf x > README.md'",
+        "bash -lc 'cd tests && echo x > README.md'",
+    ],
+)
+def test_a_doc_name_written_in_a_wrapped_cd_is_an_ordinary_write(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "workspace"
+    assert (
+        shell_write_scope(command, workspace=None, inside=lambda _p: False, relative_only=True)
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat > README.md <<'EOF'\n    cd repo && make\nEOF",
+        "bash -lc 'cd docs && echo x > guide.md'",
+        "cd docs && cat > guide.md <<'EOF'\nThen cd into the folder.\nEOF",
+    ],
+)
+def test_a_readme_whose_body_says_cd_is_still_docs(command: str) -> None:
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "docs"
+
+
+def test_a_heredoc_patch_whose_body_says_cd_is_still_docs() -> None:
+    command = (
+        "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: docs/guide.md\n@@\n"
+        "+Then cd into the folder.\n*** End Patch\nEOF"
+    )
+    assert (
+        shell_write_scope(
+            command,
+            workspace="/app",
+            inside=_inside,
+            also_written=shell_writes.heredoc_patch_paths(command),
+        )
+        == "docs"
+    )
+
+
+@pytest.mark.parametrize("target", ["/etc", "/tmp", "/app/docs"])
+def test_a_relative_only_reader_cannot_place_an_absolute_cd(target: str) -> None:
+    """correctness-r3-3: with no workspace root an absolute ``cd`` cannot be placed in it."""
+
+    command = f"cd {target} && echo x > README.md"
+    assert (
+        shell_write_scope(command, workspace=None, inside=lambda _p: False, relative_only=True)
+        == "workspace"
+    )
+
+
+_UNPLACED_DIFF = "--- a/y.py\n+++ b/y.py\n@@\n-a\n+b\n"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"patch -d src -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --directory=src <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -o src/y.py <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -p1 -i fix.patch <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply fix.patch <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        "git apply <<'EOF'\ndiff --git a/README.md b/src/x.py\nrename from README.md\n"
+        "rename to src/x.py\nEOF",
+        'git apply <<\'EOF\'\n--- "a/sp ace"\n+++ "b/sp ace"\nEOF',
+        f"git apply -p5 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        'git apply <<\'EOF\'\n--- a/README.md\n+++ b/README.md\n--- "a/q"\n+++ "b/q"\nEOF',
+    ],
+)
+def test_an_applying_patch_it_cannot_place_is_an_ordinary_write(command: str) -> None:
+    """surfaces-r3-3: a heredoc patch that moves what it writes, or names a header the reader
+    cannot read, is still a write, and the unplaced class keeps an earlier verification honest."""
+
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes.unplaced
+    hook = shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    stream = shell_write_scope(
+        command,
+        workspace=None,
+        inside=lambda _path: False,
+        relative_only=True,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    assert hook == stream == "workspace"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"git apply --check <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --stat <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --cached <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply --directory=src --check <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch --dry-run -d src -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"patch -C -p1 <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"cat <<'EOF'\n{_UNPLACED_DIFF}EOF",
+        f"git apply <<'EOF'\n{_UNPLACED_DIFF}",  # unterminated: not a complete edit
+    ],
+)
+def test_a_check_only_or_absent_patch_writes_nothing(command: str) -> None:
+    assert shell_writes.heredoc_patch_writes(command) == shell_writes.HeredocPatchWrites((), False)
+
+
+def _outside(_path: str) -> bool:
+    return False
+
+
+_DOCS_SECTION = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@\n-a\n+b\n"
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "diff --git a/src/a.py b/src/b.py\nsimilarity index 100%\nrename from src/a.py\n"
+        "rename to src/b.py\n",
+        "diff --git a/src/a.py b/src/c.py\nsimilarity index 100%\ncopy from src/a.py\n"
+        "copy to src/c.py\n",
+        "diff --git a/src/empty.py b/src/empty.py\ndeleted file mode 100644\n"
+        "index e69de29..0000000\n",
+        "diff --git a/scripts/run.sh b/scripts/run.sh\nold mode 100644\nnew mode 100755\n",
+        "diff --git a/src/logo.png b/src/logo.png\nindex 1111111..2222222 100644\n"
+        "GIT binary patch\nliteral 4\nLcmZ?wbYK7g0RRC2\n\nliteral 0\nHcmV?d00001\n",
+        "diff --git a/src/logo.png b/src/logo.png\nindex 1111111..2222222 100644\n"
+        "Binary files a/src/logo.png and b/src/logo.png differ\n",
+    ],
+    ids=["rename", "copy", "empty-delete", "mode-only", "git-binary", "binary-files"],
+)
+@pytest.mark.parametrize("docs_first", [True, False], ids=["docs-first", "docs-last"])
+@pytest.mark.parametrize("tool", ["git apply", "patch -p1"])
+def test_a_docs_patch_with_a_section_it_cannot_read_is_an_ordinary_write(
+    section: str, docs_first: bool, tool: str
+) -> None:
+    """correctness-r4-2: a patch that updates README.md and also renames, copies, deletes an
+    empty file, changes a mode or carries a binary section writes a file the reader cannot read
+    from a ``---``/``+++`` pair; every section is read, so the patch is no documentation edit."""
+
+    body = _DOCS_SECTION + section if docs_first else section + _DOCS_SECTION
+    command = f"{tool} <<'EOF'\n{body}EOF"
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes.paths == ("README.md",)
+    assert writes.unplaced
+    for workspace, inside, relative_only in (("/app", _inside, False), (None, _outside, True)):
+        scope = shell_write_scope(
+            command,
+            workspace=workspace,
+            inside=inside,
+            relative_only=relative_only,
+            also_written=writes.paths,
+            unplaced_writes=writes.unplaced,
+        )
+        assert scope == "workspace"
+    # The docs section alone is still documentation.
+    alone = shell_writes.heredoc_patch_writes(f"{tool} <<'EOF'\n{_DOCS_SECTION}EOF")
+    assert alone == shell_writes.HeredocPatchWrites(("README.md",), False)
+
+
+def test_a_rename_with_content_names_both_its_paths() -> None:
+    """A rename that also changes content removes its old path: the source file is written."""
+
+    command = (
+        "git apply <<'EOF'\ndiff --git a/src/x.py b/docs/x.md\nsimilarity index 90%\n"
+        "rename from src/x.py\nrename to docs/x.md\n--- a/src/x.py\n+++ b/docs/x.md\n@@\n-a\n+b\n"
+        "EOF"
+    )
+    writes = shell_writes.heredoc_patch_writes(command)
+    assert writes == shell_writes.HeredocPatchWrites(("docs/x.md", "src/x.py"), False)
+    assert (
+        shell_write_scope(command, workspace="/app", inside=_inside, also_written=writes.paths)
+        == "workspace"
+    )
+
+
+@pytest.mark.parametrize(
+    ("flags", "unplaced"),
+    [
+        ("--stat --apply", False),
+        ("--apply --stat", False),
+        ("--check --apply", False),
+        ("--numstat --apply", False),
+        ("--summary --apply", False),
+        ("--stat --numstat --summary --apply", False),
+        ("--stat --reject", False),
+        ("--check --no-check", False),
+        ("--stat --no-stat", False),
+        ("--build-fake-ancestor=fake.idx --apply", False),
+        ("--cached --no-cached", False),
+        # An abbreviation the reader does not know may be ``--apply``.
+        ("--stat --app", True),
+    ],
+)
+def test_a_report_flag_that_still_applies_is_a_write(flags: str, unplaced: bool) -> None:
+    """correctness-r4-3: ``--stat``/``--check``/``--numstat``/``--summary`` turn applying off, but
+    ``--apply`` turns it back on: ``git apply --stat --apply`` prints the diffstat and applies."""
+
+    command = f"git apply {flags} <<'EOF'\n{_DOCS_SECTION}EOF"
+    writes = shell_writes.heredoc_patch_writes(command)
+    expected = () if unplaced else ("README.md",)
+    assert writes == shell_writes.HeredocPatchWrites(expected, unplaced)
+    scope = shell_write_scope(
+        command,
+        workspace="/app",
+        inside=_inside,
+        also_written=writes.paths,
+        unplaced_writes=writes.unplaced,
+    )
+    assert scope == ("workspace" if unplaced else "docs")
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        "--stat",
+        "--check --numstat",
+        "--stat --summary",
+        "--apply --no-apply --stat",
+        "--reject --no-reject --check",
+        "--build-fake-ancestor fake.idx",
+        "--build-fake-ancestor=fake.idx",
+        "--cached --apply",
+        "--directory=src --check",
+    ],
+)
+def test_a_report_only_git_apply_writes_nothing(flags: str) -> None:
+    command = f"git apply {flags} <<'EOF'\n{_DOCS_SECTION}EOF"
+    assert shell_writes.heredoc_patch_writes(command) == shell_writes.HeredocPatchWrites((), False)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env " * 200_000 + "-C x",
+        "bash -c '" + "cd x; " * 100_000 + "'",
+        "cat <<EOF\n" + "cd x\n" * 200_000 + "EOF\n" + "echo y > README.md\n",
+        "echo " + "a " * 400_000 + "> README.md\n" + "x\n" * 10,
+        "git apply <<'EOF'\n" + "+cd x\n" * 200_000 + "EOF\n",
+    ],
+    ids=["many-env", "nested-cds", "long-heredoc", "long-line", "long-patch"],
+)
+def test_the_working_directory_reader_is_linear(command: str) -> None:
+    started = time.perf_counter()
+    shell_writes.command_working_directory(command)
+    shell_write_scope(command, workspace="/app", inside=_inside)
+    assert time.perf_counter() - started < _DEADLINE_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("git " * 4_000 + "> README.md", (None, False)),
+        ("sudo " * 3_200 + "> README.md", (None, False)),
+        ("env " * 4_000 + "-C x", (None, True)),
+    ],
+    ids=["many-git", "many-sudo", "many-env-then-chdir"],
+)
+def test_many_wrapper_words_inside_the_bound_are_read_in_one_pass(
+    command: str, expected: tuple[str | None, bool]
+) -> None:
+    """Each wrapper word asks whether a later word changes its directory: one pass, not n^2.
+
+    The command is inside ``MAX_SHELL_WRITE_CHARS``, so every word is lexed, and a hook may read
+    it three times for one call (a Codex hook that looks up its call's workdir).
+    """
+
+    assert len(command) <= shell_writes.MAX_SHELL_WRITE_CHARS
+    started = time.perf_counter()
+    for _ in range(3):
+        assert shell_writes.command_working_directory(command) == expected
+    assert time.perf_counter() - started < 0.5
+
+
+def test_a_long_patch_whose_tail_says_cd_is_still_docs() -> None:
+    """Past the token bound the text is searched less its heredoc bodies."""
+
+    body = "".join(f"+    cd repo{index} && make\n" for index in range(1200))
+    command = f"git apply <<'EOF'\n--- a/README.md\n+++ b/README.md\n@@\n{body}EOF\n"
+    assert len(command) > MAX_SHELL_WRITE_CHARS
+    assert shell_writes.command_working_directory(command) == (None, False)
+    assert shell_writes.command_working_directory(command + "cd tests\n") == (None, True)

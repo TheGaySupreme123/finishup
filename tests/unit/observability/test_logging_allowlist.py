@@ -9,9 +9,9 @@ from typing import cast
 import pytest
 
 from builders.clock import frozen_clock
-from yoetz.config.models import LoggingConfig
-from yoetz.domain.findings import RUNTIME_FAILURE_STAGES, SemanticFailureClass
-from yoetz.observability.logging import (
+from finishup.config.models import LoggingConfig
+from finishup.domain.findings import RUNTIME_FAILURE_STAGES, SemanticFailureClass
+from finishup.observability.logging import (
     LogMode,
     configure_logging,
     get_logger,
@@ -19,7 +19,7 @@ from yoetz.observability.logging import (
     record_fatal_exception_without_raising,
     record_unexpected_exception_without_raising,
 )
-from yoetz.protocol.ids import IdKind, validate_id
+from finishup.protocol.ids import IdKind, validate_id
 
 _NOW = datetime(2026, 7, 19, 12, 34, 56, 789000, tzinfo=UTC)
 _REQUEST_ID = "req_11111111-1111-4111-8111-111111111111"
@@ -135,7 +135,7 @@ def test_payload_and_secret_fields_are_redacted(capsys: pytest.CaptureFixture[st
     assert _CANARY not in capsys.readouterr().err
 
 
-def test_non_yoetz_logger_names_are_suppressed_or_formed(
+def test_non_finishup_logger_names_are_suppressed_or_formed(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _configure(LogMode.MCP_STDIO)

@@ -8,23 +8,23 @@ from typing import Any, cast
 import pytest
 
 from builders.replay import replay_records
-from fixture_loader import FixtureLoader
-from yoetz.domain.events import (
+from finishup.domain.events import (
     PayloadRef,
     accepted_record_digest_preimage,
     accepted_record_to_json,
 )
-from yoetz.domain.values import object_id
-from yoetz.protocol.canonical import (
+from finishup.domain.values import object_id
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_encode,
     entry_digest,
     request_digest,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import MAX_OBJECT_PLAINTEXT_BYTES
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import MAX_OBJECT_PLAINTEXT_BYTES
+from finishup.protocol.schemas import validate_schema_instance
+from fixture_loader import FixtureLoader
 
 
 def _fixture(loader: FixtureLoader, path: str) -> dict[str, Any]:
@@ -136,7 +136,7 @@ def test_entry_digest_rejects_non_preimage_views(mutation: str) -> None:
     elif mutation == "extra_field":
         preimage["transport"] = {}
     else:
-        preimage["protocol"] = "yoetz"
+        preimage["protocol"] = "finishup"
 
     with pytest.raises(ProtocolValueError) as caught:
         entry_digest(cast(JsonValue, preimage))

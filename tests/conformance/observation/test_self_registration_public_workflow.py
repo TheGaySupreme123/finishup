@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import multi_agent_service
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -150,7 +150,7 @@ async def test_self_registration_pending_acceptance_closure_and_receipt_rollup(
                         "expected_frontier": dict(current.head_frontier.as_wire().items()),
                         "mode": "deterministic_only",
                         "max_findings": "10",
-                        "policy_packs": ["work-integrity/0.1.0"],
+                        "policy_packs": ["work-integrity/0.3.0"],
                     }
                 ),
                 repository_privacy_context=_REPOSITORY,

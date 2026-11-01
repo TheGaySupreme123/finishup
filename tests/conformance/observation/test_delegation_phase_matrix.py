@@ -14,28 +14,28 @@ from typing import cast
 
 import pytest
 
-import yoetz.application.start as start_module
+import finishup.application.start as start_module
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.adapters.sqlite.lineage_catalog import SqliteLineageStore
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.application.lineage import (
+from finishup.adapters.sqlite.lineage_catalog import SqliteLineageStore
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.application.lineage import (
     DelegationOperation,
     DelegationOperationState,
     DelegationPhase,
     LineageCoordinator,
 )
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.config.models import LineageSettings, YoetzConfig
-from yoetz.domain.coordination import LineageAcceptance
-from yoetz.domain.events import AcceptedEvent, DelegationDeclaredPayload
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.ports.start_catalog import SafeReason, StartPhase
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.config.models import FinishUpConfig, LineageSettings
+from finishup.domain.coordination import LineageAcceptance
+from finishup.domain.events import AcceptedEvent, DelegationDeclaredPayload
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.ports.start_catalog import SafeReason, StartPhase
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -254,7 +254,7 @@ async def test_public_attach_handle_expiry_is_typed_and_does_not_rotate_child(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path / "workspace")
-    config = YoetzConfig(lineage=LineageSettings(attach_handle_ttl_seconds=1))
+    config = FinishUpConfig(lineage=LineageSettings(attach_handle_ttl_seconds=1))
     async with multi_agent_service(tmp_path / "state", config=config) as service:
         parent = await service.app.start(
             StartRequest.model_validate(

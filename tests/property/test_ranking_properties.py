@@ -5,16 +5,17 @@ from __future__ import annotations
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
     FindingKind,
     FindingOrigin,
+    finding_policy_identity,
 )
-from yoetz.domain.values import Frontier, finding_id, obligation_id
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier, finding_id, obligation_id
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -41,19 +42,10 @@ def _coverage(*, gaps: tuple[str, ...] = ()) -> Coverage:
 
 
 def _finding(index: int, kind: FindingKind, coverage: Coverage) -> Finding:
-    policy_id = (
-        "coordination"
-        if kind is FindingKind.COORDINATION_OVERLAP
-        else "research-evidence"
-        if kind
-        in {
-            FindingKind.EVIDENCE_DOES_NOT_SUPPORT_CLAIM,
-            FindingKind.DIFF_DOES_NOT_MATCH_ACCOUNT,
-            FindingKind.MATERIAL_LIMITATION_OMITTED,
-            FindingKind.QUESTIONABLE_FINDING_REJECTION,
-        }
-        else "work-integrity"
-    )
+    # The pack that owns each kind is the domain's decision (`finding_policy_identity`), not this
+    # test's: a hardcoded id went stale when more kinds moved to the research-evidence pack and
+    # the Finding constructor began refusing any other identity (`invalid_finding_policy_identity`).
+    policy_id, policy_version = finding_policy_identity(kind)
     return Finding(
         finding_id=finding_id(f"fnd_00000000-0000-4000-8000-{index:012d}"),
         kind=kind,
@@ -63,7 +55,7 @@ def _finding(index: int, kind: FindingKind, coverage: Coverage) -> Finding:
         detail="Property detail",
         subject_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000001"),),
         policy_id=policy_id,
-        policy_version="0.1.0",
+        policy_version=policy_version,
         subject_frontier=Frontier(1, _DIGEST),
         coverage=coverage,
     )

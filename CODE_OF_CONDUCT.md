@@ -64,7 +64,7 @@ Not every conflict represents a code of conduct violation, and this Code of Cond
 encouraged behaviors and norms that can help avoid conflicts and minimize harm.
 
 When an incident does occur, it is important to report it promptly. To report a possible violation,
-email **support@yoetz.dev** with "Code of conduct" in the subject line. This address is private
+email **support@finishup.dev** with "Code of conduct" in the subject line. This address is private
 and is not a public issue tracker; it is the same maintained maintainer mailbox that serves as the
 security fallback in [`SECURITY.md`](SECURITY.md).
 
@@ -124,7 +124,7 @@ Managers to use their discretion and judgment, in keeping with the best interest
 
 This Code of Conduct applies within all community spaces, and also applies when an individual is
 officially representing the community in public or other spaces. For this project, community spaces
-include this repository's issues, pull requests, and discussions, and any other official Yoetz
+include this repository's issues, pull requests, and discussions, and any other official FinishUP
 project space. Examples of representing our community include using an official email address,
 posting via an official social media account, or acting as an appointed representative at an online
 or offline event.

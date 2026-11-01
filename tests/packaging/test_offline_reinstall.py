@@ -1,7 +1,7 @@
 """Hash-locked, network-denied reinstall.
 
 Proves that the captured release wheelhouse (the real built wheel plus a warmed, real ``uv`` cache
-standing in for the release wheelhouse) is sufficient to install and reinstall strict-local Yoetz
+standing in for the release wheelhouse) is sufficient to install and reinstall strict-local FinishUP
 with ``--offline`` -- uv's own hard network-denial flag -- and that missing dependencies, a
 platform/arch mismatch, and a corrupted/hash-mismatched wheel each fail closed before a partial
 usable environment, rather than silently falling back to a registry, a source build, or a relaxed
@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,13 +64,14 @@ def warm_wheelhouse_cache(built_dist: _BuiltDist) -> None:
     a wheelhouse. Every test in this module then installs with --offline against that capture."""
 
     warm_dir = built_dist.directory.parent / "warm-venv"
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(warm_dir)],
+    created = subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(warm_dir)],
         capture_output=True,
         timeout=120,
         check=False,
     )
-    subprocess.run(
+    assert created.returncode == 0, created.stderr.decode("utf-8", errors="replace")
+    installed = subprocess.run(
         [
             "uv",
             "pip",
@@ -78,16 +80,35 @@ def warm_wheelhouse_cache(built_dist: _BuiltDist) -> None:
             str(warm_dir / "bin" / "python"),
             "--find-links",
             str(built_dist.directory),
-            f"yoetz[semantic-openai,portable-recovery]=={built_dist.version}",
+            f"finishup[semantic-openai,portable-recovery]=={built_dist.version}",
         ],
         capture_output=True,
         timeout=180,
         check=False,
     )
+    assert installed.returncode == 0, installed.stderr.decode("utf-8", errors="replace")
 
 
 def _offline_env(home: Path) -> dict[str, str]:
-    return {**os.environ, "HOME": str(home), "UV_CACHE_DIR": _real_cache_dir()}
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "UV_CACHE_DIR": _real_cache_dir(),
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
+
+
+def _create_offline_venv(venv: Path, env: dict[str, str]) -> None:
+    # Changing HOME hides uv-managed interpreters. Resolve no version here: use the interpreter
+    # already running this test, and deny downloads during environment creation as well.
+    created = subprocess.run(
+        ["uv", "venv", "--offline", "--python", sys.executable, str(venv)],
+        capture_output=True,
+        timeout=60,
+        env=env,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr.decode("utf-8", errors="replace")
 
 
 def _offline_venv_install(
@@ -96,13 +117,7 @@ def _offline_venv_install(
     env = _offline_env(home)
     if extra_env:
         env.update(extra_env)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     return subprocess.run(
         [
             "uv",
@@ -131,10 +146,12 @@ def test_clean_offline_install_of_the_base_package(built_dist: _BuiltDist, tmp_p
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    result = _offline_venv_install(built_dist.directory, venv, home, f"yoetz=={built_dist.version}")
+    result = _offline_venv_install(
+        built_dist.directory, venv, home, f"finishup=={built_dist.version}"
+    )
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     version = subprocess.run(
-        [str(venv / "bin" / "yoetz"), "--version"], capture_output=True, timeout=15, check=False
+        [str(venv / "bin" / "finishup"), "--version"], capture_output=True, timeout=15, check=False
     )
     assert version.returncode == 0
     assert built_dist.version.encode() in version.stdout
@@ -148,7 +165,7 @@ def test_clean_offline_install_of_each_advertised_extra(
     home = tmp_path / "home"
     home.mkdir()
     result = _offline_venv_install(
-        built_dist.directory, venv, home, f"yoetz[{extra}]=={built_dist.version}"
+        built_dist.directory, venv, home, f"finishup[{extra}]=={built_dist.version}"
     )
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
 
@@ -165,7 +182,7 @@ def test_offline_install_never_touches_the_network(built_dist: _BuiltDist, tmp_p
         "HTTPS_PROXY": "http://127.0.0.1:1",
     }
     result = _offline_venv_install(
-        built_dist.directory, venv, home, f"yoetz=={built_dist.version}", extra_env=poisoned
+        built_dist.directory, venv, home, f"finishup=={built_dist.version}", extra_env=poisoned
     )
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     assert b"127.0.0.1:1" not in result.stderr
@@ -182,12 +199,14 @@ def test_uninstall_then_offline_reinstall_from_the_same_wheelhouse(
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    first = _offline_venv_install(built_dist.directory, venv, home, f"yoetz=={built_dist.version}")
+    first = _offline_venv_install(
+        built_dist.directory, venv, home, f"finishup=={built_dist.version}"
+    )
     assert first.returncode == 0, first.stderr
 
     env = _offline_env(home)
     uninstall = subprocess.run(
-        ["uv", "pip", "uninstall", "--python", str(venv / "bin" / "python"), "yoetz"],
+        ["uv", "pip", "uninstall", "--python", str(venv / "bin" / "python"), "finishup"],
         capture_output=True,
         timeout=60,
         env=env,
@@ -195,7 +214,7 @@ def test_uninstall_then_offline_reinstall_from_the_same_wheelhouse(
     )
     assert uninstall.returncode == 0, uninstall.stderr
     check_removed = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", "import yoetz"],
+        [str(venv / "bin" / "python"), "-c", "import finishup"],
         capture_output=True,
         timeout=15,
         check=False,
@@ -212,7 +231,7 @@ def test_uninstall_then_offline_reinstall_from_the_same_wheelhouse(
             "--offline",
             "--find-links",
             str(built_dist.directory),
-            f"yoetz=={built_dist.version}",
+            f"finishup=={built_dist.version}",
         ],
         capture_output=True,
         timeout=120,
@@ -221,7 +240,7 @@ def test_uninstall_then_offline_reinstall_from_the_same_wheelhouse(
     )
     assert second.returncode == 0, second.stderr.decode("utf-8", errors="replace")
     version = subprocess.run(
-        [str(venv / "bin" / "yoetz"), "--version"], capture_output=True, timeout=15, check=False
+        [str(venv / "bin" / "finishup"), "--version"], capture_output=True, timeout=15, check=False
     )
     assert version.returncode == 0
 
@@ -239,14 +258,8 @@ def test_missing_dependency_wheel_in_an_empty_cache_fails_closed(
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    env = {**os.environ, "HOME": str(home), "UV_CACHE_DIR": str(empty_cache)}
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    env = {**_offline_env(home), "UV_CACHE_DIR": str(empty_cache)}
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -257,7 +270,7 @@ def test_missing_dependency_wheel_in_an_empty_cache_fails_closed(
             "--offline",
             "--find-links",
             str(built_dist.directory),
-            f"yoetz=={built_dist.version}",
+            f"finishup=={built_dist.version}",
         ],
         capture_output=True,
         timeout=60,
@@ -269,7 +282,7 @@ def test_missing_dependency_wheel_in_an_empty_cache_fails_closed(
     assert "network was disabled" in stderr or "no solution" in stderr
     # No partial usable environment: the package must not have been linked in despite the failure.
     check = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", "import yoetz"],
+        [str(venv / "bin" / "python"), "-c", "import finishup"],
         capture_output=True,
         timeout=15,
         check=False,
@@ -285,14 +298,8 @@ def test_missing_dependency_wheel_never_falls_back_to_a_source_build(
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
-    env = {**os.environ, "HOME": str(home), "UV_CACHE_DIR": str(empty_cache)}
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    env = {**_offline_env(home), "UV_CACHE_DIR": str(empty_cache)}
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -304,7 +311,7 @@ def test_missing_dependency_wheel_never_falls_back_to_a_source_build(
             "--no-build",
             "--find-links",
             str(built_dist.directory),
-            f"yoetz=={built_dist.version}",
+            f"finishup=={built_dist.version}",
         ],
         capture_output=True,
         timeout=60,
@@ -329,13 +336,7 @@ def test_wrong_platform_apsw_wheel_fails_before_install(
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     foreign_platform = (
         "x86_64-manylinux_2_28" if os.uname().machine == "arm64" else "aarch64-apple-darwin"
     )
@@ -351,7 +352,7 @@ def test_wrong_platform_apsw_wheel_fails_before_install(
             foreign_platform,
             "--find-links",
             str(built_dist.directory),
-            f"yoetz=={built_dist.version}",
+            f"finishup=={built_dist.version}",
         ],
         capture_output=True,
         timeout=60,
@@ -392,20 +393,14 @@ def test_corrupted_wheel_fails_exact_hash_verification_before_any_install(
 
     requirements = tmp_path / "requirements.txt"
     requirements.write_text(
-        f"yoetz=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
+        f"finishup=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
     )
 
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",
@@ -433,7 +428,7 @@ def test_corrupted_wheel_fails_exact_hash_verification_before_any_install(
     assert correct_digest not in result.stdout.decode("utf-8", errors="replace")
 
     check = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", "import yoetz"],
+        [str(venv / "bin" / "python"), "-c", "import finishup"],
         capture_output=True,
         timeout=15,
         check=False,
@@ -447,20 +442,14 @@ def test_correct_hash_matching_the_real_wheel_installs_cleanly(
     correct_digest = hashlib.sha256(built_dist.wheel.read_bytes()).hexdigest()
     requirements = tmp_path / "requirements.txt"
     requirements.write_text(
-        f"yoetz=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
+        f"finishup=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
     )
 
     venv = tmp_path / "venv"
     home = tmp_path / "home"
     home.mkdir()
     env = _offline_env(home)
-    subprocess.run(
-        ["uv", "venv", "--python", "3.14", str(venv)],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
+    _create_offline_venv(venv, env)
     result = subprocess.run(
         [
             "uv",

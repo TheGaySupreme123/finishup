@@ -21,8 +21,8 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from yoetz.domain.coordination import CoordinationDisposition, OverlapKind
-from yoetz.domain.events import (
+from finishup.domain.coordination import CoordinationDisposition, OverlapKind
+from finishup.domain.events import (
     CLAIM_SCHEMA_VERSION,
     EVENT_FAMILIES,
     EVIDENCE_SCHEMA_VERSION,
@@ -68,6 +68,7 @@ from yoetz.domain.events import (
     RedactionState,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
@@ -83,7 +84,7 @@ from yoetz.domain.events import (
     media_type_for,
     normalize_payload_json,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     ResponseDisposition,
     RuntimeAttemptEvidence,
@@ -93,7 +94,7 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     WaiverScope,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     JsonObject,
@@ -112,22 +113,22 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     EvidenceImmutability,
     PublicationChannel,
     coverage_from_json,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
     SemanticStatus,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _FIXTURE_PATH = Path(__file__).parents[3] / "fixtures" / "replay" / "all-event-families.case.json"
 _LINEAGE_FIXTURE_PATH = (
@@ -150,9 +151,9 @@ _EVENT_MATRIX_SCRIPT: Final = textwrap.dedent(
     if hasattr(time, "tzset"):
         time.tzset()
 
-    from yoetz.domain.events import EventSchema, decode_payload, encode_payload
-    from yoetz.domain.values import freeze_json
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.events import EventSchema, decode_payload, encode_payload
+    from finishup.domain.values import freeze_json
+    from finishup.protocol.canonical import canonical_encode
 
     rows = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
     encoded = []
@@ -290,6 +291,7 @@ def _generated_payload(family: str, text_value: str, integer_value: int) -> Even
         "work_abandoned",
         "work_cancelled",
         "work_written_off",
+        "contact_expectation_declared",
         "coordination_obligation_declared",
     }:
         # Lineage payloads are intentionally all structural and closed.  Their golden rows already
@@ -560,12 +562,17 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         SCHEMA_VERSION,
         "1.1.0",
         "1.2.0",
+        "1.3.0",
+        "1.4.0",
+        "1.5.0",  # n6 item 4: deferred_before_first_edit
+        "1.6.0",  # #1118: the reviewer record
     }
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "finding_recorded"} == {
         SCHEMA_VERSION,
         "1.1.0",
         "1.2.0",
         "1.3.0",
+        "1.4.0",
     }
     assert {
         schema.version for schema in PAYLOAD_TYPES if schema.name == "coordination_context_recorded"
@@ -581,12 +588,17 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         if schema.name == "coordination_obligation_declared"
     } == {"1.0.0"}
     for family in ("session_opened", "session_resumed"):
-        expected_versions = {SCHEMA_VERSION, "1.1.0"}
-        if family == "session_opened":
-            expected_versions.add("1.2.0")
+        # session_opened 1.2.0 carries lineage and, optionally, the task statement; the
+        # session_resumed 1.2.0 version exists only to carry the statement (issue #908).
+        expected_versions = {SCHEMA_VERSION, "1.1.0", "1.2.0"}
         assert {
             schema.version for schema in PAYLOAD_TYPES if schema.name == family
         } == expected_versions
+    for family in ("plan_published", "plan_revised", "obligation_published", "decision_recorded"):
+        assert {schema.version for schema in PAYLOAD_TYPES if schema.name == family} == {
+            SCHEMA_VERSION,
+            "1.1.0",
+        }
     assert all(
         schema.version == SCHEMA_VERSION
         for schema in PAYLOAD_TYPES
@@ -594,12 +606,32 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         not in {
             "check_recorded",
             "claim_recorded",
+            "decision_recorded",
             "evidence_recorded",
             "finding_recorded",
+            "obligation_published",
+            "plan_published",
+            "plan_revised",
+            "response_recorded",
+            "result_recorded",
             "session_opened",
             "session_resumed",
         }
     )
+    # Issue #1170: 1.1.0 adds only the optional agent-declared test manifest.
+    assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "result_recorded"} == {
+        SCHEMA_VERSION,
+        "1.1.0",
+    }
+    # Issue #997: 1.1.0 admits the obligation-level ``acknowledged_not_done`` status.
+    assert {
+        schema.version for schema in PAYLOAD_TYPES if schema.name == "obligation_published"
+    } == {SCHEMA_VERSION, "1.1.0"}
+    # Issue #905: 1.1.0 exists only for the terminal ``acknowledged_not_done`` disposition.
+    assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "response_recorded"} == {
+        SCHEMA_VERSION,
+        "1.1.0",
+    }
 
 
 def test_coordination_payloads_round_trip_with_closed_wire_shapes() -> None:
@@ -832,7 +864,7 @@ def test_evidence_1_2_requires_closed_compatible_digest_provenance() -> None:
 
 
 def test_support_types_and_client_enum_identity_are_exact() -> None:
-    from yoetz.protocol import models
+    from finishup.protocol import models
 
     assert ClientKind is models.ClientKind
     assert IntegrationKind is models.IntegrationKind
@@ -849,6 +881,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
         "command",
         "change",
         "source",
+        "directory",
     )
     expected_enum_values = {
         NoObligationsReason: (
@@ -856,7 +889,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "single_atomic_change",
             "exploratory_scope_unknown",
         ),
-        ObligationStatus: ("open", "resolved"),
+        ObligationStatus: ("open", "resolved", "acknowledged_not_done"),
         WritePolicy: ("read_only", "writes_allowed"),
         ActionKind: ("command", "edit", "research", "review", "other"),
         ResultOutcome: ("success", "failure", "partial", "unknown"),
@@ -869,6 +902,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "other",
         ),
         ClaimKind: ("completion", "material"),
+        RequestedItemRole: ("input", "output"),
         ObligationChangeKind: ("superseded", "waived", "carried"),
         RedactionMethod: ("logical_redaction", "object_deletion"),
         RedactionReasonCategory: ("secret", "privacy", "retention", "legal", "other"),
@@ -877,7 +911,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
     }
     for enum_type, expected in expected_enum_values.items():
         assert tuple(member.value for member in enum_type) == expected
-    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value")
+    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value", "role")
     assert tuple(field.name for field in fields(ObligationChange)) == (
         "obligation_id",
         "change",
@@ -1535,6 +1569,31 @@ def test_subscription_provenance_requires_append_only_check_event_version() -> N
     assert decode_payload(EventSchema("check_recorded", "1.1.0"), wire) == semantic
 
 
+def test_plain_check_written_by_older_builds_replays_at_every_legacy_version() -> None:
+    """A plain check row from a released ledger must decode after an upgrade.
+
+    Builds before the review-output check shape wrote plain deterministic checks as 1.0.0 (and
+    the semantic line as 1.1.0); the current writer mints 1.2.0. Every one of those stays
+    readable, while 1.3.0, 1.4.0 and 1.5.0 stay reserved for the payloads that introduced them.
+    """
+    row = _ROW_BY_FAMILY["check_recorded"]
+    assert _schema_for(row) == EventSchema("check_recorded", SCHEMA_VERSION)
+    wire = freeze_json(row["payload"])
+    plain = cast(CheckRecordedPayload, decode_payload(EventSchema("check_recorded", "1.0.0"), wire))
+    assert plain.semantic_conclusion is None
+    assert plain.review_summary is None
+    assert plain.totals is None
+    for version in ("1.0.0", "1.1.0", "1.2.0"):
+        decoded = decode_payload(EventSchema("check_recorded", version), wire)
+        assert decoded == plain
+        assert encode_payload(decoded) == wire
+    for version in ("1.3.0", "1.4.0", "1.5.0"):
+        _assert_reason(
+            "invalid_event_schema",
+            lambda version=version: decode_payload(EventSchema("check_recorded", version), wire),
+        )
+
+
 def test_check_payload_provenance_matches_selected_final_outcome() -> None:
     payload = cast(CheckRecordedPayload, _decode_row(_ROW_BY_FAMILY["check_recorded"]))
     provenance = _selected_final_provenance()
@@ -2044,7 +2103,7 @@ def test_finding_payload_is_the_exact_finding_alias() -> None:
 
 
 def test_runtime_evidence_failure_stage_round_trips_and_stays_closed() -> None:
-    from yoetz.domain.findings import (
+    from finishup.domain.findings import (
         RUNTIME_FAILURE_STAGES,
         semantic_provenance_from_json,
         semantic_provenance_to_json,
@@ -2085,7 +2144,7 @@ def test_current_runtime_evidence_schema_accepts_every_failure_stage() -> None:
     every current result schema; a stale enum would make that result undeliverable on the wire.
     """
 
-    from yoetz.domain.findings import (
+    from finishup.domain.findings import (
         RUNTIME_FAILURE_STAGES,
         semantic_provenance_to_json,
     )
@@ -2120,7 +2179,7 @@ def test_current_runtime_evidence_schema_accepts_every_failure_stage() -> None:
 
 
 def test_runtime_evidence_token_usage_is_additive_and_omits_absent_bytes() -> None:
-    from yoetz.domain.findings import semantic_provenance_from_json, semantic_provenance_to_json
+    from finishup.domain.findings import semantic_provenance_from_json, semantic_provenance_to_json
 
     base = replace(
         _selected_final_provenance(),

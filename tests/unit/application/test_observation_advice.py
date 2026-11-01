@@ -8,15 +8,18 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import get_args
+from types import SimpleNamespace
+from typing import cast, get_args
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
-from yoetz.application.observation_advice import (
+from builders.observed_runs import ObservedLedger
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     ObservationAdviceContextBuilder,
     ObservationAdviceSemanticAddon,
     advice_delivery_identity,
+    bind_failed_command_advice,
     build_observation_advice_snapshot,
     hook_advice_context,
     minimized_semantic_evidence_packet,
@@ -24,12 +27,13 @@ from yoetz.application.observation_advice import (
     select_standing_item,
     semantic_state_from_addon,
     should_reissue_advice,
+    without_retired_failed_commands,
 )
-from yoetz.application.observation_coordinator import (
+from finishup.application.observation_coordinator import (
     _materialized_advice_items,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
 )
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import (
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationCursor,
     ObservationEnvelope,
@@ -38,8 +42,8 @@ from yoetz.domain.observation import (
     ObservationStatus,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp, finding_id
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp, finding_id
+from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
     OBSERVATION_ADVICE_POLICY_VERSION,
     AdviceNextAction,
@@ -48,7 +52,9 @@ from yoetz.kernel.policies.observation_advice import (
     evidence_basis_digest,
     observation_advice_findings,
 )
-from yoetz.mcp.resources import read_resource
+from finishup.kernel.reducers import replay
+from finishup.mcp.resources import read_resource
+from finishup.ports.runtime import TaskRuntime
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _TIME = Timestamp("2026-07-22T21:00:00.000Z")
@@ -868,9 +874,10 @@ def test_delivery_identity_ignores_evidence_refs_that_are_a_rolling_window() -> 
     later = _gap_snapshot(9)
 
     assert first.ranked_items[0].evidence_refs != later.ranked_items[0].evidence_refs
-    assert hook_advice_context(first) != hook_advice_context(later), (
-        "the delivered text must still carry its (moved) evidence reference"
-    )
+    # The delivered text cites the live cause, which leads the sorted refs (#917);
+    # the rolling envelope window still travels with the item.
+    assert first.ranked_items[0].evidence_refs[0] == "cause:source_lag"
+    assert "Evidence: cause:source_lag." in hook_advice_context(later)
     assert advice_delivery_identity(first) == advice_delivery_identity(later), (
         "the dedup key moved with a rolling evidence window; the advice will storm"
     )
@@ -883,10 +890,32 @@ def test_hook_advice_context_maps_refresh_observation_to_observe_status() -> Non
     item = snapshot.ranked_items[0]
     assert item.recommended_next_action == "refresh_observation"
     text = hook_advice_context(snapshot)
-    assert "yoetz observe status" in text
+    assert "finishup observe status" in text
     assert "Next: refresh_observation" not in text
     assert item.evidence_refs[0] in text
     assert len(text) <= 512
+    # Issue #911: a standing host-profile gap (Codex `unpaired_event`) never recovers in-session,
+    # so the clause must not ask the agent to wait for it, answer it, or recheck for it.
+    assert "wait for drain to recover" not in text
+    assert "wait only while it reports lag or a drain backlog" in text
+    assert "standing limitation: it needs no response or recheck" in text
+    assert "never blocks the receipt" in text
+    # A production-length hook reference still fits the bounded context whole.
+    long_refs = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=tuple(
+                _envelope(f"hook:{index:064x}", {"tool_name": "Read"}, pos=index)
+                for index in range(1, 4)
+            ),
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=("source_lag",),
+            has_real_observation=True,
+        )
+    )
+    assert long_refs is not None
+    long_text = hook_advice_context(long_refs)
+    assert long_text.endswith(f"Evidence: {long_refs.ranked_items[0].evidence_refs[0]}.")
+    assert len(long_text) <= 512
 
 
 def test_hook_advice_context_keeps_work_next_action_tokens() -> None:
@@ -909,10 +938,10 @@ def test_hook_advice_context_keeps_work_next_action_tokens() -> None:
 
 
 def test_workflow_guidance_documents_advice_next_action_tokens() -> None:
-    text = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    text = read_resource("finishup://guidance/workflow.md").decode("utf-8")
     for token in get_args(AdviceNextAction.__value__):
         assert f"`{token}`" in text, token
-    assert "`yoetz observe status`" in text
+    assert "`finishup observe status`" in text
     assert "not MCP tools" in text
 
 
@@ -925,6 +954,195 @@ def test_finding_identity_ignores_evidence_refs_that_are_a_rolling_window() -> N
     assert first.ranked_items[0].evidence_refs != later.ranked_items[0].evidence_refs
     assert first.evidence_basis_digest != later.evidence_basis_digest
     assert first.ranked_items[0].finding_id == later.ranked_items[0].finding_id
+
+
+def _failed_snapshot(identity: str) -> AdviceSnapshot:
+    snapshot = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=(
+                _envelope(
+                    identity, {"tool_name": "shell", "exit_status": 2, "correlation_id": "c"}
+                ),
+            ),
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=(),
+            has_real_observation=True,
+        )
+    )
+    assert snapshot is not None
+    return snapshot
+
+
+def test_failed_command_identity_uses_the_accepted_pair_instead_of_the_observer_envelope() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    pair = ledger.events_of(failed)
+    schemas = {str(record.event_id): record.schema.name for record in ledger.prefix}
+    first, later = _failed_snapshot("hook:failure"), _failed_snapshot("stream:failure")
+    assert first.ranked_finding_ids != later.ranked_finding_ids  # The #1160 reproduction.
+
+    def bind(snapshot: AdviceSnapshot, *, task: str = "task-1", refs: tuple[str, ...] = pair):
+        return bind_failed_command_advice(
+            snapshot,
+            task_id=task,
+            subject_refs={item.finding_id: refs for item in snapshot.ranked_items},
+            event_schemas=schemas,
+            findings={},
+        )
+
+    bound = bind(first)
+    assert bound.ranked_finding_ids == bind(later).ranked_finding_ids
+    assert advice_delivery_identity(bound) == advice_delivery_identity(bind(later))
+    assert bound.ranked_finding_ids != bind(first, task="task-2").ranked_finding_ids
+    assert bind(first, refs=pair[:1]).ranked_finding_ids == first.ranked_finding_ids
+    # Two observer candidates in a single snapshot are also one durable concern.
+    combined = replace(
+        first,
+        ranked_items=(*first.ranked_items, *later.ranked_items),
+        ranked_finding_ids=(*first.ranked_finding_ids, *later.ranked_finding_ids),
+    )
+    assert bind(combined).ranked_finding_ids == bound.ranked_finding_ids
+    other = ledger.fail("pytest -q")
+    schemas.update({str(record.event_id): record.schema.name for record in ledger.prefix})
+    assert bind(first, refs=ledger.events_of(other)).ranked_finding_ids != bound.ranked_finding_ids
+
+
+def test_repeated_failure_keeps_legacy_ids_reason_responses_duplicate_links_and_retirement() -> (
+    None
+):
+    from finishup.domain.events import EventSchema, ResponseRecordedPayload
+    from finishup.domain.findings import ResponseDisposition
+    from finishup.kernel.projections import duplicate_link_holds
+    from finishup.kernel.receipt_capacity import current_receipt_findings
+
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    pair = ledger.events_of(failed)
+    original = ledger.advice_finding(pair, number=90)
+    # Same issue key, recorded later: receipts, status and check report this row, so advice
+    # names it too (#1165 review), whatever its ID sorts as.
+    duplicate = ledger.advice_finding(pair, number=1)
+    ledger.respond(original, ResponseDisposition.ACKNOWLEDGED, reason="Original answer")
+    ledger.append(
+        EventSchema("response_recorded", "1.1.0"),
+        ResponseRecordedPayload(
+            duplicate,
+            ledger.frontier,
+            ResponseDisposition.DUPLICATE_OF,
+            duplicate_of_finding_id=original,
+        ),
+        observed=False,
+    )
+    snapshot = _failed_snapshot("hook:later-frontier")
+
+    def bind() -> AdviceSnapshot:
+        state = replay(ledger.prefix)
+        before = dict(state.findings)
+        bound = bind_failed_command_advice(
+            snapshot,
+            task_id="task-1",
+            subject_refs={snapshot.ranked_finding_ids[0]: pair},
+            event_schemas={str(record.event_id): record.schema.name for record in ledger.prefix},
+            findings=state.findings,
+        )
+        assert state.findings == before
+        assert bound.ranked_finding_ids == (duplicate,)
+        assert bound.ranked_finding_ids == tuple(
+            finding.finding_id for finding in current_receipt_findings(state)
+        )
+        assert bound.ranked_items[0].detail == state.findings[duplicate].payload.detail  # type: ignore[union-attr]
+        assert state.responses[original].payload.reason == "Original answer"  # type: ignore[union-attr]
+        assert duplicate_link_holds(state, duplicate) == original
+        return bound
+
+    bind()
+    passing = ledger.passes("pytest -q")
+    retired = replay(ledger.prefix).findings[original]
+    assert retired.retired_by_event_id == ledger.events_of(passing)[1]
+    bind()
+    ledger.redact(ledger.events_of(passing)[1])
+    assert replay(ledger.prefix).findings[original].retired_by_event_id is None
+    bind()
+
+
+def test_advice_and_receipt_name_the_same_row_when_the_ledger_already_holds_copies() -> None:
+    """#1165 review: an older build recorded one failed pair twice with the same issue key.
+
+    Receipts, status and check keep the newest row per issue key. Advice used to bind to the
+    earliest copy, so the hook asked for an answer on a row the receipt no longer showed and
+    answering it left the receipt's row open.
+    """
+
+    from builders.observed_runs import observed_receipt
+    from finishup.domain.receipts import ReceiptSectionKey
+    from finishup.kernel.receipt_capacity import current_receipt_findings
+
+    ledger = ObservedLedger()
+    pair = ledger.events_of(ledger.fail("pytest -q"))
+    earlier = ledger.advice_finding(pair, number=90)
+    later = ledger.advice_finding(pair, number=91)
+    state = replay(ledger.prefix)
+    snapshot = _failed_snapshot("hook:copies")
+    bound = bind_failed_command_advice(
+        snapshot,
+        task_id="task-1",
+        subject_refs={snapshot.ranked_finding_ids[0]: pair},
+        event_schemas={str(record.event_id): record.schema.name for record in ledger.prefix},
+        findings=state.findings,
+    )
+    receipt_ids = tuple(finding.finding_id for finding in current_receipt_findings(state))
+    assert receipt_ids == (later,)
+    assert bound.ranked_finding_ids == receipt_ids
+    section = next(
+        section
+        for section in observed_receipt(ledger).sections
+        if section.key is ReceiptSectionKey.FINDINGS_AND_DISPOSITIONS
+    )
+    assert str(later) in section.body and str(earlier) not in section.body
+
+
+def test_cached_binding_is_reused_only_while_it_still_matches_the_ledger() -> None:
+    """#1165 review: the binding cache must never crash, rescan needlessly, or go stale.
+
+    An advice-only row (``provider_not_ready``) has no ledger finding and must not defeat a
+    hit. A changed evidence ref under a cached ID, or a cached ID that a newer copy with the
+    same issue key has superseded on the receipt, returns ``None`` so the coordinator
+    recomputes instead of raising ``KeyError`` or naming a superseded row.
+    """
+
+    from finishup.application.observation_coordinator import (
+        _rebound_cached_advice,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
+    )
+
+    ledger = ObservedLedger()
+    pair = ledger.events_of(ledger.fail("pytest -q"))
+    recorded = ledger.advice_finding(pair, number=90)
+    fresh = _failed_snapshot("hook:cached")
+    failed_item = fresh.ranked_items[0]
+    advisory = replace(
+        failed_item,
+        finding_id=finding_id("fnd_00000000-0000-4000-8000-000000000777"),
+        rule_code="provider_not_ready",
+        evidence_refs=(),
+    )
+    snapshot = replace(
+        fresh,
+        ranked_items=(failed_item, advisory),
+        ranked_finding_ids=(failed_item.finding_id, advisory.finding_id),
+    )
+    cached = (replace(failed_item, finding_id=recorded), advisory)
+    findings = replay(ledger.prefix).findings
+
+    rebound = _rebound_cached_advice(cached, snapshot, findings)
+    assert rebound is not None
+    assert rebound.ranked_finding_ids == (recorded, advisory.finding_id)
+    assert rebound.ranked_items[0].evidence_refs == failed_item.evidence_refs
+
+    moved = (replace(cached[0], evidence_refs=("hook:probe:failed",)), advisory)
+    assert _rebound_cached_advice(moved, snapshot, findings) is None
+
+    ledger.advice_finding(pair, number=91)
+    assert _rebound_cached_advice(cached, snapshot, replay(ledger.prefix).findings) is None
 
 
 def test_delivery_identity_distinguishes_successive_failed_commands() -> None:
@@ -1223,7 +1441,7 @@ def test_deterministic_only_vs_configured_semantic() -> None:
     assert len(snapshot.ranked_finding_ids) >= 2
 
 
-def test_semantic_observation_review_receives_the_trusted_yoetz_session() -> None:
+def test_semantic_observation_review_receives_the_trusted_finishup_session() -> None:
     session_id = "ses_00000000-0000-4000-8000-000000000001"
     observed: list[str | None] = []
 
@@ -1255,14 +1473,14 @@ def test_semantic_observation_review_receives_the_trusted_yoetz_session() -> Non
             return None
 
     async def review(
-        candidates: object, basis: str, gaps: tuple[str, ...], yoetz_session_id: str | None
+        candidates: object, basis: str, gaps: tuple[str, ...], finishup_session_id: str | None
     ) -> None:
         del candidates, basis, gaps
-        observed.append(yoetz_session_id)
+        observed.append(finishup_session_id)
 
     builder = ObservationAdviceContextBuilder(semantic_review=review)  # type: ignore[arg-type]
     snapshot = asyncio.run(
-        builder.build(_COMMITMENT, _Store(), yoetz_session_id=session_id)  # type: ignore[arg-type]
+        builder.build(_COMMITMENT, _Store(), finishup_session_id=session_id)  # type: ignore[arg-type]
     )
 
     assert snapshot is not None
@@ -1381,10 +1599,10 @@ def test_codex_sign_in_attention_tells_the_agent_to_involve_the_user() -> None:
 
     text = hook_advice_context(snapshot, item=item)
     assert len(text) <= 512
-    assert text.startswith("Yoetz: AI-powered review needs the user to sign in to Codex again.")
+    assert text.startswith("FinishUP: AI-powered review needs the user to sign in to Codex again.")
     assert "Next: renew_provider_sign_in. Tell the user now." in text
     assert "subagent" in text
-    assert "`yoetz provider codex-subscription setup`" in text
+    assert "`finishup provider codex-subscription setup`" in text
     assert "`--device-code`" in text
     assert "the user completes sign-in" in text
     assert text.endswith("Evidence: openai-codex.")
@@ -1392,12 +1610,12 @@ def test_codex_sign_in_attention_tells_the_agent_to_involve_the_user() -> None:
 
 def test_each_repairable_cause_renders_its_own_reason_and_repair() -> None:
     expectations = {
-        "credential_rejected": ("stored credential", "`yoetz provider status`"),
-        "access_denied": ("account or plan", "`yoetz provider status`"),
-        "quota_exhausted": ("usage quota exhausted", "`yoetz provider status`"),
-        "model_unavailable": ("no longer offered", "`yoetz provider status`"),
+        "credential_rejected": ("stored credential", "`finishup provider status`"),
+        "access_denied": ("account or plan", "`finishup provider status`"),
+        "quota_exhausted": ("usage quota exhausted", "`finishup provider status`"),
+        "model_unavailable": ("no longer offered", "`finishup provider status`"),
         "runtime_update_required": (
-            "newer Yoetz release",
+            "newer FinishUP release",
             "restart Codex, Claude Code, or Cursor",
         ),
     }
@@ -1433,7 +1651,7 @@ def test_connect_provider_keeps_its_token_and_gains_a_user_facing_repair() -> No
     assert snapshot is not None
     text = hook_advice_context(snapshot, item=select_standing_item(snapshot))
     assert "Next: connect_provider. Tell the user now." in text
-    assert "`yoetz provider status`" in text
+    assert "`finishup provider status`" in text
 
 
 def test_model_derived_advice_cannot_claim_an_attempt_derived_repair() -> None:
@@ -1460,3 +1678,58 @@ def test_model_derived_advice_cannot_claim_an_attempt_derived_repair() -> None:
         item.recommended_next_action != "renew_provider_sign_in" for item in snapshot.ranked_items
     )
     assert "advice_semantic_output_invalid" in snapshot.confidence_coverage.known_gaps
+
+
+def test_retirement_advice_filter_requires_a_readable_current_projection() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q")
+    finding = ledger.advice_finding(ledger.events_of(failed))
+    ledger.passes("pytest -q")
+    state = replay(ledger.prefix)
+    snapshot = build_observation_advice_snapshot(
+        ObservationAdviceBuildInput(
+            envelopes=(
+                _envelope(
+                    "hook:fail", {"tool_name": "shell", "exit_status": 2, "correlation_id": "x1"}
+                ),
+            ),
+            lifecycle=ObservationLifecycle.ACTIVE,
+            gaps=(),
+            has_real_observation=True,
+        )
+    )
+    assert snapshot is not None
+    snapshot = replace(
+        snapshot,
+        ranked_items=(replace(snapshot.ranked_items[0], finding_id=finding),),
+        ranked_finding_ids=(finding,),
+    )
+
+    class _Ledger:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        async def load_projection(self, *_args: object) -> object:
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    for result in (
+        None,
+        RuntimeError("projection_unavailable"),
+        SimpleNamespace(state=(), lag=0, rebuild_required=False),
+        SimpleNamespace(state=state, lag=1, rebuild_required=False),
+        SimpleNamespace(state=state, lag=0, rebuild_required=True),
+    ):
+        runtime = cast(TaskRuntime, SimpleNamespace(ledger=_Ledger(result), session_id="isolated"))
+        assert asyncio.run(without_retired_failed_commands(runtime, snapshot)) is snapshot
+    runtime = cast(
+        TaskRuntime,
+        SimpleNamespace(
+            ledger=_Ledger(SimpleNamespace(state=state, lag=0, rebuild_required=False)),
+            session_id="isolated",
+        ),
+    )
+    filtered = asyncio.run(without_retired_failed_commands(runtime, snapshot))
+    assert not filtered.ranked_items
+    assert not filtered.ranked_finding_ids

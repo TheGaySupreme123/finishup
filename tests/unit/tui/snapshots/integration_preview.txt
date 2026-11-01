@@ -1,12 +1,12 @@
-Would you like to connect Yoetz to this project?
+Would you like to connect FinishUP to this project?
 
 Codex installation
   Codex Desktop 0.44
 
 Project changes
-  + Install the Yoetz project skill
-  + Install managed Yoetz plugin and hook sources
-  + Register MCP server: yoetz mcp serve
+  + Install the FinishUP project skill
+  + Install managed FinishUP plugin and hook sources
+  + Register MCP server: finishup mcp serve
   + Allow bounded structural event recording for this project
   + Trust the exact approved-check policy digest: 7f8a92bd
 

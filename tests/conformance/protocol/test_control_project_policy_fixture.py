@@ -6,11 +6,11 @@ from typing import Any, cast
 
 import pytest
 
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.control_protocol import decode_control_frame, encode_control_frame
 from fixture_loader import FixtureLoader
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.control_protocol import decode_control_frame, encode_control_frame
 
 
 def test_project_policy_denial_roundtrips_on_control_27(fixture_loader: FixtureLoader) -> None:

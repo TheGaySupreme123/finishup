@@ -1,10 +1,11 @@
-"""Six-operation MCP/Codex capability evidence.
+"""Six-operation plus support-tool MCP/Codex capability evidence.
 
-Local cells drive all six names through the real MCP stdio transport (``yoetz mcp serve`` via the
-pinned SDK client). They prove dispatch and descriptor behavior only — not service conduit or Codex
+Local cells drive the six workflow names through the real MCP stdio transport (``finishup mcp serve``
+via the pinned SDK client), and verify the complete advertised inventory including read-only
+support tools. They prove dispatch and descriptor behavior only — not service conduit or Codex
 model activation.
 
-Driving the same slice through interactive/exec Codex requires ``YOETZ_LIVE_CODEX=1`` and a Gate
+Driving the same slice through interactive/exec Codex requires ``FINISHUP_LIVE_CODEX=1`` and a Gate
 2/3 live driver. When live authorization is present but no driver exists, the cell fails closed
 with ``live_driver_unavailable`` rather than claiming a pass.
 """
@@ -31,14 +32,14 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.mcp.descriptors import TOOL_DESCRIPTOR_SET_DIGEST, TOOL_DESCRIPTORS
-from yoetz.protocol.canonical import JsonValue, canonical_digest
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.mcp.descriptors import TOOL_DESCRIPTOR_SET_DIGEST, TOOL_DESCRIPTORS
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.errors import PublicErrorCode
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"
 _WORKFLOW_TOOLS = ("start", "publish_work", "check", "respond", "status", "receipt")
-_EXPECTED = (*_WORKFLOW_TOOLS, "read_guidance")
+_EXPECTED = (*_WORKFLOW_TOOLS, "read_guidance", "closure_prepare")
 _DEGRADED_CODES = frozenset(
     {
         PublicErrorCode.INVALID_REQUEST.value,
@@ -52,17 +53,17 @@ _REJECTION_CODES = frozenset({PublicErrorCode.INVALID_REQUEST.value})
 
 
 def _serve_parameters(tmp_path: Path) -> StdioServerParameters:
-    candidate_python = os.environ.get("YOETZ_CANDIDATE_PYTHON", "").strip()
+    candidate_python = os.environ.get("FINISHUP_CANDIDATE_PYTHON", "").strip()
     environment = child_environment(tmp_path)
     if candidate_python:
         return StdioServerParameters(
             command=candidate_python,
-            args=["-m", "yoetz", "mcp", "serve"],
+            args=["-m", "finishup", "mcp", "serve"],
             env=environment,
         )
     return StdioServerParameters(
         command="uv",
-        args=["run", "yoetz", "mcp", "serve"],
+        args=["run", "finishup", "mcp", "serve"],
         env=environment,
     )
 
@@ -177,7 +178,7 @@ def anyio_backend() -> str:
 
 
 @pytest.mark.anyio
-async def test_installed_server_advertises_exactly_six_frozen_tools(tmp_path: Path) -> None:
+async def test_installed_server_advertises_the_frozen_mcp_inventory(tmp_path: Path) -> None:
     """List tools through the real MCP stdio server; compare against frozen descriptors."""
 
     evidence_root = capability_evidence_output_root(tmp_path)
@@ -192,7 +193,7 @@ async def test_installed_server_advertises_exactly_six_frozen_tools(tmp_path: Pa
     descriptor_set_digest = TOOL_DESCRIPTOR_SET_DIGEST["policy"]
     assert tuple(item.name for item in descriptors) == _EXPECTED
     for tool, descriptor in zip(listed.tools, descriptors, strict=True):
-        assert tool.inputSchema == _plain_json(descriptor.input_schema)
+        assert tool.inputSchema == _plain_json(descriptor.advertised_input_schema)
         assert tool.outputSchema == _plain_json(descriptor.output_schema)
     context = runtime_capability_context(
         fixture_digest=bytes_digest(descriptor_set_digest.encode("ascii")),
@@ -258,10 +259,10 @@ async def test_mcp_stdio_six_tool_dispatch_without_claiming_codex_activation(
         test_revision=_TEST_REVISION,
         config_profile_digest=canonical_digest({"profile": "mcp_stdio_dispatch"}),
         external_tool="mcp",
-        external_version="1.28.1",
+        external_version="1.30.0",
         integration_channel="mcp_stdio",
         protocol_version="2025-11-25",
-        sdk_version="1.28.1",
+        sdk_version="1.30.0",
     )
     evidence = record_and_write(
         CapabilityCase(
@@ -402,7 +403,7 @@ async def test_rejected_arguments_carry_corrective_text_over_the_wire(tmp_path: 
     assert misplaced_details["repair_field"] == "attempted_items"
     assert misplaced_details["repair_selected_family"] == "claim_recorded"
     assert misplaced_details["repair_owning_family"] == "action_recorded"
-    assert misplaced_details["repair_template_uri"] == "yoetz://guidance/request-templates.md"
+    assert misplaced_details["repair_template_uri"] == "finishup://guidance/request-templates.md"
     assert (
         "Repair: attempted_items is admitted only by the action_recorded payload"
         in text_by_label["misplaced_field"]
@@ -413,10 +414,10 @@ async def test_rejected_arguments_carry_corrective_text_over_the_wire(tmp_path: 
         test_revision=_TEST_REVISION,
         config_profile_digest=canonical_digest({"profile": "mcp_stdio_corrective"}),
         external_tool="mcp",
-        external_version="1.28.1",
+        external_version="1.30.0",
         integration_channel="mcp_stdio",
         protocol_version="2025-11-25",
-        sdk_version="1.28.1",
+        sdk_version="1.30.0",
     )
     evidence = record_and_write(
         CapabilityCase(

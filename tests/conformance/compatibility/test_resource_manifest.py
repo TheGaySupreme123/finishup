@@ -1,10 +1,10 @@
 """Compatibility conformance: the packaged resource manifest matches the reviewed source set.
 
-Grounded entirely in the real, installed ``yoetz.version`` module -- the sole runtime authority for
-resource parity (``src/yoetz/version.py``). The positive checks call only
+Grounded entirely in the real, installed ``finishup.version`` module -- the sole runtime authority for
+resource parity (``src/finishup/version.py``). The positive checks call only
 its public surface (``build_version_manifest``, ``verify_resource_manifest``,
 ``read_verified_resource``). The closed-validation negative cases drive the same private
-``_load_resource_manifest`` seam ``yoetz.version`` itself uses at startup, reached only through
+``_load_resource_manifest`` seam ``finishup.version`` itself uses at startup, reached only through
 ``getattr`` (matching the established pattern in
 ``tests/integration/storage/test_build_and_pragma_gate.py``) and monkeypatched at the
 ``_package_bytes`` boundary so real validation logic runs against synthetic bytes -- never against a
@@ -21,10 +21,10 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.version as version_module
-from yoetz.ports.diagnostics import StartupCheckOutcome
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.version import (
+import finishup.version as version_module
+from finishup.ports.diagnostics import StartupCheckOutcome
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.version import (
     REVIEWED_RESOURCE_COUNT,
     ResourceIntegrityError,
     build_version_manifest,

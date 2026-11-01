@@ -25,13 +25,16 @@ selection fence; 2026-09-25 for issue #836 (a handoff its own structural row can
 is retired at delivery, by the READY sweep, or at the CHECK preflight, and drains send a content
 profile only with their own host's rows); 2026-09-26 for the reopened issue #689 (shared-store
 contention: observable lock ownership, lock-free committed reads, host-window lock budgets,
-change-proportional critical sections, and non-overlapping sweep settlement, decision 23).
-**Implemented by:** `src/yoetz/application/observation_materialize.py`,
-`src/yoetz/application/observation_coordinator.py`, `src/yoetz/cli/observe_hooks.py`,
-`src/yoetz/adapters/memory/ledger.py`,
-`src/yoetz/application/publish_work.py`, `src/yoetz/application/receipt.py`,
-`src/yoetz/kernel/policies/observation_advice.py`, `src/yoetz/service/ready_composition.py`, and
-`src/yoetz/adapters/integrations/observation_local.py`.
+change-proportional critical sections, and non-overlapping sweep settlement, decision 23);
+2026-09-30 for issue #915 (no hook delivers a notice for observation-authored frontier motion,
+decision 11); 2026-09-30 for issue #911 (observation-authored, non-actionable findings are
+disclosed limitations, not response work; see the section at the end).
+**Implemented by:** `src/finishup/application/observation_materialize.py`,
+`src/finishup/application/observation_coordinator.py`, `src/finishup/cli/observe_hooks.py`,
+`src/finishup/adapters/memory/ledger.py`,
+`src/finishup/application/publish_work.py`, `src/finishup/application/receipt.py`,
+`src/finishup/kernel/policies/observation_advice.py`, `src/finishup/service/ready_composition.py`, and
+`src/finishup/adapters/integrations/observation_local.py`.
 **Relates to:** ADR-009, ADR-010, ADR-020, and
 issues #214, #216, #217, #223, #224, #225, #226, #227, #244, #302, #320, #322, #326, #331,
 #445, #494, #539, #540, #560, #577, and #607.
@@ -141,6 +144,23 @@ unsupported claims and unbounded duplicate findings.
    remain two conditions, a call id reused across a source, session, or generation boundary never
    coalesces, and both phases stay in the evidence refs (issue #680).
 
+   Failed-command findings additionally bind to their **accepted action/result event pair**
+   before materialization and snapshot delivery (issue #1160). Different observer envelopes
+   naming that same pair reuse one task-scoped finding ID. On upgrade a readable
+   observation-authored failed-command finding for the pair supplies its existing ID, summary
+   and reason; subsequent snapshots carry fresh observation context without appending another
+   finding or rewriting the original. Only a row that receipts, status and check report is
+   eligible: the newest row per issue key, the same selection `current_receipt_findings` makes,
+   so the hook and the receipt name the same ID. Among eligible rows for one pair (rows that
+   differ in extra subject refs) the earliest recorded wins. A missing or ambiguous accepted pair
+   does not establish equivalence. Separate invocations remain separate concerns even for
+   identical commands. This stops new copies; it does not merge copies an older build already
+   recorded. Those historical duplicates and their IDs are retained, so responses and
+   `duplicate_of` links still work. Retirement and redaction continue to follow ADR-025 for each
+   recorded finding. Receipts retain the original triggering events and first-recorded frontier beside
+   the current resolution basis. This shared binding applies to Codex, Claude Code and Cursor;
+   no host payload or wire-schema change is required.
+
 8. `provenance_disputed` is the fourth `ResponseDisposition`. It records that the responder
    contests the finding's authorship or provenance premise, requires a non-empty reason, and may
    carry evidence, but is not scored as an evidence-free rejection by either local policy
@@ -199,10 +219,20 @@ unsupported claims and unbounded duplicate findings.
     per-entry recency ordinals, evict ended sessions first, then evict the least-recently-used entry
     at the cap even after restart. A legacy delivered mark without frontier-digest and recency
     identity is ignored, failing open to a duplicate rather than suppressing unknown lineage.
-    A later advice-safe `PostToolUse` hook surfaces that the motion was hook-observed, explains
+    Amended for issue #915: no hook delivers this notice any more. Every recorded notice
+    describes observation-authored motion, and such motion leaves a held cooperative publish
+    frontier admissible, so the notice carried nothing an agent could act on; its text asked for
+    `status` between routine tool calls, against the workflow cadence, and agents did not follow
+    it (DeepSWE v2: 3,442 deliveries, next-cell `status` 6.9% after a notice against an 18.9%
+    baseline). Motion by any other writer past a held frontier still reaches the agent on its next
+    state-sensitive operation as `frontier_conflict` (`reason_code` `frontier_changed`) carrying
+    the current sequence and head digest as repair facts. The bounded pending-notice and
+    delivered-mark bookkeeping described in this decision is unchanged and is no longer consumed
+    by a hook; retiring it is follow-up work. Until #915 the notice worked as follows:
+    a later advice-safe `PostToolUse` hook surfaced that the motion was hook-observed, explained
     that held cooperative publish frontiers remain admissible only across observation-authored
-    motion, and directs callers to use repair facts when an operation still conflicts. The pending notice is
-    removed only after its bytes reach the hook consumer. When a contiguous merge races that
+    motion, and directed callers to use repair facts when an operation still conflicts. The
+    pending notice was removed only after its bytes reached the hook consumer. When a contiguous merge races that
     peek/commit window, identity mismatches; commit still advances the delivered high-water to
     the peeked frontier (sequence and digest) and clamps the merged remainder rather than
     re-announcing the emitted range. When the queued same-task notice instead sits below the
@@ -242,7 +272,8 @@ unsupported claims and unbounded duplicate findings.
     gap or a failure-shaped hook diagnostic, and the reason never projects into observation
     status, advice, coverage, or receipt inputs. Losing the nonblocking drain lease records
     nothing: the holder is a live hook or the service sweeper, and flock releases with a dead
-    process. Hook drain-budget expiry records `drain_budget_exhausted` only when the pass moved no
+    process. Hook drain-budget expiry records `drain_pass_delivered_nothing` (named
+    `drain_budget_exhausted` before 2026-10-13) only when the pass moved no
     backlog; a bounded slice that delivered or quarantined rows and then yielded to the sweeper is
     working as designed. Genuine `SERVICE_UNAVAILABLE`, vault, storage, and preflight failures
     keep their existing visibility (issues #346/#351).
@@ -270,6 +301,69 @@ unsupported claims and unbounded duplicate findings.
     outbox row remains pending. It does not acknowledge the already-committed core append alone,
     because doing so could permanently lose the authoritative correction; a repaired or rebuilt
     projection lets the same row replay and finish idempotently.
+    Amendment (issue #1019, tb4n2): a Codex hook advances its session generation at every
+    `SessionStart`, including the `compact` start after a context compaction, while the session
+    stream's generation follows the rollout file, which compaction does not rotate. The call
+    identity includes the generation, so a completed stream command first looks for its hook
+    call in the other recent generations of the same host session and task (at most 16). It
+    materializes under that generation only when exactly one such hook action exists in the task
+    ledger, it carries the same keyed command identity, and it holds no explicit outcome except
+    one this completion itself recorded; otherwise the stream keeps its own generation. The
+    reverse order (a stream completion delivered before a post-compaction hook call) still
+    records two actions.
+    Amendment (issue #1027, tb4n3 N3-7): the binding is resolved before the completion's
+    captured-content manifests are looked up, because those manifests (and the role set they
+    reconstruct) are keyed by the call's generation-qualified identity. Resolved after the lookup,
+    a hook post that carried captured output committed a captured-evidence role the contentless
+    completion could not reconstruct, so the completion was appended as a new operation reusing the
+    hook post's result event id; the ledger refused it (`EVENT_INVALID`), the drain quarantined it
+    as `ledger_rejected`, and every later command of the compacted session kept its hook
+    `UNKNOWN` (183 outcomes in 7 of 7 compacted tb4n3 attempts). One shared predicate
+    (`application/observation_committed.py`) now answers "is this observation already in the task
+    ledger" for the alignment, the paired-call link and the replay lookup: when no committed
+    operation is found under any reconstructable role set but every event of a call-keyed batch
+    (event ids derived from the host call, never from a source identity alone) is already recorded,
+    the delivery is a duplicate. Nothing is appended and the stream's explicit outcome still
+    reaches the recorded action through the same append-only correction; an append the ledger
+    refuses as `EVENT_INVALID` is re-read the same way before it can quarantine. Amendment
+    (PR #1080, #1078 class): a call-keyed partial overlap is reconciled against the
+    current readable projection. The call must already have an agreeing committed action core;
+    an evidence-only intersection cannot authorize a new core. Every reused evidence row must
+    retain its original causal action and result association with this call, even when a different
+    call has its own committed pre-action. Matching core facts are replayed; only missing
+    evidence/events are appended under their own role-set operation. Existing events remain immutable. Different
+    delivery times, rendering and evidence-reference sets do not change the core. A conflicting
+    action/command or existing evidence payload still rejects; stream outcome differences keep
+    their append-only conflict correction. A committed result that stated no outcome agrees with a
+    later copy that states one (a Codex stream `function_call_output` recorded first, then the
+    content-bearing hook post), so that copy's captured evidence and workspace fact are recorded
+    instead of the delivery being quarantined; a hook copy whose explicit outcome contradicts a
+    committed explicit outcome still rejects (round 7). A smaller committed operation cannot discard new
+    captured evidence. One immediate reconciliation also handles an overlap that races append;
+    further agreeing races remain retryable rather than quarantined.
+    A collision on source-identity-keyed ids (#560) remains a content refusal. This changes no
+    capture consent, content authentication, byte budget or provider eligibility rule.
+    Late evidence uses the existing optional `evidence_recorded.reference` to name its original action
+    event after core and causal-parent validation. Selection follows that link only for service-stamped
+    observation-captured provenance and retains the original execution frontier. F1 authenticated
+    command/output binding remains required. A captured object already represented by agreeing evidence
+    is reused, so another delivery does not make its object-to-evidence association ambiguous. New
+    image source identities remain distinct; enrichment operation/claim roles bind the appended event
+    IDs. Existing schemas and frozen vectors retain their bytes.
+    Amendment (issue #1019, tb4n2 N-4): a retired native content handoff is disclosed on its own
+    task. Each retirement appends one marker, keyed by the ticket identity, to the ticket's task
+    ledger with the standing gap `capture_handoff_retired`; it never reaches another task and
+    names no path or content. Local proof and clean deterministic conclusions tolerate it, and
+    AI-powered findings treat it as a capture baseline. The marker is appended before the ticket is
+    tombstoned; a retryable or unexpected failure leaves the ticket pending for the next
+    reconciliation pass, so an interrupted publication is retried, not lost. Only a ledger that
+    terminally refuses the marker (or a route without a writer) lets the retirement proceed
+    without it, recorded in service diagnostics, so capture pressure is never held forever. The workspace-level
+    `content_capture_unavailable` flag in observation status stays a lifetime workspace flag:
+    the local store records it without a task (`note_coverage_gap` takes only the workspace, and
+    the status query names no task), so scoping it would need a task-keyed gap store and a
+    status query that resolves the current host session's task. The per-task marker is the
+    task-scoped signal instead.
 
 16. `obs-ledger/1.4.0` carries trusted observation-content manifests into ledger materialization.
     A manifest binds the encrypted object envelope plus the SHA-256 digest and byte count of its
@@ -311,23 +405,23 @@ unsupported claims and unbounded duplicate findings.
     is a defensive bound for future catch-all classification defects, not evidence that a retryable
     failure became successful (issues #539 and #540).
 
-18. Yoetz observing its own MCP workflow is delivered in proportion to distinct evidence (issue
-    #564). Every host hook (Codex, Claude Code, Cursor) and the Codex session stream record Yoetz's
+18. FinishUP observing its own MCP workflow is delivered in proportion to distinct evidence (issue
+    #564). Every host hook (Codex, Claude Code, Cursor) and the Codex session stream record FinishUP's
     own `start`, `publish_work`, `check`, `respond`, `status`, `receipt`, and `read_guidance` calls
     exactly like any other tool, and the hook process that records them is the same process that
     drains the outbox, so the prescribed workflow's own status/respond/check traffic produced two
     outbox rows plus a content capture per call and starved its own delivery. The service already
-    holds the authoritative record of every Yoetz-owned call it served, so the hook adapter and the
+    holds the authoritative record of every FinishUP-owned call it served, so the hook adapter and the
     stream reconciler ingest such envelopes into the bounded local observation store
     unconditionally but enqueue them for delivery only when they carry evidence the service cannot
-    know from serving the call: an explicit host failure or denial (any phase, any Yoetz tool), or
+    know from serving the call: an explicit host failure or denial (any phase, any FinishUP tool), or
     the post-event of a mutation (`start`, `publish_work`, `check`, `respond`). The pre-event of
-    every Yoetz-owned call and the post-event of a Yoetz-owned read (`status`, `receipt`,
+    every FinishUP-owned call and the post-event of a FinishUP-owned read (`status`, `receipt`,
     `read_guidance`) without a stated failure stay local; pairing bookkeeping is unaffected, so a
-    delivered post-event still materializes its action. Yoetz-owned tool arguments and results are
+    delivered post-event still materializes its action. FinishUP-owned tool arguments and results are
     never captured as tool input/output content: they are already durable in the ledger the call
     read or wrote. Tool identity derives from the one registry tuple rendered into every host
-    spelling; a name that merely resembles a Yoetz tool is ordinary. Like decision 10 this is a
+    spelling; a name that merely resembles a FinishUP tool is ordinary. Like decision 10 this is a
     delivery-volume policy, not a coverage limitation, so it records no gap. On the consumer side,
     the service sweeper yields with its partial summary on a budget under the daemon's sweep
     deadline, so progress made under a backlog is never discarded as a timeout. Its maintenance
@@ -345,9 +439,9 @@ unsupported claims and unbounded duplicate findings.
 18. `obs-ledger/1.5.0` keys the observation operation digest on the task, the canonical logical
     identity, the exact draft-role tuple, and the mapping version only. The stable event ids an
     operation commits are derived from the task and the source identity, never from the routed
-    Yoetz session or writer, so the operation that owns them must be findable from every later
+    FinishUP session or writer, so the operation that owns them must be findable from every later
     session of the same task. A workflow reattach in one host session (a second `start`) rotates
-    the mapped Yoetz session and therefore the derived observation writer; under the
+    the mapped FinishUP session and therefore the derived observation writer; under the
     session-bound `1.4.0`, `1.3.0`, and `1.2.0` digests the repeated envelope missed its committed
     operation, re-minted the same event ids, and was quarantined as `ledger_rejected` (#560).
     Before staging, the coordinator resolves the current identity task-wide through
@@ -454,7 +548,7 @@ limits remain in the host integration runbooks.
     rewrite or prune. If a hook cannot acquire that reservation, it captures the envelope and
     persists an explicit bounded lifecycle intent; READY and hook drains reconcile those intents
     before delivery. Observation-local schema `/10` carries the intents. Upgrading it is a
-    quiesced operation: stop older Yoetz services and host hooks, install the new runtime, then
+    quiesced operation: stop older FinishUP services and host hooks, install the new runtime, then
     restart all services and integrations before writing `/10`; mixed `/9` and `/10` writers are
     unsupported because the `/9` reader ignores the new field and can erase it on save. The
     retention bound protects pending and quarantined evidence, so protected rows may keep the
@@ -480,7 +574,7 @@ limits remain in the host integration runbooks.
     authenticates the request, it secret-scans and encrypts the eligible chunks, durably publishes
     their objects and manifests, and records a metadata-only capture ticket before the structural
     FIFO cursor advances. The ticket binds the encrypted object IDs to the exact
-    workspace/task/Yoetz session, host session and source cursor, content profile when applicable,
+    workspace/task/FinishUP session, host session and source cursor, content profile when applicable,
     original source generation, content-authority generation, and expected content groups/parts.
     For Codex, the source-qualified profileless arm additionally fences the exact active consent
     authority/generation, workspace commitment, `codex_hook` source identity and commitment,
@@ -497,7 +591,7 @@ limits remain in the host integration runbooks.
     observation back-pressure and carries no content-retention claim.
 
     A successor may consume a predecessor ticket only through the existing bounded, validated
-    route history for that mapped task and host session. The ticket's original Yoetz session stays
+    route history for that mapped task and host session. The ticket's original FinishUP session stays
     immutable; sharing a task alone does not authorize borrowing another session's content. New
     checks inspect outstanding tickets across the task, since their frozen projection includes
     predecessor work. Completed same-request replay remains independent of newer handoffs.
@@ -551,10 +645,9 @@ limits remain in the host integration runbooks.
     spool or offline acceptance guarantee. The Codex arm admits only explicitly linked hook tool
     output, selected changed-file/code bytes, and workspace-diff bytes for captured-content evidence
     and AI-powered review selection. Its session-stream records remain outside this native ticket
-    lane and are excluded from AI-powered review selection. Tool input and path/locator content are
-    excluded from AI-powered review selection too, although the current Codex hook path may still
-    stage consented input/locator chunks in the bounded encrypted local capture lane pending a
-    follow-up staging filter. Captured-content staging does not authorize egress: AI-powered review
+    lane and are excluded from AI-powered review selection. Generic tool input and path/locator content are
+    excluded from AI-powered review selection. Recognized visible edit arguments are projected
+    separately as diff/changed-file content from the post-tool event, with workspace-relative locators (ADR-006). Captured-content staging does not authorize egress: AI-powered review
     case selection still requires effective repository privacy authority and an independently
     authorized provider/attempt route. Codex's historical session-stream path otherwise remains
     unchanged, while the shared generation, operation-replay, and teardown repairs apply to all
@@ -611,10 +704,13 @@ Session-stream, input, and locator content remain excluded from AI-powered revie
 Consented input/locator chunks may still be locally staged by the current hook path until the
 staging filter follow-up lands.
 
-ADR-009 includes `other_writer` disclosure provenance. The production privacy enforcer currently
-ships without a provenance resolver. When that resolver is implemented, this harness writer must
-classify as `engine_derived_from_self_authored`: a hook observation is an observation of the agent's
-own action, not unrelated third-party authorship.
+ADR-009 includes `other_writer` disclosure provenance. When this ADR was written the production
+privacy enforcer shipped without a provenance resolver, and it recorded that this harness writer
+should then classify as `engine_derived_from_self_authored`: a hook observation is an observation of
+the agent's own action, not unrelated third-party authorship. The resolver that shipped for issue
+#914 does not implement that forward classification: rows this writer authors stay `other_writer`,
+so host-captured prose is never widened into the default `agent_context` ceiling (see ADR-009's
+2026-09-29 revision). Adopting the forward classification would be a separate, explicit decision.
 
 ## Consequences
 
@@ -623,11 +719,13 @@ concurrency still conflicts. Check cases make progress by temporarily applying b
 outbox rather than weakening verdict binding. Observation can contribute evidence and bounded
 advice without impersonating the agent or minting the same standing finding indefinitely. Routine
 reads retain their local observation evidence without producing an unbounded task-ledger trail,
-Yoetz's own tool calls are observed without recursively feeding the outbox they are drained
+FinishUP's own tool calls are observed without recursively feeding the outbox they are drained
 from, and
-cooperative writers learn about meaningful observation-authored frontier motion before their next
-state-sensitive operation. Captured objects contribute immutable byte identity without being
-upgraded to validation, reproduction, or disclosure authority. Observation-advice policy `0.1.3`
+cooperative writers learn about frontier motion that actually invalidates a held frontier from the
+`frontier_conflict` response of their next state-sensitive operation; observation-authored motion,
+which never does, is no longer announced on the hook channel (issue #915). Captured objects
+contribute immutable byte identity without being upgraded to validation, reproduction, or
+disclosure authority. Observation-advice policy `0.1.3`
 applies the condition-scoped identity to new materialization (`0.1.1` first introduced it;
 `0.1.2` rebased the standing `provider_not_ready` condition onto per-build structural machine facts
 for issue #265; `0.1.3` keeps the full evidence basis while bounding advice projection and requires
@@ -650,3 +748,310 @@ at the #241 SessionStart/Stop cadence with #249 scoping, are never materialized 
 (ADR-022 #231 amendment), and model-derived advice may not name their next actions. Hook text keeps
 the token and adds a plain instruction to tell the user and offer a subagent fix, leaving sign-in,
 credentials, and approvals to the user.
+
+
+### Captured-envelope retention within the bounded ring (2026-09-28, #883)
+
+Captured object manifests and ledger evidence can outlive the observation ring. A semantic
+resolver still needs the original, source-qualified envelope to authenticate those bytes; an
+exact-object lookup cannot recover an envelope that FIFO retention already deleted. SQLite now
+protects the newest 64 content-bearing envelopes per workspace inside the existing 256-event
+ring. The remaining slots retain the newest other events. No queue, disk, capture, or disclosure
+ceiling is increased, and no plaintext is added to structural storage. The protected subset is
+bounded and rotates when new captures arrive; this is not permanent retention or reconstruction
+of historical state. At least 192 slots remain available for recent structural events.
+
+The exact-reference lookup remains workspace/session fenced and the resolver still authenticates
+consent, manifests, objects, and ledger provenance. Evicted, redacted, revoked, or unavailable
+captures remain coverage gaps. Already-pruned envelopes cannot be repaired by upgrading. This
+shared SQLite behavior applies to Codex, Claude Code and Cursor on macOS, Linux and WSL 2.
+
+### Failed-command supersession and the keyed command identity (2026-09-30, #909)
+
+A rerun is a new host tool call, so keying "resolved" on the call id left every red -> green cycle
+unresolved. Observation-advice policy `0.1.6` makes `failed_command_unresolved` read the same kernel
+predicate the local packs and the ADR-025 claim invariant read (`kernel/observed_failures.py`): a
+failed command envelope is still reported only while no later post-event of the same *command
+identity* followed it (only the latest limiting run of a command is judged), and the same host call
+did not later succeed. A later failure or partial run of the same identity is a new condition; an
+unknown outcome does not certify repair and never revives an earlier one. An edit post-event never
+retires the failed verification.
+Cursor's ordinary shell tool `Shell` is a command tool for this rule.
+
+An observed edit changes the workspace state but does not establish that a failed verification was
+covered. A failed run therefore remains live until a later run of the same keyed command succeeds,
+or reruns with another limiting outcome, or the claim explicitly acknowledges it. An unknown
+outcome does not certify repair, and an edit never retires the failure. The receipt keeps the
+failed run as a limitation until one of those bounded resolutions occurs.
+
+This section computes the commitment on hook paths, the legacy spool, and the session stream. A
+Codex `CommandExecution` carries the same installation-keyed commitment when the local key is
+available, so a later keyed run can supersede it; a row without a commitment keeps
+`omitted:structural` and remains live until explicit acknowledgement. Same-command supersession
+is active wherever the keyed commitment is available.
+
+The command identity is a new structural envelope field, `command_commitment`: an installation-keyed
+`hmac-sha256:` value (domain `yoetz/observation-command-commitment/v1`, the local observation
+store's key material) over the host command argument (`tool_input.cmd`, `command`, or `argv`) of a
+shell/exec tool after light, semantics-preserving normalization: unquoted runs of spaces and tabs
+collapse to one space, and a host shell wrapper (`/bin/bash -lc`, `bash -lc` including the WSL 2
+form, `sh -c`) is stripped when its argument is exact (an argv wrapper, or the canonical
+single-quoted string form). Quoting, expansions, escapes and line breaks are never rewritten, so
+commands with different shell meaning never share an identity. The hook process computes it and
+discards the text; the text is never persisted, displayed, or sent, with or without content consent.
+Edit tools (for example `apply_patch`, whose `command` argument is a patch) never carry one. The
+value crosses the unreleased control-request `2.9.0` wire, materializes as the command action's
+`omitted:<commitment>`, and the hook spool carries it for legacy replays. A plain `sha256` of a
+short command is dictionary-guessable and is never an identity. Legacy envelopes without the field
+still clear through the edit rule. The same predicate names only service-stamped observations, so a
+cooperative publication of a copied commitment proves nothing.
+
+## Observation-authored limitation findings (2026-09-30, issue #911)
+
+**Context.** The observation advisory "Observation coverage is incomplete or stale" (rule
+`observation_gap_or_stale`, kind `ledger_stale_or_incomplete`, priority 3, not actionable) was
+materialized as the same condition-scoped finding in every Codex session of the 2026-09 DeepSWE run
+(decision 7 gives it one stable id per condition). No check returns such a finding and no agent
+action in the task can repair a standing host-profile gap, yet it counted in
+`unanswered_finding_count`, set `findings_unanswered`, and a response to it after a check superseded
+that check (a response to a finding the check did not return was always material), forcing an
+identical recheck.
+
+**Decision.** A finding is an *observation limitation* when its readable projection row was
+recorded by a service-stamped observation-authored `finding_recorded` (decision 2's four-fact
+authorship test) and its kind is deliberately classified as a limitation: it is in the explicit
+allowlist `kernel/projections.OBSERVATION_LIMITATION_KINDS` (only `ledger_stale_or_incomplete`) and
+its closed `actionable` trait is false (`kernel/projections.is_observation_limitation`). The
+decision is structural; no finding id is special-cased, and an unreadable row is conservatively not
+a limitation. The allowlist, not the generic trait, is the authority: a finding kind added or
+reclassified as non-actionable later stays response work, and keeps superseding a check when
+answered, until a change adds it to the allowlist with its own rationale.
+
+1. An observation limitation is never response work. `unanswered_finding_count`, the compact
+   `unanswered_findings` preview, `closure_readiness.findings_unanswered`, and the durable SQLite
+   mirror share one rule (`kernel/projections.unanswered_finding_ids`).
+2. An `acknowledged` or `provenance_disputed` response to an observation limitation does not
+   supersede a recorded check: neither disposition is scored by a local policy pack, so a recheck
+   cannot change the result. A `rejected` or `waived` response to it, and any response to another
+   finding the check did not return, remain material (issue #911 open question 1): the
+   work-integrity and research-evidence packs score those dispositions, so the recheck is
+   productive (an unsupported rejection of the advisory returns `questionable_finding_rejection`).
+   The reducer
+   applies this through `ReplayIndex.observation_finding_event_ids`; receipts, receipt capacity, and
+   compact status coverage apply the same predicate over the accepted records, so status and
+   receipts cannot disagree. The attributable suffix still carries
+   `check_current_as_of_earlier_frontier`, and the receipt names the acknowledgement.
+3. Nothing about proof changes. The row stays in `view=findings`, keeps its resolution requirements
+   and `resolved` state (it does not become resolvable), contributes its coverage gaps, and stays on
+   the receipt as a coverage-limitation finding with any recorded acknowledgement. Its detail adds a
+   bounded explanation naming it a disclosed limitation. The finding kind table, the finding and
+   response schemas, and `ResponseDisposition` are unchanged.
+4. Existing ledgers need no migration: replay applies the rule to their accepted history, so an
+   advisory row written by an earlier build renders as disclosed history rather than as unanswered
+   work after upgrade.
+5. The hook `refresh_observation` clause asks the agent to wait only while `finishup observe status`
+   reports lag or a drain backlog, and says that a remaining gap is a standing limitation needing
+   no response or recheck. Which observation conditions raise the advisory, and how the sticky
+   `unpaired_event` surfaces, are decided in issue #917.
+
+**Consequences.** Acknowledging the advisory once is optional and final; a service restart or
+session reattach does not reopen it because its condition-scoped id is not re-recorded. A later
+distinct condition is a different finding. This applies to every host (Codex, Claude Code and
+Cursor) on macOS, Linux and WSL 2, because the rule is service-side.
+
+### Codex tool outcomes read where Codex states them (2026-09-30, #910)
+
+Decision 12 consumes host-stated outcome facts, but on Codex the only reader was the
+`apply_patch` `Exit code: N` prefix. Codex 0.157.x sends no top-level outcome: a shell, exec or MCP
+result states it nested in `tool_response`. Every Codex shell result was therefore `unknown`, and
+every Codex session carried `host_outcome_unavailable`. The Codex hook mapping now reads the
+closed facts of each tool family on every `PostToolUse`. Shell and exec tools contribute the exec
+result's `exit_code` (an object, or JSON text that carries a Codex exec-result key) and the
+`Exit code: N` / `Process exited with code N` line of the function-output header, which ends at
+`Output:`. `apply_patch` contributes that header. MCP tools contribute only the protocol-level
+`isError`. The facts pass through the shared native reducer, so `exit_status` stays in `-1..255`,
+conflicting facts resolve failure-first, and a result with no fact stays `UNKNOWN` with the
+`host_outcome_unavailable` gap on that record only. Output text is never read. Selection
+classifies the same facts, so a failed read cannot be summarized as a proven routine success.
+
+The session stream now names a rollout `event_msg`/`item_completed` command, MCP or patch item as
+the completed tool call it is (event kind `item_completed`). Its `status` and `exit_code` become a
+result instead of an opaque row, and `exit_code: null` states no outcome. Where the hook call id
+equals the rollout item id, decision 15's correction path applies unchanged. The item's id
+(`exec-<uuid>`) normally does not join the hook's call, so it follows #917's code-mode wrapper gate:
+once Codex tool hooks have admitted input for the session, the item stays in the local store with
+the wrapper's accounting unless it is the only carrier of a hooked call's outcome. Items pair with
+hook posts per call, in arrival order: an item whose id is an outcome-less hook call (a process
+still running when its hook fired) is delivered and decision 15 corrects the hook's `unknown` row;
+a command item whose exit matches an unpaired stated post of the same command commitment is that
+post's copy; otherwise, while an outcome-less call of that commitment is unpaired, the item is
+delivered as that call's exit, a second action for that run which #909 judges as the later run.
+Counting per call means one call's stated outcome never withholds another call's only exit. An
+item read before any hook post it pairs with is pending, not a copy. A later post with its call
+id decides it directly, and a stated post of its command commitment takes it as the copy when
+the exits match. An outcome-less post of that commitment takes its pending items only once no
+other call of the same command is open, so parallel same-command runs never trade outcomes by
+arrival order. Surplus items are all delivered (a second record over a lost failure). A call whose
+`PreToolUse` left the envelope ring stays open until its post is seen or evicted or the turn
+ends. `Stop`/`SessionEnd` close the turn: owed calls take their command's pending items, and any
+other pending command item stays local only when a stored stated post proves it a copy (same
+call id, or same commitment and exit); MCP and patch items, which have no commitment, stay local
+as copies. A carrier is delivered once on the next stream reconcile, committed together with its
+settlement and stamped with the committed stream frontier at release time, since the task's
+per-source cursor refuses an older position. The pending account keeps each item's structural
+record. An item with no proof at the turn's end, one the ring evicts before pairing, the oldest
+past the account's bound, and one idle for 8 workspace reconciles while its session stores
+nothing are delivered with `unpaired_event` as unpaired evidence, so the receipt discloses them;
+only the account's hard bound drops an item, with a local gap. A session without tool hooks
+delivers every item, with its outcome, as the only record of the call. An `McpToolCall` item that names an `error` or a result `isError: true` fails whatever its
+`status`, and a `FileChange` item belongs to the edit family. The Codex outcome reader reads only
+Codex's own shell tools (`Bash`, `shell`, `exec_command`, `local_shell`), never a code-mode `exec`
+cell, and JSON text only when it carries an exec-result key and a string `output`. Mapping versions
+are intentionally unchanged: already-stored envelopes keep the facts they recorded, so
+historical `unknown` rows and their gap are not re-materialized. Recording
+failures makes the failed-work rules reachable on Codex, so this change is sequenced after the
+failure-supersession change of #909. A stream `CommandExecution` item carries the same
+installation-keyed `command_commitment` as its hook copy, computed from its `command` argv with
+#909's normalization, so supersession spans both paths. Observation-advice policy `0.1.7` adds the
+Codex shell spellings `exec_command` and `local_shell` to the commands the unresolved-command rule
+reads, beside `Bash` and `shell`. A delivered stream `command_execution` row stays out of the
+advice, so the advice never names one run twice. The shapes are
+pinned by the OUT-001 fixture, which is derived from recorded 0.157.1 rollouts; a raw hook stdin
+capture is still owed on #910.
+
+Amendment (2026-10-18, n7 RC2, issue #1106). Both Codex copies of one call mint the same action
+and result ids, so whichever commits first defines the action. Codex writes every `function_call`
+row of a turn before it runs them, and the first call's hook reconciles the rollout, so with
+parallel calls the other calls' stream rows commit before their own hooks fire; about a fifth of
+n7's shell calls were recorded that way, with no command identity or runner class, and planned
+verifications that ran were `planned_verification_not_observed`. A rollout `function_call` row of
+one of Codex's own shell tools (`exec_command` and the legacy `shell`, `shell_command`,
+`local_shell`, `bash`; never the code-mode `exec` cell, `write_stdin` or an MCP tool) now commits
+to the command its arguments name (`cmd`, `command`, `argv`, the hook's order) with the hook's
+normalization and key, and carries the same segment commitments, runner class and relative write
+scope (Codex 0.159 `exec_command.rs` sends the hook `tool_input: {"command": args.cmd}`, and the
+hook's `tool_use_id` is the row's `call_id`). Only the post copy carries the compound-outcome gap.
+A command containing a secret the importer redacts commits to the redacted text: a missed match,
+never a false one. A rollout `CommandExecution` item records an argv (`["/bin/bash", "-lc",
+CMD]`): its writes and heredoc patch paths are read from that one host-shell layer's script
+itself, never from a joined copy cut at the token parsers' bound (#1106 r2).
+
+Round 2 (#1106 r2): the reconciling hook hands the reader its own runtime facts
+(`cli.observe_hooks._stream_command_facts`, `codex_session_stream.StreamCommandFacts`). The
+reader runs in the hook process, which runs as the shell it observes and knows the same workspace
+root, so a call whose rollout row defines the action carries the same `write_scope` (an
+absolute-path write in the workspace, an outside or scratch write, placed under the call's
+`workdir`), `install_target` and `effective_user` as its hook copy; `workspace_effect` was already
+reconciled (#1080). A reader outside a hook (`finishup observe`) passes none and keeps the
+relative-only write rule; there a relative documentation-named write under a stated `workdir` is
+read with no workspace root, so a documentation extension alone is never `docs`. A missing hook
+fact still never stands for its opposite: `verification_only_as_root` is decided over the
+verification runs that state a user and, when none does, over the observed commands that do (a
+hook process runs as the shell it observes), so a stream-first run with no `effective_user`
+neither hides nor invents the disclosure (#1106 r1, r2).
+
+A rollout `function_call` row gives the call a runner class from its arguments alone, so a parallel
+call whose row was written but which Codex never ran (an interrupted turn, a declined approval)
+is a verification position with an unknown outcome, as a declined hook `PreToolUse` already was;
+when the task did not plan that command, it ends `edited_after_last_verification` for earlier
+edits. That limit is kept (follow-up is the #1106 owner's).
+
+A Codex 0.159 `Bash` post states no exit, so for a direct `exec_command` call the rollout is the
+only place the exit is stated. The reader takes it from the header Codex itself writes before
+the output of `function_call_output` (`context.rs` `ExecCommandToolOutput::response_header`:
+`Chunk ID`, `Wall time`, `Process exited with code N` once the process exited, `Process running
+with session ID N` while it runs, `Original token count`, then `Output:`; or the classic `Exit
+code: N` header), matched only as that anchored, closed grammar and never searched for in the
+output, and keeps it only when pairing names a Codex shell call (the output row names no tool);
+`-1..255` only. A running process states no exit.
+
+When the stream copy committed first without an outcome, the hook copy stating one was refused
+as a disagreement and the outcome was lost (#1092 item 1). A Codex hook `PostToolUse` (or
+`PostToolUseFailure`) now takes decision 15's correction path like a stream completion: the
+committed `UNKNOWN` gets one correction result linked to the same action, and the duplicate check
+counts a ledger whose only outcome for the call is `UNKNOWN` as agreeing. A hook copy never records
+a disagreement: one that contradicts a stated outcome keeps the ledger's refusal and quarantine
+(fail closed, #560), a fact a prior correction already states is not stated twice, and a hook copy
+that just recorded its own result reads no projection. A replay may resolve to the stream copy's
+operation, so while the projection lags or awaits a rebuild it is refused as retryable
+(`service_unavailable`), like a stream copy, and the outcome is recorded on the retry. A replay
+into a routed session that opens no projection yet (a workflow reattach rotated it and it has
+recorded nothing, #560) is acknowledged without a correction: the stream copy's `UNKNOWN` then
+stays, which is a missed outcome, never a hidden one. Mapping
+versions are unchanged; calls already recorded identity-less stay so. The shapes are pinned by
+OUT-005 (`observations/codex-shell-call-identity-0.159.0.case.json`), derived from the Codex
+0.159.0 source; a raw hook stdin capture is pending.
+
+## Amendment (2026-10-07, issue #994): the drain clock, content under a contended lease, and the Stop drain
+
+tb4n1 measured `drain_budget_exhausted` on 94% of Codex hooks, `content_capture_unavailable` in
+every attempt, and a Stop gate that almost always read "observations were still draining". The
+owner decided: start the clock after connecting, spool durably, and finish the drain at Stop.
+
+1. **The delivery clock starts after the connection opens.** The connect keeps its own
+   preflight bound (one second, cold handshake included). Loading the local snapshot and the
+   handshake no longer spend the delivery budget, which now covers content staging, lifecycle
+   reconciliation, the ingest RPCs and the local commit after each. An optional absolute pass
+   deadline clamps both stages. The ordinary per-hook slice is 0.20 s and at most eight rows; a
+   content-bearing pass keeps 1.0 s and sixteen rows. Decision 13's rule is unchanged:
+   `drain_budget_exhausted` (renamed `drain_pass_delivered_nothing` on 2026-10-13, see below) is
+   recorded only when a pass moved nothing.
+2. **Transient content is staged even when another owner holds the drain lease.** A hook that
+   loses the nonblocking lease still opens its own connection and sends its content chunks as
+   `capture_only`. The service commits the encrypted manifests and the retry ticket before it
+   answers the capture-pending reason, so the bytes are durable in the vault; the owner or the
+   sweeper that later delivers the structural row consumes the ticket. `capture_only` never
+   advances the ingest cursor or the ledger, so it needs no lease, and a row the owner already
+   delivered is refused as before (#836). This service-side encrypted handoff is the durable
+   spool: plaintext is never written to the local outbox. Content that still could not be
+   staged keeps the explicit `content_capture_unavailable` gap.
+3. **Stop finishes the drain.** Stop is a turn boundary: it flushes buffered routine admission
+   accounts, then drains toward the current frontier with a larger slice (2.5 s, 64 rows),
+   clamped so the closure gate keeps its five-second status-read reserve inside the ten-second
+   Stop window on every host (the drain's deadline sits 0.75 s above that reserve for the local
+   commit after the last ingest). While another owner holds the lease the Stop pass waits for that
+   owner's progress, and gives up once this task's pending count has not moved for 0.75 s; when it
+   holds the lease itself and a retryable refusal delivers nothing,
+   it stops at once and leaves the rows to the sweeper. Only rows that can still change this
+   task's facts count: the host session's own rows and those of other host sessions mapped to
+   the same FinishUP session. Rows of other tasks in the workspace, and of unmapped sessions, do
+   not hold the decision. The outcome is a bounded diagnostic, `stop_drain_complete` or
+   `stop_drain_incomplete`, and the closure gate receives `observation_pending` only when this
+   task's rows remain (ADR-033 decision 5). Claude Code and Cursor ordinary profiles drain at
+   Stop too; they no longer defer a contentless Stop pass. SessionEnd keeps its 0.15 s teardown
+   slice under the three-second host clamp.
+
+4. **Drain and pass failures name their stage (tb4n2 N-3, issue #1019).** A drain preflight
+   records `drain_connect_timeout`, `drain_connect_failed` or `native_content_stage_failed`
+   instead of one `drain_preflight_failed` for both the connect and the content handoff; an
+   unexpected pass exception records `observe_<exception class>` from the service's reviewed
+   closed vocabulary instead of the bare `observe`. The old tokens stay admitted for older rows.
+
+Not changed: `check` does not wait for hook rows (a mid-session check can still be current as
+of an earlier frontier); local content cannot be spooled when the service is unreachable,
+because the hook holds no vault key.
+
+## Amendment (2026-10-13, tb4n5): keep the drain budget, rename its counter, measure delivery lag
+
+tb4n5 recounted the per-hook drain diagnostic on the same nine tasks: no regression once attempts
+and hook volume are normalized (the S arm fell from 17.3 to 12.4 per attempt; an earlier 26.7
+compared seven old tasks with nine new ones), and rows still landed within about 1-2 s. The one
+row that landed 13 minutes late was a rollout item held for pairing, not drain latency (ADR-029
+tb4n5 amendment). The owner decided:
+
+1. **The 0.20 s ordinary per-hook delivery slice stays** (content-bearing passes keep 1.0 s).
+2. **The counter is renamed to say what it counts.** `drain_budget_exhausted` is now
+   `drain_pass_delivered_nothing`: one hook drain pass that delivered no row within its budget
+   (or whose connect preflight left none). The rows stay queued for the next pass or the
+   sweeper; it is not lost delivery and not lateness. The hook diagnostics reader reports rows
+   written under the old name under the new one, so one cause keeps one tally across an upgrade.
+   The reason is local-only (`hook-diagnostics.jsonl`, `observe status` `hook_diagnostics`), in
+   no schema or fixture.
+3. **Delivery lag is the measure.** Every outbox row records when it was enqueued
+   (`enqueued_at`, local wall clock; kept across retry attempts, not part of the row identity);
+   its acknowledgement after the service accepted it adds one enqueue-to-acceptance sample to a
+   per-workspace histogram (fixed bounds 100 ms to 900 s plus an overflow bucket, with count, sum,
+   maximum, last sample and the moment measurement began). `observe status` reports it as
+   `delivery_lag` with `p50_ms_at_most`/`p95_ms_at_most` bucket bounds. Rows enqueued before the
+   field existed are not measured. A rollout row held for pairing is enqueued when it is released,
+   so its hold time shows as `held_rollout_items`, not as delivery lag.

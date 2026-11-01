@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.application.projects import ProjectCommandError, build_project_support_handler
-from yoetz.domain.coordination import CoordinationErrorCode
-from yoetz.ports.control import ControlError
+from finishup.application.projects import ProjectCommandError, build_project_support_handler
+from finishup.domain.coordination import CoordinationErrorCode
+from finishup.ports.control import ControlError
 
 _PROJECT_ID = "prj_69000000-0000-4000-8000-000000000001"
 _EXPECTED_GENERATION = 7

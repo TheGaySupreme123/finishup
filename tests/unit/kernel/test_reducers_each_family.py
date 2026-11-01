@@ -8,8 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from fixture_loader import load_fixture_json
-from yoetz.domain.events import (
+from finishup.domain.events import (
     PAYLOAD_TYPES,
     AcceptedEvent,
     EventSchema,
@@ -22,7 +21,7 @@ from yoetz.domain.events import (
     WriterChain,
     decode_payload,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -36,8 +35,8 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.projections import projection_digest
-from yoetz.kernel.reducers import (
+from finishup.kernel.projections import projection_digest
+from finishup.kernel.reducers import (
     EvidenceObjectSource,
     ReplayIndex,
     build_replay_index,
@@ -50,15 +49,16 @@ from yoetz.kernel.reducers import (
     replay_with_index,
     validate_replay_index,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import entry_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     LedgerFreshness,
     PublicationChannel,
     coverage_from_json,
 )
+from fixture_loader import load_fixture_json
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -249,8 +249,8 @@ def test_finding_event_subject_ref_outside_prefix_does_not_overflow_projection_g
         if type(record) is AcceptedEvent and record.schema.name == "finding_recorded"
     )
     assert finding.payload is not None
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     phantom = event_id("evt_40000000-0000-4000-8000-0000000000aa")
     payload = replace(finding.payload, subject_refs=(phantom,))
@@ -361,30 +361,39 @@ def test_replay_index_can_be_reused_after_full_or_extension_replay(fixture_name:
     assert extended_index == expected_index
 
 
-@pytest.mark.parametrize("mismatch", ("payload", "evidence", "redaction"))
+@pytest.mark.parametrize("mismatch", ("payload", "evidence", "redaction", "observation"))
 def test_replay_index_validation_rejects_same_frontier_with_wrong_maps(mismatch: str) -> None:
     records = _records("all-event-families")
     _projection, index = replay_with_index(records)
     payloads = dict(index.payload_event_by_object)
     evidence = dict(index.evidence_sources_by_object)
     roots = dict(index.redaction_root_by_object)
+    observation_findings = index.observation_finding_event_ids
     if mismatch == "payload":
         objects = tuple(payloads)
         payloads[objects[0]], payloads[objects[1]] = payloads[objects[1]], payloads[objects[0]]
     elif mismatch == "evidence":
         object_key = next(iter(evidence))
         evidence[object_key] = ()
-    else:
+    elif mismatch == "redaction":
         object_key = next(iter(roots))
         roots[object_key] = next(
             event.event_id for event in records if event.event_id != roots[object_key]
         )
+    else:
+        # A cooperative finding record claimed as observation-authored would let the fold keep a
+        # check attributable across a response it must treat as material (issue #911).
+        observation_findings = observation_findings | {
+            next(event.event_id for event in records if event.schema.name == "finding_recorded")
+        }
     corrupt = ReplayIndex(
         frontier=index.frontier,
         head_digest=index.head_digest,
         payload_event_by_object=payloads,
         evidence_sources_by_object=evidence,
         redaction_root_by_object=roots,
+        observation_finding_event_ids=observation_findings,
+        observed_event_ids=index.observed_event_ids,
     )
     with pytest.raises(ValueError, match="projection_corrupt"):
         validate_replay_index(corrupt, records)
@@ -491,6 +500,9 @@ def test_replay_index_is_frozen_and_nonplaintext() -> None:
         "payload_event_by_object",
         "evidence_sources_by_object",
         "redaction_root_by_object",
+        "observation_finding_event_ids",
+        "observed_event_ids",
+        "first_task_statement_sequence",
     )
     assert tuple(field.name for field in fields(EvidenceObjectSource)) == (
         "evidence_id",
@@ -498,6 +510,8 @@ def test_replay_index_is_frozen_and_nonplaintext() -> None:
     )
     index = empty_replay_index()
     assert type(index.payload_event_by_object).__name__ == "mappingproxy"
+    # Provenance ids only: which accepted events are hook-observed actions or results (#909).
+    assert index.observed_event_ids == frozenset()
     with pytest.raises(TypeError):
         cast(dict[object, object], index.payload_event_by_object)[
             object_id("obj_00000000-0000-4000-8000-000000000099")
@@ -517,6 +531,8 @@ def test_missing_evidence_index_association_is_projection_corruption() -> None:
         payload_event_by_object=index.payload_event_by_object,
         evidence_sources_by_object={},
         redaction_root_by_object=index.redaction_root_by_object,
+        observation_finding_event_ids=index.observation_finding_event_ids,
+        observed_event_ids=index.observed_event_ids,
     )
     with pytest.raises(ValueError, match="projection_corrupt"):
         reduce_event(state, records[7], corrupt)
@@ -536,8 +552,8 @@ def _check_with_partial_coverage(
     is what decides whether the fixture's later response supersedes it.
     """
 
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     rewritten: list[LedgerRecord] = []
     for record in records:

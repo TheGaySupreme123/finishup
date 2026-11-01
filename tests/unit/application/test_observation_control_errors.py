@@ -4,9 +4,9 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.observation_control import build_observation_support_handlers
-from yoetz.ports.control import ControlError, ControlMethod
-from yoetz.ports.observation import ObservationPort
+from finishup.application.observation_control import build_observation_support_handlers
+from finishup.ports.control import ControlError, ControlMethod
+from finishup.ports.observation import ObservationPort
 
 
 @pytest.fixture

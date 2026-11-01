@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import ObservationGapCode, ObservationStatusQuery
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import ObservationGapCode, ObservationStatusQuery
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 @pytest.mark.parametrize(

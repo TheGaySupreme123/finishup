@@ -8,20 +8,20 @@ from typing import Any, cast
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.cli import app as cli
-from yoetz.cli.exits import exit_code_for
-from yoetz.cli.unlock import InstallationRecoveryImportResult
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.confidential_protocol import InstallationRecoveryTarget
-from yoetz.service.installation_recovery import (
+from finishup.cli import app as cli
+from finishup.cli.exits import exit_code_for
+from finishup.cli.unlock import InstallationRecoveryImportResult
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.confidential_protocol import InstallationRecoveryTarget
+from finishup.service.installation_recovery import (
     InstallationRecoveryState,
     InstallationRecoveryStatus,
 )
 
 
 def _stub_config(*_args: object, **_kwargs: object) -> SimpleNamespace:
-    """Bypass the strict loader, which refuses the unknown YOETZ_* variables CI sets."""
+    """Bypass the strict loader, which refuses the unknown FINISHUP_* variables CI sets."""
 
     return SimpleNamespace(storage=SimpleNamespace(data_dir=None))
 
@@ -102,7 +102,7 @@ async def test_recovery_commands_bound_store_metadata_failures(
                 4,
                 ("compact",),
                 None,
-                "yoetz service recovery restore",
+                "finishup service recovery restore",
             )
 
         def metadata(self, _generation: int) -> object:
@@ -144,7 +144,7 @@ async def test_recovery_status_is_pathless_and_agent_safe(
                 4,
                 ("self_contained",),
                 None,
-                "yoetz service recovery restore",
+                "finishup service recovery restore",
             )
 
     async def _unavailable() -> object:
@@ -156,15 +156,15 @@ async def test_recovery_status_is_pathless_and_agent_safe(
 
     monkeypatch.setattr(cli, "_installation_recovery_store", lambda: _Store())
     monkeypatch.setattr(cli, "build_service_client", _unavailable)
-    monkeypatch.setattr("yoetz.config.paths.bundle_root", _bundle_root)
+    monkeypatch.setattr("finishup.config.paths.bundle_root", _bundle_root)
     # Keep inherited configuration out of this status-only test.
     # Status reporting is what is under test here, not configuration resolution.
-    monkeypatch.setattr("yoetz.config.load.load_config", _stub_config)
+    monkeypatch.setattr("finishup.config.load.load_config", _stub_config)
 
     assert await cli._service_recovery_status(True) == 0  # pyright: ignore[reportPrivateUsage]
     report = json.loads(capsys.readouterr().out)
     assert report["state"] == "recovery_material_required"
-    assert report["next_command"] == "yoetz service recovery restore"
+    assert report["next_command"] == "finishup service recovery restore"
     encoded = json.dumps(report)
     assert canary_path not in encoded
     assert "secret" not in encoded
@@ -182,7 +182,7 @@ async def test_clean_profile_restore_stops_after_the_offline_phase(
     afterwards therefore dialled a socket that by construction had nobody listening.
     """
 
-    from yoetz.cli import unlock as unlock_module
+    from finishup.cli import unlock as unlock_module
 
     bundle = tmp_path / "bundle"
     bundle.mkdir(mode=0o700)
@@ -227,10 +227,12 @@ async def test_clean_profile_restore_stops_after_the_offline_phase(
     monkeypatch.setattr(unlock_module, "_ForegroundTerminal", _Terminal)
     monkeypatch.setattr(unlock_module, "run_human_ceremony", _forbidden_ceremony)
     monkeypatch.setattr(
-        "yoetz.service.installation_recovery.OfflineInstallationRecoveryLease", _Lease
+        "finishup.service.installation_recovery.OfflineInstallationRecoveryLease", _Lease
     )
-    monkeypatch.setattr("yoetz.service.installation_recovery.InstallationRecoverySetStore", _Store)
-    monkeypatch.setattr("yoetz.config.load.load_config", _stub_config)
+    monkeypatch.setattr(
+        "finishup.service.installation_recovery.InstallationRecoverySetStore", _Store
+    )
+    monkeypatch.setattr("finishup.config.load.load_config", _stub_config)
 
     def _bundle_root(*, _data_dir: Path | None = None) -> Path:
         del _data_dir
@@ -239,8 +241,8 @@ async def test_clean_profile_restore_stops_after_the_offline_phase(
     def _state_dir() -> Path:
         return tmp_path / "state"
 
-    monkeypatch.setattr("yoetz.config.paths.bundle_root", _bundle_root)
-    monkeypatch.setattr("yoetz.config.paths.state_dir", _state_dir)
+    monkeypatch.setattr("finishup.config.paths.bundle_root", _bundle_root)
+    monkeypatch.setattr("finishup.config.paths.state_dir", _state_dir)
 
     target = cli._installation_recovery_target(  # pyright: ignore[reportPrivateUsage]
         operation="restore",
@@ -256,8 +258,8 @@ async def test_clean_profile_restore_stops_after_the_offline_phase(
     assert type(result) is InstallationRecoveryImportResult
     assert result.outcome == "snapshot_installed"
     assert result.recovery_generation == 4
-    assert result.next_command == "yoetz service run"
+    assert result.next_command == "finishup service run"
     # The operator is told both halves: start the service, then run restore again.
     instruction = "".join(written)
-    assert "yoetz service run" in instruction
-    assert "yoetz service recovery restore" in instruction
+    assert "finishup service run" in instruction
+    assert "finishup service recovery restore" in instruction

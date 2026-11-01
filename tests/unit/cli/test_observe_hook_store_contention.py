@@ -20,13 +20,13 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local
-import yoetz.cli.observe_hooks as observe_hooks
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-from yoetz.domain.observation import ObservationSource
-from yoetz.domain.observation_profiles import (
+import finishup.adapters.integrations.observation_local as local
+import finishup.cli.observe_hooks as observe_hooks
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from finishup.domain.observation import ObservationSource
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(local.fcntl is None, reason="POSIX flock is unav
 _HOLDER = """
 import sys
 from pathlib import Path
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     set_observation_store_lock_role,
 )

@@ -15,16 +15,16 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -37,37 +37,38 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier, session_id
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import (
+from finishup.domain.values import Frontier, session_id
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import (
     CheckCommitResult,
     CheckPhase,
     OperationLease,
     OperationState,
 )
-from yoetz.ports.objects import ObjectKind, ObjectRef
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.ports.objects import ObjectKind, ObjectRef
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
     ReceiptRequest,
     ReceiptResultModel,
+    ReceiptSuccessModel,
     RespondRequest,
     StatusRequest,
     StatusVersionsPageModel,
 )
-from yoetz.version import build_status_version_slice_facts
+from finishup.version import build_status_version_slice_facts
 
 pytestmark = pytest.mark.anyio
 
@@ -173,7 +174,7 @@ class _ProjectionSpy:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -206,6 +207,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -250,7 +252,7 @@ async def test_full_workflow_uses_one_final_client_projection(
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )
@@ -468,9 +470,7 @@ async def test_full_workflow_uses_one_final_client_projection(
     )
     projected = await app.project_result_for_client(
         ClientProjectionContext(
-            ControlClientKind.CLI,
-            ProjectionRenderMode.HUMAN_READABLE,
-            True,
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
         ),
         binding,
         receipt,
@@ -478,6 +478,7 @@ async def test_full_workflow_uses_one_final_client_projection(
 
     assert isinstance(projected, ReceiptResultModel)
     assert projected.root.ok is True
+    assert isinstance(projected.root, ReceiptSuccessModel)
     assert projected.root.receipt_id == receipt.receipt_id
     assert projected.root.privacy_projection.sink == "local_human_view"
     assert len(projection.candidates) == 1
