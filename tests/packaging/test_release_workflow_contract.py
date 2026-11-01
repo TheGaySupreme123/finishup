@@ -325,61 +325,13 @@ def test_release_manifest_comparison_allows_only_new_members(
             exec(script, {})
 
 
-def test_transitional_yoetz_is_built_once_and_published_after_finishup() -> None:
-    """The deprecated `yoetz` names (ADR-048) ride the same approval and never precede finishup."""
+def test_release_publishes_only_the_finishup_names() -> None:
+    """No `yoetz` distribution is built or published (ADR-048 amendment, #1285)."""
 
     workflow = _WORKFLOW.read_text(encoding="utf-8")
-    build = workflow.split("  build-transitional:\n", 1)[1].split(
-        "  # ---------------------------------------------------------------------------------------------\n  # verify-linux",
-        1,
-    )[0]
-    assert "uv run --locked python scripts/check_transitional_yoetz.py\n" in build
-    assert "scripts/check_transitional_yoetz.py \\\n            --dist" in build
-    assert "uv build --no-sources release/transitional-yoetz/python" in build
-    assert "npm pack ./release/transitional-yoetz/npm" in build
-    assert 'expected = ["README.md", "bin/yoetz.js", "package.json"]' in build
-    assert "candidate-${{ needs.validate-release-source.outputs.version }}" in build
-    assert '"$venv/bin/python" -m yoetz --version' in build
-    assert "from yoetz.adapters.release_runtime import adopt_release_lease" in build
-
+    assert "transitional" not in workflow.lower()
+    assert "release/transitional-yoetz" not in workflow
+    assert "pypi.org/pypi/yoetz/" not in workflow
     approval = workflow.split("  approve-publication:\n", 1)[1].split("  publish-pypi:\n", 1)[0]
-    assert "- build-transitional" in approval
-    assert "transitional-digest" in approval and "transitional-npm-digest" in approval
-
-    pypi = workflow.split("  publish-transitional-pypi:\n", 1)[1].split(
-        "  publish-transitional-npm:\n", 1
-    )[0]
-    assert (
-        "needs: [validate-release-source, build-transitional, approve-publication, publish-pypi]"
-        in pypi
-    )
-    assert "packages-dir: ${{ runner.temp }}/transitional-pypi-dist" in pypi
-    assert "skip-existing: false" in pypi
-    assert "https://pypi.org/pypi/yoetz/${version}/json" in pypi
-    assert "published transitional PyPI bytes differ from recovery candidate" in pypi
-
-    npm = workflow.split("  publish-transitional-npm:\n", 1)[1].split(
-        "  verify-transitional-published:\n", 1
-    )[0]
-    assert "publish-transitional-pypi]" in npm
-    assert "environment: npm" in npm
-    assert "npm pack" not in npm
-    assert "published transitional npm bytes differ from recovery candidate" in npm
-
-    verify = workflow.split("  verify-transitional-published:\n", 1)[1].split(
-        "  # ---------------------------------------------------------------------------------------------\n  # release-required",
-        1,
-    )[0]
-    assert "cmp -s" in verify
-    assert "tool install --quiet --managed-python --python 3.14 yoetz==${version}" in verify
-    assert '= "yoetz status" ]' in verify
-    assert "--force" not in build + pypi + npm + verify
-
-    required = workflow.split("  release-required:\n", 1)[1]
-    for job in (
-        "build-transitional",
-        "publish-transitional-pypi",
-        "publish-transitional-npm",
-        "verify-transitional-published",
-    ):
-        assert f"[{job}]=" in required
+    assert "needs.build-candidate.outputs.candidate-digest" in approval
+    assert "needs.build-npm-launcher.outputs.npm-digest" in approval

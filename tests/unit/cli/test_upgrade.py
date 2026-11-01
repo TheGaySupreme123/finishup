@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -635,6 +636,15 @@ def test_receipt_extras_are_one_shared_set() -> None:
 
     assert frozenset({"semantic-openai", "portable-recovery"}) == package_adapter.PACKAGE_EXTRAS
     assert upgrade.PACKAGE_EXTRAS is package_adapter.PACKAGE_EXTRAS
+
+
+def test_receipt_extras_match_the_declared_package_extras() -> None:
+    """The extras an upgrade carries over are exactly the ones the distribution declares."""
+
+    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    with pyproject.open("rb") as stream:
+        declared = tomllib.load(stream)["project"]["optional-dependencies"]
+    assert frozenset(declared) == package_adapter.PACKAGE_EXTRAS
 
 
 def _unsafe_receipt(prefix: Path, kind: str) -> None:

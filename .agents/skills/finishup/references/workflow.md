@@ -105,11 +105,8 @@ settings, permissions, vault and task data stay in the existing installation. Th
 must confirm the installed version; exit zero or an unchanged version is not a completed update.
 FinishUP was named Yoetz before 0.3. Notes, skills, and guidance written then name
 `yoetz://guidance/...` URIs and the `yoetz` command: `read_guidance` still reads such a URI and
-answers in that scheme. A `yoetz` command exists only on an install upgraded through the
-transitional `yoetz` package: there, for this release, it is a deprecated alias that runs the same
-subcommands as `finishup`, and `finishup` itself may not be on PATH. On such an install, where
-`finishup` is not found, run the same subcommand with `yoetz` for this release. A fresh install has
-only `finishup`. New requests use `finishup://` and `finishup`.
+answers in that scheme. Run those commands as `finishup` with the same subcommand. A `yoetz`
+command still on PATH belongs to the earlier Yoetz release, not to FinishUP. New requests use `finishup://` and `finishup`.
 The package command is only the package step. On that controlled service
 startup, a compatible 0.2-to-0.3 bundle migration runs backup-first before READY and preserves
 existing task data; the user does not perform a per-task migration ceremony.

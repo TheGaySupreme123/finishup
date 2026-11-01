@@ -45,9 +45,8 @@ package is a dependency-free launcher for the exact PyPI distribution).
 ## Release integrity
 
 How to verify the artifacts: point at the attached `SHA256SUMS`, `NPM_SHA256SUMS`, SBOM, support
-matrix, known limitations, release-evidence bundle, and `VERIFY.md`. While the deprecated `yoetz`
-alias ships (ADR-048), also name `TRANSITIONAL_SHA256SUMS`, `TRANSITIONAL_NPM_SHA256SUMS` and
-`TRANSITIONAL_REPRODUCIBILITY.txt`, and keep an "Upgrading from Yoetz" note under Install.
+matrix, known limitations, release-evidence bundle, and `VERIFY.md`. Keep an "Upgrading
+from Yoetz" note under Install while Yoetz-era installations remain (ADR-048).
 
 ## Thanks
 

@@ -22,8 +22,8 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    command only (interactive terminal, setup marker absent), which launches `finishup setup run`.
 4. **Console script:** distribution and executable both `finishup`
    (`finishup.cli.entry:main`). `python -m finishup` delegates to the same entry. Amended by ADR-048:
-   through 0.2.5 both were `yoetz`; the `finishup` wheel declares only `finishup`, and a separate
-   transitional `yoetz` distribution carries the deprecated `yoetz` command for one release.
+   through 0.2.5 both were `yoetz`; the `finishup` wheel declares only `finishup`. No transitional
+   `yoetz` distribution is published; PyPI and npm `yoetz` end at 0.2.5 (ADR-048 amendment, #1285).
 5. **Wheel strategy:** finishup itself is a pure-Python wheel; platform specificity comes from
    the pinned APSW dependency wheels. Advertised platform matrix remains macOS 11.0+ arm64
    (`macosx_11_0_arm64`) and glibc 2.28+ x86-64 (`manylinux_2_28_x86_64`) until exact release
@@ -480,8 +480,7 @@ The owner asked for an install that works on whatever machine the user has, with
 relaxed to minimums. Decision 1's single CPython line and decision 2's exact uv are replaced
 for users and contributors. Release reproducibility is unchanged.
 
-- **Interpreter range.** `requires-python = ">=3.12,<3.15"` in both the `finishup` and the
-  transitional `yoetz` distributions. Source must parse under the 3.12 grammar. In particular,
+- **Interpreter range.** `requires-python = ">=3.12,<3.15"` in the `finishup` distribution. Source must parse under the 3.12 grammar. In particular,
   multi-type `except` clauses stay parenthesized (PEP 758's bare form is 3.14-only), and a
   `slots=True` dataclass names its class in `super(...)`, because before 3.14 `slots=True`
   rebuilds the class and a zero-argument `super()` binds the discarded original.

@@ -37,10 +37,9 @@ PACKAGE_UPGRADE_ARGV: Final = (
 # through the transitional ``yoetz`` distribution, which installs the same-version ``finishup``
 # and keeps the ``yoetz`` command its hosts run (ADR-048). The tool is never renamed here.
 _UV_TOOL_NAMES: Final = frozenset({LAUNCHER_NAME, LEGACY_LAUNCHER_NAME})
-# The optional extras the ``finishup`` distribution declares; the transitional ``yoetz``
-# distribution re-exports the same set (ADR-048). A receipt naming only these carries them over,
-# both on an in-place upgrade and in the move to the new name. The one definition:
-# scripts/check_transitional_yoetz.py asserts it equals the repository-root pyproject extras.
+# The optional extras the ``finishup`` distribution declares. A receipt naming only these carries
+# them over, both on an in-place upgrade and in the move to the new name (ADR-048). The one
+# definition: tests/unit/cli/test_upgrade.py asserts it equals the repository-root pyproject extras.
 PACKAGE_EXTRAS: Final = frozenset({"semantic-openai", "portable-recovery"})
 # uv tool receipts are a few hundred bytes; anything larger is not one this boundary trusts.
 UV_RECEIPT_MAX_BYTES: Final = 64 * 1024

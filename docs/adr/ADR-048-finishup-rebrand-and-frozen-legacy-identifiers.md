@@ -7,7 +7,9 @@ protocol, storage/durability, release/packaging. Maintainer acknowledgement: the
 decisions recorded on #1055 — full backward compatibility for existing installs (PyPI `yoetz`
 0.1-0.2.5, the maintainer's live vault, 0.3 development builds); recorded data is never rewritten;
 the legacy state folder is adopted in place; a transitional `yoetz` distribution carries the
-deprecated `yoetz` command for one release, and on such an install only `yoetz` is on `PATH`; new
+deprecated `yoetz` command for one release, and on such an install only `yoetz` is on `PATH`
+(**withdrawn 2026-11-01, #1285**: no transitional distribution is published; see the amendment
+at the end); new
 output uses the FinishUP spelling except where a released contract or the deprecated-alias install
 forces otherwise, and each such exception is labeled `(ADR-048)` in code (§1). This ADR changes
 no released schema, migration, canonical fixture or backward-read fixture. It widens unreleased
@@ -38,7 +40,6 @@ pre-rename pending records), `src/finishup/domain/observation_capacity_policy.py
 `src/finishup/cli/upgrade.py` and `src/finishup/application/upgrade.py`,
 `src/finishup/adapters/package_upgrade.py`, `src/finishup/application/package_update.py`,
 `src/finishup/adapters/privacy/update_checks.py`, `scripts/generate_schemas.py`,
-`release/transitional-yoetz/`, `scripts/check_transitional_yoetz.py`,
 `.github/workflows/release.yml`, `scripts/provision_test_instance.py`,
 `scripts/sync_committed_agent_trees.py`.
 **Relates to:** ADR-002 (canonical protocol), ADR-003 (storage), ADR-004 (crypto and keys),
@@ -157,6 +158,10 @@ numeric values retain their existing default behavior.
 
 ### 4. The transitional `yoetz` distribution and the alias window
 
+> **Withdrawn 2026-11-01 (#1285).** The transitional distribution described below is not built or
+> published; see *Amendment: no transitional `yoetz` distribution*. This section records the
+> runtime behavior that remains in the code for a `yoetz` launcher running FinishUP.
+
 The `finishup` wheel and npm package declare only the `finishup` command. A separate, deprecated
 `yoetz` distribution (`release/transitional-yoetz/`) is published to PyPI and npm at the same
 version for **one release**:
@@ -197,11 +202,8 @@ version for **one release**:
   `refused_custom_uv_installation` rather than dropping the recorded choices; refresh each host; then
   `uv tool uninstall yoetz`. The step also says that every `finishup` command shown works as
   `yoetz` with the same subcommand until then.
-- `release.yml` builds the transitional distributions twice, checks them in lockstep
-  (`scripts/check_transitional_yoetz.py`), smoke-tests them against the exact `finishup`
-  candidate, binds their digests into the same publication approval, publishes them only after
-  `finishup` (PyPI, then npm) through Trusted Publishing, and verifies the published bytes. See the
-  [transitional distribution runbook](../runbooks/transitional-yoetz-release.md).
+- *(Withdrawn, #1285.)* `release.yml` built, approved, published and verified the transitional
+  distributions after `finishup`; those jobs and their runbook are removed.
 
 **Removal gate.** The alias, the transitional distributions, their release jobs and the launcher
 recognition are removed in a later release, and only after status reports no host still bound to a
@@ -266,12 +268,13 @@ folder selection, ambiguity and every legacy-only, new-only, equal and conflicti
 (`tests/unit/adapters/test_*_legacy.py`, `tests/unit/cli/test_codex_legacy_surfaces.py`,
 `tests/unit/application/test_host_connection_legacy.py`, `tests/unit/tui/test_runtime_legacy.py`)
 cover legacy states, migration and removal. `tests/unit/cli/test_entry_legacy_alias.py`,
-`tests/unit/adapters/test_launcher_legacy_alias.py` and `tests/unit/test_transitional_yoetz.py`
-cover the alias and the transitional distributions. `tests/unit/cli/test_folder_refusal_surfaces.py`
+and `tests/unit/adapters/test_launcher_legacy_alias.py`
+cover the alias; `tests/unit/cli/test_upgrade.py` keeps `PACKAGE_EXTRAS` equal to the
+root extras. `tests/unit/cli/test_folder_refusal_surfaces.py`
 and `tests/unit/mcp/test_folder_refusal.py` cover folder refusals on every connect path;
 `tests/unit/service/test_elevated_bootstrap.py` and `tests/unit/cli/test_elevated.py` cover
 pre-rename pending records and the consent command head;
-`tests/conformance/surfaces/test_transitional_launcher_guidance.py` covers the transitional-launcher
+`tests/conformance/surfaces/test_legacy_launcher_guidance.py` covers the legacy-launcher
 guidance. The release-workflow jobs are verified by
 inspection and static contract tests only until a dry run (#1056).
 
@@ -317,3 +320,30 @@ the scanning rules. This one covers the spelling.
 - **Unchanged.** No data category is added, no ceiling is raised, and Private still sends nothing
   (ADR-009). Every other §2 identifier stays frozen. The behaviour is service-side and identical on
   Codex, Claude Code and Cursor.
+
+## Amendment: no transitional `yoetz` distribution (*Amended 2026-11-01, #1285*)
+
+The maintainer decided on 2026-11-01 to publish the product only as `finishup` on PyPI and npm,
+and not to publish the transitional `yoetz` distribution from §4. No other package depends on
+`yoetz` as a library. PyPI and npm `yoetz` stay frozen at 0.2.5.
+
+- `release/transitional-yoetz/`, `scripts/check_transitional_yoetz.py`, the
+  `build-transitional`, `publish-transitional-pypi`, `publish-transitional-npm` and
+  `verify-transitional-published` release jobs, the PR-CI lockstep step and the transitional
+  release runbook are removed. Release approval binds only the `finishup` Python and npm digests.
+  The `PACKAGE_EXTRAS` drift check moves to `tests/unit/cli/test_upgrade.py`.
+- **Consequence for Yoetz-era installs.** Their update check and `yoetz upgrade` keep reporting
+  0.2.5 as current and never reach FinishUP. Moving is a manual, documented step: stop the old
+  sessions and service, install `finishup` beside the `yoetz` tool, reconnect each host (which
+  replaces Yoetz-era registrations, §3), then `uv tool uninstall yoetz`
+  ([upgrade guide](../usage/upgrading.md#upgrading-from-yoetz)). Until a host is reconnected, it
+  still starts Yoetz 0.2.5, which cannot serve data FinishUP has upgraded. The same applies to a
+  Codex registration kept under the earlier name. The permanent readers in §3 (folders,
+  variables, policy paths, guidance URIs, recorded markers and receipts) are unchanged.
+- **Dormant runtime recognition.** §1's deprecated-alias exception and the rest of §4's runtime
+  behavior (the `yoetz` consent head, the `yoetz` update-check identity, the alias notice, the
+  *Move from the yoetz name* step and RECORD-proven `yoetz` scripts) apply only when a `yoetz`
+  distribution at exactly the running FinishUP version is installed beside it. Without a
+  published shim, released installs no longer meet that condition. The code and its
+  documentation stay until a follow-up removes them, because that removal changes the consent
+  `/7` heads and the ADR-009 allowlist.

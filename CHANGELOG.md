@@ -72,17 +72,14 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   - `yoetz://` guidance URIs, `mcp__yoetz__*` tool names, `yoetz-blocker:`-style decision markers,
     `yoetz` command heads in results from an older service, and receipts naming package `yoetz`
     are still recognized.
-- **A transitional `yoetz` distribution** is published to PyPI and npm at the same version for one
-  release. It installs `finishup` and keeps a deprecated `yoetz` command, so released `yoetz upgrade`
-  lands on FinishUP in place and hosts connected through the old tool keep running. The alias
-  prints a one-line notice in interactive terminals only. Until you move, any `finishup` command
-  shown works as `yoetz` with the same subcommand, and update tips, the upgrade plan and consent
-  requests started through `yoetz` name `yoetz`. Move with
-  `uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup` (plus any
-  extras; `finishup upgrade` prints the command), reconnect each host in each project you
-  connected, and for Codex take the steps `finishup setup status --host codex` lists until it no
-  longer says the registration under the earlier name `yoetz` stays beside `finishup` (that kept
-  entry still starts the `yoetz` command from the old tool); then `uv tool uninstall yoetz`. See
+- **The packages are `finishup` on PyPI and npm; `yoetz` ends at 0.2.5** (#1285). No transitional
+  `yoetz` release is published, so a Yoetz installation's `yoetz upgrade` and update tip never
+  offer FinishUP. Move by hand: close the Yoetz sessions and run `yoetz service stop`, install with
+  `uv tool install --managed-python --python 3.14 finishup` (plus any extras) or
+  `npx finishup@latest`, reconnect each host in each project you connected, and for Codex take the
+  steps `finishup setup status --host codex` lists until it no longer says the registration under
+  the earlier name `yoetz` stays beside `finishup` (that kept entry still starts Yoetz 0.2.5); then
+  `uv tool uninstall yoetz`. Your data stays where it is. See
   [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 - **Some identifiers stay spelled `yoetz` permanently** under protocol 0.1, because they live inside
   stored or released bytes: ledger protocol tags, object and vault formats, crypto domain
