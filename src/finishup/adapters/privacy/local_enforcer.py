@@ -85,8 +85,10 @@ def estimated_token_count(byte_count: int) -> int:
 # as though it had used the new semantics.
 # v4 (#1248 P-D1): FinishUP's own markers are exempt only by the spans recorded when they were
 # written, never by their text; a resumed proposal prepared under v3 fails closed as a mismatch.
-_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v4"
-_SCANNER_PROFILE_DIGEST = "sha256:8710381761bf88c0585e3fc081cbfc7571ecf946eb1828139175eb72de251f9c"
+# v5 (#1248 P-D3): an unquoted value ends at a raw or encoded line break or tab, and no pass
+# replaces bytes outside its match.
+_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v5"
+_SCANNER_PROFILE_DIGEST = "sha256:afbf5c541ef8d643f5bcd8b83aa591291990611c0f801d7c0c4f554d6bcdf41a"
 _STRUCTURAL_CATEGORIES = frozenset(
     {DataCategory.BOUNDED_STRUCTURAL_METADATA, DataCategory.DECLARED_FILE_TYPE}
 )

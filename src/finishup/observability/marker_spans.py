@@ -41,6 +41,8 @@ _WHITESPACE: Final = re.compile(rb"[ \t\r\n]*")
 _STRING: Final = re.compile(rb'"(?:[^"\\]|\\.)*"', re.DOTALL)
 _SCALAR: Final = re.compile(rb"-?[0-9][0-9.eE+-]*|true|false|null")
 _MAX_DEPTH: Final = 64
+# How many JSON string encodings deep a container may carry a packet (#1248 P2: a wrapped exchange).
+_MAX_CONTAINER_DEPTH: Final = 4
 
 
 def valid_marker_spans(data: bytes, spans: Iterable[tuple[int, int]]) -> MarkerSpans:
@@ -135,25 +137,35 @@ def container_marker_spans(container: bytes, packet: bytes, spans: MarkerSpans) 
     """``spans`` of ``packet`` wherever ``container`` carries that exact packet.
 
     ``container`` is the packet itself, or JSON that holds the packet as one string (the reviewer
-    conversation, a provider request body). The string is found by the packet's own exact
-    encoding, which no other content can equal, and every occurrence carries the same spans.
+    conversation, a provider request body), possibly nested as a string again (a conversation
+    wrapped in another JSON document), up to ``_MAX_CONTAINER_DEPTH`` encodings deep. The string
+    is found by the packet's own exact encoding at that depth, which no other content can equal,
+    and every occurrence carries the same spans.
     """
 
     if not spans:
         return ()
     if container == packet:
         return spans
-    try:
-        token = canonical_encode(packet.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return ()
-    inner = encoded_string_spans(token, spans)
-    out: list[tuple[int, int]] = []
-    found = container.find(token)
-    while found >= 0 and len(out) < _MAX_SPANS:
-        out.extend(shift_marker_spans(inner, found))
-        found = container.find(token, found + len(token))
-    return valid_marker_spans(container, out)
+    text, inner = packet, spans
+    for depth in range(_MAX_CONTAINER_DEPTH):
+        try:
+            token = canonical_encode(text.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return ()
+        inner = encoded_string_spans(token, inner)
+        # Deeper than one string the packet's quotes are themselves escaped inside the outer
+        # string, so the bytes the container holds are the encoding without its own quotes.
+        needle, shift = (token, 0) if depth == 0 else (token[1:-1], -1)
+        out: list[tuple[int, int]] = []
+        found = container.find(needle)
+        while found >= 0 and len(out) < _MAX_SPANS:
+            out.extend(shift_marker_spans(inner, found + shift))
+            found = container.find(needle, found + len(needle))
+        if out:
+            return valid_marker_spans(container, out)
+        text = token
+    return ()
 
 
 # -- review packets ---------------------------------------------------------------------------
