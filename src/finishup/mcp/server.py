@@ -786,10 +786,10 @@ class _RootsSession(Protocol):
 class _RawListRootsResult(BaseModel):
     """Raw roots/list envelope used for Cursor's non-conforming POSIX root representation."""
 
-    # MCP 1.28.1 models ``Root.uri`` as ``FileUrl`` and rejects Cursor's raw ``/absolute/path``
-    # before the bridge can apply its narrow host-specific compatibility rule.  Keep this model
-    # intentionally shallow; root shape and URI safety are checked below without retaining raw
-    # host content.
+    # MCP 1.30.0 (unchanged since 1.28.1) models ``Root.uri`` as ``FileUrl`` and rejects Cursor's
+    # raw ``/absolute/path`` before the bridge can apply its narrow host-specific compatibility
+    # rule.  Keep this model intentionally shallow; root shape and URI safety are checked below
+    # without retaining raw host content.
     roots: object
 
 

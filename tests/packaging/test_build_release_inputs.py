@@ -52,7 +52,7 @@ def _inputs(tmp_path: Path, *, prefixed_checksums: bool = False) -> tuple[Path, 
                 "cells": [
                     {
                         "capability_family": "mcp",
-                        "external_version": "1.28.1",
+                        "external_version": "1.30.0",
                         "platform": "linux_x86_64",
                         "requirement_id": "initialize",
                         "status": "supported",
@@ -132,7 +132,7 @@ def test_builder_output_drives_the_real_evidence_generator(tmp_path: Path) -> No
     document = json.loads(manifest.read_text(encoding="utf-8"))
     assert set(document["gates"]) == set(_GATES)
     assert document["support_matrix_cells"] == [
-        {"label": "mcp:1.28.1:linux_x86_64:initialize", "status": "supported"}
+        {"label": "mcp:1.30.0:linux_x86_64:initialize", "status": "supported"}
     ]
 
     generated = subprocess.run(
