@@ -30,6 +30,7 @@ from finishup.adapters.integrations.cursor_mcp_runtime import (
     OsCursorMcpProcesses,
     observe_cursor_mcp_runtime,
 )
+from finishup.adapters.integrations.host_config_json import parse_host_config_json
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher, valid_launcher
 from finishup.adapters.integrations.launcher_probe import (
     UNOBSERVED_LAUNCHER_IDENTITY,
@@ -2261,7 +2262,8 @@ def _config_entries(
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
             return None, None, False
-        parsed = strict_json_parse(path.read_bytes())
+        # Host-owned and only observed here: tolerate host decimals (#1278).
+        parsed = parse_host_config_json(path.read_bytes())
     except (OSError, ProtocolValueError, UnicodeError):
         return None, None, False
     if not isinstance(parsed, Mapping):
@@ -2581,7 +2583,7 @@ def _discover_linux_cursor_ide(app_path: Path) -> CursorCapabilityIdentity:
                 content = stream.read(_MAX_CURSOR_IDENTITY_METADATA_BYTES + 1)
             if len(content) > _MAX_CURSOR_IDENTITY_METADATA_BYTES:
                 raise ValueError("cursor_ide_identity_invalid")
-            value = strict_json_parse(content)
+            value = parse_host_config_json(content)
             if not isinstance(value, Mapping):
                 raise ValueError("cursor_ide_identity_invalid")
             metadata.append(value)
