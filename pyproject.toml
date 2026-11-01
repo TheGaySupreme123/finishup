@@ -55,10 +55,10 @@ finishup = "finishup.cli.entry:main"
 
 [project.urls]
 Homepage = "https://finishup.dev"
-Documentation = "https://github.com/TheGaySupreme123/finishup/tree/main/docs"
-Repository = "https://github.com/TheGaySupreme123/finishup"
-Issues = "https://github.com/TheGaySupreme123/finishup/issues"
-Changelog = "https://github.com/TheGaySupreme123/finishup/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/orgFinishUP/finishup/tree/main/docs"
+Repository = "https://github.com/orgFinishUP/finishup"
+Issues = "https://github.com/orgFinishUP/finishup/issues"
+Changelog = "https://github.com/orgFinishUP/finishup/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
