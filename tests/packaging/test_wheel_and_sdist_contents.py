@@ -254,8 +254,8 @@ def test_wheel_contains_exactly_one_package_console_entry_and_py_typed(
     entry_points = members[f"{dist_info_prefix}entry_points.txt"].decode("utf-8")
     assert "[console_scripts]" in entry_points
     assert "finishup = finishup.cli.entry:main" in entry_points
-    # Only `finishup`: the deprecated `yoetz` alias ships in the transitional `yoetz`
-    # distribution (ADR-048). Declaring it here would collide with an existing `yoetz` uv tool.
+    # Only `finishup` (ADR-048): declaring `yoetz` here would collide with an existing Yoetz-era
+    # `yoetz` uv tool installed beside it.
     scripts = [
         line.split("=", 1)[0].strip()
         for line in entry_points.split("[console_scripts]", 1)[1].splitlines()

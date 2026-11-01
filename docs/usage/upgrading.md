@@ -83,12 +83,9 @@ What changes:
 
 - The command and the package are `finishup` (PyPI and npm). New messages, receipts and the files
   FinishUP writes into your agent hosts use the FinishUP name.
-- For this release only, an upgraded Yoetz installation keeps a `yoetz` command that runs FinishUP.
-  In an interactive terminal it prints a one-line notice pointing here. Such an installation has
-  only `yoetz` on its `PATH`, so until you move, any `finishup ...` command FinishUP shows you can
-  be run as `yoetz ...` with the same subcommand. Update tips, the upgrade plan and consent requests
-  started through `yoetz` already name `yoetz` there. A later release removes the alias, so move to
-  `finishup` (below) when convenient.
+- The `yoetz` package on PyPI and npm ends at 0.2.5 and gets no further releases. A Yoetz
+  installation therefore keeps reporting 0.2.5 as current: `yoetz upgrade` and its update tip never
+  offer FinishUP. Moving is a one-time install under the new name, described below.
 
 What stays where it is:
 
@@ -109,51 +106,39 @@ What stays where it is:
   `yoetz_owned` or `yoetz.<name>/<n>` schema tags) stay spelled `yoetz` permanently; they are not
   leftovers to clean up.
 
-### 1. Update the existing installation
+### 1. Stop the Yoetz installation
 
-Run `yoetz upgrade` and follow its package step. From 0.2.x this is 0.2's stop-first procedure
-described above. Version 0.1.0 has no `upgrade` command: use its original package manager.
-
-The released 0.2.1-0.2.5 command runs `uv tool upgrade yoetz`. If the tool was installed with an
-exact pin such as `yoetz==0.2.5`, uv keeps that pin, so the command can report success while
-leaving 0.2.5 installed. Installations made through the npm launcher have this exact pin. After
-stopping the old hosts, hooks and service, replace that requirement explicitly:
+Close every agent session that uses Yoetz, then stop its service:
 
 ```text
-uv tool install --upgrade 'yoetz>=0.3.0'
-yoetz --version
+yoetz service stop
 ```
 
-Carry over the extras and Python or package resolution options from your original installation.
-For example, use `'yoetz[semantic-openai]>=0.3.0'` when that extra was installed, and keep a
-recorded `--python` request or custom index options. For another package manager, use its upgrade
-procedure. Verify that the fresh launcher reports 0.3.0 or later before continuing; a successful
-exit from the old upgrade command does not establish that.
+Version 0.2 cannot safely share the newer local observation state, so nothing should run the old
+`yoetz` command while you move.
 
-For an npm installation, after the same stop-first procedure, run the transitional release
-explicitly with `npx yoetz@0.3.0 --version`. An older installed or cached 0.2.x npm launcher still
-requests its own old Python package version. The current transitional launcher installs its matching
-`yoetz` Python package in place; use the explicit uv command above instead when you need to
-preserve extras or custom installation options.
-
-The update keeps the installation under the `yoetz` name and adds FinishUP to it, so agents
-connected through that installation keep their launcher path.
-
-### 2. Move to the `finishup` command
+### 2. Install `finishup`
 
 ```text
 uv tool install --managed-python --python 3.14 finishup
+finishup --version
 ```
 
 If you installed `yoetz` with extras, install the same ones, for example
-`uv tool install --managed-python --python 3.14 'finishup[semantic-openai]'`.
-`yoetz upgrade` ends with a *Move from the yoetz name* step that prints this command with your
-extras when it can confirm them, and otherwise asks you to add them yourself.
+`uv tool install --managed-python --python 3.14 'finishup[semantic-openai]'`, and keep any
+recorded `--python` request or custom index options. For an npm installation, run
+`npx finishup@latest --version` instead; it installs the `finishup` Python package the same way the
+`yoetz` launcher installed `yoetz`. `finishup` installs beside the `yoetz` tool without replacing
+it, and finds your existing data where Yoetz left it.
 
-Then reconnect each agent host with the new command, in each project you connected. The guided
-connection, `finishup setup run --host codex|claude|cursor-ide|cursor-cli`, shows one reviewed
-change that replaces the host's Yoetz-era registration with the FinishUP one; `finishup upgrade`
-lists the same host steps. Check each host afterwards with `finishup setup status --host <host>`:
+### 3. Reconnect each agent host
+
+Reconnect each agent host with the new command, in each project you connected. Until a host is
+reconnected it still starts the old `yoetz` command, so do not open sessions in it between steps.
+The guided connection, `finishup setup run --host codex|claude|cursor-ide|cursor-cli`, shows one
+reviewed change that replaces the host's Yoetz-era registration with the FinishUP one;
+`finishup upgrade` lists the same host steps. Check each host afterwards with
+`finishup setup status --host <host>`:
 a registration reported as `legacy_only` or `duplicate` still uses the old name and needs
 reconnecting. Something reported as `foreign` under the old name is not provably FinishUP's, so
 FinishUP leaves it alone; the host's integration guide ([Codex](../runbooks/codex-integration.md#legacy-yoetz-registrations), [Claude
@@ -166,7 +151,8 @@ Codex settings still name the `yoetz` server (such as the approval entry Yoetz 0
 wrote), or FinishUP cannot read them, removing the earlier registration would stop Codex loading
 that project, so the MCP registration under the earlier name `yoetz` stays beside `finishup`. That
 kept registration still starts the `yoetz` command from your old installation, for every project of
-that Codex home. `finishup setup status --host codex` says when the registration under the earlier
+that Codex home, and that command is still Yoetz 0.2.5, not FinishUP. Finish this step before
+opening Codex sessions in those projects. `finishup setup status --host codex` says when the registration under the earlier
 name yoetz stays beside finishup, and lists each project that still needs it with its step: the
 exact command that revokes an earlier-name approval entry, what to fix in a project file FinishUP
 could not read, or tables you edited, to remove by hand. Take those steps, then run
