@@ -6025,8 +6025,29 @@ def main() -> None:
         lifecycle_exit = _lifecycle_exit_code(error)
         if lifecycle_exit is not None:
             raise SystemExit(lifecycle_exit) from None
-        _stderr("internal_error: the command could not be completed")
+        _stderr(
+            "internal_error: the command could not be completed" + _unexpected_failure_suffix(error)
+        )
         raise SystemExit(70) from None
+
+
+def _unexpected_failure_suffix(error: BaseException) -> str:
+    """Record an unexpected command failure and name the record, never its content (#1280).
+
+    Only the exception class and its innermost ``finishup`` frame are recorded, in the owner-only
+    diagnostic ring the service already uses, so ``err_...`` resolves to a cause without exposing
+    paths, prompts or other user content. Recording never raises.
+    """
+
+    try:
+        from finishup.observability.logging import record_unexpected_exception_without_raising
+
+        correlation = record_unexpected_exception_without_raising(
+            error, component="cli", operation="command_failed"
+        )
+    except Exception:
+        return ""
+    return f"; correlation: {correlation}" if correlation.startswith("err_") else ""
 
 
 @elevated_app.command("status")

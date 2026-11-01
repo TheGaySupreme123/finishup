@@ -183,6 +183,8 @@ _CHANGE_WORDING: Final[Mapping[str, str]] = {
     "record_connected_project": "Record this project as connected to this configuration",
     "forget_connected_project": "Forget this project in this configuration's connected projects",
     "remove_project_admission": "Remove this project's FinishUP tool-approval entry",
+    # The same reviewed consent step Codex setup has always carried (#1279).
+    "allow_observation": "Allow bounded structural event recording for this project",
 }
 
 
@@ -1112,20 +1114,47 @@ def apply_selected(plan: ConnectionPlan, refresh: object) -> dict[str, JsonValue
         refuse_unservable_runtime()
 
     authority = None
+    prepared_here: str | None = None
     if not plan.unchanged and plan.body.get("requires_os_presence") is not False:
         pending = load_pending()
         if pending is None:
             pending = prepare_pending("plugin_artifact_apply", target_digest=plan.digest)
+            prepared_here = pending.pending_id
         if pending.operation != "plugin_artifact_apply" or pending.target_digest != plan.digest:
             raise ConnectionError("connection_other_approval_pending")
         authority = ArtifactAuthority("review_only", plan.digest, pending.pending_id)
-    return apply_connection(
-        plan,
-        accepted_digest=plan.digest,
-        refresh=cast(Callable[[], ConnectionPlan], refresh),
-        authority=authority,
-        review=ElevatedPortableArtifactReview(select_artifact_user_presence()),
-    )
+    try:
+        return apply_connection(
+            plan,
+            accepted_digest=plan.digest,
+            refresh=cast(Callable[[], ConnectionPlan], refresh),
+            authority=authority,
+            review=ElevatedPortableArtifactReview(select_artifact_user_presence()),
+        )
+    except BaseException:
+        _release_unreviewed_approval(prepared_here)
+        raise
+
+
+def _release_unreviewed_approval(pending_id: str | None) -> None:
+    """Withdraw the approval this run prepared when its apply failed before the review took it.
+
+    Only one approval may be pending at a time, so one left behind refused every retry with
+    ``connection_other_approval_pending`` until it expired 15 minutes later (#1280). A review
+    consumes its approval, so a pending one with this run's id was never reviewed; any other
+    pending approval belongs to another request and is left alone. Never raises.
+    """
+
+    if pending_id is None:
+        return
+    try:
+        from finishup.service.elevated_bootstrap import clear_pending, load_pending
+
+        current = load_pending()
+        if current is not None and current.pending_id == pending_id:
+            clear_pending()
+    except Exception:
+        return
 
 
 def run_host_connection(
