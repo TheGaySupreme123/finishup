@@ -58,7 +58,13 @@ configuration root, derives the cache and private marketplace paths, and preview
 plus enablement in one exact connection plan. Override the executable/configuration or project
 with `--host-path`, `--host-config-root`, and `--project`. Agent-driven setup uses
 `--non-interactive --json`, then repeats the preview's request ID and digest with `--accept`.
-The existing OS-authenticated artifact review still applies. Status and disconnect use
+The existing OS-authenticated artifact review still applies. The plan also lists
+`allow_observation` ("Allow bounded structural event recording for this project") whenever the
+project has no active observation consent; without it the hooks record nothing and deliver no
+startup cue (`workspace_unconsented`). It is the same step Codex setup carries, and disconnect keeps
+the consent (`finishup observe revoke` withdraws it) (#1279). Setup reads Claude Code's own
+`.claude.json` (up to 32 MiB) for ownership even though Claude writes decimal values into it; only
+its MCP tables are used, and FinishUP never writes that file (#1278). Status and disconnect use
 `finishup setup status|disconnect --host claude` with the same target options. Standalone `plugin
 install` below retains its disabled-by-default behavior.
 

@@ -28,6 +28,8 @@ from finishup.adapters.integrations.host_projects import (
     same_directory,
     write_connected_projects,
 )
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.workspace_binding import canonical_workspace_locator
 from finishup.config.home_project import home_project_allowed, home_project_scope
 from finishup.domain.values import RequestId
 from finishup.ports.plugin_artifacts import (
@@ -402,6 +404,60 @@ class SharedProjectsStep:
         return current.unknown_members or (current.raw is None and shared_present)
 
 
+def _observation_store() -> LocalObservationStore:
+    """The local observation store setup records consent in (a seam tests isolate)."""
+
+    return LocalObservationStore()
+
+
+class ObservationConsentStep:
+    """Workspace observation consent, reviewed and approved with the connection (#1279).
+
+    Codex setup has always listed "Allow bounded structural event recording for this project" in
+    its reviewed plan. Claude Code and Cursor connections now carry the same step, so their hooks
+    record structural events and deliver FinishUP's startup cue instead of exiting
+    ``workspace_unconsented``. The preview reads consent without creating key material; the step
+    is planned only when the workspace has no active consent, so a repeated setup stays a no-op.
+    A disconnect never revokes it: consent belongs to the workspace and every host on it, as on
+    Codex (``finishup observe revoke`` withdraws it).
+    """
+
+    CHANGE: Final = "allow_observation"
+
+    def __init__(self, project: Path, action: str) -> None:
+        self._locator = canonical_workspace_locator(project) if action == "connect" else None
+        self.planned = False
+        if self._locator is None:
+            return
+        commitment = _observation_store().existing_workspace_commitment(self._locator)
+        consent = None if commitment is None else _observation_store().consent_for(commitment)
+        self.planned = consent is None or not consent.active
+
+    def plan(self, body: dict[str, JsonValue], changes: list[JsonValue]) -> None:
+        if not self.planned:
+            return
+        changes.append(self.CHANGE)
+        # This plan carries the consent itself, so it is no longer a separate decision.
+        warnings = body.get("warnings")
+        if isinstance(warnings, list):
+            body["warnings"] = [item for item in warnings if item != "observation_consent_separate"]
+
+    def apply(self) -> None:
+        if not self.planned or self._locator is None:
+            return
+        store = _observation_store()
+        store.grant_consent(store.workspace_commitment(self._locator))
+
+    def status(self) -> dict[str, JsonValue]:
+        if self._locator is None:
+            return {}
+        commitment = _observation_store().existing_workspace_commitment(self._locator)
+        consent = None if commitment is None else _observation_store().consent_for(commitment)
+        return {
+            "observation_consent": "active" if consent is not None and consent.active else "absent"
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionPlan:
     body: dict[str, JsonValue]
@@ -563,6 +619,8 @@ def prepare_connection(
                     if before.discovered:
                         changes.append("uninstall_plugin")
                     changes.extend(("remove_marketplace", "remove_plugin_mcp"))
+        observation = ObservationConsentStep(project, action)
+        observation.plan(body, changes)
         body["changes"] = changes
         shared.disclose(admission.disclosure)
         route_before = (
@@ -597,11 +655,13 @@ def prepare_connection(
                     ),
                 ),
                 **admission.status(),
+                **observation.status(),
             }
 
         def apply() -> None:
             admission.apply(sweep_admission)
             if noop or preview is None:
+                observation.apply()
                 return
             result = claude.apply_claude_code_plugin(
                 request,
@@ -615,6 +675,7 @@ def prepare_connection(
             )
             if result.operation_state is not PluginOperationState.COMPLETED:
                 raise ConnectionError("connection_outcome_unknown")
+            observation.apply()
 
     elif installation.host in {"cursor-ide", "cursor-cli"}:
         config_existed = installation.config_root.exists()
@@ -749,6 +810,8 @@ def prepare_connection(
         record_change = shared.record_change(action)
         if record_change is not None:
             changes.append(record_change)
+        observation = ObservationConsentStep(project, action)
+        observation.plan(body, changes)
         body.update(
             {
                 "create_config_root": not config_existed and action == "connect",
@@ -797,6 +860,7 @@ def prepare_connection(
                     recorded,
                 ),
                 **admission.status(),
+                **observation.status(),
             }
 
         def plugin_step() -> None:
@@ -868,6 +932,7 @@ def prepare_connection(
             plugin_step()
             mcp_step()
             shared.record(action)
+            observation.apply()
 
     else:
         raise ConnectionError("connection_host_unsupported")

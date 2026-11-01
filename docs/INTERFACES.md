@@ -7718,7 +7718,13 @@ ADR-048), as it does for `integrate cursor plugin preview --action remove`; and 
 `connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
-forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
+forget_connected_project` (Cursor, record-only updates), and a Claude Code or Cursor connect adds
+`allow_observation` (worded "Allow bounded structural event recording for this project", the
+reviewed consent step Codex setup has always carried) whenever the canonical workspace has no active
+observation consent; such a plan drops the `observation_consent_separate` warning, applies the
+consent after its host steps, and its status adds `observation_consent` (`active|absent`). A
+disconnect never revokes it: consent is per workspace and shared by every host there (#1279). The
+plan disclosure `shared_with` lists
 the other projects that keep the shared pieces and is bound into `preview_digest`. Status adds
 `codex_home_projects` and the project's own `activation_state` (Codex; `active` only for a
 connected project) or `connected_projects` (Claude Code, Cursor). A connect through a

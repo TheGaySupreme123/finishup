@@ -633,7 +633,7 @@ def test_guided_connection_migrates_and_disconnect_removes_a_legacy_install(
         plan = prepare()
         expected = "migrate_legacy_plugin" if action == "connect" else "remove_legacy_plugin"
         assert plan.body["changes"] == (
-            [expected, "install_plugin", "enable_plugin", "plugin_mcp"]
+            [expected, "install_plugin", "enable_plugin", "plugin_mcp", "allow_observation"]
             if action == "connect"
             else [expected]
         )

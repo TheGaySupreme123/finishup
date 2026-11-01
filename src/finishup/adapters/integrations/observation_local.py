@@ -4007,6 +4007,18 @@ class LocalObservationStore:
     def workspace_commitment(self, path: str) -> str:
         return workspace_commitment_from_path(self._cached_key_material(), path)
 
+    def existing_workspace_commitment(self, path: str) -> str | None:
+        """Return the workspace commitment without creating key material.
+
+        ``None`` means no key exists yet, so no workspace can hold consent; a read-only preview
+        uses this instead of :meth:`workspace_commitment`, which creates the key on first use.
+        """
+
+        existing = _read_bytes(self._root / "key-material.bin", maximum=_KEY_BYTES)
+        if existing is None or len(existing) != _KEY_BYTES:
+            return None
+        return workspace_commitment_from_path(existing, path)
+
     def session_commitment(self, codex_session_id: str) -> str:
         return session_commitment_from_codex_id(self._cached_key_material(), codex_session_id)
 
