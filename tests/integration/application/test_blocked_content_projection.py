@@ -613,6 +613,6 @@ async def test_the_projection_carries_the_approved_bytes_not_the_original_leaf()
     page = cast(Mapping[str, JsonValue], projected["page"])
     item = cast(list[Mapping[str, JsonValue]], page["items"])[0]
     assert item["task_title"] == (
-        "Rotate the database password=[withheld-by-yoetz:possible-credential] today"
+        "Rotate the database password=[withheld-by-finishup:possible-credential] today"
     )
     assert value.encode() not in canonical_encode(cast(JsonValue, dict(projected)))
