@@ -464,3 +464,190 @@ def test_an_obligation_citing_an_equivalent_statement_event_justifies_the_edit()
 
     assert equivalent.unjustified == 0
     assert only_newer.unjustified == 1
+
+
+# Issue #1059: the dogfood shape. The request asked for edge-case tests and every host appended new
+# test functions to the existing ``tests/test_spans.py``. The deterministic check reads only
+# path/status metadata, so it cannot prove an edit append-only; these tests lock that it does not
+# guess (append-only, modified and skip-marker edits stay unjustified until justified) and that the
+# two justifications the finding names, spelled exactly as taught, clear it.
+_SPANS = "tests/test_spans.py"
+_SPANS_ACTION = action_id("act_10000000-0000-4000-8000-000000000059")
+_SPANS_HEX = hashlib.sha256(_SPANS.encode("utf-8")).hexdigest()
+
+
+def _spans_projection(decision_statement: str | None = None) -> ProjectionState:
+    action = ActionRecordedPayload(
+        action_id=_SPANS_ACTION,
+        action_kind=ActionKind.EDIT,
+        description="Add edge-case tests",
+        attempted_items=(_SPANS,),
+    )
+    decisions: dict[EventId, DecisionProjectionRecord] = {}
+    if decision_statement is not None:
+        decision = DecisionRecordedPayload(
+            statement=decision_statement,
+            rationale="The request asked for new edge-case tests.",
+            authority=actor_id("harness:test"),
+        )
+        record = DecisionProjectionRecord(
+            payload=decision,
+            payload_digest=canonical_digest(encode_payload(decision)),
+            redacted=False,
+            source_event_id=event_id("evt_10000000-0000-4000-8000-000000000061"),
+            source_frontier=3,
+        )
+        decisions[record.source_event_id] = record
+    return replace(
+        empty_projection_state(),
+        frontier=3,
+        head_digest="sha256:" + "a" * 64,
+        actions={
+            action.action_id: ProjectionRecord(
+                payload=action,
+                payload_digest=canonical_digest(encode_payload(action)),
+                redacted=False,
+                source_event_id=event_id("evt_10000000-0000-4000-8000-000000000060"),
+                source_frontier=2,
+            )
+        },
+        decisions=decisions,
+    )
+
+
+def _spans_metadata() -> CheckChangeMetadata:
+    return CheckChangeMetadata(
+        base="task_start",
+        entries=(ChangeMetadataEntry("M", _SPANS),),
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        base_commit="a" * 40,
+    )
+
+
+_APPENDED_HUNK = b"""@@ -10,3 +10,7 @@ def test_merge_overlapping():
+     assert merge([(1, 3), (2, 4)]) == [(1, 4)]
++
++
++def test_merge_empty_input():
++    assert merge([]) == []
+"""
+_MODIFIED_HUNK = b"""@@ -10,3 +10,3 @@ def test_merge_overlapping():
+-    assert merge([(1, 3), (2, 4)]) == [(1, 4)]
++    assert merge([(1, 3), (2, 4)])
+"""
+_SKIP_ADDED_HUNK = (
+    b"@@ -8,3 +8,4 @@ import pytest\n"
+    b" \n"
+    b'+@pytest.mark.skip(reason="flaky")\n'
+    b" def test_merge_overlapping():\n"
+    b"     assert merge([(1, 3), (2, 4)]) == [(1, 4)]\n"
+)
+
+
+def _spans_capture(hunk: bytes, counts: bytes) -> CheckChangeCapture:
+    return CheckChangeCapture(
+        base="task_start",
+        text=b"FinishUP check-time change\nFiles:\n  M "
+        + _SPANS.encode()
+        + b" "
+        + counts
+        + b"\nEnd of header. The unified diff follows.\n"
+        + b"diff --git a/tests/test_spans.py b/tests/test_spans.py\n"
+        + b"--- a/tests/test_spans.py\n+++ b/tests/test_spans.py\n"
+        + hunk,
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+        base_commit="a" * 40,
+    )
+
+
+def test_append_only_metadata_edit_is_still_an_unjustified_preexisting_test_edit() -> None:
+    """Path/status metadata cannot tell an appended test from an edited one: fail closed."""
+
+    facts = preexisting_test_edits(_spans_metadata(), _spans_projection())
+
+    assert (facts.modified, facts.unjustified) == (1, 1)
+    assert "preexisting_test_edit_unjustified" in facts.gaps
+    assert facts.unjustified_action_event_ids == (
+        event_id("evt_10000000-0000-4000-8000-000000000060"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("hunk", "counts", "skipped"),
+    (
+        (_APPENDED_HUNK, b"(+4 -0)", 0),
+        (_MODIFIED_HUNK, b"(+1 -1)", 0),
+        (_SKIP_ADDED_HUNK, b"(+1 -0)", 1),
+    ),
+    ids=("append_only", "modified_assertion", "skip_marker_added"),
+)
+def test_added_lines_alone_never_clear_a_preexisting_test_edit(
+    hunk: bytes, counts: bytes, skipped: int
+) -> None:
+    """Added-only lines can still weaken a test (a skip decorator, an early return), so the
+    kernel does not infer append-only from a diff body either; #973 stays protected."""
+
+    facts = preexisting_test_edits(_spans_capture(hunk, counts), _spans_projection())
+
+    assert (facts.modified, facts.skipped, facts.unjustified) == (1, skipped, 1)
+    assert "preexisting_test_edit_unjustified" in facts.gaps
+    assert ("preexisting_test_skipped" in facts.gaps) is bool(skipped)
+
+
+@pytest.mark.parametrize("value", (_SPANS, f"./{_SPANS}", f"/work/{_SPANS}"))
+def test_request_naming_the_test_file_justifies_the_appended_tests(value: str) -> None:
+    projection = _with_statement_obligation(_spans_projection(), value=value)
+
+    for capture in (_spans_metadata(), _spans_capture(_APPENDED_HUNK, b"(+4 -0)")):
+        facts = preexisting_test_edits(
+            capture, projection, task_statement_event_id=_STATEMENT_EVENT
+        )
+        assert facts.unjustified == 0
+        assert "preexisting_test_edit_unjustified" not in facts.gaps
+        # Still disclosed as an edit of a pre-existing test file.
+        assert "preexisting_test_modified" in facts.gaps
+
+
+def test_the_marker_line_the_finding_teaches_clears_the_edit() -> None:
+    """The brief summary names the exact decision line; filled in, it clears the edit."""
+
+    from finishup.kernel.deterministic_checks import TEST_EDIT_UNJUSTIFIED_SUMMARY
+    from finishup.kernel.test_edit_visibility import TEST_CHANGE_MARKER
+
+    assert f"{TEST_CHANGE_MARKER}:<act_ id of that edit action>:sha256:<the 64" in (
+        TEST_EDIT_UNJUSTIFIED_SUMMARY
+    )
+    line = f"{TEST_CHANGE_MARKER}:{_SPANS_ACTION}:sha256:{_SPANS_HEX}"
+
+    facts = preexisting_test_edits(_spans_metadata(), _spans_projection(f"Why.\n{line}\n"))
+
+    assert facts.unjustified == 0
+    assert "preexisting_test_edit_unjustified" not in facts.gaps
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        # The earlier guidance read literally: ``<path_digest>`` already carrying ``sha256:``.
+        f"finishup:test-change:{_SPANS_ACTION}:sha256:sha256:{_SPANS_HEX}",
+        # The digest of the absolute path, or of the bare file name.
+        "finishup:test-change:{}:sha256:{}".format(
+            _SPANS_ACTION, hashlib.sha256(b"/work/tests/test_spans.py").hexdigest()
+        ),
+        "finishup:test-change:{}:sha256:{}".format(
+            _SPANS_ACTION, hashlib.sha256(b"test_spans.py").hexdigest()
+        ),
+        # The source event id instead of the act_ id.
+        f"finishup:test-change:evt_10000000-0000-4000-8000-000000000060:sha256:{_SPANS_HEX}",
+    ),
+)
+def test_a_misspelled_marker_line_does_not_clear_the_edit(statement: str) -> None:
+    facts = preexisting_test_edits(_spans_metadata(), _spans_projection(statement))
+
+    assert facts.unjustified == 1

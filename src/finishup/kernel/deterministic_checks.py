@@ -89,6 +89,7 @@ from finishup.kernel.reducers import (
     replay,
     validate_replay_index,
 )
+from finishup.kernel.test_edit_visibility import TEST_CHANGE_MARKER
 from finishup.kernel.verification_freshness import VerificationFreshness
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.coverage import (
@@ -138,6 +139,8 @@ __all__ = [
     "PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT",
     "STATEMENT_SOURCED_OBLIGATION_ABSENT_FACT",
     "TASK_STATEMENT_RECORDED_FACT",
+    "TEST_CHANGE_MARKER_LINE_FORM",
+    "TEST_EDIT_UNJUSTIFIED_SUMMARY",
     "TASK_STATEMENT_SCOPE_EMPTY_FACT",
     "TASK_STATEMENT_UNMAPPED_FACT",
     "PolicyPack",
@@ -460,9 +463,36 @@ def _test_edit_repair(statement_refs: str) -> str:
         " republish the new obligation with status resolved and resolution_evidence_refs naming"
         " that fresh observed verification result; (5) replace the"
         " completion claim with claim_recorded/1.1.0 supersedes_claim_refs naming the old claim"
-        " and obligation_refs including the new obligation. Otherwise revert the test change and"
-        " check again."
+        " and obligation_refs including the new obligation. If the change is justified another"
+        " way (broken setup, an outdated fixture, an explicitly changed behavior), record instead"
+        " a decision_recorded, after your latest edit action whose attempted_items list that"
+        " exact repository-relative path, whose statement holds this exact line: "
+        + TEST_CHANGE_MARKER_LINE_FORM
+        + " Otherwise revert the test change and check again."
     )
+
+
+# Issue #1059: the check-time structural capture is path/status metadata only, so it cannot tell an
+# appended test from an edited one. The fixed summary (the only finding text a brief check result
+# carries) therefore names both accepted justifications in their exact form.
+TEST_CHANGE_MARKER_LINE_FORM: Final = (
+    f"{TEST_CHANGE_MARKER}:<act_ id of that edit action>:sha256:<the 64 lowercase hex"
+    " characters of the SHA-256 of the path's repository-relative UTF-8 spelling, as printed by"
+    " printf '%s' tests/test_x.py | sha256sum (or shasum -a 256)> with a single sha256: prefix."
+)
+TEST_EDIT_UNJUSTIFIED_SUMMARY: Final = (
+    "An existing test file was edited without a recorded justification. The check sees which"
+    " files changed, not which lines, so appending new tests to an existing test file counts"
+    " too. It clears only on one of: (a) when the request asks for these tests or names the"
+    " file: a NEW obligation whose source_refs cite the task-statement event and whose"
+    " requested_items list the file's repository-relative path with item_kind file, carried by"
+    " plan_revised (every step is in this finding's detail: status view=findings detail=full);"
+    " or (b) a decision_recorded after your latest edit action whose attempted_items list that"
+    " exact repository-relative path, whose statement holds the exact line "
+    + TEST_CHANGE_MARKER_LINE_FORM
+    + " Free-form prose in respond or a decision does not clear it; otherwise revert the test"
+    " change."
+)
 
 
 DETERMINISTIC_FINDING_TEMPLATES: Final[
@@ -550,7 +580,7 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
             "Record the repair evidence or revise the code-defect finding.",
         ),
         FindingKind.TASK_REQUIREMENT_UNMET: DeterministicFindingTemplate(
-            "An existing test file was edited without a recorded justification.",
+            TEST_EDIT_UNJUSTIFIED_SUMMARY,
             _test_edit_repair(
                 "the task-statement event (the newest event that carried task_statement:"
                 " session_opened, session_resumed, plan_published or plan_revised)"

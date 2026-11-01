@@ -35,8 +35,12 @@ def test_core_startup_and_publication_describe_plan_refinement() -> None:
 def test_publication_topic_requires_the_closed_test_change_marker() -> None:
     text = _collapsed(_ROOT / "guidance/publication.md")
     assert "Do not change an existing test's assertion or expectation" in text
-    assert "finishup:test-change:<action_id>:sha256:<path_digest>" in text
-    assert "lowercase SHA-256 of the captured path's UTF-8 spelling" in text
+    # Issue #1059: one ``sha256:`` prefix followed by the bare hex digest, never two prefixes.
+    assert "finishup:test-change:<action_id>:sha256:<hex>" in text
+    assert "64 lowercase hexadecimal characters of the SHA-256 of the path's" in text
+    assert "one `sha256:` prefix, not two" in text
+    assert "<path_digest>" not in text
+    assert "adding new tests to an existing test file is also an edit" in text
     assert "generic prose does not clear the structural edit finding" in text
 
 

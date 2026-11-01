@@ -11260,6 +11260,15 @@ plan. Names and contracts:
   marker cannot be read is `preexisting_test_skip_unknown` (standing; not informational, so the
   check stays coverage-incomplete) rather than `preexisting_test_baseline_unknown`, which now means
   only an unknown task-start baseline or an omitted/truncated edit set.
+- Issue #1059: because that structural capture is path/status metadata, an `M` test path counts as
+  an edit of a pre-existing test even when the agent only appended new tests; append-only cannot be
+  told apart from an edited assertion or an added skip marker without a content read. The
+  test-edit finding's fixed summary (`deterministic_checks.TEST_EDIT_UNJUSTIFIED_SUMMARY`, the only
+  finding text a `detail: brief` check result carries) therefore says so and names both accepted
+  justifications in their exact form: the statement-sourced obligation with the file as an
+  `item_kind` `file` requested item, and the decision line
+  `finishup:test-change:<act_ id>:sha256:<64 lowercase hex>` (one `sha256:` prefix). The detail
+  keeps the five-step obligation repair and adds the decision form.
 - Observed corroboration (same amendment): work-integrity `claim_without_admissible_evidence` with
   facts `observed_verification_uncited` / `observed_verification_absent` (subject: the completion
   claim) fires when hooks observed an edit or a verification run with a recorded outcome and the
