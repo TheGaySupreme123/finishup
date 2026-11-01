@@ -775,9 +775,13 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 - Claude Code installed by root (`sudo npm install -g`, a distro package, a container image) can now
   be connected, like Codex: its executable is admitted when the user or root owns it and no other
   account can write it. It was refused as `target_unsafe` (#1283).
-- An unexpected failure while connecting an agent names an `err_...` correlation id for its
-  diagnostic record, and the approval it had prepared is withdrawn, so the next attempt is no
-  longer refused as `connection_other_approval_pending` for 15 minutes (#1280).
+- Connecting Claude Code or Cursor no longer fails with a bare `internal_error` when a plugin step
+  is refused: on Python 3.14 the refusal (for example `human_authority_unavailable` outside a
+  trusted terminal) lost its type while leaving the connection lock and reached the user as an
+  unrelated crash. Every frozen FinishUP error now keeps its type, an unexpected failure names an
+  `err_...` correlation id for its diagnostic record, and the approval it had prepared is withdrawn,
+  so the next attempt is no longer refused as `connection_other_approval_pending` for 15 minutes
+  (#1280).
 - Agents no longer have their tool calls refused for shapes the guidance told them to send (#1103).
   A claim (`claim_recorded/1.1.0`) that leaves out an empty `limitation_refs` or
   `supersedes_claim_refs`, and a plan that leaves out an empty `obligation_refs` beside

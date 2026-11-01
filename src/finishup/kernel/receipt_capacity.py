@@ -36,8 +36,10 @@ _CHECK_NOT_APPLICABLE: Final = "check_not_applicable"
 _CHECK_PAYLOAD_UNAVAILABLE: Final = "check_payload_unavailable"
 
 
-@dataclass(frozen=True, slots=True)
-class ReceiptCoverageCapacityExceeded(ValueError):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _ReceiptCoverageCapacityExceededFields(ValueError):
     """The exact proposed receipt gap union exceeds the public coverage bound."""
 
     count: int
@@ -47,6 +49,14 @@ class ReceiptCoverageCapacityExceeded(ValueError):
         if type(self.count) is not int or self.count <= self.limit:
             raise ValueError("invalid_receipt_coverage_capacity")
         ValueError.__init__(self, "receipt_coverage_capacity_exceeded")
+
+
+class ReceiptCoverageCapacityExceeded(_ReceiptCoverageCapacityExceededFields):
+    """Raised form of :class:`_ReceiptCoverageCapacityExceededFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 def current_receipt_findings(projection: ProjectionState) -> tuple[Finding, ...]:

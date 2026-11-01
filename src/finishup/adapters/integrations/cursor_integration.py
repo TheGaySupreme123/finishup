@@ -629,8 +629,10 @@ class CursorPluginResult:
             raise ValueError("cursor_result_invalid")
 
 
-@dataclass(frozen=True, slots=True)
-class CursorIntegrationError(Exception):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _CursorIntegrationErrorFields(Exception):
     reason: PluginArtifactReason
     safe_details: Mapping[str, JsonValue]
 
@@ -649,6 +651,14 @@ class CursorIntegrationError(Exception):
             raise ValueError("cursor_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class CursorIntegrationError(_CursorIntegrationErrorFields):
+    """Raised form of :class:`_CursorIntegrationErrorFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
