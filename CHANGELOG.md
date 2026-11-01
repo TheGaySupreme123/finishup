@@ -772,6 +772,9 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   has been used. Claude Code writes decimal values into its own `.claude.json`, which FinishUP read
   with its strict wire parser and reported as `mcp_ownership_conflict`; it is now read for its MCP
   tables only, also when it is larger than 256 KiB (#1278).
+- Claude Code installed by root (`sudo npm install -g`, a distro package, a container image) can now
+  be connected, like Codex: its executable is admitted when the user or root owns it and no other
+  account can write it. It was refused as `target_unsafe` (#1283).
 - An unexpected failure while connecting an agent names an `err_...` correlation id for its
   diagnostic record, and the approval it had prepared is withdrawn, so the next attempt is no
   longer refused as `connection_other_approval_pending` for 15 minutes (#1280).

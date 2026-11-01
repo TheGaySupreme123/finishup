@@ -2219,9 +2219,9 @@ workspace binding (same path as every host); (2) Claude-specific: every plugin m
 (in a sticky root another account could create it in the instant before Claude Code does, which
 FinishUP cannot fence; root can pre-create `.claude` for the user to close it);
 (3) host admission never writes `.claude/settings.local.json` into such a `.claude` (same path as
-every host; refined in round 2 below). Not changed: Claude Code's executable must
-still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
-user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
+every host; refined in round 2 below). Claude Code's executable may be the user's own or root's,
+like the Codex launcher, provided no other account can write it; its digest stays bound into the
+preview (#1283; before that a root-installed `claude` was refused as `target_unsafe`). Covered by tests through the
 public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
 squatted `.claude`) with simulated ownership.
 

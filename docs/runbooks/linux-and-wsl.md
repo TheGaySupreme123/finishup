@@ -219,8 +219,8 @@ swapped in after the check.
 **Scope.** The rule admits every root-owned sticky directory, so a non-root user can also bind
 `/tmp`, `/var/tmp` or `/dev/shm` (on macOS `/private/tmp` and the shared folder under `/Users`) as
 a project; FinishUP's own state still refuses shared temporary directories. A root-installed `claude`
-executable is still refused for a non-root user (Claude Code's executable must be the user's own),
-while Codex accepts a root-owned launcher.
+executable is admitted for a non-root user like the Codex launcher, as long as no other account can
+write it (#1283).
 
 **The runtime.** Install it as the user (or give the user its prefix and a 0700
 `.<prefix>-releases` sibling), because binding an instance writes into the prefix and every

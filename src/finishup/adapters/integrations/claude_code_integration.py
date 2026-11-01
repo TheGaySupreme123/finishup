@@ -32,7 +32,11 @@ from finishup.adapters.integrations.host_projects import live_projects
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher, valid_launcher
 from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
 from finishup.adapters.integrations.portable_plugin import PackagedPortableResources
-from finishup.config.foreign_write import project_root_admitted, writable_by_others
+from finishup.config.foreign_write import (
+    project_root_admitted,
+    superuser_owned,
+    writable_by_others,
+)
 from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -1102,6 +1106,20 @@ def _require_owned_project_settings_directory(target: ClaudeCodePluginTarget) ->
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
 
 
+def _executable_admitted(facts: os.stat_result) -> bool:
+    """Whether Claude Code's executable may be run for this user (#1283).
+
+    The running user's own executable, or one the superuser installed (``sudo npm install -g``, a
+    distro package, a container image), provided no other account can write it: root is already
+    trusted with everything the user runs, and the Codex launcher is admitted the same way. The
+    executable's digest stays bound into the preview, so a replaced binary makes it stale.
+    """
+
+    if writable_by_others(facts):
+        return False
+    return not hasattr(os, "geteuid") or facts.st_uid == os.geteuid() or superuser_owned(facts)
+
+
 def _validate_target(target: ClaudeCodePluginTarget) -> str:
     if type(target) is not ClaudeCodePluginTarget:
         raise _error(PluginArtifactReason.TARGET_UNTRUSTED)
@@ -1121,8 +1139,7 @@ def _validate_target(target: ClaudeCodePluginTarget) -> str:
     executable = Path(target.executable)
     if executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
-    facts = executable.stat()
-    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
+    if not _executable_admitted(executable.stat()):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     if _digest_file(executable) != target.identity.executable_digest:
         raise _error(PluginArtifactReason.PREVIEW_STALE)
