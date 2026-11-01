@@ -30,8 +30,8 @@ _PATH: Final = "canonical/check-agent-next-1.5.0.case.json"
 _FIXTURE_ID: Final = "AGN-001"
 _STATUS_PATH: Final = "canonical/status-check-outcome-1.4.0.case.json"
 _STATUS_FIXTURE_ID: Final = "AGN-002"
-# A reviewed status-result 1.4.0 operation page whose envelope the outcome page reuses.
-_STATUS_BASE: Final = "canonical/status-check-admission-1.4.0.case.json"
+# A reviewed status page, closure readiness included, whose envelope the outcome page reuses.
+_STATUS_BASE: Final = "canonical/status-check-admission-1.5.0.case.json"
 
 
 def _ref(prefix: str, number: int) -> str:

@@ -221,7 +221,7 @@ def document(root: Path) -> dict[str, Any]:
         "client": {"kind": "test_client", "version": "0.1.0", "integration": "local_cli"},
     }
     status = json.loads(
-        (root / "fixtures/canonical/status-check-admission-1.4.0.case.json").read_bytes()
+        (root / "fixtures/canonical/status-check-admission-1.5.0.case.json").read_bytes()
     )
     projection = _first_privacy_projection(status)
     result: dict[str, Any] = {
