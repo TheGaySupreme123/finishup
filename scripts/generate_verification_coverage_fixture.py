@@ -63,7 +63,7 @@ def evidence_basis_example() -> dict[str, JsonValue]:
 def document() -> dict[str, JsonValue]:
     root = Path(__file__).resolve().parents[1]
     base = json.loads(
-        (root / "fixtures/canonical/status-check-admission-1.4.0.case.json").read_bytes()
+        (root / "fixtures/canonical/status-check-admission-1.5.0.case.json").read_bytes()
     )
     status = base["input"]["results"]["capture_refused"]
     coverage = VerificationCoverage(

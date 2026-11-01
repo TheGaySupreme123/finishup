@@ -533,6 +533,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/status-check-admission-1.5.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/status-check-outcome-1.4.0.case.json",
         "canonical_vector",
         "application/json",
@@ -552,6 +558,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "fixtures/canonical/status-semantic-progress-1.4.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/status-semantic-progress-1.5.0.case.json",
         "canonical_vector",
         "application/json",
         True,
