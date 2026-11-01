@@ -626,12 +626,23 @@ def test_view_binds_where_redactions_and_hunks_lie_not_only_their_counts() -> No
     assert b"token" not in base.view and b"value" not in base.view  # structure, not lines
 
 
-def test_the_possible_credential_placeholder_counts_as_a_redaction_like_redacted() -> None:
+@pytest.mark.parametrize(
+    "spelling",
+    (
+        b"[withheld-by-finishup:possible-credential]",
+        # Frozen legacy identifier (ADR-048): a change stored before #1248 P4.
+        b"[withheld-by-yoetz:possible-credential]",
+    ),
+)
+def test_the_possible_credential_placeholder_counts_as_a_redaction_like_redacted(
+    spelling: bytes,
+) -> None:
     """tb4n5: capture-time redaction marks a look-alike value with the placeholder; the shown-file
     record must still see a withheld span, so the file is never ``whole`` and its view binds it.
-    A change holding ``[REDACTED]`` only (stored before the placeholder) keeps its exact view."""
+    A change holding ``[REDACTED]`` only (stored before the placeholder) keeps its exact view.
+    Both spellings of the placeholder count alike (#1248 P4)."""
 
-    placeholder = _SECTION.replace(b"[REDACTED]", b"[withheld-by-yoetz:possible-credential]")
+    placeholder = _SECTION.replace(b"[REDACTED]", spelling)
     both = placeholder.replace(b"+new = 4\n", b"+new = [REDACTED]\n")
 
     legacy = _view_of(_SECTION)
@@ -639,14 +650,14 @@ def test_the_possible_credential_placeholder_counts_as_a_redaction_like_redacted
     mixed = _view_of(both)
 
     assert not marked.whole and marked.redactions == 1
-    assert marked.clean_bytes == placeholder.index(b"[withheld-by-yoetz")
+    assert marked.clean_bytes == placeholder.index(spelling)
     assert not mixed.whole and mixed.redactions == 2
     assert mixed.clean_bytes == marked.clean_bytes
     assert len({legacy.view, marked.view, mixed.view}) == 3
     # The pre-existing record is byte-for-byte what it was: one [REDACTED] at the same offset.
     assert legacy.redactions == 1 and legacy.clean_bytes == _SECTION.index(b"[REDACTED]")
     # A placeholder cut by the packet edge still counts: part of the withheld span was shown.
-    edge = placeholder.index(b"[withheld-by-yoetz") + 5
+    edge = placeholder.index(spelling) + 5
     (cut,) = check_time_change_shown_files(_change(placeholder).capture, edge)
     assert cut.redactions == 1 and cut.clean_bytes == edge - 5
 

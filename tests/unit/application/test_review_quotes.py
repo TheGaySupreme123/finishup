@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from finishup.application.review_quotes import CREDENTIAL_PLACEHOLDER, REDACTION_MARKER, prove_quote
+from finishup.application.review_quotes import (
+    CREDENTIAL_PLACEHOLDER,
+    LEGACY_CREDENTIAL_PLACEHOLDER,
+    REDACTION_MARKER,
+    prove_quote,
+)
 
 
 def test_exact_substring_is_returned_unchanged() -> None:
@@ -66,6 +71,23 @@ def test_a_quote_across_the_possible_credential_placeholder_is_proven(placeholde
     quote = f"URL.create( username=config.USER,password={placeholder},host=h)"
     assert prove_quote(quote, (sent,)) == sent
     assert prove_quote(quote, ("URL.create( username=config.USER,password=x,host=h)",)) is None
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [LEGACY_CREDENTIAL_PLACEHOLDER, CREDENTIAL_PLACEHOLDER, "[REDACTED]", "[withheld]"],
+)
+def test_a_quote_across_the_legacy_placeholder_is_proven(placeholder: str) -> None:
+    """#1248 P4: content stored before the rename still carries the legacy spelling, so the sent
+    text may hold it; a quote in any placeholder spelling lines up with it, and the admitted span
+    is the sent text, never the reviewer's spelling."""
+
+    assert LEGACY_CREDENTIAL_PLACEHOLDER == "[withheld-by-yoetz:possible-credential]"
+    assert CREDENTIAL_PLACEHOLDER == "[withheld-by-finishup:possible-credential]"
+    sent = f"connect(user=app, password={LEGACY_CREDENTIAL_PLACEHOLDER}, host=h)"
+    quote = f"connect(user=app, password={placeholder}, host=h)"
+    assert prove_quote(quote, (sent,)) == sent
+    assert prove_quote(LEGACY_CREDENTIAL_PLACEHOLDER, (sent,)) is None
 
 
 @pytest.mark.parametrize(

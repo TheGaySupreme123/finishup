@@ -89,6 +89,12 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
   separators, keyring service names, the SQL schema, wire enum values such as `yoetz_owned`, the
   `yoetz.<name>/<n>` tag namespace, actor ids, marker file names, and the released schemas with
   their `$id`s under `https://schemas.yoetz.dev/0.1/`. They are not leftovers.
+- **The possible-credential marker is now `[withheld-by-finishup:possible-credential]`**
+  (#1248, #1138). A value that only looks like a credential reads this way in the external
+  reviewer's copy, the change read at check time and task-input summaries. Content stored by an
+  earlier release keeps `[withheld-by-yoetz:possible-credential]` exactly as it was; checks, status,
+  receipts and the reviewer read both spellings, and nothing is rewritten. A review prepared before
+  the upgrade and resumed after it is prepared again rather than sent with mixed spellings.
 - A consent prepared before the upgrade stays reviewable after it, with the warning it was prepared
   with, and expires within 15 minutes as usual.
 

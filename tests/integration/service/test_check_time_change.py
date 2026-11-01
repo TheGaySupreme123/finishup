@@ -331,7 +331,7 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     # self-describing placeholder, so the reviewer never takes the marker for code (tb4n5).
     assert _SECRET not in text and "const fixtureToken = '[REDACTED]';" in text
     assert "config.POSTGRES_PASSWORD" not in text
-    assert "const password = [withheld-by-yoetz:possible-credential];" in text
+    assert "const password = [withheld-by-finishup:possible-credential];" in text
     assert all(_egress_clean(item.plaintext) for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
@@ -777,7 +777,7 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     assert "Nested repository api/: its own change is shown under that directory" in change
     assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in change
     assert (
-        "username=config.POSTGRES_USER,password=[withheld-by-yoetz:possible-credential],"
+        "username=config.POSTGRES_USER,password=[withheld-by-finishup:possible-credential],"
         "host=config.POSTGRES_HOST)" in change
     )
     assert "[REDACTED]" not in change and "config.POSTGRES_PASSWORD" not in change
@@ -918,7 +918,8 @@ async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
     candidate = privacy.candidates[0]
     change_text = _change_text(candidate)
     # The change itself needed nothing.
-    assert "[REDACTED]" not in change_text and "[withheld-by-yoetz:" not in change_text
+    assert "[REDACTED]" not in change_text and "[withheld-by-finishup:" not in change_text
+    assert "[withheld-by-yoetz:" not in change_text
     task_input = next(item for item in candidate.items if item.item_id == "task-input-01")
     assert b"RULES_INPUT_MARKER" in task_input.plaintext
     assert _SECRET.encode() not in task_input.plaintext and b"[REDACTED]" in task_input.plaintext

@@ -89,8 +89,12 @@ def estimated_token_count(byte_count: int) -> int:
 # replaces bytes outside its match.
 # v6 (#1248 P-D4): redact whole private-key blocks and YAML block values before slicing,
 # preserve line breaks and recorded marker spans, and read quoted values at depth three.
-_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v6"
-_SCANNER_PROFILE_DIGEST = "sha256:f2e1b54f38e9f3a2c2c3a458bd5ad5cb8b6bdd17f00ef144fc5439deac3c0774"
+# v7 (#1248 P-D5, P4): new content carries ``[withheld-by-finishup:possible-credential]`` and
+# readers accept the legacy ``[withheld-by-yoetz:...]`` too. A proposal prepared under v6 holds
+# only the legacy spelling; resumed under v7 it fails closed as a mismatch and a new evaluation is
+# prepared, so one resumed packet never mixes the two spellings.
+_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v7"
+_SCANNER_PROFILE_DIGEST = "sha256:57168d288e8e9b083507ccf75664791b3799cf145a310928e0f317a3082a1c04"
 _STRUCTURAL_CATEGORIES = frozenset(
     {DataCategory.BOUNDED_STRUCTURAL_METADATA, DataCategory.DECLARED_FILE_TYPE}
 )

@@ -562,8 +562,13 @@ async def run_projection_workflow(
     *,
     seed: int = 1400,
     max_findings: int = 3,
+    event_drafts: Callable[[list[JsonValue]], list[JsonValue]] | None = None,
 ) -> ProjectionWorkflow:
-    """Run one workflow and collect a case for every public result model and status view."""
+    """Run one workflow and collect a case for every public result model and status view.
+
+    ``event_drafts`` rewrites the published batch (a test that needs particular agent text in the
+    ledger, such as a marker stored by an earlier release); ids and event shapes stay the same.
+    """
 
     app, policy = await build_projection_application(semantic, seed=seed, max_findings=max_findings)
     cases: list[ProjectionCase] = []
@@ -576,12 +581,15 @@ async def run_projection_workflow(
 
     obligation_id = protocol_id("obl_", seed + 2)
     obligation_event_id = protocol_id("evt_", seed + 3)
+    drafts = _event_drafts(seed, obligation_event_id, obligation_id)
+    if event_drafts is not None:
+        drafts = event_drafts(drafts)
     publish_body: dict[str, JsonValue] = {
         **request_base(protocol_id("req_", seed + 4)),
         "session_id": started.session_id,
         "writer_id": started.writer_id,
         "expected_frontier": frontier_json(started.frontier),
-        "event_drafts": _event_drafts(seed, obligation_event_id, obligation_id),
+        "event_drafts": drafts,
     }
     published = await app.publish_work(PublishWorkRequest.model_validate(publish_body))
     # A first, non-replayed publish always yields the internal result; the replay branch returns a

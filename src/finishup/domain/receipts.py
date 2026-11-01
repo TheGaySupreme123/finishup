@@ -969,20 +969,24 @@ class ReceiptSectionKey(str, Enum):  # noqa: UP042 - exact wire enum base
 
 # Owner-approved PL2-1 (issue #982): the one fixed line every human and agent rendering adds,
 # once, when a check or receipt names items whose values the external reviewer did not see.
-# Frozen legacy identifier (ADR-048): the in-packet credential placeholder it names.
+# It names the placeholder in both spellings (#1248 P4, ADR-048 2026-10-31 amendment): new content
+# carries ``[withheld-by-finishup:...]``, while content stored before the rename keeps the frozen
+# legacy ``[withheld-by-yoetz:...]`` (ADR-048) and a new review may still compose it.
 SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
-    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
-    "reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your "
-    "work to clear this. If a finding stays open only because of it, verify the repair yourself "
-    "and respond self_verified."
+    "Values marked [withheld-by-finishup:possible-credential] (or, in content stored earlier, "
+    "[withheld-by-yoetz:possible-credential]) were withheld from the external reviewer only; "
+    "local checks saw them. Do not change consent, rename, hide or reshape your work to clear "
+    "this. If a finding stays open only because of it, verify the repair yourself and respond "
+    "self_verified."
 )
 
 
 # The bounded MCP summaries must keep the frontier head digest (issue #279); when the full line
 # cannot fit beside it, they carry this shorter fixed form. Full renderings always use the line.
 SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
-    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
-    "reviewer only; do not change consent or your code; verify yourself, respond self_verified."
+    "Values marked [withheld-by-finishup:possible-credential] or "
+    "[withheld-by-yoetz:possible-credential] were withheld from the external reviewer only; do "
+    "not change consent or your code; verify yourself, respond self_verified."
 )
 
 
