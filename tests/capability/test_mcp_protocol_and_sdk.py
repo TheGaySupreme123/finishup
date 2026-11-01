@@ -1,6 +1,6 @@
 """Pinned MCP SDK/protocol capability evidence.
 
-Proves the installed candidate against ``mcp==1.28.1`` and negotiated protocol
+Proves the installed candidate against ``mcp==1.30.0`` and negotiated protocol
 ``2025-11-25`` via raw JSON-RPC frames and SDK identity probes. FinishUP-owned
 validation/framing is exercised; SDK import alone is never treated as proof.
 """
@@ -34,7 +34,7 @@ from finishup.mcp.semantic_destination import disclose_semantic_destination
 from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
-_PINNED_MCP = "1.28.1"
+_PINNED_MCP = "1.30.0"
 _PROTOCOL = "2025-11-25"
 
 _CASE_NEGOTIATE = CapabilityCase(
