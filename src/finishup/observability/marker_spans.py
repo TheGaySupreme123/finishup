@@ -33,9 +33,18 @@ __all__ = [
 
 MarkerSpans = tuple[tuple[int, int], ...]
 
-# FinishUP's own fixed markers: ``[REDACTED]`` and the possible-credential placeholder. Kept here
+# FinishUP's own fixed markers: ``[REDACTED]`` and the possible-credential placeholder in both
+# spellings (#1248 P4: ``[withheld-by-finishup:...]`` is written; the frozen legacy
+# ``[withheld-by-yoetz:...]`` (ADR-048) is still read, so a span recorded over either is kept).
+# The exemption still comes only from the recorded position, never from the spelling. Kept here
 # (and asserted equal to the scanner's) so this module has no import cycle with the scanner.
-_MARKERS: Final = frozenset({b"[REDACTED]", b"[withheld-by-yoetz:possible-credential]"})
+_MARKERS: Final = frozenset(
+    {
+        b"[REDACTED]",
+        b"[withheld-by-finishup:possible-credential]",
+        b"[withheld-by-yoetz:possible-credential]",
+    }
+)
 _MAX_SPANS: Final = 65_536
 _WHITESPACE: Final = re.compile(rb"[ \t\r\n]*")
 _STRING: Final = re.compile(rb'"(?:[^"\\]|\\.)*"', re.DOTALL)

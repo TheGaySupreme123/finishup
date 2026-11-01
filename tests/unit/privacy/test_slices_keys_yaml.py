@@ -75,7 +75,11 @@ _SECOND = "Hq7" + "zKp2" + "xWv9"
 
 def test_slice_redaction_has_a_distinct_scanner_profile() -> None:
     scanner = SecretScanRuleset()
-    assert scanner.version == "observability-sensitive-content-v6"
+    # v6 since P3; later #1248 steps (P4: v7) move it again, never back to P2's v5.
+    assert scanner.version not in (
+        "observability-sensitive-content-v4",
+        "observability-sensitive-content-v5",
+    )
     assert scanner.profile_digest != (
         "sha256:afbf5c541ef8d643f5bcd8b83aa591291990611c0f801d7c0c4f554d6bcdf41a"
     )

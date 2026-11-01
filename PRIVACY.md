@@ -110,8 +110,9 @@ file the raising review saw, whole or through an identical view; for a file show
 records a keyed commitment to where its redactions and hunks lay, never its content, so a moved
 redaction or hunk keeps the finding open. The change is redacted before it is stored: a concrete
 credential shape reads `[REDACTED]`, and a value that only looks like a credential reads
-`[withheld-by-yoetz:possible-credential]`, so the reviewer is told the value was withheld rather
-than shown a marker it could take for code. It is stored
+`[withheld-by-finishup:possible-credential]` (a change stored before the rename keeps the earlier
+spelling `[withheld-by-yoetz:possible-credential]`, which is read the same way), so the reviewer is
+told the value was withheld rather than shown a marker it could take for code. It is stored
 encrypted, and offered to the privacy gateway as bounded `repository_excerpt` items under the same
 policy and never-send scan: a policy whose inference channel does not allow repository excerpts
 never sends it, and the check says the review's context was withheld. Everything else must already
