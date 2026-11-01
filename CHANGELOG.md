@@ -764,6 +764,24 @@ gates on #1056. This heading takes the release date when 0.3.0 is tagged. See
 
 ### Fixed
 
+- Claude Code and Cursor now work like Codex after setup. Connecting them records the project's
+  bounded structural event recording in the same reviewed step Codex setup has always shown, so
+  their hooks observe work and tell the agent about FinishUP; before, the agent was never told and
+  nothing was recorded unless `finishup observe grant` was run by hand (#1279).
+- `finishup setup run|status --host claude` no longer refuses every Claude Code installation that
+  has been used. Claude Code writes decimal values into its own `.claude.json`, which FinishUP read
+  with its strict wire parser and reported as `mcp_ownership_conflict`; it is now read for its MCP
+  tables only, also when it is larger than 256 KiB (#1278).
+- Claude Code installed by root (`sudo npm install -g`, a distro package, a container image) can now
+  be connected, like Codex: its executable is admitted when the user or root owns it and no other
+  account can write it. It was refused as `target_unsafe` (#1283).
+- Connecting Claude Code or Cursor no longer fails with a bare `internal_error` when a plugin step
+  is refused: on Python 3.14 the refusal (for example `human_authority_unavailable` outside a
+  trusted terminal) lost its type while leaving the connection lock and reached the user as an
+  unrelated crash. Every frozen FinishUP error now keeps its type, an unexpected failure names an
+  `err_...` correlation id for its diagnostic record, and the approval it had prepared is withdrawn,
+  so the next attempt is no longer refused as `connection_other_approval_pending` for 15 minutes
+  (#1280).
 - Agents no longer have their tool calls refused for shapes the guidance told them to send (#1103).
   A claim (`claim_recorded/1.1.0`) that leaves out an empty `limitation_refs` or
   `supersedes_claim_refs`, and a plan that leaves out an empty `obligation_refs` beside

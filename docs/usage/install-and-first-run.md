@@ -307,7 +307,10 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    `finishup privacy conversations` also offers per-review owner approval.
 5. **One combined preview.** See every selected agent's changes together. Codex's preview retains
    its project skill, plugin and hook files, MCP registration, bounded structural event recording
-   and approved-check policy digest. The preview also names other projects affected by a shared
+   and approved-check policy digest. Claude Code and Cursor previews list their plugin and MCP
+   changes and the same bounded structural event recording for the project, which lets their
+   hooks tell the agent about FinishUP; it stays on if you later disconnect one agent, and
+   `finishup observe revoke` turns it off. The preview also names other projects affected by a shared
    review-mode change. One explicit approval binds every preview: a stale member refuses the
    batch before any agent is changed.
 6. **Installation activity.** Each agent's result is reported separately. Agents that need

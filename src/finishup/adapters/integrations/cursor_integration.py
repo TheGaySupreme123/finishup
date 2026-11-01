@@ -30,6 +30,7 @@ from finishup.adapters.integrations.cursor_mcp_runtime import (
     OsCursorMcpProcesses,
     observe_cursor_mcp_runtime,
 )
+from finishup.adapters.integrations.host_config_json import parse_host_config_json
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher, valid_launcher
 from finishup.adapters.integrations.launcher_probe import (
     UNOBSERVED_LAUNCHER_IDENTITY,
@@ -628,8 +629,10 @@ class CursorPluginResult:
             raise ValueError("cursor_result_invalid")
 
 
-@dataclass(frozen=True, slots=True)
-class CursorIntegrationError(Exception):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _CursorIntegrationErrorFields(Exception):
     reason: PluginArtifactReason
     safe_details: Mapping[str, JsonValue]
 
@@ -648,6 +651,14 @@ class CursorIntegrationError(Exception):
             raise ValueError("cursor_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class CursorIntegrationError(_CursorIntegrationErrorFields):
+    """Raised form of :class:`_CursorIntegrationErrorFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -2261,7 +2272,8 @@ def _config_entries(
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
             return None, None, False
-        parsed = strict_json_parse(path.read_bytes())
+        # Host-owned and only observed here: tolerate host decimals (#1278).
+        parsed = parse_host_config_json(path.read_bytes())
     except (OSError, ProtocolValueError, UnicodeError):
         return None, None, False
     if not isinstance(parsed, Mapping):
@@ -2581,7 +2593,7 @@ def _discover_linux_cursor_ide(app_path: Path) -> CursorCapabilityIdentity:
                 content = stream.read(_MAX_CURSOR_IDENTITY_METADATA_BYTES + 1)
             if len(content) > _MAX_CURSOR_IDENTITY_METADATA_BYTES:
                 raise ValueError("cursor_ide_identity_invalid")
-            value = strict_json_parse(content)
+            value = parse_host_config_json(content)
             if not isinstance(value, Mapping):
                 raise ValueError("cursor_ide_identity_invalid")
             metadata.append(value)

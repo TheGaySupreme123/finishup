@@ -1711,8 +1711,10 @@ _OBLIGATION_RESOLUTION_INVARIANTS: Final = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ObligationResolutionMismatch(ValueError):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _ObligationResolutionMismatchFields(ValueError):
     """Typed rejection when an obligation_published transition is not a valid resolution.
 
     Carries only allowlisted schema field names and a fixed invariant code — never submitted
@@ -1778,11 +1780,21 @@ class ObligationResolutionMismatch(ValueError):
         return "obligation_resolution_mismatch"
 
 
+class ObligationResolutionMismatch(_ObligationResolutionMismatchFields):
+    """Raised form of :class:`_ObligationResolutionMismatchFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
+
+
 _MAX_EVENTS_PER_BATCH_FOR_POINTER: Final = 100
 
 
-@dataclass(frozen=True, slots=True)
-class NoObligationsReasonMismatch(ValueError):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _NoObligationsReasonMismatchFields(ValueError):
     """Typed rejection for a no-obligations reason on non-empty or unreadable scope.
 
     The exception carries only the accepted event identity. The caller-supplied summary, revision
@@ -1802,6 +1814,14 @@ class NoObligationsReasonMismatch(ValueError):
         return "no_obligations_reason_conflict"
 
 
+class NoObligationsReasonMismatch(_NoObligationsReasonMismatchFields):
+    """Raised form of :class:`_NoObligationsReasonMismatchFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
+
+
 _CLAIM_REVISION_FIELDS: Final = frozenset(
     {
         "claim_id",
@@ -1819,8 +1839,10 @@ _CLAIM_REVISION_FIELDS: Final = frozenset(
 _CLAIM_REVISION_INVARIANTS: Final = ADMITTED_CLAIM_REVISION_INVARIANTS
 
 
-@dataclass(frozen=True, slots=True)
-class ClaimRevisionMismatch(ValueError):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _ClaimRevisionMismatchFields(ValueError):
     """Typed, content-free rejection for an invalid claim_recorded/1.1 revision."""
 
     field: str
@@ -1869,6 +1891,14 @@ class ClaimRevisionMismatch(ValueError):
     @property
     def reason_code(self) -> str:
         return "claim_revision_mismatch"
+
+
+class ClaimRevisionMismatch(_ClaimRevisionMismatchFields):
+    """Raised form of :class:`_ClaimRevisionMismatchFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 def public_error_for_no_obligations_reason_mismatch(

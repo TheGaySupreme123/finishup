@@ -442,8 +442,10 @@ class PluginArtifactResult:
         object.__setattr__(self, "changed_files", files)
 
 
-@dataclass(frozen=True, slots=True)
-class PluginArtifactError(Exception):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _PluginArtifactErrorFields(Exception):
     reason: PluginArtifactReason
     safe_details: Mapping[str, JsonValue]
 
@@ -462,6 +464,14 @@ class PluginArtifactError(Exception):
             raise ValueError("plugin_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class PluginArtifactError(_PluginArtifactErrorFields):
+    """Raised form of :class:`_PluginArtifactErrorFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 class PluginMutationReviewPort(Protocol):

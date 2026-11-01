@@ -59,7 +59,13 @@ composes the native user plugin and an external MCP entry for the selected proje
 review. The user-wide plugin scope is disclosed; regular Cursor and testing profiles are never
 silently interchanged. `--host-path`, `--host-config-root`, and `--project` override discovery.
 Agents first request `--non-interactive --json`, present the plan, and repeat its exact request ID
-and digest with `--accept`. OS-authenticated artifact presence still applies.
+and digest with `--accept`. OS-authenticated artifact presence still applies. The plan lists
+`allow_observation` ("Allow bounded structural event recording for this project") whenever the
+project has no active observation consent, as Codex setup does; without it every hook exits
+`workspace_unconsented` and the agent gets no startup cue. Disconnect keeps the consent (#1279). If
+an apply fails unexpectedly, the error names an `err_...` correlation id for the diagnostic record,
+and the approval it prepared is withdrawn so the next attempt is not refused as
+`connection_other_approval_pending` (#1280).
 
 `setup status|disconnect --host cursor-ide|cursor-cli` uses the same target options. Disconnect
 removes the selected project's separately managed MCP entry and, when it is the last connected

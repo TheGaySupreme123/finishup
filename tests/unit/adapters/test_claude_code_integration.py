@@ -1102,6 +1102,54 @@ def test_mcp_sources_preserve_precedence_and_report_dual_foreign_and_ambiguous(
     assert ambiguous.observed is False
 
 
+def test_mcp_ownership_reads_a_used_claude_config_with_decimal_values(tmp_path: Path) -> None:
+    """Claude Code writes costs, frame rates and flag rates as decimals into ``.claude.json``."""
+
+    plugin = tmp_path / "plugin"
+    project = tmp_path / "project"
+    config = tmp_path / "config"
+    plugin.mkdir()
+    project.mkdir()
+    config.mkdir()
+    (config / ".claude.json").write_text(
+        '{"numStartups": 3, "cachedGrowthBookFeatures": {"rate": 0.15},'
+        f' "projects": {{"{project}": {{"lastCost": 22.0157, "lastFpsAverage": 10.13}}}}}}',
+        encoding="utf-8",
+    )
+
+    observed = observe_claude_code_mcp(
+        plugin_root=plugin,
+        project_root=project,
+        claude_config_root=config,
+    )
+
+    assert observed.ownership_state is McpOwnershipState.ABSENT
+    assert observed.observed is True
+
+
+def test_mcp_ownership_reads_a_claude_config_larger_than_plugin_files(tmp_path: Path) -> None:
+    plugin = tmp_path / "plugin"
+    project = tmp_path / "project"
+    config = tmp_path / "config"
+    plugin.mkdir()
+    project.mkdir()
+    config.mkdir()
+    history = {f"/work/p{index}": {"lastCost": 1.5, "note": "x" * 200} for index in range(2_000)}
+    (config / ".claude.json").write_text(
+        json.dumps({"projects": history, "mcpServers": {}}), encoding="utf-8"
+    )
+    assert (config / ".claude.json").stat().st_size > 262_144
+
+    observed = observe_claude_code_mcp(
+        plugin_root=plugin,
+        project_root=project,
+        claude_config_root=config,
+    )
+
+    assert observed.ownership_state is McpOwnershipState.ABSENT
+    assert observed.observed is True
+
+
 def test_mcp_ownership_detects_an_exact_finishup_route_under_an_alias(tmp_path: Path) -> None:
     plugin = tmp_path / "plugin"
     project = tmp_path / "project"

@@ -58,7 +58,13 @@ configuration root, derives the cache and private marketplace paths, and preview
 plus enablement in one exact connection plan. Override the executable/configuration or project
 with `--host-path`, `--host-config-root`, and `--project`. Agent-driven setup uses
 `--non-interactive --json`, then repeats the preview's request ID and digest with `--accept`.
-The existing OS-authenticated artifact review still applies. Status and disconnect use
+The existing OS-authenticated artifact review still applies. The plan also lists
+`allow_observation` ("Allow bounded structural event recording for this project") whenever the
+project has no active observation consent; without it the hooks record nothing and deliver no
+startup cue (`workspace_unconsented`). It is the same step Codex setup carries, and disconnect keeps
+the consent (`finishup observe revoke` withdraws it) (#1279). Setup reads Claude Code's own
+`.claude.json` (up to 32 MiB) for ownership even though Claude writes decimal values into it; only
+its MCP tables are used, and FinishUP never writes that file (#1278). Status and disconnect use
 `finishup setup status|disconnect --host claude` with the same target options. Standalone `plugin
 install` below retains its disabled-by-default behavior.
 
@@ -2213,9 +2219,9 @@ workspace binding (same path as every host); (2) Claude-specific: every plugin m
 (in a sticky root another account could create it in the instant before Claude Code does, which
 FinishUP cannot fence; root can pre-create `.claude` for the user to close it);
 (3) host admission never writes `.claude/settings.local.json` into such a `.claude` (same path as
-every host; refined in round 2 below). Not changed: Claude Code's executable must
-still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
-user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
+every host; refined in round 2 below). Claude Code's executable may be the user's own or root's,
+like the Codex launcher, provided no other account can write it; its digest stays bound into the
+preview (#1283; before that a root-installed `claude` was refused as `target_unsafe`). Covered by tests through the
 public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
 squatted `.claude`) with simulated ownership.
 

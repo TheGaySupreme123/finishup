@@ -531,6 +531,40 @@ def test_text_contract_digest_tracks_template_wording(monkeypatch: pytest.Monkey
     assert reworded_digest != DETERMINISTIC_TEXT_CONTRACT_DIGEST
 
 
+def test_test_edit_summary_names_both_accepted_justifications_exactly() -> None:
+    """Issue #1059: a brief check result carries only the summary, so it must name the exact
+    accepted justifications and say that appended tests count, without any path."""
+
+    subject = event_id("evt_00000000-0000-4000-8000-000000000010")
+    statement = event_id("evt_00000000-0000-4000-8000-000000000001")
+    summary, detail = render_deterministic_finding_text(
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        (subject,),
+        observed_facts=(
+            FindingFact(deterministic_checks.PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT, (subject,)),
+            FindingFact(deterministic_checks.TASK_STATEMENT_RECORDED_FACT, (statement,)),
+        ),
+    )
+    plain_summary, plain_detail = render_deterministic_finding_text(
+        FindingKind.TASK_REQUIREMENT_UNMET, (subject,)
+    )
+
+    assert summary == plain_summary == deterministic_checks.TEST_EDIT_UNJUSTIFIED_SUMMARY
+    assert summary.startswith("An existing test file was edited without a recorded justification.")
+    assert "appending new tests to an existing test file counts too" in summary
+    assert "requested_items list the file's repository-relative path with item_kind file" in summary
+    assert "status view=findings detail=full" in summary
+    marker_form = "finishup:test-change:<act_ id of that edit action>:sha256:<the 64 lowercase hex"
+    assert marker_form in summary
+    assert "with a single sha256: prefix" in summary
+    # The detail keeps the five-step obligation repair, names the statement, and adds the marker.
+    for text in (detail, plain_detail):
+        assert "(5) replace the completion claim" in text
+        assert marker_form in text
+    assert f"source_refs cite [{statement}]" in detail
+    assert summary.isascii()
+
+
 def test_action_without_result_detail_names_the_act_id_and_how_a_result_links() -> None:
     """tb4n3 N3-5 (cargo D): the finding's subject is the event that recorded the action, but a
     result links by the action's own act_ id; the agent tried a causal parent and was refused."""

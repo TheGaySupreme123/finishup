@@ -44,6 +44,7 @@ from finishup.ports.change_capture import (
 )
 
 __all__ = [
+    "TEST_CHANGE_MARKER",
     "PreExistingTestEdits",
     "check_change_header_entries",
     "check_change_sections",
@@ -62,7 +63,7 @@ _TEST_DIRS: Final = frozenset({"test", "tests", "spec", "specs", "__tests__"})
 # The only accepted decision assertion is the whole line
 # ``finishup:test-change:<edit-action-id>:sha256:<path-digest>``.  Guidance owns how agents learn this
 # marker; this kernel keeps the parser exact and never stores the path behind the digest.
-_TEST_CHANGE_MARKER: Final = "finishup:test-change"
+TEST_CHANGE_MARKER: Final = "finishup:test-change"
 # Frozen legacy identifier (ADR-048): decision statements recorded before the rename carry this
 # spelling and are re-parsed on every projection rebuild, so the parser accepts it permanently.
 _LEGACY_TEST_CHANGE_MARKER: Final = "yoetz:test-change"
@@ -558,7 +559,7 @@ def _path_justified(
         # Either spelling of the marker counts (ADR-048).
         markers = {
             f"{prefix}:{latest_action_id}:{digest}"
-            for prefix in (_TEST_CHANGE_MARKER, _LEGACY_TEST_CHANGE_MARKER)
+            for prefix in (TEST_CHANGE_MARKER, _LEGACY_TEST_CHANGE_MARKER)
         }
         if any(line.strip() in markers for line in payload.statement.splitlines()):
             return True
@@ -705,7 +706,12 @@ def _preexisting_test_edits_from_metadata(
     *,
     task_statement_event_id: EventId | Iterable[EventId] | None = None,
 ) -> PreExistingTestEdits:
-    """Reduce path/status metadata without treating missing content as a clean skip result."""
+    """Reduce path/status metadata without treating missing content as a clean skip result.
+
+    An ``M`` test path counts as a modified pre-existing test even when only new tests were
+    appended: without content nothing proves the edit append-only (issue #1059), so the finding
+    text names the two accepted justifications instead of guessing.
+    """
 
     baseline_known = capture.base == "task_start"
     if not baseline_known:

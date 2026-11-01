@@ -43,6 +43,30 @@ def _isolated_diagnostic_log(  # pyright: ignore[reportUnusedFunction]
 
 
 @pytest.fixture(autouse=True)
+def _isolated_connection_observation_store(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the observation consent a Claude or Cursor connection grants out of real state.
+
+    Those connections record workspace observation consent like Codex setup (#1279); without
+    this redirect every test that applies one would write consent into the machine's own store.
+    """
+
+    try:
+        import finishup.application.host_connection as host_connection_module
+        from finishup.adapters.integrations.observation_local import LocalObservationStore
+    except ImportError:
+        return
+    root = tmp_path_factory.mktemp("connection-observation")
+    root.chmod(0o700)
+    monkeypatch.setattr(
+        host_connection_module,
+        "_observation_store",
+        lambda: LocalObservationStore(_state=Path(root)),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolated_host_config_locks(  # pyright: ignore[reportUnusedFunction]
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

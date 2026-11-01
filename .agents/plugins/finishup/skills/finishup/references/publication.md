@@ -82,21 +82,25 @@ same batch as the action; evidence and decisions do not link an action.
 
 Do not change an existing test's assertion or expectation, rename it, skip it, or delete it to make
 the implementation pass. Change pre-existing test code only for broken setup, an outdated fixture,
-or an explicitly changed behavior, and record the instruction line and reason. When the user's
-request asks for a change to an existing test file (for example "add a regression test in
-`tests/regression_test.cc`"), list that path as a `requested_items` entry with `item_kind` `file`
-on an obligation whose `source_refs` cite the task-statement event: that structural link justifies
-the edit, and the path may be repository-relative or absolute. If the obligation does not exist
+or an explicitly changed behavior, and record the instruction line and reason. The check sees
+which files changed, not which lines, so adding new tests to an existing test file is also an edit
+of that file. When the user's request asks for a change to an existing test file (for example "add
+a regression test in `tests/regression_test.cc`"), or asks for new tests you add to an existing
+test file, list that path as a `requested_items` entry with `item_kind` `file` on an obligation
+whose `source_refs` cite the task-statement event: that structural link justifies the edit, and
+the path may be repository-relative or absolute. If the obligation does not exist
 yet (the test-edit finding fired), the full repair is: publish a new obligation citing the
 statement with that file item, carry it with `plan_revised`, record an `edit` action whose
 `attempted_items` list the path with its result, republish the obligation `resolved` citing the observed
 verification run after your last edit, and supersede the completion claim with one naming it in
 `obligation_refs`; then check. Otherwise, for a justified
 pre-existing test edit, put this exact line in a later decision statement, after the edit action:
-`finishup:test-change:<action_id>:sha256:<path_digest>`. `<action_id>` is the exact edit action id;
-`<path_digest>` is `sha256:` plus the lowercase SHA-256 of the captured path's UTF-8 spelling. Do
-not rely on free-form prose or repeat the raw path: generic prose does not clear the structural
-edit finding.
+`finishup:test-change:<action_id>:sha256:<hex>`. `<action_id>` is the `act_` id of your latest
+edit action whose `attempted_items` list the path in its exact repository-relative spelling; `<hex>` is the 64 lowercase hexadecimal
+characters of the SHA-256 of the path's repository-relative UTF-8 spelling (for example the first
+field of `printf '%s' tests/test_x.py | sha256sum`, or `shasum -a 256` on macOS). The line carries
+one `sha256:` prefix, not two. Do not rely on free-form prose or repeat the raw path: generic prose
+does not clear the structural edit finding.
 
 Before replacing evidence or a claim, read `status`, cite IDs from your own publication, and link
 the replacement with the prior effective claim. A claim is an assertion, not a conclusion. Read the

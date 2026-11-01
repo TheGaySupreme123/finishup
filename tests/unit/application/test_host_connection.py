@@ -200,8 +200,13 @@ def test_partial_cursor_connection_resumes_only_remaining_mcp_stage(
     assert (config / "plugins/local/finishup").is_dir()
     monkeypatch.setattr(mcp, "apply_cursor_project_mcp", original)
     remaining = prepare()
-    # The interrupted connect never recorded the project (#1058), so resuming records it too.
-    assert remaining.body["changes"] == ["register_project_mcp", "record_connected_project"]
+    # The interrupted connect never recorded the project (#1058), so resuming records it too,
+    # and the consent step that runs last is still owed (#1279).
+    assert remaining.body["changes"] == [
+        "register_project_mcp",
+        "record_connected_project",
+        "allow_observation",
+    ]
     result = apply_connection(
         remaining,
         accepted_digest=remaining.digest,
@@ -771,3 +776,141 @@ def test_cursor_connection_upgrades_pristine_prior_skill_but_preserves_edits(
     with pytest.raises(ConnectionError, match="connection_modified_plugin"):
         prepare()
     assert skill.read_bytes() == b"# My own changes\n"
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_connect_records_observation_consent_like_codex(tmp_path: Path, host: str) -> None:
+    """The reviewed Cursor plan carries Codex's consent step; disconnect keeps the consent (#1279)."""
+
+    from finishup.adapters.integrations.host_discovery import SetupHost
+    from finishup.application.host_connection import ConnectionAction
+
+    project = tmp_path / "project"
+    config = tmp_path / "cursor"
+    project.mkdir(mode=0o700)
+    launcher = tmp_path / "finishup"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    installation = HostInstallation(cast(SetupHost, host), launcher, "2026.10.22", config, "Cursor")
+    review = Review()
+
+    def prepare(action: str):
+        return prepare_connection(
+            REQUEST,
+            installation,
+            project,
+            action=cast(ConnectionAction, action),
+            route="strict",
+            launcher=(str(launcher),),
+        )
+
+    plan = prepare("connect")
+    assert "allow_observation" in cast(list[object], plan.body["changes"])
+    result = apply_connection(
+        plan,
+        accepted_digest=plan.digest,
+        refresh=lambda: prepare("connect"),
+        authority=ArtifactAuthority("review_only", plan.digest, "test"),
+        review=review,
+    )
+    assert result["observation_consent"] == "active"
+
+    again = prepare("connect")
+    assert again.unchanged
+
+    leave = prepare("disconnect")
+    assert "allow_observation" not in cast(list[object], leave.body["changes"])
+    apply_connection(
+        leave,
+        accepted_digest=leave.digest,
+        refresh=lambda: prepare("disconnect"),
+        authority=ArtifactAuthority("review_only", leave.digest, "test"),
+        review=review,
+    )
+    back = prepare("connect")
+    assert "allow_observation" not in cast(list[object], back.body["changes"])
+
+
+def test_claude_connect_offers_observation_consent_to_an_installed_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project connected before #1279 is offered the consent step alone, and setup records it."""
+
+    from types import SimpleNamespace
+
+    from finishup.adapters.integrations import claude_code_integration as claude
+    from finishup.application import host_connection as module
+    from finishup.ports.plugin_artifacts import PluginArtifactState
+
+    project, config = tmp_path / "a", tmp_path / "claude"
+    for item in (project, config):
+        item.mkdir(mode=0o700)
+    status = SimpleNamespace(
+        state=PluginArtifactState.NATIVE_MANAGED,
+        discovered=True,
+        enabled=True,
+        legacy_installation="none",
+        installed_digest="sha256:" + "b" * 64,
+        marketplace_registered=True,
+    )
+
+    def target(*args: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            project_root=args[0],
+            claude_config_root=args[1],
+            cache_root=args[2],
+            marketplace_root=args[3],
+        )
+
+    def preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            action=claude.ClaudeCodePluginAction.NOOP, preview_digest="sha256:" + "a" * 64
+        )
+
+    def rendered(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(artifact_digest="sha256:" + "b" * 64)
+
+    def anything(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    def nothing(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    def observed(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return status
+
+    def no_others(*_args: object, **_kwargs: object) -> tuple[str, ...]:
+        return ()
+
+    monkeypatch.setattr(claude, "ClaudeCodePluginTarget", target)
+    monkeypatch.setattr(claude, "discover_claude_code", anything)
+    monkeypatch.setattr(claude, "installed_claude_startup_mode", nothing)
+    monkeypatch.setattr(claude, "render_claude_code_plugin", rendered)
+    monkeypatch.setattr(claude, "status_claude_code_plugin", observed)
+    monkeypatch.setattr(claude, "claude_code_other_projects", no_others)
+    monkeypatch.setattr(claude, "installed_claude_route_profile", nothing)
+    monkeypatch.setattr(claude, "preview_claude_code_plugin", preview)
+    installation = HostInstallation("claude", tmp_path / "claude-bin", "2.1.299", config, "Claude")
+
+    def prepare():
+        return module.prepare_connection(
+            request_id("req_50000000-0000-4000-8000-00000000000a"),
+            installation,
+            project,
+            action="connect",
+            route="strict",
+            launcher=("/x/finishup",),
+        )
+
+    plan = prepare()
+    assert plan.body["changes"] == ["allow_observation"]
+    review = Review()
+    result = apply_connection(
+        plan,
+        accepted_digest=plan.digest,
+        refresh=prepare,
+        authority=ArtifactAuthority("review_only", plan.digest, "test"),
+        review=review,
+    )
+    assert result["observation_consent"] == "active"
+    assert prepare().unchanged

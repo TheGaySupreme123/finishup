@@ -342,9 +342,11 @@ _TEST_EDIT_ACCOUNTING = (
 
 
 def _test_edit_finding() -> Finding:
+    from finishup.kernel.deterministic_checks import TEST_EDIT_UNJUSTIFIED_SUMMARY
+
     return replace(
         _finding(kind=FindingKind.TASK_REQUIREMENT_UNMET, policy_id="research-evidence"),
-        summary="An existing test file was edited without a recorded justification.",
+        summary=TEST_EDIT_UNJUSTIFIED_SUMMARY,
     )
 
 

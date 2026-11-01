@@ -27,11 +27,16 @@ from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
 from finishup import __version__
+from finishup.adapters.integrations.host_config_json import parse_host_config_json
 from finishup.adapters.integrations.host_projects import live_projects
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher, valid_launcher
 from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
 from finishup.adapters.integrations.portable_plugin import PackagedPortableResources
-from finishup.config.foreign_write import project_root_admitted, writable_by_others
+from finishup.config.foreign_write import (
+    project_root_admitted,
+    superuser_owned,
+    writable_by_others,
+)
 from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -193,6 +198,10 @@ _RENDERER_VERSION: Final = "claude-code-plugin/0.4.0"
 _STAGE_PREFIX: Final = ".yoetz-claude-marketplace-stage-"
 _ROLLBACK_NAME: Final = ".yoetz-claude-marketplace-rollback"
 _MAX_FILE_BYTES: Final = 262_144
+# Claude Code's own user configuration grows with every project it has opened; it is only ever
+# read, digested and observed here, never written (#1278).
+_MAX_USER_CONFIG_BYTES: Final = 33_554_432
+_USER_CONFIG_NAME: Final = ".claude.json"
 _MAX_FILES: Final = 64
 _MAX_PATH: Final = 4_096
 _MAX_COMMAND_OUTPUT: Final = 1_048_576
@@ -561,8 +570,10 @@ class ClaudeCodeSessionObservation:
             raise ValueError("claude_code_session_observation_invalid")
 
 
-@dataclass(frozen=True, slots=True)
-class ClaudeCodeIntegrationError(Exception):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _ClaudeCodeIntegrationErrorFields(Exception):
     reason: PluginArtifactReason
     safe_details: Mapping[str, JsonValue]
 
@@ -574,6 +585,14 @@ class ClaudeCodeIntegrationError(Exception):
             raise ValueError("claude_code_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class ClaudeCodeIntegrationError(_ClaudeCodeIntegrationErrorFields):
+    """Raised form of :class:`_ClaudeCodeIntegrationErrorFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1097,6 +1116,20 @@ def _require_owned_project_settings_directory(target: ClaudeCodePluginTarget) ->
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
 
 
+def _executable_admitted(facts: os.stat_result) -> bool:
+    """Whether Claude Code's executable may be run for this user (#1283).
+
+    The running user's own executable, or one the superuser installed (``sudo npm install -g``, a
+    distro package, a container image), provided no other account can write it: root is already
+    trusted with everything the user runs, and the Codex launcher is admitted the same way. The
+    executable's digest stays bound into the preview, so a replaced binary makes it stale.
+    """
+
+    if writable_by_others(facts):
+        return False
+    return not hasattr(os, "geteuid") or facts.st_uid == os.geteuid() or superuser_owned(facts)
+
+
 def _validate_target(target: ClaudeCodePluginTarget) -> str:
     if type(target) is not ClaudeCodePluginTarget:
         raise _error(PluginArtifactReason.TARGET_UNTRUSTED)
@@ -1116,8 +1149,7 @@ def _validate_target(target: ClaudeCodePluginTarget) -> str:
     executable = Path(target.executable)
     if executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
-    facts = executable.stat()
-    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
+    if not _executable_admitted(executable.stat()):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     if _digest_file(executable) != target.identity.executable_digest:
         raise _error(PluginArtifactReason.PREVIEW_STALE)
@@ -1313,13 +1345,23 @@ def _inspect_source(
     )
 
 
+def _max_read_bytes(path: Path) -> int:
+    return _MAX_USER_CONFIG_BYTES if path.name == _USER_CONFIG_NAME else _MAX_FILE_BYTES
+
+
 def _json_file(path: Path) -> tuple[Mapping[str, JsonValue] | None, bool]:
+    """Read one host-owned JSON file for observation; ``(None, True)`` when it is absent.
+
+    Claude Code writes decimal numbers into its own files, so this read-only path uses the host
+    configuration reader (#1278). Every rewrite of a host file parses it strictly instead.
+    """
+
     if not path.exists() and not path.is_symlink():
         return None, True
     try:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _max_read_bytes(path):
             return None, False
-        parsed = strict_json_parse(path.read_bytes())
+        parsed = parse_host_config_json(path.read_bytes())
     except (OSError, ProtocolValueError, UnicodeError):
         return None, False
     return (
@@ -1418,7 +1460,7 @@ def _host_state_digest(target: ClaudeCodePluginTarget) -> str:
         if not path.exists() and not path.is_symlink():
             rows.append({"name": name, "state": "absent"})
             continue
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _max_read_bytes(path):
             rows.append({"name": name, "state": "unsafe"})
             continue
         data = path.read_bytes()
@@ -1760,7 +1802,8 @@ def _list_plugins(
     if result.returncode != 0:
         return [], False
     try:
-        parsed = strict_json_parse(result.stdout)
+        # Host output: other plugins' rows may carry values the wire profile does not admit.
+        parsed = parse_host_config_json(result.stdout)
     except (ProtocolValueError, UnicodeError):
         return [], False
     if type(parsed) is not list or any(not isinstance(item, Mapping) for item in parsed):

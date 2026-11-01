@@ -3106,7 +3106,9 @@ their pre-tool payloads); see each host runbook. A delivered
 lease outlived the event's own time plus one lease; open work is then abandoned with reason
 `session_ended` after the recovery window unless the session resumes first. Expiry appends one
 authenticated, service-stamped `work_abandoned` event to that task's own ledger before updating
-the catalog. Recovery replays that event idempotently after interruption. The catalog keeps the
+the catalog. After a `SessionEnd`, the route rests on an ended session that no start reserved, so
+the event is written there under that session's derived harness writer (#1281). Recovery replays
+that event idempotently after interruption. The catalog keeps the
 abandonment reason (`contact_lost`, `session_ended`, or `attach_handle_expired`). A parent-minted child whose handle expires
 without any attach is abandoned with reason `attach_handle_expired`; its session health stays
 `ended`, since no attached session lost contact. Cancellation and write-off preserve the accepted
@@ -7718,7 +7720,13 @@ ADR-048), as it does for `integrate cursor plugin preview --action remove`; and 
 `connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
-forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
+forget_connected_project` (Cursor, record-only updates), and a Claude Code or Cursor connect adds
+`allow_observation` (worded "Allow bounded structural event recording for this project", the
+reviewed consent step Codex setup has always carried) whenever the canonical workspace has no active
+observation consent; such a plan drops the `observation_consent_separate` warning, applies the
+consent after its host steps, and its status adds `observation_consent` (`active|absent`). A
+disconnect never revokes it: consent is per workspace and shared by every host there (#1279). The
+plan disclosure `shared_with` lists
 the other projects that keep the shared pieces and is bound into `preview_digest`. Status adds
 `codex_home_projects` and the project's own `activation_state` (Codex; `active` only for a
 connected project) or `connected_projects` (Claude Code, Cursor). A connect through a
@@ -11252,6 +11260,15 @@ plan. Names and contracts:
   marker cannot be read is `preexisting_test_skip_unknown` (standing; not informational, so the
   check stays coverage-incomplete) rather than `preexisting_test_baseline_unknown`, which now means
   only an unknown task-start baseline or an omitted/truncated edit set.
+- Issue #1059: because that structural capture is path/status metadata, an `M` test path counts as
+  an edit of a pre-existing test even when the agent only appended new tests; append-only cannot be
+  told apart from an edited assertion or an added skip marker without a content read. The
+  test-edit finding's fixed summary (`deterministic_checks.TEST_EDIT_UNJUSTIFIED_SUMMARY`, the only
+  finding text a `detail: brief` check result carries) therefore says so and names both accepted
+  justifications in their exact form: the statement-sourced obligation with the file as an
+  `item_kind` `file` requested item, and the decision line
+  `finishup:test-change:<act_ id>:sha256:<64 lowercase hex>` (one `sha256:` prefix). The detail
+  keeps the five-step obligation repair and adds the decision form.
 - Observed corroboration (same amendment): work-integrity `claim_without_admissible_evidence` with
   facts `observed_verification_uncited` / `observed_verification_absent` (subject: the completion
   claim) fires when hooks observed an edit or a verification run with a recorded outcome and the

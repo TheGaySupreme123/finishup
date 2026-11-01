@@ -943,3 +943,24 @@ still refused. A symlink outside the exclusions is never followed and reports
 reported as `unsafe_root`. Check-time change capture is unaffected by such a link and never
 reads its target. Observation grants, review recipes, privacy minimization, never-send scanning
 and egress admission are unchanged for Codex, Claude Code and Cursor.
+
+## Amendment — observation consent in every agent's reviewed connection (2026-11-01, issue #1279)
+
+Codex setup has carried workspace observation consent as one listed, digest-bound line of its
+reviewed plan ("Allow bounded structural event recording for this project") since this ADR. Claude
+Code and Cursor connections did not, and nothing else in guided setup granted it, so their hooks
+exited `workspace_unconsented`: nothing was recorded and no startup cue reached the agent. In a
+native Cursor Agent CLI run after a successful connection the agent finished its task without a
+single FinishUP call; after `finishup observe grant` the same task used FinishUP end to end.
+
+Decision (maintainer-requested): a Claude Code or Cursor connect plan carries the same consent step
+as Codex. It appears as the change `allow_observation` with Codex's wording, is bound into the plan
+digest and the one existing review, and is applied after the host steps succeed. It is planned only
+when the canonical workspace has no active consent (the preview reads consent without creating key
+material), so a repeated setup stays a no-op, and a project connected before this amendment is
+offered the step alone. Such a plan no longer carries the `observation_consent_separate` warning.
+Disconnect never revokes the consent, exactly as on Codex: it belongs to the workspace and every
+host there, and `finishup observe revoke` withdraws it. Consent remains independent of egress and
+AI-powered review authority (ADR-009), and the earlier statement that plugin installation alone
+does not imply observation consent still holds: consent comes only from this explicitly listed,
+reviewed step.

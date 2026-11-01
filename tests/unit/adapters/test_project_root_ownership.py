@@ -479,3 +479,29 @@ def test_host_admission_refuses_a_project_root_the_rule_does_not_admit(
     with pytest.raises(HostAdmissionError) as refused:
         observe_host_admission("claude", project, owner="plugin")
     assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE
+
+
+@pytest.mark.parametrize(
+    ("owner", "mode", "admitted"),
+    [
+        ("self", 0o755, True),
+        ("root", 0o755, True),
+        ("other", 0o755, False),
+        ("root", 0o777, False),
+        ("self", 0o757, False),
+        ("other", 0o775, False),
+    ],
+)
+def test_claude_executable_owned_by_the_user_or_root_is_admitted(
+    owner: str, mode: int, admitted: bool
+) -> None:
+    """A root-installed ``claude`` is admitted like the Codex launcher, unless others can write it (#1283)."""
+
+    import stat as stat_module
+
+    from finishup.adapters.integrations import claude_code_integration as claude
+
+    me = os.geteuid()
+    uid = {"self": me, "root": 0, "other": me + 4242}[owner]
+    facts = os.stat_result((stat_module.S_IFREG | mode, 0, 0, 1, uid, 4243 + me, 0, 0, 0, 0))
+    assert claude._executable_admitted(facts) is admitted  # pyright: ignore[reportPrivateUsage]

@@ -171,12 +171,14 @@ def test_one_reviewed_connect_migrates_and_remove_shared_removes(tmp_path: Path)
     installation = HostInstallation("cursor-ide", launcher, "3.17.8", config, "Cursor")
 
     plan, status = _connection(installation, project, launcher, "connect", 2)
-    # The connect also records the project for the shared user plugin (#1058).
+    # The connect also records the project for the shared user plugin (#1058) and its
+    # observation consent (#1279).
     assert plan.body["changes"] == [
         "migrate_legacy_plugin",
         "install_plugin",
         "register_project_mcp",
         "record_connected_project",
+        "allow_observation",
     ]
     # A Yoetz-era tree found without a record may serve projects no record names (ADR-012).
     assert plan.disclosure["membership_unknown"] is True

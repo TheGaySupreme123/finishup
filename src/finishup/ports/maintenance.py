@@ -284,8 +284,10 @@ class MaintenanceHandle:
         raise TypeError("maintenance_handle_not_serializable")
 
 
-@dataclass(frozen=True, slots=True)
-class MaintenanceError(Exception):
+# No slots=True: the generated frozen __setattr__ must not cover the raised subclass, whose
+# interpreter-owned __traceback__ Python 3.14 contextlib assigns (issue #1119).
+@dataclass(frozen=True)
+class _MaintenanceErrorFields(Exception):
     reason: MaintenanceReason
     retryable: bool
     safe_details: Mapping[str, JsonValue]
@@ -305,6 +307,14 @@ class MaintenanceError(Exception):
             raise _invalid("maintenance_error_invalid")
         object.__setattr__(self, "safe_details", details)
         Exception.__init__(self, self.reason.value)
+
+
+class MaintenanceError(_MaintenanceErrorFields):
+    """Raised form of :class:`_MaintenanceErrorFields`: its fields stay frozen while Python can still
+    attach the traceback when it passes through a ``@contextmanager`` (#1119).
+    """
+
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)

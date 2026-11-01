@@ -13,6 +13,7 @@ from finishup.application.lineage import (
     LineageCoordinator,
     LineageSnapshot,
 )
+from finishup.application.observation_materialize import observation_writer_id
 from finishup.application.start import provision_lineage_recovery
 from finishup.application.unit_of_work import PreparedMutation, run_prepared_append
 from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth
@@ -263,6 +264,18 @@ def observed_session_end(
     return end
 
 
+async def _is_ended_placeholder(app: Application, task_id: str, session_id: str) -> bool:
+    """Whether the route's current session is this task's recorded, ended session."""
+
+    state = await app.start_catalog.task_session_state(session_id)
+    return (
+        state is not None
+        and state.task_id == task_id
+        and state.session_id == session_id
+        and state.health is SessionHealth.ENDED
+    )
+
+
 async def lineage_recovery_runtime(app: Application, task_id: str) -> TaskRuntime:
     """Open a current route or the inert bundle of one completed reservation."""
 
@@ -288,14 +301,22 @@ async def lineage_recovery_runtime(app: Application, task_id: str) -> TaskRuntim
             True,
         )
     binding = await app.start_catalog.session_binding(route.session_id)
-    if binding is None or binding.task_id != task_id:
+    if binding is not None and binding.task_id == task_id:
+        writer_id = binding.writer_id
+    elif binding is None and await _is_ended_placeholder(app, task_id, route.session_id):
+        # #1281: ending a session (a host ``SessionEnd``) moves the route to an inert ended
+        # placeholder session that no start reserved, so it has no start-bound writer. Recovery
+        # writes there as the service's own harness writer for that session, the writer every
+        # route admits and the one whose author the recovery events already carry.
+        writer_id = observation_writer_id(task_id, route.session_id)
+    else:
         raise PublicOperationError(
             PublicErrorCode.STORAGE_CORRUPT, "The task recovery identity is inconsistent.", False
         )
     return await app.runtime.route(
         RouteCommand(
             route.session_id,
-            binding.writer_id,
+            writer_id,
             RouteAccess.MAINTENANCE,
             frozenset({RuntimeCapability.WRITE, RuntimeCapability.PAYLOAD_READ}),
         )
