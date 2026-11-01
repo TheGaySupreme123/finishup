@@ -3106,7 +3106,9 @@ their pre-tool payloads); see each host runbook. A delivered
 lease outlived the event's own time plus one lease; open work is then abandoned with reason
 `session_ended` after the recovery window unless the session resumes first. Expiry appends one
 authenticated, service-stamped `work_abandoned` event to that task's own ledger before updating
-the catalog. Recovery replays that event idempotently after interruption. The catalog keeps the
+the catalog. After a `SessionEnd`, the route rests on an ended session that no start reserved, so
+the event is written there under that session's derived harness writer (#1281). Recovery replays
+that event idempotently after interruption. The catalog keeps the
 abandonment reason (`contact_lost`, `session_ended`, or `attach_handle_expired`). A parent-minted child whose handle expires
 without any attach is abandoned with reason `attach_handle_expired`; its session health stays
 `ended`, since no attached session lost contact. Cancellation and write-off preserve the accepted

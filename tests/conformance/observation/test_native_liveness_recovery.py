@@ -28,6 +28,7 @@ from finishup.application.lineage_recovery import (
     lineage_recovery_runtime,
     observed_activity_renewal,
     observed_quiet_period,
+    observed_session_end,
 )
 from finishup.application.publish_work import PublishWorkInternalResult
 from finishup.application.service import Application
@@ -914,3 +915,48 @@ async def test_a_child_close_replayed_after_a_crash_refreshes_its_parent_once(
         # Later sweeps replay the same close onto a closed row and refresh nothing.
         await app.recover_lineage()
         assert refreshed == [child.task_id]
+
+
+async def test_a_host_ended_session_settles_its_open_work_once(tmp_path: Path) -> None:
+    """#1281: a delivered ``SessionEnd`` abandons open work once, after the grace, and stops.
+
+    Ending the session moves the task's route to an inert placeholder session that no start
+    reserved, so it has no start-bound writer. Recovery must still append the abandonment for that
+    route instead of refusing it as an inconsistent identity on every periodic sweep.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        app = service.app
+        assert app.lineage is not None
+        task = await _create(service, workspace, "host-ended")
+        await _publish_action(service, task, "Work before the host session ends.")
+        checked = await _check(service, task)
+        await _receipt(service, task, checked, request_id=new_id(IdKind.REQUEST))
+
+        ended_at = service.clock.now_utc()
+        end = observed_session_end(app.start_catalog, app.lineage)
+        await end(task.task_id, task.session_id, task.writer_id, ended_at)
+        ended = await app.lineage.store.get_task(task.task_id)
+        assert ended is not None and ended.session_health is SessionHealth.ENDED
+        assert ended.abandonment_reason == "session_ended"
+
+        # Inside the grace a resumed host could still reattach; nothing is settled yet.
+        service.clock.advance(seconds=_WINDOW - 1)
+        await app.recover_lineage()
+        assert await _work(app, task) is WorkState.OPEN
+
+        service.clock.advance(seconds=2)
+        await app.recover_lineage()
+        assert await _work(app, task) is WorkState.ABANDONED
+        (event,) = await _abandonment_events(app, task.task_id)
+        assert isinstance(event.payload, WorkAbandonedPayload)
+        assert event.payload.reason_code == "session_ended"
+        assert event.occurred_at.as_datetime() == ended_at + timedelta(seconds=_WINDOW)
+
+        # Later sweeps find settled work: no second event and no failure.
+        for _ in range(3):
+            service.clock.advance(seconds=60)
+            await app.recover_lineage()
+        assert await _work(app, task) is WorkState.ABANDONED
+        assert len(await _abandonment_events(app, task.task_id)) == 1
