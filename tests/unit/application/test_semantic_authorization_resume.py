@@ -336,6 +336,11 @@ async def test_resume_rejects_proposal_identity_mismatch(
     [
         ("unknown", "sha256:" + "0" * 64),
         ("observability-sensitive-content-v2", _SCANNER.profile_digest),
+        ("observability-sensitive-content-v5", _SCANNER.profile_digest),
+        (
+            _SCANNER.version,
+            "sha256:afbf5c541ef8d643f5bcd8b83aa591291990611c0f801d7c0c4f554d6bcdf41a",
+        ),
     ],
 )
 async def test_resume_rejects_stale_scanner_identity(

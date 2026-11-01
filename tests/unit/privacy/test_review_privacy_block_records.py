@@ -215,20 +215,21 @@ async def test_the_tb4_nested_yaml_shape_reaches_the_reviewer_with_its_marker() 
 
 
 @pytest.mark.anyio
-async def test_a_real_value_seen_only_in_the_conversation_withholds_its_item() -> None:
-    # The shipped scanner, no planted match: ``secret=x9`` right after a closing quote is missed
-    # at capture depth and seen once the conversation nests the packet (#1248 P2's fuzzing). The
-    # placeholder before it is FinishUP's own, recorded, and never matches; the real value
-    # withholds the one item it sits in, named, and the review still runs (P-D2).
+async def test_an_adjacent_assignment_is_redacted_before_the_conversation() -> None:
+    # P3 catches ``secret=x9`` right after a closing quote at capture depth, before it can become
+    # a conversation-stage hit. Both values are replaced and their recorded markers survive
+    # the deeper conversation encoding; the excerpt remains available to the reviewer.
     result, audit = await _evaluate_conversation(
         b'db:\n  password: "hunter2"secret=x9\n  role: admin\n'
     )
     conversation = _prepared(result, audit)
     assert b"secret=x9" not in conversation and b"hunter2" not in conversation
     assert isinstance(result, SemanticEgressBlocked)
-    assert _EXCERPT in result.withheld_item_ids
-    (withheld,) = [item for item in result.redacted_values if item.item_id == _EXCERPT]
-    assert withheld.disposition == "item_withheld"
+    assert _EXCERPT not in result.withheld_item_ids
+    packet = json.loads(decode_reviewer_exchange(conversation)[1][1])
+    (excerpt,) = [item for item in packet["items"] if item["item_id"] == _EXCERPT]
+    marker = EGRESS_CREDENTIAL_PLACEHOLDER.decode()
+    assert f'password: "{marker}"secret={marker}\n  role: admin\n' in excerpt["content"]
 
 
 @pytest.mark.anyio

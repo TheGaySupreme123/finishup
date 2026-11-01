@@ -1125,12 +1125,14 @@ def _yaml_key_line_lead(data: bytes, name_start: int) -> bytes | None:
     return None
 
 
-def _yaml_block_values(data: bytes) -> Iterator[tuple[int, int]]:
+def _yaml_block_values(
+    data: bytes, *, marker_spans: Mapping[int, int]
+) -> Iterator[tuple[int, int]]:
     """Each YAML block value under a credential-named key: from the key to the value's end.
 
     The span starts at the key's name, so a replacement keeps the name and separator and replaces
-    the value lines whole (``_replace_sensitive_spans``). A block of FinishUP's own markers only
-    (an already redacted value) is not a value.
+    the value lines whole (``_replace_sensitive_spans``). Only recorded marker spans exempt an
+    already-redacted block; marker-shaped source text receives the ordinary value rules.
     """
 
     offset = 0
@@ -1147,6 +1149,7 @@ def _yaml_block_values(data: bytes) -> Iterator[tuple[int, int]]:
         cursor = key.end()
         value_end: int | None = None
         contents: list[bytes] = []
+        recorded_contents: list[bool] = []
         while cursor < len(data):
             line_break = _LINE_BREAK.match(data, cursor)
             if line_break is None:
@@ -1162,6 +1165,10 @@ def _yaml_block_values(data: bytes) -> Iterator[tuple[int, int]]:
                 elif not (indicator and not contents and not _YAML_NESTED_KEY.match(content)):
                     break
                 contents.append(content.strip(b" \t"))
+                content_start = line_end - len(content.lstrip(b" \t"))
+                recorded_contents.append(
+                    _value_is_replacement_marker(contents[-1], content_start, marker_spans)
+                )
                 value_end = line_end
                 if columns <= key_columns:
                     # A block indicator over a line that is not indented: that line was meant
@@ -1173,7 +1180,7 @@ def _yaml_block_values(data: bytes) -> Iterator[tuple[int, int]]:
             # One plain line under an empty key is the ordinary assignment heuristic's value
             # (``password:`` then ``  value``), judged by its value rules.
             or (not indicator and len(contents) == 1)
-            or all(content in _EXEMPT_REPLACEMENT_MARKERS for content in contents)
+            or all(recorded_contents)
         ):
             continue
         yield key.start("name"), value_end
@@ -1336,7 +1343,7 @@ def scan_for_sensitive_content(
             )
 
     # YAML block values span lines, so they are found in the whole of ``data`` (#1248, P-D4).
-    for value_start, value_end in _yaml_block_values(data):
+    for value_start, value_end in _yaml_block_values(data, marker_spans=recorded):
         if len(findings) >= _MAX_SCAN_FINDINGS:
             break
         _append_finding(

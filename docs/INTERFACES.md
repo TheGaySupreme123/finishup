@@ -4970,8 +4970,8 @@ behaves as those paragraphs describe.
   `key: |` block values are detected.
 - **Spelling (P-D5, step P4, low priority).** New content will use
   `[withheld-by-finishup:possible-credential]`. Both spellings are read permanently, and the scanner
-  profile (`observability-sensitive-content-v4` since P1, `v5` since P2) is bumped so resumed work
-  never mixes them.
+  profile (`observability-sensitive-content-v4` since P1, `v5` since P2, `v6` since P3) is bumped
+  so resumed work never mixes them.
   Until P4, the legacy spelling is written.
 - **Unchanged.** No category is added, no ceiling is raised, and Private still sends nothing.
 A recorded span is carried into a JSON string by that string's byte-offset map, which accounts for

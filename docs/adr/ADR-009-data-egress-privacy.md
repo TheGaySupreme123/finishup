@@ -1307,8 +1307,7 @@ missing item. A refused capture is not sent as a raw evidence excerpt either.
   Git. Gitignored paths are absent from the frozen change, so a verifier that names an unlisted
   ignored path, and whose output the scan below does not hit, can still be sent.
 - The output then takes the check-time change scan (`redact_sensitive_content`, heuristics
-  included) plus a private-key END line or OpenSSH key-body check. The capture store only
-  replaces a BEGIN banner, so those two are checked here. Any hit drops the whole item. A
+  included) plus a private-key END line or OpenSSH key-body check. Capture and persistence redact each private key from BEGIN through the END line with the same label; a missing END line withholds the containing item, or only the affected file's part of a check-time change. Any hit drops the whole item. A
   partly redacted capture is not sent. A value the scan does not recognise (for example
   `DB_PASS=`) is not a hit by itself.
 
@@ -1617,16 +1616,7 @@ measured the minimized row: 16,402 bytes. Egress refused the whole packet and no
   the approved total. Ceiling planning measures the payload in its largest disclosed shape,
   including each replaced row's `redacted` transformation. A composed case therefore fits every
   per-excerpt, total and exchange bound once its values are replaced.
-- **Redact, then cut.** A cut can drop a label (`password =`) and keep the value it made
-  detectable, where no scan of the cut text sees it. So every composition cut (a head-and-tail
-  clip, a captured diff split into parts, a part cut again to its disclosed size, a clipped prose
-  field) is taken from the whole text with every detected value already replaced
-  (`redact_before_cut`), never from the raw text; the egress scan then checks what is sent as
-  usual. Text the bounded passes cannot redact in full (more values than the scanner reports
-  across them) is never cut from: the cut reads a fixed FinishUP line instead (fail closed). A cut
-  of replaced text has no exact place in its source, so it places no bytes there and
-  never reads as showing its source whole (`SemanticCase.unplaced_item_ids`); a captured diff
-  split from replaced text is placed in that text and reads as truncated.
+- **Redact, then cut.** Every composition clip, captured diff split, reviewer line-range or offset read (including declared tests), and check-time change part is cut from the whole source after raw and JSON-encoded redaction. Redaction preserves line breaks. A private key without its matching END line withholds the containing item; in a check-time change, only that file's part is withheld. Reviewer reads with high-confidence hits remain refused, and heuristic admission is unchanged. Other composition text that bounded passes cannot fully redact uses the fixed withholding line. Composition cuts of replaced text retain the existing `unplaced_item_ids` coverage rules, and egress scans every delivered form.
 - **Leave out, then refuse.** If a semantic packet still exceeds an approved excerpt limit or the
   exchange's byte or token bound at disclosure (for example, the owner narrowed the limits after
   composition), egress leaves out whole excerpts instead of failing the review; it never cuts an
@@ -1868,8 +1858,9 @@ local-sink backstops, and the egress-receipt shape keep their rules.
 **Scanner profile.** The 2026-10-03 amendment already requires a new scanner profile version for
 every step that changes what the scanner matches, exempts or replaces. Step P1 moved it from
 `observability-sensitive-content-v3` to `observability-sensitive-content-v4`, and step P2 to
-`observability-sensitive-content-v5`. A resumed proposal prepared under an older profile therefore
-fails closed as a profile mismatch, and a new evaluation uses the current profile.
+`observability-sensitive-content-v5`, and step P3 to `observability-sensitive-content-v6`. A resumed
+proposal prepared under an older profile therefore fails closed as a profile mismatch, and a new
+evaluation uses the current profile.
 
 **Work order.** P1 implements P-D1 and P-D2 (#1138, #966 items 2, 3 and 5). P2 implements P-D3.
 P3 implements P-D4 (#1236, #1237, #1238, #1015, #1134). P4 implements P-D5. Records, labels,
@@ -1888,7 +1879,14 @@ message is replaced by the broker's refusal for a withheld read and it is record
 P-D3 shipped with step P2 (#1270): an unquoted value ends at raw whitespace and at an encoded line
 break or tab at any escaping depth, an empty `KEY=` value ends at its line break, a quoted value
 never spans a line break, and every redaction pass replaces only the union of its overlapping
-matches. P-D4 and P-D5 are not yet implemented.
+matches.
+
+P-D4 shipped with step P3 (#1272): composition clips, reviewer line-range and offset reads
+(including declared tests), and check-time change parts are cut from the whole source after raw
+and JSON-encoded redaction, preserving line breaks. Private keys are redacted through the END line
+with the same label; a missing END withholds the item, or only that file's check-time change part.
+YAML block values are detected. Reviewer reads retain high-confidence refusals and the existing
+heuristic admission policy. P-D5 is not yet implemented.
 
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,

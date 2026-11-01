@@ -24,12 +24,16 @@ import pytest
 
 from builders.privacy_policies import minimal_external_policy
 from builders.privacy_widenings import with_llm
-from finishup.adapters.privacy.local_enforcer import scan_exact_bytes_with_confidence
+from finishup.adapters.privacy.local_enforcer import (
+    SecretScanRuleset,
+    scan_exact_bytes_with_confidence,
+)
 from finishup.application import check_change as check_change_module
 from finishup.application import semantic_case as semantic_case_module
 from finishup.application.check_change import ChangeCaptureUnavailable
 from finishup.application.reviewer_broker import ReadRoot
 from finishup.domain.privacy import CredentialHeuristic
+from finishup.observability.marker_spans import encoded_string_spans
 from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     ScanConfidence,
@@ -41,6 +45,7 @@ from finishup.observability.privacy import (
     redact_heuristic_spans,
     redact_high_confidence_content,
     redact_sensitive_content,
+    redact_sensitive_content_marked,
     scan_for_sensitive_content,
     semantic_egress_forms,
 )
@@ -66,6 +71,14 @@ _LABELS = (
 )
 _PASSWORD = "Qz7" + "-pw-" + "4410x"
 _SECOND = "Hq7" + "zKp2" + "xWv9"
+
+
+def test_slice_redaction_has_a_distinct_scanner_profile() -> None:
+    scanner = SecretScanRuleset()
+    assert scanner.version == "observability-sensitive-content-v6"
+    assert scanner.profile_digest != (
+        "sha256:afbf5c541ef8d643f5bcd8b83aa591291990611c0f801d7c0c4f554d6bcdf41a"
+    )
 
 
 def _begin(label: str) -> str:
@@ -316,12 +329,40 @@ def test_what_is_not_a_yaml_block_value(text: str) -> None:
     assert redact_fully(text.encode()) == text.encode()
 
 
-def test_a_block_of_finishup_markers_is_not_redacted_again() -> None:
-    # An already redacted block value converges: its marker lines are not a fresh value.
+def test_a_block_of_unrecorded_marker_text_is_redacted_as_a_value() -> None:
+    # P1 grants no exemption by text: marker-shaped source values are replaced as a whole block.
     text = ("password: |\n  " + _MARK + "\n  " + _MARK + "\nrole: admin\n").encode()
     once = redact_fully(text)
-    assert once is not None and once.count(_MARK.encode()) == 3
+    assert once is not None and once.count(_MARK.encode()) == 1
+    assert once.count(b"\n") == text.count(b"\n")
     assert redact_fully(once) == once
+
+
+@pytest.mark.parametrize("shape", ("yaml", "private_key"))
+@pytest.mark.parametrize("depth", (0, 1, 2, 3))
+def test_multiline_redaction_carries_recorded_markers_through_encodings(
+    shape: str, depth: int
+) -> None:
+    body = (
+        _yaml("password: |", ("  " + _PASSWORD, "  " + _SECOND), indent="  ")
+        if shape == "yaml"
+        else _with_key("RSA PRIVATE KEY")
+    ).encode()
+    prefix = b"password=" + EGRESS_CREDENTIAL_PLACEHOLDER + b"\n"
+    raw = prefix + body
+    prior = ((len(b"password="), len(prefix) - 1),)
+    redacted, changed, recorded = redact_sensitive_content_marked(
+        raw, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER, marker_spans=prior
+    )
+    assert changed and len(recorded) == 2
+    assert redacted.startswith(prefix)
+    assert redacted.count(b"\n") == raw.count(b"\n")
+    assert all(value.encode() not in redacted for value in (_PASSWORD, _SECOND, _BODY_LINE))
+    for _ in range(depth):
+        encoded = canonical_encode(redacted.decode())
+        recorded = encoded_string_spans(encoded, recorded)
+        redacted = encoded
+    assert scan_for_sensitive_content(redacted, marker_spans=recorded) == ()
 
 
 # ---- slices: reviewer line reads and check-time change parts ---------------------------------

@@ -87,8 +87,10 @@ def estimated_token_count(byte_count: int) -> int:
 # written, never by their text; a resumed proposal prepared under v3 fails closed as a mismatch.
 # v5 (#1248 P-D3): an unquoted value ends at a raw or encoded line break or tab, and no pass
 # replaces bytes outside its match.
-_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v5"
-_SCANNER_PROFILE_DIGEST = "sha256:afbf5c541ef8d643f5bcd8b83aa591291990611c0f801d7c0c4f554d6bcdf41a"
+# v6 (#1248 P-D4): redact whole private-key blocks and YAML block values before slicing,
+# preserve line breaks and recorded marker spans, and read quoted values at depth three.
+_SCANNER_REGISTRY_VERSION = "observability-sensitive-content-v6"
+_SCANNER_PROFILE_DIGEST = "sha256:f2e1b54f38e9f3a2c2c3a458bd5ad5cb8b6bdd17f00ef144fc5439deac3c0774"
 _STRUCTURAL_CATEGORIES = frozenset(
     {DataCategory.BOUNDED_STRUCTURAL_METADATA, DataCategory.DECLARED_FILE_TYPE}
 )
