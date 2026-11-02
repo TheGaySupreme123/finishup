@@ -1097,16 +1097,19 @@ class SqliteBundleUpgradeEffects:
         target: BundleUpgradeTarget,
         entries: tuple[BackupObjectEntry, ...],
     ) -> None:
-        privacy_ids = tuple(ref.object_id for ref in snapshot.privacy_audit_objects)
-        manifest_privacy_ids = tuple(
+        # Disclosure content is held process-locally and the catalog keeps only its refs, so a
+        # privacy-audit ref normally has no bundle object. The sidecar carries the refs; the
+        # bundle may only hold privacy-audit objects the sidecar names (#1295).
+        privacy_ids = {ref.object_id for ref in snapshot.privacy_audit_objects}
+        manifest_privacy_ids = {
             entry.object_id for entry in entries if entry.kind is ObjectKind.PRIVACY_AUDIT
-        )
+        }
         if (
             snapshot.origin_installation_id != self._installation_id
             or snapshot.origin_task_id != target.task_id
             or snapshot.privacy_root_generation != target.privacy_root_generation
             or snapshot.privacy_root_digest != target.privacy_root_digest
-            or privacy_ids != manifest_privacy_ids
+            or not manifest_privacy_ids <= privacy_ids
         ):
             raise _backup_failure("privacy_binding", retryable=False)
 

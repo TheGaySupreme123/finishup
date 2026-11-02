@@ -23,7 +23,13 @@ from finishup.domain.values import Frontier, format_rfc3339_millis, task_id
 from finishup.ports.ids import IdPort
 from finishup.ports.keys import BundleKeys, WrappedDek
 from finishup.ports.maintenance import PrivacyAuditBackupSnapshot
-from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRootSnapshot, ObjectSource
+from finishup.ports.objects import (
+    ObjectKind,
+    ObjectMetadata,
+    ObjectRef,
+    ObjectRootSnapshot,
+    ObjectSource,
+)
 from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretHandle,
@@ -523,3 +529,82 @@ async def test_backup_authenticates_and_copies_present_encrypted_objects(
     replay_after_restart = await effects.verify_replay(target, None, after, evidence)
     assert replay_after_restart == before.projection_digest
     assert fenced.calls == 2
+
+
+def _privacy_ref(object_id: str) -> ObjectRef:
+    # Disclosure content is process-local; the catalog keeps only this ref (#1295).
+    return ObjectRef(
+        object_id,
+        12,
+        "hmac-sha256:" + "a" * 64,
+        "sha256:" + "c" * 64,
+        "yoetz-object/1",
+        "privacy-audit",
+        ObjectMetadata(
+            ObjectKind.PRIVACY_AUDIT,
+            "application/vnd.yoetz.privacy-disclosure+json",
+            _TASK_ID,
+            _NOW,
+        ),
+    )
+
+
+@pytest.mark.anyio
+async def test_backup_records_privacy_audit_refs_that_have_no_bundle_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        connection_module, "verify_private_local_bundle", _allow_private_local_bundle
+    )
+    bundle = tmp_path / "ledger.sqlite3"
+    backup_root = tmp_path / "upgrade-backups"
+    _build_bundle(bundle)
+    target = _target(bundle)
+    before = _before(bundle)
+    refs = (
+        _privacy_ref("obj_00000000-0000-4000-8000-0000000000a1"),
+        _privacy_ref("obj_00000000-0000-4000-8000-0000000000a2"),
+    )
+
+    @asynccontextmanager
+    async def open_fenced(
+        _target: BundleUpgradeTarget,
+    ) -> AsyncGenerator[BundleUpgradeFencedLedger]:
+        yield _FencedLedger()
+
+    async def load_privacy(
+        _target: BundleUpgradeTarget, _before: object
+    ) -> PrivacyAuditBackupSnapshot:
+        return PrivacyAuditBackupSnapshot(
+            origin_installation_id=_INSTALLATION_ID,
+            origin_task_id=task_id(_TASK_ID),
+            catalog_version="1",
+            audit_store_version="1",
+            privacy_root_generation=0,
+            privacy_root_digest=_ZERO_DIGEST,
+            audit_rows=(),
+            terminal_receipts=(),
+            privacy_audit_objects=refs,
+        )
+
+    async def load_keys(_task: str) -> BundleKeys:
+        return _keys()
+
+    effects = SqliteBundleUpgradeEffects(
+        backup_root=backup_root,
+        installation_id=_INSTALLATION_ID,
+        load_bundle_keys=load_keys,
+        secret_memory=cast(SecretMemoryPort, object()),
+        ids=cast(IdPort, object()),
+        open_temporary_fenced_ledger=open_fenced,
+        load_privacy_snapshot=load_privacy,
+        clock=_Clock(),
+    )
+
+    evidence = await effects.ensure_machine_backup(target, _operation(), before, None)
+
+    assert evidence.task_id == target.task_id
+    verified = verify_backup_set(backup_root / _TASK_ID / _REQUEST_ID)
+    assert verified.manifest.privacy_audit_object_count == len(refs)
+    assert not [e for e in verified.manifest.objects if e.kind is ObjectKind.PRIVACY_AUDIT]
