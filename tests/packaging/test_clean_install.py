@@ -145,7 +145,9 @@ def _short_home(tag: str) -> Path:
     # unix_socket.py) must stay well under the ~104-byte sockaddr_un limit, and HOME must contain
     # no symlink component and not be a shared/world-writable temp directory. The real user home
     # is the only location on this host satisfying all of that; it is fully disposable and removed
-    # in a finally block.
+    # in a finally block. Keep ``tag`` short: on macOS the longest endpoint is
+    # ``<home>/Library/Caches/TemporaryItems/finishup/secret-ingress.sock``, so a long tag under a
+    # ``/Users/<name>`` home crosses the limit and the service fails as ``endpoint_unsafe``.
     base = Path.home() / f".yz-{tag}"
     base.mkdir(mode=0o700, exist_ok=True)
     root = base / secrets.token_hex(3)
@@ -618,7 +620,7 @@ def test_fresh_install_no_network_no_provider_secret_service_reports_locked(
 def test_six_workflow_operations_refuse_honestly_without_a_hidden_runtime(
     built_dist: _BuiltDist,
 ) -> None:
-    root = _short_home("clean-install-six-op")
+    root = _short_home("ci-six-op")
     try:
         home = root / "h"
         finishup_exe, env = _tool_install(built_dist.directory, root, home)

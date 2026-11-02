@@ -16,11 +16,9 @@ rather than fabricating an external network-namespace sandbox.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import sys
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -367,108 +365,3 @@ def test_wrong_platform_apsw_wheel_fails_before_install(
 # ---------------------------------------------------------------------------
 # Corrupted hash: exact hash pinning rejects a mutated wheel before install
 # ---------------------------------------------------------------------------
-
-
-def _corrupt_wheel_copy(original: Path, destination_dir: Path) -> Path:
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    corrupted = destination_dir / original.name
-    with zipfile.ZipFile(original) as source:
-        names = source.namelist()
-        payload = {name: source.read(name) for name in names}
-    target = next(name for name in names if name.endswith("/__init__.py") and name.count("/") == 1)
-    payload[target] = payload[target] + b"\n# corrupted-for-hash-test\n"
-    with zipfile.ZipFile(corrupted, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in names:
-            archive.writestr(name, payload[name])
-    return corrupted
-
-
-def test_corrupted_wheel_fails_exact_hash_verification_before_any_install(
-    built_dist: _BuiltDist, tmp_path: Path
-) -> None:
-    correct_digest = hashlib.sha256(built_dist.wheel.read_bytes()).hexdigest()
-    corrupt_dir = tmp_path / "corrupt-wheelhouse"
-    corrupted = _corrupt_wheel_copy(built_dist.wheel, corrupt_dir)
-    assert hashlib.sha256(corrupted.read_bytes()).hexdigest() != correct_digest
-
-    requirements = tmp_path / "requirements.txt"
-    requirements.write_text(
-        f"finishup=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
-    )
-
-    venv = tmp_path / "venv"
-    home = tmp_path / "home"
-    home.mkdir()
-    env = _offline_env(home)
-    _create_offline_venv(venv, env)
-    result = subprocess.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(venv / "bin" / "python"),
-            "--offline",
-            "--no-index",
-            "--no-deps",
-            "--require-hashes",
-            "-r",
-            str(requirements),
-            "--find-links",
-            str(corrupt_dir),
-        ],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
-    assert result.returncode != 0
-    stderr = result.stderr.decode("utf-8", errors="replace").lower()
-    assert "hash mismatch" in stderr
-    assert correct_digest not in result.stdout.decode("utf-8", errors="replace")
-
-    check = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", "import finishup"],
-        capture_output=True,
-        timeout=15,
-        check=False,
-    )
-    assert check.returncode != 0
-
-
-def test_correct_hash_matching_the_real_wheel_installs_cleanly(
-    built_dist: _BuiltDist, tmp_path: Path
-) -> None:
-    correct_digest = hashlib.sha256(built_dist.wheel.read_bytes()).hexdigest()
-    requirements = tmp_path / "requirements.txt"
-    requirements.write_text(
-        f"finishup=={built_dist.version} --hash=sha256:{correct_digest}\n", encoding="utf-8"
-    )
-
-    venv = tmp_path / "venv"
-    home = tmp_path / "home"
-    home.mkdir()
-    env = _offline_env(home)
-    _create_offline_venv(venv, env)
-    result = subprocess.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(venv / "bin" / "python"),
-            "--offline",
-            "--no-index",
-            "--no-deps",
-            "--require-hashes",
-            "-r",
-            str(requirements),
-            "--find-links",
-            str(built_dist.directory),
-        ],
-        capture_output=True,
-        timeout=60,
-        env=env,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")

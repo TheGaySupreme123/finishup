@@ -491,8 +491,8 @@ jobs:
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
           release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
-            --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
-            --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
+            --deselect tests/packaging/test_offline_hash_verification.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
+            --deselect tests/packaging/test_offline_hash_verification.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -m "not fault and not soak and not live" -q --timeout=900
           real_uv="$(command -v uv)"
           tagged_uv_wrapper="${{ runner.temp }}/tagged-uv-bin"
@@ -521,8 +521,8 @@ jobs:
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
-            tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
-            tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
+            tests/packaging/test_offline_hash_verification.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
+            tests/packaging/test_offline_hash_verification.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
           FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
@@ -615,8 +615,8 @@ jobs:
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
           release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
-            --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
-            --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
+            --deselect tests/packaging/test_offline_hash_verification.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
+            --deselect tests/packaging/test_offline_hash_verification.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -m "not fault and not soak and not live" -q --timeout=900
           real_uv="$(command -v uv)"
           tagged_uv_wrapper="${{ runner.temp }}/tagged-uv-bin"
@@ -645,8 +645,8 @@ jobs:
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
-            tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
-            tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
+            tests/packaging/test_offline_hash_verification.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
+            tests/packaging/test_offline_hash_verification.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
           FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
