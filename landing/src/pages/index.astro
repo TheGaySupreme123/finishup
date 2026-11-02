@@ -11,7 +11,7 @@ import "@fontsource/newsreader/latin-500.css";
 import landingPackage from "../../package.json";
 
 const SITE = "https://finishup.dev";
-const GITHUB = "https://github.com/TheGaySupreme123/finishup";
+const GITHUB = "https://github.com/orgFinishUP/finishup";
 const DOCS = `${GITHUB}/tree/main/docs/usage`;
 // PyPI and npm installs are documented here; the page sends people to it rather than repeating it.
 const INSTALL_GUIDE = `${GITHUB}/blob/main/docs/usage/install-and-first-run.md`;
@@ -19,10 +19,13 @@ const CONTACT_EMAIL = "support@finishup.dev";
 const VERSION = landingPackage.version;
 const AGENT_PROMPT = `Install FinishUP for me (${GITHUB}). Fetch its agent install guide and follow "The short version" at the top:
 
-curl -fsSL https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/usage/agent-start.md
+curl -fsSL https://raw.githubusercontent.com/orgFinishUP/finishup/main/docs/usage/agent-start.md
 
 If your sandbox blocks that fetch, ask me to approve it or to paste the guide. Setup's questions are mine to answer, so ask me each one and wait, and show me any proposed change before it is applied. Never ask me for a key or password in chat; hand me the terminal for those.`;
 const TITLE = "FinishUP: agents start, FinishUP checks";
+// The link-preview card. Bump `v` whenever og.png changes: link previews cache the image by
+// its URL, so an unchanged URL keeps showing the old card.
+const OG_IMAGE = `${SITE}/assets/og.png?v=2`;
 const DESCRIPTION =
   "FinishUP checks recorded work evidence and shows what remains open. Open source, with local checks and optional AI-powered review. For Codex, Claude Code, and Cursor.";
 const structuredData = {
@@ -80,16 +83,16 @@ const PAPER_URL = "[PAPER URL]";
     <meta property="og:type" content="website" />
     <meta property="og:url" content={`${SITE}/`} />
     <meta property="og:site_name" content="FinishUP" />
-    <meta property="og:image" content={`${SITE}/assets/og.png`} />
-    <meta property="og:image:width" content="1731" />
-    <meta property="og:image:height" content="909" />
-    <meta property="og:image:alt" content="Agents start. FinishUP checks. Open source, local checks, free." />
+    <meta property="og:image" content={OG_IMAGE} />
+    <meta property="og:image:width" content="2400" />
+    <meta property="og:image:height" content="1260" />
+    <meta property="og:image:alt" content="The FinishUP logo beside the line: Agents start. FinishUP checks. Open source, local checks, free." />
     <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={TITLE} />
     <meta name="twitter:description" content={DESCRIPTION} />
-    <meta name="twitter:image" content={`${SITE}/assets/og.png`} />
-    <meta name="twitter:image:alt" content="Agents start. FinishUP checks. Open source, local checks, free." />
+    <meta name="twitter:image" content={OG_IMAGE} />
+    <meta name="twitter:image:alt" content="The FinishUP logo beside the line: Agents start. FinishUP checks. Open source, local checks, free." />
     <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <script is:inline type="application/json" id="story-plan" set:html={JSON.stringify(plan)} />
     <script is:inline type="application/json" id="bench-scores" set:html={JSON.stringify(BENCH.scores)} />
