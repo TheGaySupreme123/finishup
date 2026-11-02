@@ -44,11 +44,10 @@ function environment({ fits = true } = {}) {
     getBoundingClientRect() { return { top: 100, bottom: 500, left: 32, right: 700, width: 668, height: 400 }; }
   }
   const ids = Object.fromEntries([
-    "particles", "story", "motion-toggle", "main-content", "story-plan", "bench-scores",
-    "bench-with", "toast", "toast-title", "toast-sub", "toast-close",
+    "particles", "story", "motion-toggle", "main-content", "story-plan",
+    "toast", "toast-title", "toast-sub", "toast-close",
   ].map((id) => [id, new Element()]));
-  ids["story-plan"].textContent = JSON.stringify([["hero", 0.82], ["alone", 1.5], ["swarm", 1.5], ["robot", 3.6], ["sun", 3], ["end", 1]]);
-  ids["bench-scores"].textContent = '["60", "80"]';
+  ids["story-plan"].textContent = JSON.stringify([["hero", 0.82], ["alone", 1.5], ["swarm", 1.5], ["robot", 3.6], ["end", 1]]);
   ids.particles.clientHeight = 800;
   ids.particles.getBoundingClientRect = () => ({ top: 0, bottom: 800, left: 0, right: 1280 });
   ids.story.dataset.screens = "12";
@@ -62,7 +61,7 @@ function environment({ fits = true } = {}) {
   toastLink.parent = ids.toast;
   const setup = new Element();
   setup.dataset.prompt = "Install FinishUP";
-  const copies = ["hero", "alone", "swarm", "robot1", "robot2", "robot3", "bench", "end"].map((copy) => {
+  const copies = ["hero", "alone", "swarm", "robot1", "robot2", "robot3", "end"].map((copy) => {
     const el = new Element();
     el.dataset.copy = copy;
     return el;

@@ -41,30 +41,19 @@ const structuredData = {
 };
 
 // The scroll story: one scene at a time, in order. `screens` is how many viewport
-// heights the scene spans: a beat and a half for each of the first two lines, 1.2 for each
-// of the robot's three, and three for the sunrise so each stop gets its own line.
+// heights the scene spans: a beat and a half for each of the first two lines and
+// 1.2 for each of the robot's three lines.
 const plan = [
   ["hero", 0.82],
   ["alone", 1.5],
   ["swarm", 1.5],
   ["robot", 3.6],
-  ["sun", 3],
   ["end", 1],
 ];
 // Extra screens the finished lockup holds, frozen, before the footer scrolls in.
 const END_HOLD = 0.6;
 const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + END_HOLD;
 
-// The sunrise is a benchmark: one model on Codex as it was tested on the suite, then tested
-// again with FinishUP. The two scores are drawn in dots beside the sun and count up from the
-// first to the second as the reader scrolls (see particles.js); the scene also writes them out
-// as text for screen readers and the static story. The page reads the figures from here only.
-// PLACEHOLDER BENCHMARK NUMBERS: the owner replaces them by hand before launch. 60/80 are
-// stand-ins, not results; fill in the run's model and scores (the suite is Terminal-Bench 4).
-// tests/page.test.mjs keeps this marker required while any of the restored values is unchanged.
-const BENCH = { model: "GPT 6.1 Sol", suite: "Terminal-Bench 4", scores: ["60", "80"] };
-// PLACEHOLDER PAPER LINK: the owner replaces it by hand before launch.
-const PAPER_URL = "[PAPER URL]";
 ---
 
 <html lang="en">
@@ -95,7 +84,6 @@ const PAPER_URL = "[PAPER URL]";
     <meta name="twitter:image:alt" content="The FinishUP logo beside the line: Agents start. FinishUP checks. Open source, local checks, free." />
     <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <script is:inline type="application/json" id="story-plan" set:html={JSON.stringify(plan)} />
-    <script is:inline type="application/json" id="bench-scores" set:html={JSON.stringify(BENCH.scores)} />
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">Skip to the story</a>
@@ -147,14 +135,6 @@ const PAPER_URL = "[PAPER URL]";
               <p class="stanza">And shows what remains open.</p>
             </div>
           </div>
-          <div class="copy side" data-copy="bench">
-              <div class="copy-right wide">
-                {/* PLACEHOLDER BENCHMARK NUMBERS: the model, suite, scores and paper link come from BENCH and PAPER_URL above; the owner replaces them by hand before launch. */}
-                <p class="stanza">{BENCH.model} on <span class="nowrap"><span class="tag"><img src="/assets/openai.svg" alt="" width="22" height="22" />Codex</span></span> was tested on <span class="nowrap"><span class="tag wordmark">{BENCH.suite}</span>.</span> <span class="reveal then" id="bench-with" aria-hidden="true">Now we test it with <span class="nowrap"><img class="fup-mark" src="/assets/finishup-mark.png" alt="" />FinishUP.</span></span></p>
-                <p class="bench-result"><span class="nowrap"><strong>{BENCH.scores[0]}%</strong> on Codex alone.</span> <span class="nowrap"><strong>{BENCH.scores[1]}%</strong> with FinishUP.</span></p>
-                <a class="paper" href={PAPER_URL} target="_blank" rel="noopener">Read the full paper <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" /></svg></a>
-              </div>
-          </div>
           <div class="copy foot" data-copy="end">
             <div class="copy-center">
               <div class="end-title">
@@ -203,8 +183,7 @@ const PAPER_URL = "[PAPER URL]";
       import { mountParticles } from "../scripts/particles.js";
 
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-      // In forced colours the artwork's dots carry no reliable contrast, so the story is static
-      // and the benchmark figures read as text.
+      // In forced colours the artwork's dots carry no reliable contrast, so the story is static.
       const forced = window.matchMedia("(forced-colors: active)");
       const compact = window.matchMedia("(max-height: 560px)");
       const narrow = window.matchMedia("(max-width: 719px)");
@@ -215,12 +194,6 @@ const PAPER_URL = "[PAPER URL]";
       const mainContent = document.getElementById("main-content");
       const planEl = document.getElementById("story-plan");
       const plan: [string, number][] = planEl ? JSON.parse(planEl.textContent || "[]") : [];
-      // The benchmark figures come from BENCH in the frontmatter (PLACEHOLDER until the owner
-      // fills them in). The artwork counts them up in dots; the scene's text holds the final
-      // figures, so screen readers and the static story never meet a ticking number.
-      const scoresEl = document.getElementById("bench-scores");
-      const scores: string[] = scoresEl ? JSON.parse(scoresEl.textContent || "[]") : [];
-      const benchWith = document.getElementById("bench-with");
       const lockupSlot = document.querySelector<HTMLElement>('[data-copy="end"] .dot-lockup');
       let pageActive = true;
       // Set when the artwork cannot draw (no context, or WebGL lost for good): the static story.
@@ -267,7 +240,6 @@ const PAPER_URL = "[PAPER URL]";
           el.style.removeProperty("transform");
           el.classList.add("on");
         }
-        benchWith?.classList.remove("on");
         if (!animated || !canvas || !story) return;
         if (!copyFits()) {
           layoutFits = false;
@@ -282,9 +254,8 @@ const PAPER_URL = "[PAPER URL]";
         const tryDots = import.meta.env.DEV ? Number(new URLSearchParams(location.search).get("dots")) : 0;
         const unit = innerWidth < 720 ? innerWidth * 0.42 : Math.min(innerWidth, innerHeight) * 0.46;
         const glCount = tryDots > 0 ? tryDots : Math.round(Math.max(12000, Math.min(60000, 60000 * (unit / 368) ** 2)));
-        // drawTier: false: the sunrise shows the scores only, with no tier word in dots.
         const art = mountParticles(canvas, {
-          count: narrow.matches ? 2600 : 5500, glCount, scores, plan, drawTier: false,
+          count: narrow.matches ? 2600 : 5500, glCount, plan, drawTier: false,
           onUnavailable: () => { artFailed = true; syncPresentation(); },
         });
         if (art.renderer === "none") {
@@ -306,7 +277,6 @@ const PAPER_URL = "[PAPER URL]";
           ["robot1", robot[0]],
           ["robot2", robot[0] + robot[1] / 3],
           ["robot3", robot[0] + (2 * robot[1]) / 3],
-          ["bench", start.sun?.[0] ?? 0],
           ["end", start.end?.[0] ?? 0],
         ];
         const byCopy: Record<string, HTMLElement> = {};
@@ -341,12 +311,6 @@ const PAPER_URL = "[PAPER URL]";
           if (focused instanceof HTMLElement && focused.closest(".copy[inert]")) {
             const target = active?.querySelector<HTMLElement>("a, button") ?? mainContent;
             target?.focus({ preventScroll: true });
-          }
-          // The benchmark line stays put; "Now we test it with FinishUP." appears at the
-          // sunrise's second stop.
-          if (start.sun) {
-            const second = (screens - start.sun[0]) / start.sun[1] >= 0.5;
-            benchWith?.classList.toggle("on", second);
           }
           // The artwork draws the closing lockup in dots into the room above "is free.". The
           // slot moves with the copy's drift, fonts and images, so it is measured after this
