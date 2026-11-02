@@ -1387,8 +1387,11 @@ async def _load_privacy_audit_snapshot(
                 False,
                 {"check": "privacy_receipt_id"},
             )
-    audit_rows.sort(key=lambda item: cast(str, item["proposal_id"]).encode("ascii"))
-    terminal_receipts.sort(key=lambda item: cast(str, item["receipt_id"]).encode("ascii"))
+    # The snapshot's set fields are ordered by each row's canonical encoding, which is what
+    # ``PrivacyAuditBackupSnapshot`` validates. That encoding sorts keys, so neither
+    # ``proposal_id`` nor ``receipt_id`` is the leading field and neither orders the rows (#1293).
+    audit_rows.sort(key=canonical_encode)
+    terminal_receipts.sort(key=canonical_encode)
     audit_versions = {row[columns.index("audit_store_version")] for row in rows}
     if audit_versions - {1}:
         raise BundleUpgradeError(
