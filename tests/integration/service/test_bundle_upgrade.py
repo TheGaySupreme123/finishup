@@ -28,6 +28,7 @@ from finishup.service.bundle_upgrade import (
     BundleUpgradeReason,
     BundleUpgradeTarget,
     SqliteBundleUpgradeJournal,
+    capture_sqlite_integrity,
 )
 
 _INSTALLATION_ID = "ins_00000000-0000-4000-8000-000000000001"
@@ -878,3 +879,32 @@ def test_usage_preservation_digest_normalizes_legacy_nulls_and_detects_counter_c
     db.execute("UPDATE semantic_attempts SET usage_input_tokens=100, usage_total_tokens=100")
     assert _stream_table_digest(db, "semantic_attempts") != before
     db.close()
+
+
+def test_integrity_ignores_only_the_cached_projection_digest(tmp_path: Path) -> None:
+    # The cached reducer digest may differ between releases and is refreshed by the replay
+    # (#1299). Every other projection fact, such as how far the projection was applied, still
+    # counts, so a replay that stops short of the frontier is still caught.
+    tmp_path.chmod(0o700)
+    bundle = tmp_path / "ledger.sqlite3"
+    _build_bundle(bundle, version=BUNDLE_UPGRADE_TARGET_VERSION)
+    database = apsw.Connection(str(bundle))
+    try:
+        database.execute(
+            "INSERT INTO projection_state(projection_name,projection_version,"
+            "projection_generation,applied_through_seq,state_digest,engine_version) "
+            "VALUES('work','yoetz/0.1.0',1,28,?,'0.1.0')",
+            ("sha256:" + "9" * 64,),
+        )
+        stored = capture_sqlite_integrity(database)
+
+        database.execute("UPDATE projection_state SET state_digest=?", ("sha256:" + "0" * 64,))
+        refreshed = capture_sqlite_integrity(database)
+        assert refreshed == stored
+
+        database.execute("UPDATE projection_state SET applied_through_seq=27")
+        short = capture_sqlite_integrity(database)
+        assert short.projection_digest != stored.projection_digest
+        assert short.preserved_digest != stored.preserved_digest
+    finally:
+        database.close()

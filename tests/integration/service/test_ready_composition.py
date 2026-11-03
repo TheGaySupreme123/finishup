@@ -27,6 +27,7 @@ from finishup.adapters.sqlite.connection import open_catalog_writer
 from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     CATALOG_MIGRATIONS,
+    EMPTY_PROJECTION_DIGEST,
     Migration,
     initialize_catalog,
 )
@@ -1264,10 +1265,16 @@ async def test_startup_bundle_upgrade_skips_legacy_route_and_keeps_v12_candidate
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("cached_state_digest", [None, "sha256:" + "9" * 64])
 async def test_default_startup_bundle_upgrade_runs_real_effects_on_isolated_v12_fixture(
     tmp_path: Path,
+    cached_state_digest: str | None,
 ) -> None:
-    """Exercise the production backup, migration, and replay glue against an isolated bundle."""
+    """Exercise the production backup, migration, and replay glue against an isolated bundle.
+
+    With ``cached_state_digest``, the bundle carries a work projection whose cached digest came
+    from an older reducer. The replay refreshes it, and the upgrade still completes (#1299).
+    """
 
     tmp_path.chmod(0o700)
     route = _runtime_route()
@@ -1289,6 +1296,13 @@ async def test_default_startup_bundle_upgrade_runs_real_effects_on_isolated_v12_
             (route.task_id, route.route_identity_digest, format_rfc3339_millis(_Clock().now_utc())),
         )
         bundle_db.execute("INSERT INTO counters(name,next_value) VALUES('ingestion_sequence',1)")
+        if cached_state_digest is not None:
+            bundle_db.execute(
+                "INSERT INTO projection_state(projection_name,projection_version,"
+                "projection_generation,applied_through_seq,state_digest,engine_version) "
+                "VALUES('work','yoetz/0.1.0',1,0,?,'0.1.0')",
+                (cached_state_digest,),
+            )
     bundle_db.close()
     bundle.chmod(0o600)
 
@@ -1425,6 +1439,10 @@ async def test_default_startup_bundle_upgrade_runs_real_effects_on_isolated_v12_
         assert inspection.execute("PRAGMA user_version").fetchone() == (
             BUNDLE_UPGRADE_TARGET_VERSION,
         )
+        if cached_state_digest is not None:
+            assert inspection.execute(
+                "SELECT applied_through_seq, state_digest FROM projection_state"
+            ).fetchall() == [(0, EMPTY_PROJECTION_DIGEST)]
     finally:
         inspection.close(force=True)
 
