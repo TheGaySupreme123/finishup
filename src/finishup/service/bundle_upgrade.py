@@ -138,6 +138,17 @@ class BundleUpgradeReason(StrEnum):  # noqa: UP042 - closed internal error vocab
     ROLLBACK_REQUIRED = "rollback_required"
 
 
+# A migration is backup-first: every phase after ``reserved`` carries a backup manifest digest
+# (enforced by the catalog CHECK), and these codes are recorded only at or before the backup step.
+# Such a quarantine never touched the bundle, so it needs no rollback and must not block a fresh
+# attempt, including one by a release that fixed the cause (#1294). Contradictions found in the
+# bundle itself (``rollback_required``, ``operation_lost``) still block.
+_COUNTED_MIGRATION_SQL: Final = (
+    "NOT (state='quarantined' AND backup_manifest_digest IS NULL "
+    "AND quarantine_code IN ('backup_failed','verification_failed','plan_stale'))"
+)
+
+
 class BundleUpgradeError(Exception):
     """Typed, payload-free upgrade failure suitable for the startup boundary."""
 
@@ -703,7 +714,8 @@ class SqliteBundleUpgradeJournal:
         rows = self._catalog.execute(
             "SELECT state, quarantine_code FROM maintenance_operations "
             "WHERE installation_id=? AND task_id=? AND kind='migration' "
-            "AND requested_target_version=? ORDER BY created_at DESC LIMIT 2",
+            f"AND requested_target_version=? AND {_COUNTED_MIGRATION_SQL} "
+            "ORDER BY created_at DESC LIMIT 2",
             (
                 self._installation_id,
                 str(target.task_id),
@@ -755,7 +767,8 @@ class SqliteBundleUpgradeJournal:
             "lease_owner_id, lease_generation, lease_expires_at "
             ", request_digest "
             "FROM maintenance_operations WHERE installation_id=? AND task_id=? "
-            "AND kind='migration' AND requested_target_version=? ORDER BY created_at DESC LIMIT 2",
+            "AND kind='migration' AND requested_target_version=? "
+            f"AND {_COUNTED_MIGRATION_SQL} ORDER BY created_at DESC LIMIT 2",
             (
                 self._installation_id,
                 str(target.task_id),
@@ -786,6 +799,55 @@ class SqliteBundleUpgradeJournal:
             raise BundleUpgradeError(BundleUpgradeReason.PLAN_STALE, False)
         return row, False
 
+    def _retire_abandoned_reservations(self, target: BundleUpgradeTarget, now_wire: str) -> None:
+        """Quarantine an expired ``reserved`` migration planned for another target version.
+
+        An earlier release can leave its reservation behind when its own attempt never started
+        (no backup, no schema change). Its plan can never be resumed by this binary, so it is
+        retired exactly as ``quarantine`` records a stale plan instead of blocking startup as
+        ``maintenance_busy`` forever (#1294). Runs inside the caller's write transaction.
+        """
+
+        rows = self._catalog.execute(
+            "SELECT operation_id FROM maintenance_operations WHERE installation_id=? "
+            "AND task_id=? AND kind='migration' AND state='pending' AND phase='reserved' "
+            "AND backup_manifest_digest IS NULL AND requested_target_version IS NOT ? "
+            "AND lease_expires_at <= ?",
+            (
+                self._installation_id,
+                str(target.task_id),
+                str(BUNDLE_UPGRADE_TARGET_VERSION),
+                now_wire,
+            ),
+        ).fetchall()
+        for row in rows:
+            operation_id = cast(str, row[0])
+            value: dict[str, JsonValue] = {
+                "kind": "migration",
+                "request_id": operation_id,
+                "task_id": str(target.task_id),
+                "outcome": "quarantined",
+                "code": BundleUpgradeReason.PLAN_STALE.value,
+            }
+            self._catalog.execute(
+                "UPDATE maintenance_operations SET state='quarantined', phase='terminal', "
+                "owner_generation=NULL, lease_owner_id=NULL, lease_generation=NULL, "
+                "lease_expires_at=NULL, result_canonical=?, result_digest=?, quarantine_code=?, "
+                "terminal_at=?, updated_at=? WHERE installation_id=? AND operation_id=? "
+                "AND state='pending' AND phase='reserved'",
+                (
+                    canonical_encode(value),
+                    canonical_digest(value),
+                    BundleUpgradeReason.PLAN_STALE.value,
+                    now_wire,
+                    now_wire,
+                    self._installation_id,
+                    operation_id,
+                ),
+            )
+            if self._catalog.changes() != 1:
+                raise BundleUpgradeError(BundleUpgradeReason.MAINTENANCE_BUSY, True)
+
     def reserve(
         self,
         target: BundleUpgradeTarget,
@@ -810,6 +872,7 @@ class SqliteBundleUpgradeJournal:
                 if not create_if_absent:
                     self._catalog.execute("COMMIT")
                     return None
+                self._retire_abandoned_reservations(target, now_wire)
                 competing = self._catalog.execute(
                     "SELECT kind FROM maintenance_operations WHERE task_id=? AND state='pending' LIMIT 2",
                     (str(target.task_id),),

@@ -178,6 +178,13 @@ maintenance operation as `rollback_required`; READY stays blocked until the supp
 rollback procedure establishes a verified route. This path never performs reverse SQL, rewrites
 canonical event bytes, or treats package replacement as data-upgrade completion.
 
+Two pre-schema records therefore do not block a later attempt (#1294). A migration quarantined at
+the backup step (`backup_failed` or `verification_failed`) with no backup manifest never touched
+the bundle, so it is retried rather than reported as `rollback_required`, including by a release
+that fixed the cause. A `reserved` reservation left by an earlier release for another target
+version, with no backup and an expired lease, is retired as `plan_stale` instead of holding the
+task busy; a live lease still reports `maintenance_busy`.
+
 The package-update authorization is schema-only. It preserves task bundles, settings, permissions,
 host integrations, object roots, observation consent, event bytes, and frontiers; it adds no
 observation, content, provider, disclosure, or egress authority. Explicit backup, restore, and

@@ -480,7 +480,7 @@ async def test_committed_schema_with_lost_phase_uses_backup_facts_on_resume(
 
 
 @pytest.mark.anyio
-async def test_deterministic_backup_contradiction_is_quarantined_before_ddl(
+async def test_deterministic_backup_failure_is_quarantined_before_ddl_and_retried_later(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,9 +511,94 @@ async def test_deterministic_backup_contradiction_is_quarantined_before_ddl(
     finally:
         inspection.close(force=True)
 
+    # The quarantine never touched the bundle (no backup manifest), so it needs no rollback and
+    # does not block a later attempt (#1294): the same failure is reported again, not a demand
+    # for a rollback nothing can perform, and a binary that no longer fails migrates the task.
     with pytest.raises(BundleUpgradeError) as retry:
         await _coordinator(catalog, clock=_Clock(), effects=effects).run_before_ready((target,))
-    assert retry.value.reason is BundleUpgradeReason.ROLLBACK_REQUIRED
+    assert retry.value.reason is BundleUpgradeReason.BACKUP_FAILED
+
+    effects.backup_error = None
+    report = await _coordinator(catalog, clock=_Clock(), effects=effects).run_before_ready(
+        (target,)
+    )
+    assert len(report.migrated) == 1
+    assert catalog.execute(
+        "SELECT state, count(*) FROM maintenance_operations GROUP BY state ORDER BY state"
+    ).fetchall() == [("complete", 1), ("quarantined", 2)]
+
+
+def _abandon_as_older_release(
+    catalog: apsw.Connection, operation_id: str, *, lease_expires_at: datetime
+) -> None:
+    catalog.execute(
+        "UPDATE maintenance_operations SET requested_target_version='16', plan_digest=?, "
+        "lease_owner_id=?, lease_expires_at=? WHERE installation_id=? AND operation_id=?",
+        (
+            "sha256:" + "d" * 64,
+            _OTHER_SERVICE_ID,
+            lease_expires_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            _INSTALLATION_ID,
+            operation_id,
+        ),
+    )
+
+
+@pytest.mark.anyio
+async def test_expired_reservation_from_an_older_release_is_retired_not_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(connection_module, "verify_private_local_bundle", _allow_isolated_path)
+    bundle = tmp_path / "ledger.sqlite3"
+    _build_bundle(bundle, version=12)
+    catalog = _catalog(bundle)
+    target = _target(bundle)
+    effects = _Effects()
+    stale = _coordinator(catalog, clock=_Clock(), effects=effects)._journal.reserve(  # pyright: ignore[reportPrivateUsage]
+        target, create_if_absent=True
+    )
+    assert stale is not None
+    _abandon_as_older_release(catalog, stale.request_id, lease_expires_at=_NOW - timedelta(days=1))
+
+    report = await _coordinator(catalog, clock=_Clock(), effects=effects).run_before_ready(
+        (target,)
+    )
+
+    assert len(report.migrated) == 1
+    assert catalog.execute(
+        "SELECT state, phase, quarantine_code, requested_target_version "
+        "FROM maintenance_operations WHERE operation_id=?",
+        (stale.request_id,),
+    ).fetchone() == ("quarantined", "terminal", "plan_stale", "16")
+
+
+@pytest.mark.anyio
+async def test_live_reservation_from_an_older_release_still_reports_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(connection_module, "verify_private_local_bundle", _allow_isolated_path)
+    bundle = tmp_path / "ledger.sqlite3"
+    _build_bundle(bundle, version=12)
+    catalog = _catalog(bundle)
+    target = _target(bundle)
+    effects = _Effects()
+    live = _coordinator(catalog, clock=_Clock(), effects=effects)._journal.reserve(  # pyright: ignore[reportPrivateUsage]
+        target, create_if_absent=True
+    )
+    assert live is not None
+    _abandon_as_older_release(catalog, live.request_id, lease_expires_at=_NOW + timedelta(hours=1))
+
+    with pytest.raises(BundleUpgradeError) as error:
+        await _coordinator(catalog, clock=_Clock(), effects=effects).run_before_ready((target,))
+
+    assert error.value.reason is BundleUpgradeReason.MAINTENANCE_BUSY
+    assert catalog.execute(
+        "SELECT state, phase FROM maintenance_operations WHERE operation_id=?",
+        (live.request_id,),
+    ).fetchone() == ("pending", "reserved")
+    assert effects.backups == []
 
 
 @pytest.mark.anyio
