@@ -1214,7 +1214,8 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "The local FinishUP service exited while starting, so it is not running and nothing "
             "was recorded; retrying fails the same way until the cause is repaired. Give the "
             "user the correlation_id: 'finishup service diagnostics --correlation-id' with it names "
-            "the failing stage and exception class. Do not run service lifecycle commands."
+            "the failing stage and exception class. Do not run service lifecycle commands unless the "
+            "user asks; offer a fix, an issue report, or continuing without FinishUP."
         ),
         "service_handshake_failed": (
             "The local FinishUP service closed the connection while setting it up and answered "

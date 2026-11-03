@@ -39,7 +39,7 @@ from finishup.ports.control import McpHostProfile
 COMPACT_BODY_CAP_BYTES = 2_048
 # The Claude body hash locks the current compact startup contract, including guidance recovery
 # (re-locked for the tb4n5 startup dedup: the cadence moved to the operating card).
-CLAUDE_BODY_SHA256 = "sha256:7560dd04123143464144f386c9abc2b1a679de9e11d92de81c405143b06de286"
+CLAUDE_BODY_SHA256 = "sha256:5e3e6c625a09291567ff49430a23abd806dd0ad2cc0bec6c3fe31a26dd55f901"
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")
 # The longer of the two route lines the bridge appends to every body.
 LONGEST_ROUTE_LINE = (
@@ -147,7 +147,7 @@ def test_the_compact_body_says_when_to_call_start_and_never_to_claim_it_early() 
     assert "Never claim active before `start`" in text
     assert "never invent a task, id, finding, verdict or receipt" in text
     assert "If `start` fails, follow its typed continuation, then ask" in text
-    assert "do not work without a task" in text
+    assert "then ask; skip FinishUP only if the user says so." in text
 
 
 def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> None:

@@ -1,6 +1,6 @@
 ---
 name: finishup
-description: Use for material multi-step, resumable, delegated, or verification-heavy Cursor Agent work. In a new session read guidance and discover schemas, then call start before substantive work; follow recovery on failure and ask for intro and guidance if startup remains blocked. Also use when a FinishUP finding, Stop message or receipt needs an answer.
+description: Use for material multi-step, resumable, delegated, or verification-heavy Cursor Agent work. In a new session read guidance and discover schemas, then call start before substantive work; if start fails after recovery, offer a fix, an issue or work without FinishUP. Also use when a FinishUP finding, Stop message or receipt needs an answer.
 ---
 
 # Role
