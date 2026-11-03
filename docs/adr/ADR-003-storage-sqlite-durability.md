@@ -170,7 +170,12 @@ machine-bound, frontier-pinned backup before DDL. The migration writer is the na
 reopened. `capture_sqlite_integrity()` and the injected `verify_replay()` compare task identity,
 canonical event history/count, frontier, object inventory, preserved metadata/table digests, and
 the deterministic projection replay digest. The resulting `MigrationResult` requires an unchanged
-frontier before the journal is terminalized.
+frontier before the journal is terminalized. These digests leave out
+`projection_state.state_digest` (#1299). That column caches the reducer output of the release that
+last wrote the bundle, and nothing reads it back, because every open replays the events. When the
+reducer has changed since then, the replay refreshes the cache instead of failing the upgrade.
+The replay still has to decode, verify, and reduce every event at the preserved frontier, and every
+other projection column and table must match exactly.
 
 A failure before a proved schema commit can retry when the old schema is intact. A post-commit,
 reopen, verification, or journal uncertainty preserves the backup and target and quarantines the

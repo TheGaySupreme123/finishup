@@ -105,6 +105,10 @@ _MIGRATION_CREATED_TABLES: Final[frozenset[str]] = frozenset(
 _EPHEMERAL_PRESERVATION_TABLES: Final[frozenset[str]] = frozenset(
     {"bundle_meta", "maintenance_pins", "maintenance_operations"}
 )
+_PROJECTION_STATE_FACT_COLUMNS: Final = (
+    "projection_name, projection_version, projection_generation, applied_through_seq, "
+    "engine_version"
+)
 _PROJECTION_TABLES: Final[tuple[str, ...]] = (
     "projection_state",
     "p1_projection_state",
@@ -510,6 +514,11 @@ def _stream_table_digest(
             raise BundleUpgradeError(BundleUpgradeReason.SCHEMA_METADATA_DISAGREES, False)
         if not any(present):
             projection += ", " + ", ".join("NULL" for _ in usage_columns)
+    elif table == "projection_state":
+        # ``state_digest`` caches the reducer output of the release that last wrote the bundle.
+        # Nothing reads it back: every open replays the events. A reducer that changed since then
+        # makes the replay refresh it, so it is not a preserved or replayed fact (#1299).
+        projection = _PROJECTION_STATE_FACT_COLUMNS
     sql = f"SELECT {projection} FROM {_safe_identifier(table)}"
     if order_by is not None:
         sql += f" ORDER BY {_safe_identifier(order_by)}"
