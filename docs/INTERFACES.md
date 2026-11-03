@@ -7200,8 +7200,11 @@ an invalid/no-migration request; v0.1 does not fabricate backup/replay identitie
 plan/result schemas to represent a no-op. Downgrades and skipped versions remain rejected.
 
 The maintenance pin and backup manifest bind privacy-root generation/digest. The backup contains a
-canonical structural `privacy-audit-snapshot.json` sidecar plus every referenced encrypted
-task-bundle object, without creating ledger inventory rows. A same-installation route switch copies
+canonical structural `privacy-audit-snapshot.json` sidecar plus every encrypted task-bundle object
+the task holds, without creating ledger inventory rows. Disclosure-proposal content is held
+process-locally and the catalog keeps only its `ObjectRef`, so the sidecar records privacy-audit
+refs by id (bound by `privacy_audit_object_count`) without requiring a bundle object for each; a
+privacy-audit object the set does carry must be one the sidecar names (#1295). A same-installation route switch copies
 and verifies the current catalog root union and CASes its generation/digest. Clean-profile restore
 imports terminal audit evidence, expires pending/approved/authorized state, resolves
 `receipt_pending` as `transport_failed/outcome_unknown`, and never restores live disclosure

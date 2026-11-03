@@ -742,12 +742,15 @@ def _verify_privacy_snapshot(data: bytes, manifest: BackupManifest) -> None:
             or len(cast(list[object], rows)) + len(cast(list[object], receipts))
             != manifest.privacy_audit_row_count
             or len(object_ids) != manifest.privacy_audit_object_count
-            or object_ids
-            != [
+            # Privacy-audit refs are catalog references; their content is process-local and
+            # normally has no bundle object. Any privacy-audit object the set does carry must be
+            # one the sidecar names (#1295).
+            or not {
                 entry.object_id
                 for entry in manifest.objects
                 if entry.kind is ObjectKind.PRIVACY_AUDIT
-            ]
+            }
+            <= set(object_ids)
         ):
             raise ValueError("privacy_snapshot_binding_invalid")
     except Exception as exc:
