@@ -23,7 +23,7 @@ from finishup.cli.exits import (
     exit_code_for,
     remediation_message,
 )
-from finishup.config.paths import PathSafetyError, installation_naming, isolated_root
+from finishup.config.paths import PathSafetyError, active_root, installation_naming
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import PublicErrorCode
 
@@ -55,7 +55,7 @@ def installation_folders() -> InstallationFolders:
     set but unusable, or ambient data under both product names (``installation_root_ambiguous``).
     """
 
-    if isolated_root() is not None:
+    if active_root() is not None:
         return "isolated"
     return installation_naming()
 

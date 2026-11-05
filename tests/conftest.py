@@ -124,6 +124,22 @@ def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[repor
 
 
 @pytest.fixture(autouse=True)
+def _fresh_server_selection() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Resolve the server selection afresh in every test (ADR-051).
+
+    ``active_root()`` memoizes the selection once per process, as an MCP bridge must; a test that
+    rebases the ambient directories or writes a selection would otherwise leak its answer into
+    the next test in the same process.
+    """
+
+    from finishup.config.paths import reset_selection_memo
+
+    reset_selection_memo()
+    yield
+    reset_selection_memo()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

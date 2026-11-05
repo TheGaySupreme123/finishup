@@ -83,9 +83,9 @@ from finishup.config.load import load_config
 from finishup.config.models import ConfigError, FinishUpConfig
 from finishup.config.paths import (
     PathSafetyError,
+    active_root,
     bundle_root,
     ensure_owner_only_dir,
-    isolated_root,
     read_runtime_pin,
     service_generation_path,
     state_dir,
@@ -4779,7 +4779,8 @@ async def _production_composition(
     instance_identity = read_instance_identity(paths.state)
     verify_instance_binding(
         instance_identity,
-        isolated=isolated_root() is not None,
+        # A selected named local server is an isolated root too (ADR-051).
+        isolated=active_root() is not None,
         pin=read_runtime_pin(),
         now=clock.now_utc(),
     )
