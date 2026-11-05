@@ -151,9 +151,20 @@ def test_blocked_startup_offers_fix_report_or_no_finishup_and_the_user_decides()
     assert "Only when the user says so" in section
     assert "claim no task, finding, check or receipt" in section
     assert "A required AI-powered review stays unmet" in section
+    # An upgrade only reaches the next session, so replaying here would test the old version.
+    assert "After `finishup upgrade`, do not replay here" in section
+    assert "open a new session" in section
+    # Later FinishUP coverage must not be denied by the statement about the unrecorded work.
+    assert "recorded none of the work done without it" in section
+    assert "names the uncovered prefix separately from the later task and receipt" in section
     for relative in ("guidance/workflow.md", "guidance/coverage-and-receipts.md"):
         text = " ".join((_REPO_ROOT / relative).read_text("utf-8").split())
         assert "[When FinishUP is not working](recovery.md)" in text, relative
+        # The two outage rules must agree, or the agent cannot follow both.
+        assert "unless the user asks for that restart after a failed startup" in text, relative
+        assert "then apply startup failure precedence before continuing" in text, relative
+        assert "then continue without FinishUP" not in text, relative
+        assert "state the boundary and continue without FinishUP" not in text, relative
     precedence = " ".join(
         (_REPO_ROOT / "guidance/coverage-and-receipts.md").read_text("utf-8").split()
     )

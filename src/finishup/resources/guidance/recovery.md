@@ -57,8 +57,9 @@ three choices and let the user pick one; never pick for them:
    `finishup service status`, and explain the failing stage in plain words. Only with the user's
    go-ahead, apply the local fix that points to: `finishup service restart`, `finishup upgrade`,
    or the repair command the diagnostics name. Then replay the original `start` once with the
-   same `request_id`. Fixing a defect in FinishUP's own source is a separate task the user
-   requests. Never kill FinishUP processes by name or pattern, and never edit or delete files in
+   same `request_id`. After `finishup upgrade`, do not replay here: this session keeps running the
+   previous version, so ask the user to open a new session and call `start` there. Fixing a defect
+   in FinishUP's own source is a separate task the user requests. Never kill FinishUP processes by name or pattern, and never edit or delete files in
    FinishUP's data folder.
 2. **Report it.** If it looks like a FinishUP defect, offer an issue at
    <https://github.com/orgFinishUP/finishup/issues>. Search for an existing one first. Draft the
@@ -66,7 +67,8 @@ three choices and let the user pick one; never pick for them:
    the failing stage and exception class, and the steps; leave out source, prompts, transcripts,
    private paths and credentials. File it only after the user approves that exact text.
 3. **Continue without FinishUP.** Only when the user says so: do the requested work, claim no
-   task, finding, check or receipt, and end by saying FinishUP recorded none of it. Their choice
-   covers this task only. A required AI-powered review stays unmet. If FinishUP recovers later,
-   `start` may record the rest, disclosing the uncovered prefix. Under required startup, tools
+   task, finding, check or receipt for it, and end by saying FinishUP recorded none of the work
+   done without it. Their choice covers this task only. A required AI-powered review stays unmet.
+   If FinishUP recovers later, `start` may record the rest; the final reply then names the
+   uncovered prefix separately from the later task and receipt. Under required startup, tools
    stay blocked until the owner returns startup to optional.

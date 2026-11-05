@@ -521,16 +521,17 @@ vault setup are not this case; finish them first. Then offer three choices and l
 1. **Restart or fix it locally.** Run `finishup service diagnostics --correlation-id <id>` and
    `finishup service status`, and explain the failing stage. Only with the user's go-ahead, apply
    the local fix that points to: `finishup service restart`, `finishup upgrade`, or the repair
-   command the diagnostics name. Then retry the original `start` once with the same request id. Never kill
-   FinishUP processes by name or pattern, and never edit or delete files in FinishUP's data folder.
+   command the diagnostics name. Then retry the original `start` once with the same request id.
+   After `finishup upgrade`, ask the user to open a new session and call `start` there instead:
+   the current session keeps running the previous version. Never kill FinishUP processes by name or pattern, and never edit or delete files in FinishUP's data folder.
 2. **Report it.** If it looks like a FinishUP defect, offer an issue at
    <https://github.com/orgFinishUP/finishup/issues>. Search for an existing one first. Include
    `finishup version`, the OS, the agent, the error code, the correlation id, the failing stage and
    the steps; leave out source, prompts, transcripts, private paths and credentials. File it only
    after the user approves the exact text.
 3. **Continue without FinishUP.** Only when the user chooses it, for this task: do the work, claim
-   no FinishUP task, check or receipt, and say at the end that FinishUP recorded none of it. Under
-   required startup, tools stay blocked until the owner returns startup to optional.
+   no FinishUP task, check or receipt for it, and say at the end that FinishUP recorded none of the
+   work done without it. Under required startup, tools stay blocked until the owner returns startup to optional.
 
 
 ## Required startup
