@@ -1922,6 +1922,8 @@ async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_resu
         "The local FinishUP service exited while starting "
         "(stage: activation; exception_not_implemented_error)"
     )
+    # Cursor reads this wire message, so it must agree with the remedy other hosts receive.
+    assert "unless the user asks; offer a fix, an issue report" in " ".join(message.split())
     assert message != _ABSENT_SERVICE_MESSAGE
     text = cast(types.TextContent, result.content[0]).text
     assert "Reason: service_start_failed (stage: activation)." in text
