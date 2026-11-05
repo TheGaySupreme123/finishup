@@ -2105,8 +2105,8 @@ def _control_error_result(
                     "until the cause is repaired. Give the user this correlation_id; 'finishup "
                     "service diagnostics --correlation-id' with it shows the bounded record. Do "
                     "not run service lifecycle commands unless the user asks for a restart after "
-                    "this failed startup. Read finishup://guidance/recovery.md, then offer a fix, "
-                    "an issue report, or continuing without FinishUP."
+                    "this failed startup. Follow finishup://guidance/recovery.md; a first `start` "
+                    "offers the user a fix, an issue report, or continuing without FinishUP."
                 ),
                 retryable=False,
                 host_profile=host_profile,
