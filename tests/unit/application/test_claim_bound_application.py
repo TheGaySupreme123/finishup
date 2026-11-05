@@ -60,8 +60,7 @@ def test_a_claim_bound_connection_reads_only_its_handle() -> None:
 
 def test_a_claim_bound_start_records_only_its_own_handle() -> None:
     _require(_start(_HANDLE), _CLAIM)
-    _require(_start(None), _CLAIM)
-    for reference in ("/home/dev/project", "client:fedcba9876543210", "project"):
+    for reference in (None, "/home/dev/project", "client:fedcba9876543210", "project"):
         with pytest.raises(PublicOperationError) as caught:
             _require(_start(reference), _CLAIM)
         error = caught.value
@@ -69,7 +68,18 @@ def test_a_claim_bound_start_records_only_its_own_handle() -> None:
         assert cast(dict[str, object], error.safe_details)["reason_code"] == (
             "workspace_ref_not_portable"
         )
-        assert reference not in error.message
+        assert reference is None or reference not in error.message
+
+
+def test_only_an_attach_to_an_existing_session_may_omit_the_handle() -> None:
+    attach = StartRequest.model_validate(
+        {
+            **_start(None).model_dump(mode="json", by_alias=True, exclude_none=True),
+            "mode": "attach",
+            "session_id": "ses_00000000-0000-4000-8000-000000051001",
+        }
+    )
+    _require(attach, _CLAIM)
 
 
 def test_a_connection_without_a_claim_cannot_record_a_handle() -> None:
