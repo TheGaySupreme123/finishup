@@ -888,3 +888,41 @@ async def test_an_agent_lost_mid_review_ends_the_review_unavailable_never_a_pass
     assert result.reviewer.ended == "workspace_agent_unavailable"
     # The judgment the provider would have given was never asked for.
     assert len(gateway.exchanges) == 1
+
+
+async def test_a_pending_workspace_call_keeps_an_idle_agent_connection_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: _Service
+) -> None:
+    import time
+
+    import finishup.service.daemon as daemon_module
+    from finishup.ports.workspace_agent import WorkspaceOnlyArguments, WorkspaceOperation
+
+    class SlowAgent(FakeWorkspaceAgent):
+        def answer(self, call: Any) -> Any:  # noqa: ANN401
+            time.sleep(0.4)
+            return super().answer(call)
+
+    client_repo = tmp_path / "client" / "repo"
+    head = _repository(client_repo, "app.py", "print('client')\n")
+    # A session with no control call in flight idles out after this long.
+    monkeypatch.setattr(daemon_module, "_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS", 0.1)
+    client = await service.connect(claim=_claim_for(client_repo), agent=SlowAgent(client_repo))
+    try:
+        handle = client.session.workspace_handle
+        assert handle is not None
+        base = await service.hub.call(
+            handle,
+            WorkspaceOperation.READ_TASK_BASE,
+            WorkspaceOnlyArguments(handle),
+            timeout_seconds=5.0,
+        )
+        assert base.commit == head
+        # With nothing pending the idle bound applies again and the connection is released.
+        for _ in range(200):
+            if not service.hub.has_agent(handle):
+                break
+            await asyncio.sleep(0.01)
+        assert not service.hub.has_agent(handle)
+    finally:
+        await client.close()

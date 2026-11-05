@@ -401,7 +401,11 @@ def test_an_approved_check_runs_on_the_client_and_hands_over_its_redacted_output
     handle = access.open(_HANDLE)
     runner = access.runner({approval.approval_commitment: approval})
     seen: list[tuple[bytes, bool]] = []
-    runner._output_sink = lambda data, redacted: seen.append((data, redacted))  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+
+    def sink(data: bytes, redacted: bool) -> None:
+        seen.append((data, redacted))
+
+    runner._output_sink = sink  # pyright: ignore[reportPrivateUsage]
 
     assert runner.run(ApprovedCheckCommand(handle, approval, subject, subject)) == result
     assert seen == [(output, True)]
