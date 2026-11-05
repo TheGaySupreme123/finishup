@@ -837,3 +837,46 @@ def test_reply_helper_builds_ok_and_closed_outcomes() -> None:
     assert workspace_reply(call_id, "internal_error").outcome == "failed"
     with pytest.raises(ValueError):
         workspace_reply(call_id, "not_a_reason")
+
+
+def test_an_exclusion_closed_to_this_account_is_dropped_and_the_rest_kept(
+    repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed = "/srv/finishup-server/state"
+    stats: list[str] = []
+
+    def stat(path: str) -> object:
+        stats.append(path)
+        if path == closed:
+            raise PermissionError(13, "denied")
+        if path == "/srv/missing":
+            raise FileNotFoundError(2, "missing")
+        return object()
+
+    examinable = agent_module._examinable  # pyright: ignore[reportPrivateUsage]
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(agent_module, "os", SimpleNamespace(stat=stat))
+        assert examinable(closed) is False
+        assert examinable("/srv/missing") is True
+        assert examinable("/srv/open") is True
+
+    def open_here(path: str) -> bool:
+        return path != closed
+
+    monkeypatch.setattr(agent_module, "_examinable", open_here)
+    seen: list[tuple[str, ...]] = []
+
+    def capture(*_args: object, excluded: tuple[str, ...], **_kwargs: object) -> tuple[()]:
+        seen.append(excluded)
+        return ()
+
+    monkeypatch.setattr(agent_module, "read_outside_inputs", capture)
+    handler = _handler(repository, protected)
+    _ok(
+        handler,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments(
+            (os.fspath(shared),), (f"{shared}/spec.md",), excluded=(_HANDLE, closed, "/srv/kept")
+        ),
+    )
+    assert seen == [(os.fspath(repository), "/srv/kept", os.fspath(protected))]

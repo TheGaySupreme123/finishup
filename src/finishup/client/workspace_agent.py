@@ -373,7 +373,7 @@ class WorkspaceAgentHandler:
 
         resolved = tuple(self._location(value, call) for value in named)
         own = (self._root, *self._protected) if outside else self._protected
-        return tuple(dict.fromkeys((*resolved, *own)))
+        return tuple(dict.fromkeys((*filter(_examinable, resolved), *own)))
 
     @staticmethod
     def _admitted(roots: Sequence[str]) -> None:
@@ -609,6 +609,25 @@ class WorkspaceAgentHandler:
             return ApprovedCheckRun(result)
         output, redacted = captured[-1]
         return ApprovedCheckRun(result, output, redacted)
+
+
+def _examinable(path: str) -> bool:
+    """Whether this process can tell what a server-named exclusion is; one it cannot is dropped.
+
+    The local readers read nothing at all when an exclusion exists but cannot be examined. A
+    server on another machine lists its own directories among the exclusions; where such a path
+    is on this machine but closed to this account (another user's home, say), a directory on the
+    way is not searchable here, so nothing beneath it is readable here either. Dropping it narrows
+    nothing and keeps the read; any other failure keeps the exclusion, failing closed.
+    """
+
+    try:
+        os.stat(path)
+    except PermissionError:
+        return False
+    except (OSError, ValueError):
+        return True
+    return True
 
 
 def _unavailable(reason: str) -> str:
