@@ -380,7 +380,7 @@ class GatewayApp:
         session = self._session(request, key)
         seconds = _wait_seconds(request)
         rpc_id = request.path_params.get("rpc_id", "")
-        if not 0 < len(rpc_id) <= _RPC_ID_MAX or session.slot(rpc_id) is None:
+        if not 0 < len(rpc_id) <= _RPC_ID_MAX or not session.known(rpc_id):
             raise _Refused("frame_invalid")
         result = await session.wait_result(rpc_id, seconds)
         if result is not None:

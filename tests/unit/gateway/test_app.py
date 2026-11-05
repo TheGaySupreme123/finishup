@@ -327,10 +327,17 @@ async def test_a_pending_call_long_polls_and_is_delivered_at_most_once(gateway: 
         f"/v1/sessions/{sid}/calls?wait_ms=0", content=slow, headers=gateway.headers()
     )
     assert again.status_code == 400 and _reason(again) == "frame_invalid"
-    gone = await gateway.client.get(
+    # A delivered result stays readable for a while (an answer lost in transit is polled again),
+    # and reading it never sends the call to the daemon again.
+    reread = await gateway.client.get(
         f"/v1/sessions/{sid}/results/{rpc_id(0x51F0)}?wait_ms=0", headers=gateway.headers()
     )
-    assert gone.status_code == 400
+    assert reread.status_code == 200 and reread.content == done.content
+    assert [frame for frame in gateway.daemon.received() if b'"kind":"call"' in frame] == [slow]
+    unknown = await gateway.client.get(
+        f"/v1/sessions/{sid}/results/{rpc_id(0x51F1)}?wait_ms=0", headers=gateway.headers()
+    )
+    assert unknown.status_code == 400 and _reason(unknown) == "frame_invalid"
 
 
 @pytest.mark.anyio
