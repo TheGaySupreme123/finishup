@@ -14,8 +14,8 @@ Two confinements hold on top of the adapters':
   maps the handle to its own root and refuses any other handle (``workspace_not_claimed``).
 * **Outside reads stay outside.** Reads beyond the workspace are confined to the admitted roots
   the server names (each must pass the owner-policy rule ``admitted_input_root_valid``) and never
-  enter the claimed workspace (for outside inputs) or this client's own FinishUP directories,
-  whatever the server lists as excluded.
+  enter the claimed workspace through an outside root, or this client's own FinishUP directories
+  at all, whatever the server lists as excluded.
 
 An approved check runs only when the repository's own ``.finishup/checks.toml`` (read here, by
 the existing policy loader) approves exactly the argv the server asked for; anything else is
