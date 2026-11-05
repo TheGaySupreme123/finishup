@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, BinaryIO, Final, Literal, TypedDict, cast
 
 from finishup import __version__
 from finishup.adapters.control.unix_socket import (
-    AuthenticatedUnixStream,
     LocalControlTransportError,
     connect_control,
 )
@@ -102,6 +101,7 @@ from finishup.service.control_protocol import (
     CONTROL_PROTOCOL_VERSION,
     ControlProtocolError,
     ControlSession,
+    ControlStream,
     client_handshake,
     parse_control_result,
     read_control_frame,
@@ -111,6 +111,7 @@ from finishup.service.control_protocol import (
 )
 
 if TYPE_CHECKING:
+    from finishup.client.transports import ControlTransport
     from finishup.service.confidential_protocol import OwnerReceiptViewTarget
     from finishup.service.lifecycle import SingletonHolder
 
@@ -159,6 +160,10 @@ _SERVICE_START_POLL_SECONDS: Final = 0.05
 # hello while its singleton stamp names another identity (``_unanswered_hello``). Both reasons
 # name that condition; only these may make on-demand startup replace the running process.
 _SUPERSEDE_REASONS: Final = frozenset({"service_incompatible", "protocol_mismatch"})
+# A remote server answered or refused this client's hello as another release would (ADR-051).
+_REMOTE_INCOMPATIBLE_REASONS: Final = frozenset(
+    {"handshake_rejected", "manifest_mismatch", "method_forbidden", "protocol_mismatch"}
+)
 _SECRET_ENV_MARKERS: Final = (
     "API_KEY",
     "AUTHORIZATION",
@@ -999,7 +1004,7 @@ class ServiceClient(ControlClientPort):
 
     def __init__(
         self,
-        stream: AuthenticatedUnixStream,
+        stream: ControlStream,
         session: ControlSession,
         client_kind: ControlClientKind,
         *,
@@ -1570,7 +1575,7 @@ class ServiceClient(ControlClientPort):
 
 
 def _connected_client(
-    stream: AuthenticatedUnixStream,
+    stream: ControlStream,
     session: ControlSession,
     client_kind: ControlClientKind,
 ) -> ServiceClient:
@@ -1638,7 +1643,7 @@ def _consume_background_task[ResultT](task: asyncio.Task[ResultT]) -> None:
         pass
 
 
-async def _best_effort_close_stream(stream: AuthenticatedUnixStream) -> None:
+async def _best_effort_close_stream(stream: ControlStream) -> None:
     """Bound cleanup even when a faulty peer stream never completes ``aclose``."""
 
     task = asyncio.create_task(stream.aclose())
@@ -1655,7 +1660,43 @@ async def _best_effort_close_stream(stream: AuthenticatedUnixStream) -> None:
     task.add_done_callback(_consume_background_task)
 
 
-async def _connect_service_attempt(
+def _control_transport() -> ControlTransport:
+    """How this process dials its server: the active root's transport (ADR-051).
+
+    Every local root (the everyday server, an explicit isolation root, a named local server)
+    dials its owner-only endpoint through this module's ``connect_control``, exactly as before. A
+    target record that cannot be read refuses before any dial, so a damaged remote root never
+    starts a local service in itself.
+    """
+
+    from finishup.client.targets import TargetError
+    from finishup.client.transports import transport_for_active_root
+
+    try:
+        return transport_for_active_root(connect_control)
+    except TargetError as exc:
+        raise _EndpointRootRefused("isolation_root_invalid") from exc
+
+
+async def _remote_end_phase(stream: ControlStream | None) -> str | None:
+    """The closed remote phase a failed remote stream names for its own end, if any."""
+
+    from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+    failure_phase = cast(
+        Callable[[], Awaitable[str | None]] | None, getattr(stream, "failure_phase", None)
+    )
+    if failure_phase is None:
+        return None
+    try:
+        phase = await failure_phase()
+    except Exception:
+        return None
+    return phase if phase in REMOTE_CONNECTION_PHASES else None
+
+
+async def _connect_remote_attempt(
+    transport: ControlTransport,
     client_kind: ControlClientKind,
     *,
     workspace_locator: WorkspaceLocator | None,
@@ -1663,13 +1704,88 @@ async def _connect_service_attempt(
     output_is_controlling_tty: bool,
     timeout_seconds: float,
 ) -> ServiceClient:
-    """Connect and handshake within one attempt budget, preserving accepted-socket identity."""
+    """Dial a remote target and handshake within one attempt budget (ADR-051, approach B).
 
-    stream: AuthenticatedUnixStream | None = None
+    The hello never carries a locator: no path crosses to another machine. The claim and the
+    workspace agent come from ``remote_workspace_binding``. Every failure is a retryable
+    ``service_unavailable`` whose ``phase`` is one closed remote phase; nothing local is probed,
+    spawned or superseded.
+    """
+
+    from finishup.client.agent_session import remote_workspace_binding
+    from finishup.client.transports import TransportError
+
+    target = transport.target
+    if target is None:
+        raise TypeError("remote_transport_required")
+    stream: ControlStream | None = None
+    phase = "remote_unreachable"
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            binding = await remote_workspace_binding(target, workspace_locator)
+            stream = await transport.connect()
+            session = await client_handshake(
+                stream,
+                client_kind,
+                __version__,
+                workspace_claim=binding.claim,
+                workspace_agent=binding.agent,
+                projection_render_mode=projection_render_mode,
+                output_is_controlling_tty=output_is_controlling_tty,
+            )
+        return _connected_client(stream, session, client_kind)
+    except TransportError as exc:
+        phase = exc.phase
+    except TimeoutError:
+        phase = await _remote_end_phase(stream) or "remote_unreachable"
+    except ControlProtocolError as exc:
+        phase = await _remote_end_phase(stream) or (
+            "remote_incompatible"
+            if exc.reason in _REMOTE_INCOMPATIBLE_REASONS
+            else "remote_unreachable"
+        )
+    except LocalControlTransportError:
+        phase = "remote_unreachable"
+    except BaseException:
+        if stream is not None:
+            await _best_effort_close_stream(stream)
+        raise
+    if stream is not None:
+        await _best_effort_close_stream(stream)
+    raise ControlError("service_unavailable", retryable=True, phase=phase)
+
+
+async def _connect_service_attempt(
+    client_kind: ControlClientKind,
+    *,
+    workspace_locator: WorkspaceLocator | None,
+    projection_render_mode: ProjectionRenderMode,
+    output_is_controlling_tty: bool,
+    timeout_seconds: float,
+    transport: ControlTransport | None = None,
+) -> ServiceClient:
+    """Connect and handshake within one attempt budget, preserving accepted-socket identity.
+
+    The stream comes from the active root's transport (``_control_transport``); a remote target
+    is dialled by ``_connect_remote_attempt``.
+    """
+
+    if transport is None:
+        transport = _control_transport()
+    if transport.target is not None:
+        return await _connect_remote_attempt(
+            transport,
+            client_kind,
+            workspace_locator=workspace_locator,
+            projection_render_mode=projection_render_mode,
+            output_is_controlling_tty=output_is_controlling_tty,
+            timeout_seconds=timeout_seconds,
+        )
+    stream: ControlStream | None = None
     deadline = time.monotonic() + timeout_seconds
     try:
         async with asyncio.timeout(timeout_seconds):
-            stream = await connect_control()
+            stream = await transport.connect()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
@@ -1888,6 +2004,45 @@ def _manifest_digest_for_client() -> str:
     return schema_manifest_digest()
 
 
+async def _connect_remote_on_demand(
+    transport: ControlTransport,
+    client_kind: ControlClientKind,
+    *,
+    workspace_locator: WorkspaceLocator | None,
+    deadline: float,
+) -> ServiceClient:
+    """Connect to a remote target on demand: nothing local is ever spawned or superseded.
+
+    A remote service that is not running (stopped after its idle period, say) is started once
+    through the target's recorded launcher when its transport can (SSH), then dialled again
+    inside the same budget. Any other remote failure is reported as it is.
+    """
+
+    from finishup.client.transports import start_remote_service
+
+    async def attempt() -> ServiceClient:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+        return await _connect_service_attempt(
+            client_kind,
+            workspace_locator=workspace_locator,
+            projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
+            output_is_controlling_tty=False,
+            timeout_seconds=min(_CONNECT_HANDSHAKE_TIMEOUT_SECONDS, remaining),
+            transport=transport,
+        )
+
+    try:
+        return await attempt()
+    except ControlError as exc:
+        if exc.phase != "remote_service_not_running":
+            raise
+        if not await start_remote_service(transport, deadline - time.monotonic()):
+            raise
+    return await attempt()
+
+
 async def connect_service_on_demand(
     client_kind: ControlClientKind,
     *,
@@ -1922,6 +2077,11 @@ async def connect_service_on_demand(
     if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
         raise ValueError("service_start_timeout_invalid")
     deadline = time.monotonic() + timeout_seconds
+    transport = _control_transport()
+    if transport.target is not None:
+        return await _connect_remote_on_demand(
+            transport, client_kind, workspace_locator=workspace_locator, deadline=deadline
+        )
 
     async def connect_with_remaining_budget() -> ServiceClient:
         remaining = deadline - time.monotonic()

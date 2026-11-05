@@ -1,0 +1,484 @@
+"""HTTPS binding v1 under ``ServiceClient``: same client above the stream, closed phases below.
+
+``ServiceClient`` runs unchanged over ``BindingControlStream``. A refused key, an unavailable
+service, an incompatible release, an expired session and a lost response each end as one closed
+remote phase or the ordinary retryable outcome; a call is never posted twice. TLS trusts the
+recorded pin or CA file, and a pin mismatch stops the connection inside the TLS handshake, before
+any request (and so the key) is sent.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime
+import hashlib
+import ipaddress
+import json
+import ssl
+import tempfile
+from collections.abc import Callable, Coroutine
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
+
+import httpx
+import pytest
+
+from builders.direct_dial import (
+    API_KEY,
+    FakeBindingGateway,
+    StaticCredential,
+    https_target,
+    memory_pair,
+    service_status,
+)
+from finishup.client.https_binding import (
+    LONG_POLL_WAIT_MS,
+    TlsPinMismatch,
+    fetch_server_info,
+    phase_for_http_error,
+    phase_for_status,
+)
+from finishup.client.transports import HttpsTransport, TransportError
+from finishup.ports.control import (
+    ControlClientKind,
+    ControlError,
+    ControlMethod,
+    ControlResult,
+    ProjectionRenderMode,
+)
+from finishup.service import client as client_module
+from finishup.service.control_protocol import (
+    ControlStream,
+    parse_control_request,
+    read_control_frame,
+    server_handshake,
+    write_control_frame,
+)
+
+
+async def _status_server(stream: ControlStream) -> None:
+    """A service that answers every ``service_status`` call."""
+
+    session = await server_handshake(stream, stream.peer_identity, service_status())
+    while True:
+        try:
+            frame = await read_control_frame(stream, eof_reason="session_closed")
+        except Exception:
+            return
+        request = parse_control_request(frame)
+        await write_control_frame(
+            stream,
+            ControlResult(
+                protocol_version="1.0",
+                rpc_id=request.rpc_id,
+                service_instance_id=session.service_instance_id,
+                service_generation=session.service_generation,
+                method=ControlMethod.SERVICE_STATUS,
+                outcome="ok",
+                body=service_status(),
+            ),
+        )
+
+
+def _gateway(
+    server: Callable[[ControlStream], Coroutine[Any, Any, None]] = _status_server,
+) -> FakeBindingGateway:
+    async def upstream() -> ControlStream:
+        gateway_end, server_end = memory_pair()
+        asyncio.get_running_loop().create_task(server(server_end))
+        return gateway_end
+
+    return FakeBindingGateway(upstream)
+
+
+def _transport(
+    http: httpx.AsyncBaseTransport, *, credential: StaticCredential | None = None
+) -> HttpsTransport:
+    return HttpsTransport(
+        https_target(),
+        Path("/nonexistent"),
+        credential=credential or StaticCredential(),
+        http_transport=http,
+    )
+
+
+async def _connect(transport: HttpsTransport) -> client_module.ServiceClient:
+    return await client_module._connect_service_attempt(  # pyright: ignore[reportPrivateUsage]
+        ControlClientKind.CLI,
+        workspace_locator=None,
+        projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
+        output_is_controlling_tty=False,
+        timeout_seconds=5.0,
+        transport=transport,
+    )
+
+
+def test_service_client_runs_unchanged_over_the_binding() -> None:
+    gateway = _gateway()
+
+    async def exercise() -> None:
+        client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        try:
+            statuses = await asyncio.gather(*(client.service_status() for _ in range(5)))
+        finally:
+            await client.close()
+        assert {status.service_instance_id for status in statuses} == {
+            service_status().service_instance_id
+        }
+
+    asyncio.run(exercise())
+    paths = [(method, path) for method, path, _headers in gateway.requests]
+    assert paths[0] == ("POST", "/base/v1/sessions")
+    assert sum(1 for _method, path in paths if path.endswith("/calls")) == 5
+    # No agent was declared, so no frames long-poll ran.
+    assert not any(path.endswith("/frames") for _method, path in paths)
+
+
+@pytest.mark.parametrize(
+    ("status", "phase"),
+    [(401, "remote_auth_failed"), (403, "remote_auth_failed"), (503, "remote_service_not_running")],
+)
+def test_a_refused_session_is_a_closed_remote_phase(status: int, phase: str) -> None:
+    gateway = _gateway()
+    gateway.statuses["POST sessions"] = status
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == ("service_unavailable", True, phase)
+
+
+def test_a_wrong_key_is_refused_by_the_gateway_as_an_auth_failure() -> None:
+    gateway = _gateway()
+    gateway.key = "fuk_ffffffffffff_" + "C" * 43
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        return raised.value
+
+    assert asyncio.run(exercise()).phase == "remote_auth_failed"
+
+
+def test_a_missing_key_never_dials() -> None:
+    gateway = _gateway()
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await _connect(
+                _transport(
+                    httpx.ASGITransport(app=gateway), credential=StaticCredential(secret=None)
+                )
+            )
+        return raised.value
+
+    assert asyncio.run(exercise()).phase == "remote_auth_failed"
+    assert gateway.requests == []
+
+
+def test_another_release_behind_the_gateway_is_remote_incompatible() -> None:
+    from finishup.protocol.canonical import JsonValue, canonical_encode
+    from finishup.service import control_protocol
+
+    async def other_release(stream: ControlStream) -> None:
+        await read_control_frame(stream)
+        allowed = control_protocol._allowed_for(  # pyright: ignore[reportPrivateUsage]
+            ControlClientKind.CLI
+        )
+        wire = control_protocol._hello_result_wire(  # pyright: ignore[reportPrivateUsage]
+            service_status(), allowed
+        )
+        wire["schema_manifest_digest"] = "sha256:" + "0" * 64
+        payload = canonical_encode(cast(JsonValue, wire))
+        await stream.send_all(len(payload).to_bytes(4, "big") + payload)
+
+    gateway = _gateway(other_release)
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.phase) == ("service_unavailable", "remote_incompatible")
+
+
+def test_an_idle_expired_session_fails_the_write_so_the_caller_reconnects() -> None:
+    from finishup.client.https_binding import SESSION_IDLE_CHECK_SECONDS, BindingControlStream
+
+    gateway = _gateway()
+
+    async def exercise() -> ControlError:
+        client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        stream = cast(BindingControlStream, client._stream)  # pyright: ignore[reportPrivateUsage]
+        # Idle past the check, and the gateway has expired the session meanwhile.
+        stream._last_activity -= SESSION_IDLE_CHECK_SECONDS + 1  # pyright: ignore[reportPrivateUsage]
+        gateway.sessions.clear()
+        try:
+            with pytest.raises(ControlError) as raised:
+                await client.service_status()
+        finally:
+            await client.close()
+        return raised.value
+
+    error = asyncio.run(exercise())
+    # Retryable ``service_unavailable`` is the class the MCP bridge's reconnect-once handles.
+    assert (error.reason, error.retryable) == ("service_unavailable", True)
+    paths = [(method, path) for method, path, _headers in gateway.requests]
+    assert not any(path.endswith("/calls") for _method, path in paths)
+
+
+def test_an_idle_live_session_is_checked_once_and_used() -> None:
+    from finishup.client.https_binding import SESSION_IDLE_CHECK_SECONDS, BindingControlStream
+
+    gateway = _gateway()
+
+    async def exercise() -> None:
+        client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        stream = cast(BindingControlStream, client._stream)  # pyright: ignore[reportPrivateUsage]
+        stream._last_activity -= SESSION_IDLE_CHECK_SECONDS + 1  # pyright: ignore[reportPrivateUsage]
+        try:
+            await client.service_status()
+            await client.service_status()
+        finally:
+            await client.close()
+
+    asyncio.run(exercise())
+    frames_checks = [path for _method, path, _h in gateway.requests if path.endswith("/frames")]
+    assert len(frames_checks) == 1
+
+
+def test_an_unknown_session_on_a_call_ends_the_stream() -> None:
+    gateway = _gateway()
+
+    async def exercise() -> ControlError:
+        client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        gateway.statuses["POST calls"] = 404
+        try:
+            with pytest.raises(ControlError) as raised:
+                await client.service_status()
+        finally:
+            await client.close()
+        return raised.value
+
+    # The same outcome as a local service closing the connection under a pending call.
+    assert asyncio.run(exercise()).reason == "frame_invalid"
+
+
+class _LoseFirstCallResponse(httpx.AsyncBaseTransport):
+    """Deliver the first call to the gateway, then lose its response on the way back."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self.inner = inner
+        self.lost = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self.inner.handle_async_request(request)
+        if not self.lost and request.method == "POST" and request.url.path.endswith("/calls"):
+            self.lost = True
+            await response.aclose()
+            raise httpx.ReadError("lost", request=request)
+        return response
+
+
+def test_a_lost_call_response_is_fetched_again_never_reposted() -> None:
+    gateway = _gateway()
+    lossy = _LoseFirstCallResponse(httpx.ASGITransport(app=gateway))
+
+    async def exercise() -> None:
+        client = await _connect(_transport(lossy))
+        try:
+            status = await client.service_status()
+        finally:
+            await client.close()
+        assert status.service_instance_id == service_status().service_instance_id
+
+    asyncio.run(exercise())
+    assert lossy.lost
+    paths = [(method, path) for method, path, _headers in gateway.requests]
+    assert sum(1 for _method, path in paths if path.endswith("/calls")) == 1
+    assert any(method == "GET" and "/results/" in path for method, path in paths)
+
+
+def test_long_polls_carry_the_binding_wait_and_the_version_header() -> None:
+    seen: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(401, json={"reason": "api_key_invalid", "schema_version": "1.0.0"})
+
+    async def exercise() -> None:
+        with pytest.raises(ControlError):
+            await _connect(_transport(httpx.MockTransport(handler)))
+
+    asyncio.run(exercise())
+    (request,) = seen
+    assert request.headers["authorization"] == f"Bearer {API_KEY}"
+    assert request.headers["finishup-binding"] == "1.0"
+    assert "origin" not in request.headers
+    assert request.url.path == "/base/v1/sessions"
+    assert LONG_POLL_WAIT_MS == 25_000
+
+
+def test_server_info_checks_the_manifest_and_keeps_only_closed_values() -> None:
+    gateway = _gateway()
+
+    async def info() -> object:
+        return await fetch_server_info(
+            https_target(), API_KEY, http_transport=httpx.ASGITransport(app=gateway)
+        )
+
+    reported = asyncio.run(info())
+    assert reported.schema_manifest_digest == gateway.digest  # type: ignore[attr-defined]
+
+    gateway.digest = "sha256:" + "0" * 64
+    with pytest.raises(TransportError) as raised:
+        asyncio.run(info())
+    assert raised.value.phase == "remote_incompatible"
+
+    gateway.statuses["GET server"] = 401
+    with pytest.raises(TransportError) as raised:
+        asyncio.run(info())
+    assert raised.value.phase == "remote_auth_failed"
+
+
+def test_status_and_error_phases_are_closed() -> None:
+    assert [phase_for_status(code) for code in (401, 403, 404, 429, 500, 503)] == [
+        "remote_auth_failed",
+        "remote_auth_failed",
+        "remote_unreachable",
+        "remote_unreachable",
+        "remote_unreachable",
+        "remote_service_not_running",
+    ]
+    nested = httpx.ConnectError("wrapped")
+    nested.__cause__ = TlsPinMismatch("tls_pin_mismatch")
+    assert phase_for_http_error(nested) == "remote_identity_changed"
+    assert phase_for_http_error(httpx.ConnectTimeout("slow")) == "remote_unreachable"
+
+
+# -- real TLS: the pin is checked inside the handshake, the CA file by ordinary verification ----
+
+
+def _certificate(directory: Path, name: str) -> tuple[Path, Path, str]:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = directory / f"{name}.pem"
+    key_path = directory / f"{name}.key"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    der = certificate.public_bytes(serialization.Encoding.DER)
+    return cert_path, key_path, "sha256:" + hashlib.sha256(der).hexdigest()
+
+
+async def _tls_info(target_for: Callable[[int], object], cert: Path, key: Path) -> list[bytes]:
+    """Serve ``GET /v1/server`` over TLS once per connection; return what each connection read."""
+
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    received: list[bytes] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = b""
+        try:
+            while b"\r\n\r\n" not in data:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                data += chunk
+        except (ConnectionError, ssl.SSLError):
+            pass
+        received.append(data)
+        if data:
+            body = json.dumps(
+                {"release": "0.3.0", "schema_manifest_digest": schema_manifest_digest()}
+            ).encode()
+            writer.write(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
+                + f"content-length: {len(body)}\r\nconnection: close\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl=context)
+    port = cast(int, server.sockets[0].getsockname()[1])
+    try:
+        await fetch_server_info(cast("object", target_for(port)), API_KEY)  # type: ignore[arg-type]
+    finally:
+        server.close()
+        await server.wait_closed()
+    return received
+
+
+def test_a_matching_pin_connects_and_a_mismatch_sends_nothing() -> None:
+    with tempfile.TemporaryDirectory(prefix="fu-tls-") as raw:
+        cert, key, pin = _certificate(Path(raw), "server")
+        _other, _other_key, other_pin = _certificate(Path(raw), "other")
+
+        def pinned(value: str) -> Callable[[int], object]:
+            return lambda port: replace(
+                https_target(kind="local_port", tls_pin=value),
+                base_url=f"https://127.0.0.1:{port}",
+            )
+
+        received = asyncio.run(_tls_info(pinned(pin), cert, key))
+        assert len(received) == 1 and received[0].startswith(b"GET /v1/server HTTP/1.1")
+        assert f"Bearer {API_KEY}".encode() in received[0]
+
+        with pytest.raises(TransportError) as raised:
+            asyncio.run(_tls_info(pinned(other_pin), cert, key))
+        assert raised.value.phase == "remote_identity_changed"
+
+
+def test_a_ca_file_verifies_the_server_and_refuses_another() -> None:
+    with tempfile.TemporaryDirectory(prefix="fu-tls-") as raw:
+        cert, key, _pin = _certificate(Path(raw), "server")
+        other, _other_key, _other_pin = _certificate(Path(raw), "other")
+
+        def trusting(ca: Path) -> Callable[[int], object]:
+            return lambda port: replace(
+                https_target(kind="local_port"),
+                base_url=f"https://127.0.0.1:{port}",
+                ca_file=str(ca),
+            )
+
+        received = asyncio.run(_tls_info(trusting(cert), cert, key))
+        assert len(received) == 1 and received[0].startswith(b"GET /v1/server")
+
+        with pytest.raises(TransportError) as raised:
+            asyncio.run(_tls_info(trusting(other), cert, key))
+        assert raised.value.phase == "remote_identity_changed"
