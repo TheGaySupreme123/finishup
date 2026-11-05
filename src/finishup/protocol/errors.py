@@ -15,6 +15,7 @@ __all__ = [
     "ADMITTED_CONTINUATION_TOKENS",
     "PROTOCOL_REASON_CODES",
     "REASON_CODE_CONTINUATIONS",
+    "REMOTE_CONNECTION_PHASES",
     "SAFE_DETAIL_KEYS",
     "SERVICE_HANDSHAKE_PHASES",
     "SERVICE_START_TIMEOUT_PHASE",
@@ -366,11 +367,17 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "receipt_semantic_withheld_items_not_canonical",
     "redaction_target_required",
     "ref_mirror_mismatch",
+    "remote_auth_failed",
+    "remote_identity_changed",
+    "remote_incompatible",
+    "remote_service_not_running",
+    "remote_unreachable",
     "repository_identity_mismatch",
     "repository_identity_required",
     "request_identity_conflict",
     "request_timeout",
     "requested_command_placeholder",
+    "requires_server_host",
     "resolution_attempt_required",
     "response_fields_invalid",
     "response_projection_failed",
@@ -397,6 +404,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "schema_path_unsafe",
     "schema_reference_unresolved",
     "schema_version_mismatch",
+    "selection_overridden",
     "selector_conflict",
     "semantic_provenance_json_shape_invalid",
     "semantic_redacted_values_invalid",
@@ -416,6 +424,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "start_runtime_rebind_retry_ready",
     "start_state_inconsistent",
     "stored_result_shape_invalid",
+    "target_root_is_remote",
     "timestamp_not_utc",
     "timestamp_out_of_range",
     "timestamp_submillisecond_precision",
@@ -426,6 +435,10 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "unsupported_json_type",
     "unsupported_payload_type",
     "verification_criterion_not_in_task",
+    "workspace_agent_refused",
+    "workspace_agent_unavailable",
+    "workspace_binding_conflict",
+    "workspace_ref_not_portable",
     "workspace_task_exists",
 )
 
@@ -447,13 +460,28 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # caller's start budget: still starting (a slow machine, or the first start after an install or
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
-# #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 356
+# A selected remote FinishUP server could not serve the connection (ADR-051): ``phase`` on a
+# retryable ``service_unavailable`` error a client raises for a remote target. Each phase is also
+# the protocol reason code a surface reports for it, so its recovery directive resolves the same
+# way on every surface; no host, user or path rides on it.
+REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
+    {
+        "remote_auth_failed",
+        "remote_identity_changed",
+        "remote_incompatible",
+        "remote_service_not_running",
+        "remote_unreachable",
+    }
+)
+# #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check; ADR-051:
+# the twelve workspace-binding, server-target and remote-connection reasons.
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 368
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
 
 PROTOCOL_REASON_CODES: frozenset[str] = frozenset(_PROTOCOL_REASON_CODE_VALUES)
+assert REMOTE_CONNECTION_PHASES <= PROTOCOL_REASON_CODES
 
 SAFE_DETAIL_KEYS: tuple[str, ...] = (
     "actual_version",
@@ -605,6 +633,19 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "semantic_response_truncated",
         "semantic_timeout",
         "semantic_transport_retry",
+        # Workspace binding, server-host commands, server targets and remote connections (ADR-051).
+        "remote_credential_repair",
+        "remote_identity_verify",
+        "remote_release_mismatch",
+        "remote_server_test",
+        "remote_service_start_required",
+        "remote_target_no_local_service",
+        "server_host_command_required",
+        "server_selection_overridden",
+        "workspace_agent_reconnect",
+        "workspace_agent_refusal_review",
+        "workspace_binding_correction",
+        "workspace_handle_required",
     }
 )
 
@@ -781,6 +822,20 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "start_catalog_retry_ready": "start_busy_same_identity",
         "start_runtime_rebind_retry_ready": "start_busy_same_identity",
         "start_lease_pending": "start_pending_same_identity",
+        # ADR-051: a connection's workspace binding, the commands that run only where the server
+        # lives, the selected server target, and the phases of a failed remote connection.
+        "workspace_binding_conflict": "workspace_binding_correction",
+        "workspace_ref_not_portable": "workspace_handle_required",
+        "workspace_agent_unavailable": "workspace_agent_reconnect",
+        "workspace_agent_refused": "workspace_agent_refusal_review",
+        "requires_server_host": "server_host_command_required",
+        "target_root_is_remote": "remote_target_no_local_service",
+        "selection_overridden": "server_selection_overridden",
+        "remote_unreachable": "remote_server_test",
+        "remote_auth_failed": "remote_credential_repair",
+        "remote_identity_changed": "remote_identity_verify",
+        "remote_service_not_running": "remote_service_start_required",
+        "remote_incompatible": "remote_release_mismatch",
     }
 )
 if set(REASON_CODE_CONTINUATIONS.values()) - ADMITTED_CONTINUATION_TOKENS:
