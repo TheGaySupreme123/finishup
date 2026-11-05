@@ -4638,7 +4638,7 @@ name the producing service by `service_instance_id` and a closed transport token
 | `workspace_ref_not_portable` | a claim-bound `start` names an absolute `workspace_ref` | send the connection's `workspace_handle` |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
-| `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, the shown `ssh -t` command) |
+| `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
 | `target_root_is_remote` | `service run` or `service start` is asked to serve a remote target's root | the service runs on the server; use `finishup server test` here |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
 

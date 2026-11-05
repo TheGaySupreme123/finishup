@@ -57,9 +57,9 @@ to task facts. It is superseded by this ADR because:
 - it never reached end to end, so it left the service's reads of the agent's working tree
   unsolved.
 
-This ADR keeps from #946 the endpoint normalization, the refusal of plain HTTP, one wire contract
-for every transport, a server-enforced method allowlist, receipts that name the producer, and a
-decision per host.
+This ADR keeps from #946 the endpoint normalization, the refusal of plain HTTP, the same operation
+contracts on every transport, a server-enforced method allowlist, receipts that name the producer,
+and a decision per host.
 
 The hardest coupling is not the transport. The service reads the agent's working tree directly:
 repository identity at handshake, the task change base, the ADR-031 check-time change and its
@@ -78,8 +78,9 @@ typed outcomes when the client side cannot be reached.
 
 ### 1. The cut line is an enforced contract, not a package move
 
-- Every module under `src/finishup/` is labelled CLIENT, SERVER or SHARED in one boundary map. An
-  approach may add the label of its own edge process. CLIENT covers `cli`, `mcp`, `tui`,
+- Every module under `src/finishup/` is labelled CLIENT, SERVER, SHARED or GATEWAY in one boundary
+  map. GATEWAY is reserved for a same-user control client of the daemon on the server host
+  (`finishup.gateway`), used only by the approaches that run one. CLIENT covers `cli`, `mcp`, `tui`,
   `service.client`, `service.confidential_client`, the host integration adapters (except the
   observation store the service also opens), the client-side application modules and the new
   `finishup.client` package. SHARED covers `protocol`, `ports`, `domain`, `config`,
@@ -146,8 +147,8 @@ typed outcomes when the client side cannot be reached.
 | `ssh` | `ssh://[user@]host[:port]`, optional `--remote-root` (the server's isolated root) and `--remote-launcher` (absolute path of the server's `finishup`) | Owner-equivalent: the SSH login is the service owner. |
 | `https` | `https://host[:port][/base]` with `--ca-file` or `--tls-pin sha256:…` | No userinfo, query or fragment. Plain `http` is refused. |
 
-Every kind except `local` is a *remote kind* for consent, credentials and the workspace agent,
-including `local_port`: a loopback port can forward anywhere.
+Every kind except `local` is a *remote kind* for consent, the zero-network refusal and the
+workspace agent, including `local_port`: a loopback port can forward anywhere.
 
 `finishup server add|list|use|status [--json]|test|remove|login|logout|connect|disconnect` manages
 targets; each mutating command has its reverse (see *Reverse states*). `connect`, `disconnect` and
@@ -328,9 +329,10 @@ superseded by a client. A compatibility window is a later decision.
 Vault setup, unlock and passphrase changes, provider and AI-powered review configuration, privacy
 ceremonies, elevated bootstrap, observation store administration, backup, restore and migrate run
 on the server host. Over SSH, `finishup service start|stop|restart|status|lock|unlock|diagnostics`
-can run there through `ssh -t`, whose remote pseudo-terminal passes the trusted-console check; any
-other `server_host` command is refused with the exact `ssh -t` command to run. Over HTTPS every
-`server_host` command is refused with "run it on the server host".
+can run there through `ssh -t`, whose remote pseudo-terminal passes the trusted-console check.
+On the client every `server_host` command is refused with `requires_server_host`, whose remedy
+says to run it on the server host (through `ssh -t` for an SSH target; by the server's operator for
+an HTTPS target).
 
 ## Topology (approach-specific)
 
