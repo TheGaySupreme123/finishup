@@ -75,8 +75,10 @@ def test_step_zero_stops_on_an_empty_guidance_read() -> None:
     assert "page and verify empty or clipped guidance" in collapsed
     assert "The first workflow operation is `start`" in collapsed
     # tb4n5 startup dedup (ADR-047): the skill states failed-start recovery once, in its
-    # description; "do not work without a task" is the initialize body's (tests/unit/mcp).
-    assert "ask for intro and guidance if startup remains blocked" in collapsed
+    # description; "skip FinishUP only if the user says so" is the initialize body's (tests/unit/mcp).
+    assert (
+        "if start fails after recovery, offer a fix, an issue or work without FinishUP" in collapsed
+    )
     # The skill routes to the compact core; it does not claim that any full document is already in
     # the host context. Other procedures remain addressable through the topic catalog, and the
     # card, not the skill, names the workflow page for resume, recovery and delegation.

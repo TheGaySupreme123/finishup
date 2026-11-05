@@ -1211,10 +1211,11 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "and report the correlation_id."
         ),
         "service_start_failed": (
-            "The local FinishUP service exited while starting, so it is not running and nothing "
-            "was recorded; retrying fails the same way until the cause is repaired. Give the "
-            "user the correlation_id: 'finishup service diagnostics --correlation-id' with it names "
-            "the failing stage and exception class. Do not run service lifecycle commands."
+            "The local FinishUP service exited while starting; nothing was recorded and retrying "
+            "alone cannot help. Give the user the correlation_id: 'finishup service diagnostics "
+            "--correlation-id' with it names the failing stage. Do not run service lifecycle "
+            "commands unless the user asks for a restart after this failed startup. Follow "
+            "finishup://guidance/recovery.md; a first `start` offers the user three choices."
         ),
         "service_handshake_failed": (
             "The local FinishUP service closed the connection while setting it up and answered "

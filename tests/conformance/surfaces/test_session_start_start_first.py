@@ -2,8 +2,8 @@
 
 Issue #692's instruction-delivery slice (not a PreToolUse deny gate): Codex, Claude Code, and
 Cursor catalog descriptions and skill bodies, plus SessionStart inactive context, tell a new
-session to call `start` before substantive work and to follow recovery before asking for intro and guidance if startup
-remains blocked. Wording is not enforcement.
+session to call `start` before substantive work and, if startup stays blocked after recovery, to offer
+the user a fix, an issue report or continuing without FinishUP. Wording is not enforcement.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ _HOST_SKILLS: Final = (
 )
 
 _START_FIRST = "read guidance and discover schemas, then call start before substantive work"
-_FAIL_INTRO = "follow recovery on failure and ask for intro and guidance if startup remains blocked"
+# The user decides how a blocked startup goes on: repair, an issue report, or no FinishUP.
+_FAIL_INTRO = "if start fails after recovery, offer a fix, an issue or work without FinishUP"
 _BODY_START_FIRST = "first workflow operation is `start`"
 # tb4n5 (P10): the body sentence names what "This" is, so it cannot read as "start includes
 # read_guidance".
@@ -89,7 +90,7 @@ def test_failed_start_recovery_is_stated_by_initialize_and_the_operating_card() 
     assert "Skip trivial questions or edits; never invent a ledger task." in card
     for initialize in (CLAUDE_CODE_INITIALIZE_INSTRUCTIONS, COMPACT_INITIALIZE_INSTRUCTIONS):
         text = " ".join(initialize.split())
-        assert "then ask; do not work without a task." in text
+        assert "then ask; skip FinishUP only if the user says so." in text
         assert "Read-only questions skip it." in text
 
 
@@ -131,3 +132,43 @@ def test_startup_recovery_keeps_unknown_writes_and_denied_consent_out_of_fallbac
     assert "One bounded diagnostic read does not satisfy the repair exception" in rules
     assert "then continue without FinishUP" not in rules
     assert "state the boundary and continue without FinishUP" not in rules
+
+
+def test_blocked_startup_offers_fix_report_or_no_finishup_and_the_user_decides() -> None:
+    """A blocked `start` is not a dead end: the agent offers three choices and the user picks."""
+
+    recovery = " ".join((_REPO_ROOT / "guidance/recovery.md").read_text("utf-8").split())
+    section = recovery.split("## When FinishUP is not working", 1)[1]
+    assert "tell the user plainly that FinishUP is not working" in section
+    assert "let the user pick one; never pick for them" in section
+    assert "`finishup service diagnostics --correlation-id <id>`" in section
+    assert "Only with the user's go-ahead, apply the local fix" in section
+    assert "`finishup service restart`, `finishup upgrade`" in section
+    assert "Never kill FinishUP processes by name or pattern" in section
+    assert "<https://github.com/orgFinishUP/finishup/issues>" in section
+    assert "Search for an existing one first" in section
+    assert "File it only after the user approves that exact text" in section
+    assert "Only when the user says so" in section
+    assert "claim no task, finding, check or receipt" in section
+    assert "A required AI-powered review stays unmet" in section
+    # An upgrade only reaches the next session, so replaying here would test the old version.
+    assert "After `finishup upgrade`, do not replay here" in section
+    assert "open a new session" in section
+    # Later FinishUP coverage must not be denied by the statement about the unrecorded work.
+    assert "recorded none of the work done without it" in section
+    assert "names the uncovered prefix separately from the later task and receipt" in section
+    for relative in ("guidance/workflow.md", "guidance/coverage-and-receipts.md"):
+        text = " ".join((_REPO_ROOT / relative).read_text("utf-8").split())
+        assert "[When FinishUP is not working](recovery.md)" in text, relative
+        # The two outage rules must agree, or the agent cannot follow both.
+        assert "unless the user asks for that restart after a failed startup" in text, relative
+        assert "then apply startup failure precedence before continuing" in text, relative
+        assert "then continue without FinishUP" not in text, relative
+        assert "state the boundary and continue without FinishUP" not in text, relative
+    precedence = " ".join(
+        (_REPO_ROOT / "guidance/coverage-and-receipts.md").read_text("utf-8").split()
+    )
+    assert "the agent never makes that choice itself" in precedence
+    # A first `start` that never succeeded reaches the user, even after a named repair failed.
+    assert "a first `start` whose named repair/retry reached a terminal outcome" in precedence
+    assert "A first `start` that never succeeded, with or without a named repair" in recovery

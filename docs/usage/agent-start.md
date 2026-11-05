@@ -512,6 +512,28 @@ what egress means before enabling any, [Privacy and AI-powered
 review](privacy-and-semantic-review.md).
 
 
+## When FinishUP is not working
+
+If `start` still fails after its typed continuation and same-request recovery, stop material work
+and tell the user plainly, with the error code and correlation id. Pending approvals and first-run
+vault setup are not this case; finish them first. Then offer three choices and let the user pick:
+
+1. **Restart or fix it locally.** Run `finishup service diagnostics --correlation-id <id>` and
+   `finishup service status`, and explain the failing stage. Only with the user's go-ahead, apply
+   the local fix that points to: `finishup service restart`, `finishup upgrade`, or the repair
+   command the diagnostics name. Then retry the original `start` once with the same request id.
+   After `finishup upgrade`, ask the user to open a new session and call `start` there instead:
+   the current session keeps running the previous version. Never kill FinishUP processes by name or pattern, and never edit or delete files in FinishUP's data folder.
+2. **Report it.** If it looks like a FinishUP defect, offer an issue at
+   <https://github.com/orgFinishUP/finishup/issues>. Search for an existing one first. Include
+   `finishup version`, the OS, the agent, the error code, the correlation id, the failing stage, the
+   exception class and the steps; leave out source, prompts, transcripts, private paths and
+   credentials. File it only after the user approves the exact text.
+3. **Continue without FinishUP.** Only when the user chooses it, for this task: do the work, claim
+   no FinishUP task, finding, check or receipt for it, and say at the end that FinishUP recorded
+   none of the work done without it. Under required startup, tools stay blocked until the owner returns startup to optional.
+
+
 ## Required startup
 
 The owner can select required startup for native Claude Code or Cursor plugins. In that mode,

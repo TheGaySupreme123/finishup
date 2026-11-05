@@ -1922,10 +1922,15 @@ async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_resu
         "The local FinishUP service exited while starting "
         "(stage: activation; exception_not_implemented_error)"
     )
+    # Cursor reads this wire message, so it must agree with the remedy other hosts receive.
+    assert "unless the user asks for a restart after this failed startup" in message
+    # The message cannot carry every limit, so it must lead to the guidance that does.
+    assert "Follow finishup://guidance/recovery.md; a first `start` offers" in message
     assert message != _ABSENT_SERVICE_MESSAGE
     text = cast(types.TextContent, result.content[0]).text
     assert "Reason: service_start_failed (stage: activation)." in text
     assert "Remedy: The local FinishUP service exited while starting" in text
+    assert "a restart after this failed startup" in " ".join(text.split())
     assert _SERVICE_CORRELATION in text
     # One failure, one id: the bridge reuses the spawned service's record and adds none.
     (found,) = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
