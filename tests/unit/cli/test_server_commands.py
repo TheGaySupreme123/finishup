@@ -24,6 +24,7 @@ from finishup.cli import app as cli
 from finishup.cli import server as server_cli
 from finishup.client import targets
 from finishup.client.credentials import SERVER_CREDENTIAL_SERVICE
+from finishup.client.target_runtime import LocalTargetRuntime, ProbeResult, TargetRuntime
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, active_root, reset_selection_memo
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.schemas import validate_schema_instance
@@ -71,6 +72,55 @@ def authorized(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
 @pytest.fixture
 def no_platform_store(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("finishup.client.credentials._platform_backend", lambda: None)
+
+
+class _OfflineRemoteRuntime:
+    """A remote runtime that never dials: these tests own no server (``test_direct_*`` do)."""
+
+    def __init__(self, calls: list[tuple[str, Path | None]]) -> None:
+        self.calls = calls
+
+    def ensure_ready(self, root: Path | None) -> None:
+        self.calls.append(("ensure_ready", root))
+
+    def stop(self, root: Path | None) -> None:
+        self.calls.append(("stop", root))
+
+    def probe(self, root: Path | None) -> ProbeResult:
+        self.calls.append(("probe", root))
+        return ProbeResult("unavailable", reason="service_unavailable", phase="remote_unreachable")
+
+
+@pytest.fixture(autouse=True)
+def offline_remote(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Path | None]]:
+    """Keep every remote step on this machine: no ssh child, no HTTPS request, no DNS lookup."""
+
+    from finishup.client import direct_runtime, target_runtime
+
+    calls: list[tuple[str, Path | None]] = []
+
+    def discover(**arguments: object) -> object:
+        root = cast(str | None, arguments["remote_root"])
+        endpoint = "/run/user/1000/control.sock" if root is None else f"{root}/run/control.sock"
+        return direct_runtime.SshEndpoint(
+            endpoint, cast(str | None, arguments["remote_launcher"]), False
+        )
+
+    monkeypatch.setattr(direct_runtime, "discover_ssh_endpoint", discover)
+
+    def accepted(_record: object, _secret: str) -> None:
+        return None
+
+    monkeypatch.setattr(server_cli, "_check_gateway", accepted)
+    loaders = dict(target_runtime._RUNTIME_LOADERS)  # pyright: ignore[reportPrivateUsage]
+
+    def offline() -> TargetRuntime:
+        return _OfflineRemoteRuntime(calls)
+
+    for kind in ("ssh", "https", "local_port"):
+        loaders[kind] = offline
+    monkeypatch.setattr(target_runtime, "_RUNTIME_LOADERS", loaders)
+    return calls
 
 
 def _invoke(*arguments: str) -> Result:
@@ -235,11 +285,11 @@ def test_remote_add_and_use_record_the_owner_authorization(
     authorization = cast(dict[str, JsonValue], target["authorization"])
     assert authorization["current"] is True
     probe = cast(dict[str, JsonValue], status["probe"])
-    # The foundation registers no remote runtime: a closed token, never a local fallback.
+    # The remote runtime's own closed phase, never a local fallback.
     assert (probe["outcome"], probe["reason"], probe["phase"]) == (
         "unavailable",
+        "service_unavailable",
         "remote_unreachable",
-        "runtime_unavailable",
     )
     assert "claim_salt" not in json.dumps(status)
 
@@ -367,14 +417,28 @@ def test_ssh_targets_take_no_api_key(home: Path, authorized: list[tuple[str, str
 
 
 def test_remote_connect_without_a_runtime_is_a_typed_refusal(
-    home: Path, authorized: list[tuple[str, str]]
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from finishup.client import target_runtime
+
     assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    monkeypatch.setattr(target_runtime, "_RUNTIME_LOADERS", {"local": LocalTargetRuntime})
     for command in ("connect", "disconnect"):
         result = _invoke(command, "lab")
         assert result.exit_code == 20
         assert result.stderr.startswith("runtime_unavailable:")
         assert "remote_unreachable, phase runtime_unavailable" in result.stderr
+
+
+def test_remote_connect_and_disconnect_dispatch_to_the_remote_runtime(
+    home: Path, authorized: list[tuple[str, str]], offline_remote: list[tuple[str, Path | None]]
+) -> None:
+    assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    (record,) = targets.list_targets()
+    root = targets.target_root(record.target_id)
+    assert _invoke("connect", "lab").exit_code == 0
+    assert _invoke("disconnect", "lab").exit_code == 0
+    assert offline_remote == [("ensure_ready", root), ("stop", root)]
 
 
 def test_connect_and_disconnect_dispatch_to_the_local_runtime(
@@ -558,3 +622,129 @@ def test_ambiguous_everyday_folders_are_a_bounded_refusal(home: Path) -> None:
         assert result.exit_code == 20, result.output
         assert result.stderr.startswith("installation_root_ambiguous:")
         assert "Traceback" not in result.output
+
+
+# -- direct-dial wiring: SSH endpoint discovery, key checks, the foreground agent -------------
+
+
+def test_ssh_add_records_what_the_server_reports_after_authorization(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client import direct_runtime
+
+    asked: list[dict[str, object]] = []
+
+    def discover(**arguments: object) -> direct_runtime.SshEndpoint:
+        assert authorized == [("lab", "ssh")]  # nothing reaches the server before consent
+        asked.append(arguments)
+        return direct_runtime.SshEndpoint(
+            "/run/user/1001/finishup/control.sock", "/home/owner/.local/bin/finishup", True
+        )
+
+    monkeypatch.setattr(direct_runtime, "discover_ssh_endpoint", discover)
+    added = _invoke("add", "lab", "ssh://owner@lab.example:2222")
+    assert added.exit_code == 0, added.output
+    assert asked == [
+        {
+            "user": "owner",
+            "host": "lab.example",
+            "port": 2222,
+            "remote_root": None,
+            "remote_launcher": None,
+        }
+    ]
+    (record,) = targets.list_targets()
+    assert record.remote_endpoint == "/run/user/1001/finishup/control.sock"
+    assert record.remote_launcher == "/home/owner/.local/bin/finishup"
+    assert "enable linger" in added.stdout
+
+
+def test_ssh_add_is_refused_with_the_servers_closed_phase(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client import direct_runtime
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    def refused(**_arguments: object) -> direct_runtime.SshEndpoint:
+        raise TargetRuntimeError("service_unavailable", phase="remote_auth_failed")
+
+    monkeypatch.setattr(direct_runtime, "discover_ssh_endpoint", refused)
+    result = _invoke("add", "lab", "ssh://owner@lab.example")
+    assert result.exit_code == 20
+    assert result.stderr.startswith("remote_auth_failed:")
+    assert "lab.example" not in result.stderr and "owner" not in result.stderr
+    assert targets.list_targets() == ()
+
+
+def test_a_relative_remote_path_is_refused_before_any_consent(
+    home: Path, authorized: list[tuple[str, str]]
+) -> None:
+    result = _invoke("add", "lab", "ssh://lab.example", "--remote-root", "srv/fu")
+    assert result.exit_code == 2
+    assert result.stderr.startswith("target_path_invalid:")
+    assert authorized == []
+
+
+@pytest.mark.parametrize("phase", ["remote_auth_failed", "remote_identity_changed"])
+def test_login_keeps_no_key_the_server_refuses(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    no_platform_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+    (record,) = targets.list_targets()
+
+    def refused(_record: object, _secret: str) -> str:
+        return phase
+
+    monkeypatch.setattr(server_cli, "_check_gateway", refused)
+    key_file = home / "key"
+    key_file.write_text(_KEY, encoding="ascii")
+    key_file.chmod(0o600)
+    result = _invoke("login", "fu", "--key-file", str(key_file))
+    assert result.exit_code == 20
+    assert result.stderr.startswith(f"{phase}:")
+    assert _KEY not in result.output
+    assert not (targets.target_root(record.target_id) / "config" / "credential").exists()
+    assert targets.list_targets()[0].credential is None
+
+
+def test_login_keeps_a_key_while_the_server_is_down_and_says_so(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    no_platform_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+
+    def unanswered(_record: object, _secret: str) -> str:
+        return "remote_unreachable"
+
+    monkeypatch.setattr(server_cli, "_check_gateway", unanswered)
+    key_file = home / "key"
+    key_file.write_text(_KEY, encoding="ascii")
+    key_file.chmod(0o600)
+    result = _invoke("login", "fu", "--key-file", str(key_file))
+    assert result.exit_code == 0, result.output
+    assert "did not answer yet (remote_unreachable)" in result.stdout
+    assert targets.list_targets()[0].credential == "file"
+
+
+def test_the_foreground_agent_is_only_for_remote_targets(home: Path) -> None:
+    assert _invoke("add", "work", "--local").exit_code == 0
+    result = _invoke("connect", "work", "--agent")
+    assert result.exit_code == 2
+    assert result.stderr.startswith("agent_not_applicable:")
+
+
+def test_the_foreground_agent_is_a_typed_refusal_until_the_agent_is_wired(
+    home: Path, authorized: list[tuple[str, str]], offline_remote: list[tuple[str, Path | None]]
+) -> None:
+    assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    result = _invoke("connect", "lab", "--agent")
+    assert result.exit_code == 20
+    assert "Connected: lab" in result.stdout
+    assert result.stderr.startswith("workspace_agent_unavailable:")
+    assert [call for call, _root in offline_remote] == ["ensure_ready"]

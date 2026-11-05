@@ -1,4 +1,4 @@
-"""``TargetRuntime`` dispatch: the local runtime is built in; remote kinds fail closed by token."""
+"""``TargetRuntime`` dispatch: local is built in; B registers the remote kinds; none fails closed."""
 
 from __future__ import annotations
 
@@ -21,13 +21,28 @@ def test_the_local_kind_has_the_built_in_runtime() -> None:
 
 
 @pytest.mark.parametrize("kind", ["local_port", "ssh", "https"])
-def test_an_unregistered_remote_kind_is_a_closed_refusal(kind: str) -> None:
+def test_an_unregistered_remote_kind_is_a_closed_refusal(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(target_runtime, "_RUNTIME_LOADERS", {"local": LocalTargetRuntime})
     with pytest.raises(TargetRuntimeError) as raised:
         runtime_for(kind)  # type: ignore[arg-type]
     assert (raised.value.reason, raised.value.phase) == (
         "remote_unreachable",
         "runtime_unavailable",
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "runtime"),
+    [
+        ("ssh", "SshTargetRuntime"),
+        ("https", "HttpsTargetRuntime"),
+        ("local_port", "HttpsTargetRuntime"),
+    ],
+)
+def test_the_direct_dial_topology_registers_every_remote_kind(kind: str, runtime: str) -> None:
+    assert type(runtime_for(kind)).__name__ == runtime  # type: ignore[arg-type]
 
 
 def test_an_approach_registers_its_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

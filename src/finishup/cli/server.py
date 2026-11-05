@@ -11,7 +11,8 @@ trusted console; refusals name a target by its id or not at all, with a closed r
 * ``use NAME|local`` writes or removes the owner-only selection; remote targets need the same
   typed confirmation. ``use local`` is the reverse.
 * ``login``/``logout`` store or delete an HTTPS target's API key (platform store or owner-only
-  file); ``connect``/``disconnect`` make the target usable or stop what this client runs for it.
+  file); ``connect``/``disconnect`` make the target usable or stop what this client runs for it;
+  ``connect --agent`` then stays in the foreground as this directory's workspace agent.
 * ``list``, ``status [--json]`` and ``test`` show the deciding source, the target, and a probe.
 
 An isolation root or a runtime pin outranks the selection; while one is in force every command
@@ -181,6 +182,42 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
         _USAGE,
     ),
+    # The five remote connection phases (ADR-051): fixed text, never a host, user, or path.
+    "remote_unreachable": (
+        "the server could not be reached; check its address and this computer's network, then "
+        "run 'finishup server test'",
+        _UNAVAILABLE,
+    ),
+    "remote_auth_failed": (
+        "the server refused this computer's credentials; for SSH load your key (ssh-add) or check "
+        "~/.ssh/config, for HTTPS run 'finishup server login'",
+        _UNAVAILABLE,
+    ),
+    "remote_identity_changed": (
+        "the server's identity could not be verified (an unknown or changed SSH host key, or a "
+        "certificate that does not match the recorded trust); verify it another way, then add "
+        "the target again",
+        _UNAVAILABLE,
+    ),
+    "remote_service_not_running": (
+        "no FinishUP service answers on that server; run 'finishup service start' there, or give "
+        "--remote-launcher so this client can start it",
+        _UNAVAILABLE,
+    ),
+    "remote_incompatible": (
+        "that server is not running this FinishUP release (or is not a FinishUP server); install "
+        "the same release on both",
+        _UNAVAILABLE,
+    ),
+    "agent_not_applicable": (
+        "only a remote server target needs a workspace agent; a local server reads the workspace "
+        "itself",
+        _USAGE,
+    ),
+    "workspace_agent_unavailable": (
+        "this directory could not be offered to that server as a workspace agent",
+        _UNAVAILABLE,
+    ),
 }
 
 DISCLOSURE_LINES: Final = (
@@ -255,6 +292,10 @@ def _cli[**P](command: Callable[P, None]) -> Callable[P, None]:
 
 
 def _runtime_failure(error: TargetRuntimeError) -> NoReturn:
+    from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+    if error.phase in REMOTE_CONNECTION_PHASES:
+        raise ServerCommandRefused(error.phase, detail=error.reason)
     if error.phase == "runtime_unavailable":
         raise ServerCommandRefused(
             "runtime_unavailable", detail=f"{error.reason}, phase {error.phase}"
@@ -381,6 +422,65 @@ def _authorize_remote(name: str, kind: str) -> None:
     _confirm_on_trusted_console(name, kind)
 
 
+def _absolute_option(value: str | None) -> str | None:
+    """An absolute remote path option, checked before it is used in any remote command."""
+
+    if value is not None and (
+        not value.startswith("/")
+        or len(value) > 1_024
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        raise ServerCommandRefused("target_path_invalid")
+    return value
+
+
+def _discover_ssh_endpoint(
+    user: str | None,
+    host: str,
+    port: int,
+    remote_root: str | None,
+    remote_launcher: str | None,
+) -> tuple[str, str | None]:
+    """Ask the authorized server over SSH where its endpoint is: ``(endpoint, launcher)``."""
+
+    from finishup.client import direct_runtime
+
+    try:
+        found = direct_runtime.discover_ssh_endpoint(
+            user=user,
+            host=host,
+            port=port,
+            remote_root=remote_root,
+            remote_launcher=remote_launcher,
+        )
+    except TargetRuntimeError as error:
+        _runtime_failure(error)
+    if found.session_bound:
+        typer.echo(
+            "Warning: that server's endpoint lives in its login session's runtime folder and "
+            "disappears at its last logout; enable linger for that account or give --remote-root."
+        )
+    return found.endpoint, found.launcher
+
+
+def _check_gateway(record: ServerTarget, secret: str) -> str | None:
+    """``GET /v1/server`` with ``secret``: ``None`` when it answered, else the closed phase."""
+
+    import anyio
+
+    from finishup.client.https_binding import fetch_server_info
+    from finishup.client.transports import TransportError
+
+    async def check() -> None:
+        await fetch_server_info(record, secret)
+
+    try:
+        anyio.run(check)
+    except TransportError as error:
+        return error.phase
+    return None
+
+
 def _emit(lines: tuple[str, ...]) -> None:
     for line in lines:
         typer.echo(line)
@@ -471,8 +571,15 @@ def server_add(
         raise ServerCommandRefused(error.reason)
     if taken:
         raise ServerCommandRefused("target_name_taken")
+    remote_root = _absolute_option(remote_root)
+    remote_launcher = _absolute_option(remote_launcher)
     if kind != "local":
         _authorize_remote(name, kind)
+    remote_endpoint: str | None = None
+    if kind == "ssh":
+        remote_endpoint, remote_launcher = _discover_ssh_endpoint(
+            user, cast(str, host), cast(int, ssh_port), remote_root, remote_launcher
+        )
     try:
         with registry_lock():
             if kind == "local":
@@ -493,6 +600,7 @@ def server_add(
                     port=ssh_port,
                     remote_root=remote_root,
                     remote_launcher=remote_launcher,
+                    remote_endpoint=remote_endpoint,
                 )
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
@@ -907,6 +1015,15 @@ def server_login(
         raise ServerCommandRefused("credential_not_applicable")
     try:
         secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+    # The key is checked against the server before it is kept: a refused key, a server whose
+    # identity does not match the recorded trust, or another release is never stored. A server
+    # that does not answer yet keeps the key, and says so.
+    unanswered = _check_gateway(record, secret)
+    if unanswered in {"remote_auth_failed", "remote_identity_changed", "remote_incompatible"}:
+        raise ServerCommandRefused(unanswered)
+    try:
         root = target_root(record.target_id)
         location = KeyringOrFileCredential(
             record.target_id, root, recorded=record.credential
@@ -919,6 +1036,11 @@ def server_login(
         raise ServerCommandRefused(error.reason)
     where = "the platform credential store" if location == "keyring" else "an owner-only file"
     typer.echo(f"Stored the API key for {record.target_id} in {where}.")
+    if unanswered is not None:
+        typer.echo(
+            f"The server did not answer yet ({unanswered}); run 'finishup server test "
+            f"{record.name}' once it is up."
+        )
 
 
 @server_app.command("logout")
@@ -976,11 +1098,49 @@ def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> 
 @_cli
 def server_connect(
     name: Annotated[str | None, typer.Argument(help="A target name, or 'local'.")] = None,
+    agent: Annotated[
+        bool,
+        typer.Option(
+            "--agent",
+            help="Remote targets: then stay connected as this directory's workspace agent "
+            "until interrupted (for CLI-only use; an agent session's MCP bridge does this).",
+        ),
+    ] = False,
 ) -> None:
     """Make a target usable now (start its service or its connection); it also starts on demand."""
 
+    serving: tuple[ServerTarget, Path] | None = None
+    if agent:
+        record, root, _everyday = _resolve(name)
+        if record is None or root is None or not record.is_remote:
+            raise ServerCommandRefused("agent_not_applicable")
+        serving = (record, root)
     label = _runtime_call(name, "ensure_ready")
     typer.echo(f"Connected: {label}.")
+    if serving is not None:
+        _serve_foreground_agent(*serving)
+
+
+def _serve_foreground_agent(record: ServerTarget, root: Path) -> None:
+    """Answer the server's workspace calls for this directory until interrupted."""
+
+    import anyio
+
+    from finishup.cli.bootstrap import resolve_cli_workspace_locator
+    from finishup.client.agent_session import AgentSessionError, run_foreground_agent
+
+    locator = resolve_cli_workspace_locator()
+    if locator is None:
+        raise ServerCommandRefused("workspace_agent_unavailable")
+    typer.echo("Serving this directory's workspace calls; press Ctrl-C to stop.")
+    try:
+        anyio.run(run_foreground_agent, record, root, locator)
+    except KeyboardInterrupt:
+        typer.echo("Stopped the workspace agent.")
+        return
+    except AgentSessionError as error:
+        raise ServerCommandRefused(error.phase or error.reason) from None
+    typer.echo("The server closed the workspace agent connection.")
 
 
 @server_app.command("disconnect")

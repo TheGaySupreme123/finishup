@@ -2,11 +2,12 @@
 
 ``finishup server connect``, ``disconnect``, ``test`` and ``status`` dispatch through
 ``TargetRuntime`` by target kind. The foundation ships the ``local`` runtime: a named local server
-(or the everyday one) whose service starts on demand exactly like today's. Each separation
-approach registers its remote runtimes (``local_port``, ``ssh``, ``https``) in
-``_RUNTIME_LOADERS``; a kind with no registered runtime fails with the closed reason
-``remote_unreachable`` in phase ``runtime_unavailable``, never a silent fallback to a local
-service.
+(or the everyday one) whose service starts on demand exactly like today's. The direct-dial
+topology (approach B) registers its remote runtimes in ``_RUNTIME_LOADERS``: ``ssh`` (the
+target's persistent OpenSSH master) and ``https``/``local_port`` (the gateway itself), loaded from
+``finishup.client.direct_runtime`` only when used. A kind with no registered runtime fails with the
+closed reason ``remote_unreachable`` in phase ``runtime_unavailable``, never a silent fallback to a
+local service.
 
 Runtimes are synchronous: the CLI calls them outside its event loop, and the terminal interface
 calls them from a worker thread. Every failure is a ``TargetRuntimeError`` carrying closed tokens.
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol
 
 from finishup.client.targets import TargetKind
+from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
 
 __all__ = [
     "PROBE_SAMPLES",
@@ -30,6 +32,7 @@ __all__ = [
     "ProbeResult",
     "TargetRuntime",
     "TargetRuntimeError",
+    "probe_service",
     "register_target_runtime",
     "runtime_for",
 ]
@@ -156,51 +159,85 @@ class LocalTargetRuntime:
                 raise TargetRuntimeError("service_unavailable", phase="timeout") from None
 
     def probe(self, root: Path | None) -> ProbeResult:
-        import anyio
+        return probe_service(root)
 
-        from finishup.config.paths import selection_override
-        from finishup.ports.control import ControlClientKind, ControlError, ServiceState
-        from finishup.service.client import connect_service
 
-        async def probe() -> ProbeResult:
-            try:
-                with anyio.fail_after(_PROBE_CONNECT_SECONDS):
-                    client = await connect_service(ControlClientKind.CLI, workspace_locator=None)
-            except ControlError as error:
-                outcome: ProbeOutcome = (
-                    "not_running" if error.reason == "service_unavailable" else "unavailable"
+def probe_service(root: Path | None) -> ProbeResult:
+    """Connect to ``root``'s server (as its selection) and time ``PROBE_SAMPLES`` status calls.
+
+    The connection goes through whatever transport the root's record names, so the same probe
+    serves a local service and a remote one. A remote connection's failure keeps its closed
+    remote phase (``remote_service_not_running`` reads as ``not_running``); a local one reports
+    exactly as before.
+    """
+
+    import anyio
+
+    from finishup.config.paths import selection_override
+    from finishup.ports.control import ControlClientKind, ControlError, ServiceState
+    from finishup.service.client import connect_service
+
+    async def probe() -> ProbeResult:
+        try:
+            with anyio.fail_after(_PROBE_CONNECT_SECONDS):
+                client = await connect_service(ControlClientKind.CLI, workspace_locator=None)
+        except ControlError as error:
+            if error.phase in REMOTE_CONNECTION_PHASES:
+                remote: ProbeOutcome = (
+                    "not_running" if error.phase == "remote_service_not_running" else "unavailable"
                 )
-                return ProbeResult(outcome, reason=error.reason)
-            except TimeoutError:
-                return ProbeResult("unavailable", reason="service_unavailable", phase="timeout")
-            samples: list[float] = []
-            try:
-                status = None
-                for _sample in range(PROBE_SAMPLES):
-                    started = time.monotonic()
-                    status = await client.service_status()
-                    samples.append(time.monotonic() - started)
-            except ControlError as error:
-                return ProbeResult("unavailable", reason=error.reason)
-            finally:
-                await client.close()
-            assert status is not None
-            return ProbeResult(
-                "ready" if status.state is ServiceState.READY else "reachable",
-                service_version=status.service_version,
-                service_instance_id=status.service_instance_id,
-                service_state=status.state.value,
-                vault_mode=status.vault_mode,
-                round_trip_p95_ms=_p95(samples),
-                samples=len(samples),
+                return ProbeResult(remote, reason=error.reason, phase=error.phase)
+            outcome: ProbeOutcome = (
+                "not_running" if error.reason == "service_unavailable" else "unavailable"
             )
+            return ProbeResult(outcome, reason=error.reason)
+        except TimeoutError:
+            return ProbeResult("unavailable", reason="service_unavailable", phase="timeout")
+        samples: list[float] = []
+        try:
+            status = None
+            for _sample in range(PROBE_SAMPLES):
+                started = time.monotonic()
+                status = await client.service_status()
+                samples.append(time.monotonic() - started)
+        except ControlError as error:
+            return ProbeResult("unavailable", reason=error.reason)
+        finally:
+            await client.close()
+        assert status is not None
+        return ProbeResult(
+            "ready" if status.state is ServiceState.READY else "reachable",
+            service_version=status.service_version,
+            service_instance_id=status.service_instance_id,
+            service_state=status.state.value,
+            vault_mode=status.vault_mode,
+            round_trip_p95_ms=_p95(samples),
+            samples=len(samples),
+        )
 
-        with selection_override(root):
-            return anyio.run(probe)
+    with selection_override(root):
+        return anyio.run(probe)
 
 
-# Kind -> loader. The foundation ships ``local``; each approach adds its remote kinds here.
-_RUNTIME_LOADERS: dict[str, Callable[[], TargetRuntime]] = {"local": LocalTargetRuntime}
+def _ssh_runtime() -> TargetRuntime:
+    from finishup.client.direct_runtime import SshTargetRuntime
+
+    return SshTargetRuntime()
+
+
+def _https_runtime() -> TargetRuntime:
+    from finishup.client.direct_runtime import HttpsTargetRuntime
+
+    return HttpsTargetRuntime()
+
+
+# Kind -> loader. The foundation ships ``local``; the direct-dial topology adds its remote kinds.
+_RUNTIME_LOADERS: dict[str, Callable[[], TargetRuntime]] = {
+    "local": LocalTargetRuntime,
+    "ssh": _ssh_runtime,
+    "https": _https_runtime,
+    "local_port": _https_runtime,
+}
 
 
 def register_target_runtime(kind: TargetKind, loader: Callable[[], TargetRuntime]) -> None:

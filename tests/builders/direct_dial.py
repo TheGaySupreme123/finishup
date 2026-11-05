@@ -444,15 +444,22 @@ class FakeBindingGateway:
                         session.results[frame["rpc_id"]] = payload
                         session.arrived.notify_all()
         except (EOFError, OSError, ConnectionError):
+            # The daemon closed this session's connection: the session ends, and every later
+            # request on it is ``404 session_unknown``.
             session.closed = True
+            session.frames.put_nowait(b"")
+            async with session.arrived:
+                session.arrived.notify_all()
 
     async def _wait_result(self, session: _Session, rpc: str, wait_ms: int) -> bytes | None:
         seconds = min(wait_ms, self.wait_cap_ms) / 1_000
         try:
             async with asyncio.timeout(seconds):
                 async with session.arrived:
-                    await session.arrived.wait_for(lambda: rpc in session.results)
+                    await session.arrived.wait_for(lambda: rpc in session.results or session.closed)
         except TimeoutError:
+            return None
+        if rpc not in session.results:
             return None
         # Kept after delivery, as the binding requires: a client whose response was lost asks
         # for the same result again instead of posting the call twice.
@@ -521,6 +528,8 @@ class FakeBindingGateway:
             return await self._error(send, 404, "session_unknown")
         session = self.sessions[parts[3]]
         tail = parts[4:]
+        if session.closed and method != "DELETE":
+            return await self._error(send, 404, "session_unknown")
         if method == "DELETE" and not tail:
             del self.sessions[parts[3]]
             await session.upstream.aclose()
@@ -543,6 +552,8 @@ class FakeBindingGateway:
                     frame = await session.frames.get()
             except TimeoutError:
                 return await self._reply(send, 204)
+            if not frame:
+                return await self._error(send, 404, "session_unknown")
             return await self._reply(send, 200, frame)
         return await self._error(send, 404, "session_unknown")
 
