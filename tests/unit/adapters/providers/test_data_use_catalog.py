@@ -25,6 +25,23 @@ def test_openai_record_is_route_specific_and_has_fixed_evidence_lifetime() -> No
     )
 
 
+def test_reviewed_routes_keep_the_facts_their_recommendation_rests_on() -> None:
+    for endpoint_profile_id, retention, ceiling in (
+        ("openai-responses", "bounded", 30),
+        ("anthropic-openai-chat-completions", "bounded", 30),
+        ("fireworks-responses", "none", None),
+        ("xai-openai-chat-completions", "bounded", 30),
+    ):
+        record = data_use_record_for_endpoint(endpoint_profile_id)
+        assert record.official_source_urls, endpoint_profile_id
+        assert record.profile.customer_content_training == "prohibited", endpoint_profile_id
+        assert record.profile.retention == retention, endpoint_profile_id
+        assert record.profile.retention_days_ceiling == ceiling, endpoint_profile_id
+        assert endpoint_profile_data_use_recommendation_eligible(
+            endpoint_profile_id, now=record.profile.reviewed_at
+        ), endpoint_profile_id
+
+
 def test_unreviewed_route_never_inherits_another_provider_posture() -> None:
     record = data_use_record_for_endpoint("openrouter-openai-chat-completions")
 

@@ -34,8 +34,8 @@ class ProviderDataUseRecord:
     profile: ProviderDataUseProfile
 
 
-_REVIEWED_AT: Final = datetime(2026, 8, 4, tzinfo=UTC)
-_EXPIRES_AT: Final = datetime(2026, 11, 4, tzinfo=UTC)
+_REVIEWED_AT: Final = datetime(2026, 11, 5, tzinfo=UTC)
+_EXPIRES_AT: Final = datetime(2027, 2, 5, tzinfo=UTC)
 
 
 def _profile(
@@ -53,7 +53,7 @@ def _profile(
 
     return ProviderDataUseProfile(
         data_use_profile_id=profile_id,
-        data_use_profile_version="2026.08.04",
+        data_use_profile_version="2026.11.05",
         customer_content_training=training,
         retention=retention,
         retention_days_ceiling=retention_days,
@@ -110,18 +110,26 @@ def _record(
 
 
 _OPENAI_SOURCES: Final = (
-    "https://platform.openai.com/docs/models/default-usage-policies-by-endpoint",
-    "https://help.openai.com/en/articles/5722486-api-data-usage-policies",
+    "https://developers.openai.com/api/docs/guides/your-data",
+    "https://openai.com/enterprise-privacy/",
 )
 _ANTHROPIC_SOURCES: Final = (
     "https://privacy.claude.com/en/articles/7996868-is-my-data-used-for-model-training",
     "https://privacy.claude.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data",
+    "https://privacy.claude.com/en/articles/15425996-data-retention-practices-for-covered-models",
 )
-_FIREWORKS_SOURCES: Final = ("https://docs.fireworks.ai/guides/security_compliance/data_handling",)
-_XAI_SOURCES: Final = ("https://docs.x.ai/developers/faq/security",)
+_FIREWORKS_SOURCES: Final = (
+    "https://docs.fireworks.ai/guides/security_compliance/data_handling",
+    "https://docs.fireworks.ai/accounts/zero-data-retention",
+    "https://fireworks.ai/terms-of-service",
+)
+_XAI_SOURCES: Final = (
+    "https://docs.x.ai/developers/faq/security",
+    "https://x.ai/legal/data-processing-addendum",
+)
 _GEMINI_SOURCES: Final = (
-    "https://ai.google.dev/gemini-api/terms",
-    "https://ai.google.dev/gemini-api/docs/zdr",
+    "https://aistudio.google.com/docs/terms",
+    "https://aistudio.google.com/docs/zdr",
 )
 _OPENROUTER_SOURCES: Final = (
     "https://openrouter.ai/docs/guides/privacy/data-collection",
@@ -129,7 +137,7 @@ _OPENROUTER_SOURCES: Final = (
 )
 _VERCEL_SOURCES: Final = (
     "https://vercel.com/docs/ai-gateway/models-and-providers/provider-options",
-    "https://vercel.com/docs/ai-gateway/byok",
+    "https://vercel.com/docs/ai-gateway/authentication-and-byok/byok",
 )
 _CODEX_SUBSCRIPTION_SOURCES: Final = (
     "https://help.openai.com/en/articles/11369540-codex-in-chatgpt",
@@ -213,8 +221,11 @@ _CATALOG: Final = MappingProxyType(
             sources=_ANTHROPIC_SOURCES,
             caveats=(
                 "Abuse-policy, legal, safety, and support exceptions may permit longer retention "
-                "or restricted authorized access.",
+                "or restricted authorized access: flagged inputs and outputs may be kept up to 2 "
+                "years and classification scores up to 7 years.",
                 "Consumer, feedback-opt-in, and third-party cloud routes are excluded.",
+                "Zero-data-retention workspaces generally need 30-day retention with safety review "
+                "to use Covered Models; Anthropic notifies organizations eligible for an exception.",
             ),
             training="prohibited",
             retention="bounded",
@@ -229,7 +240,8 @@ _CATALOG: Final = MappingProxyType(
             sources=_FIREWORKS_SOURCES,
             caveats=(
                 "Operational metadata is retained; safety, legal, and support handling may still "
-                "involve restricted authorized access.",
+                "involve restricted authorized access, and data may be retained where required by "
+                "law or to prevent abuse.",
                 "Opt-in logging, training products, and other stored features are excluded.",
             ),
             training="prohibited",
@@ -247,6 +259,7 @@ _CATALOG: Final = MappingProxyType(
                 "The 30-day window is for abuse/misuse auditing; legal and safety exceptions may "
                 "apply and authorized access is restricted rather than impossible.",
                 "Files, collections, stateful features, consumer Grok, and team ZDR are excluded.",
+                "xAI's documentation now uses the name SpaceXSI for this API.",
             ),
             training="prohibited",
             retention="bounded",
