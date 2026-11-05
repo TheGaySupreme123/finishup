@@ -2104,8 +2104,9 @@ def _control_error_result(
                     "it is not running and nothing was recorded. Retrying fails the same way "
                     "until the cause is repaired. Give the user this correlation_id; 'finishup "
                     "service diagnostics --correlation-id' with it shows the bounded record. Do "
-                    "not run service lifecycle commands unless the user asks; offer a fix, an "
-                    "issue report, or continuing without FinishUP."
+                    "not run service lifecycle commands unless the user asks for a restart after "
+                    "this failed startup; offer a fix, an issue report, or continuing without "
+                    "FinishUP."
                 ),
                 retryable=False,
                 host_profile=host_profile,
