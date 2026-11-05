@@ -949,3 +949,33 @@ claim had no basis and is removed.
   widened, after a declaration does not trigger a copy at that grant: the next admitting
   operation that names the input does, labelled `admission_time`. Both are open scope decisions
   on issue #1118, not implemented behaviour. Old tasks have no copies, and none is invented.
+
+## Amendment proposed by ADR-051 (2026-11-05): capture by the client workspace agent
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets a client
+use a FinishUP service on another machine. Such a service cannot read the agent's working tree,
+and a server directory at the same path is a different tree. Once ADR-051 is accepted:
+
+- **Decision 2 for a claim-bound connection.** A connection to a remote target carries a
+  workspace *claim* (a keyed digest) instead of a locator, so the service holds no path to read.
+  The capture, the task base (decision 3), the requested-output probes and the task-input reads
+  are then performed by the client's **workspace agent** on the client machine, through this
+  record's own adapter with every fence above (validated root and identity pinning, link refusal,
+  object verification, the effective-config refusal, bounds and retakes), and confined to the
+  agent's own claimed root. The service asks for them with bounded `workspace_call` frames; it
+  never resolves a path for that connection.
+- **Labelled `client_attested`.** Evidence obtained this way is labelled `client_attested`. The
+  fences ran on the client and the service cannot check them independently, so every non-local
+  rendering of the receipt states that the workspace evidence was read on the client machine by
+  the FinishUP workspace agent and attested over the connection.
+- **Redaction stays on the service.** The capture travels to the service as read; the service
+  redacts it and applies the never-send scan before it enters any packet, exactly as for its own
+  read.
+- **No agent, no silent pass.** When no workspace agent is reachable the capture is unavailable
+  with the new reason `workspace_agent_unavailable`
+  (`check_time_change_unavailable_workspace_agent_unavailable`); the existing gap rules and
+  fail-closed defaults apply unchanged.
+- **HOME projects.** The HOME admission of the 2026-10-21 decision is made by the agent on the
+  client, never from the server's own home directory.
+- A connection that carries a locator (every local target) keeps this record's behaviour byte
+  for byte.

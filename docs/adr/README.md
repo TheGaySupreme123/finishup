@@ -37,9 +37,12 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [030](ADR-030-typed-recovery-directives.md) | Typed recovery directives for public errors (proposed) |
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
+| [033](ADR-033-task-facts-and-stop-time-closure-gate.md) | Task facts, explicit blockers, and the Stop-time closure gate |
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
+| [035](ADR-035-declared-delivered-set.md) | The declared delivered set and a fact for a removed deliverable |
 | [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route; the local rule owns action/result pairing (tb4n5) |
 | [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
+| [042](ADR-042-write-classification-and-task-fact-scope.md) | Which edits make verification stale, and which task facts bear on a finding |
 | [043](ADR-043-bounded-agent-facing-text.md) | Bounded agent-facing text: one never-failing composer, and a committed operation never fails on its text |
 | [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of FinishUP state when a host resumes after compaction |
 | [045](ADR-045-derived-facts-history-and-lineage.md) | Derived facts carry history (path-keyed deliverable state) and lineage; canonical command commitments; attempts; binary by content first |
@@ -48,6 +51,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [048](ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) | FinishUP rebrand: identifiers frozen under protocol 0.1, legacy Yoetz spellings recognized beside the new ones; packages ship only as `finishup` (the transitional `yoetz` distribution was withdrawn, #1285) |
 | [049](ADR-049-per-conversation-review-mode-and-hybrid-default.md) | Per-task review mode: every task starts local, the agent turns on AI-powered review for a task with one `decision_recorded` 1.1.0 switch, the owner's `conversation_review` setting (hybrid recommended, local only, owner approval, every task), and three first-run answers on the policy route |
 | [050](ADR-050-server-filled-publish-boilerplate-and-brief-status.md) | Server-filled publish boilerplate: a fresh `request_id` minted per id-less call by the MCP bridge or CLI (never derived from the body) with an in-memory repeat guard, minted draft event ids, service-clock `occurred_at`, an omitted frontier guarded at admission, copied mirrors and canonicalized sets; `server_filled` names the filled fields, never the request id; brief status detail and the results filter |
+| [051](ADR-051-client-server-cut-and-server-targets.md) | Client/server cut line, server targets (several local servers, localhost ports, SSH, HTTPS) and the client workspace agent (proposed) |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

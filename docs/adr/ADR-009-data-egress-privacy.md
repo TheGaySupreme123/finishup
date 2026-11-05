@@ -1901,3 +1901,35 @@ exact bytes in every sink and a new case may carry both spellings, as the amendm
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,
 text) read the same records.
+
+## Amendment proposed by ADR-051 (2026-11-05): the FinishUP server hop
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets a client
+use a FinishUP service on another machine that the same owner runs. Once it is accepted, this
+record changes as follows.
+
+- **A distinct hop, outside the five channels.** Traffic between a FinishUP client and the
+  owner's own FinishUP server is the *FinishUP server hop*. It is not `llm_inference` and not one
+  of the four non-LLM channels, and enabling it enables none of them. It carries the ordinary
+  control traffic (task statements, published work, evidence, check, respond and receipt
+  traffic), observation rows, the workspace claim digest, and the workspace evidence the server
+  asks the client's workspace agent for within each operation's existing bound. It never carries
+  a vault secret, a provider credential, or human-control or secret-ingress traffic.
+- **Authorization.** Each remote target is authorized by the owner on the trusted foreground
+  console with a versioned disclosure and a typed confirmation, recorded in the target record; a
+  new disclosure version requires a fresh confirmation. Agents cannot add or select a remote
+  target. This is a trusted-console decision, not a vault-reauthenticated ceremony, because a
+  client machine may have no vault; ADR-051 records that limit.
+- **Refused in the zero-network state.** Decision 10 is enforced, not reworded: a remote target
+  is refused while the effective policy is zero-network and, with no local service, while the
+  configuration bootstrap leaves `network_egress_permitted` false. In that state the FinishUP-owned
+  process set still permits only the exact endpoints decision 10 lists.
+- **Policy authority sits on the server.** The server's own effective policy, repository grants
+  and never-send fence decide every AI-powered review disclosure from there, exactly as they do
+  locally; the client's profile does not widen or narrow them. Workspace evidence reaches the
+  server as the agent read it, and the server applies minimization, redaction and the never-send
+  scan before any egress, as for a service read. A claim-bound repository's rows are keyed by its
+  claim commitment.
+- **Local sinks (decision 3).** `agent_context` and `local_human_view` remain non-egress sinks on
+  the client machine; with a remote target, the content they receive has first crossed the
+  owner-authorized hop from the server.
