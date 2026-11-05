@@ -43,6 +43,7 @@ from finishup.cli.exits import (
     lifecycle_public_code,
     remediation_message,
 )
+from finishup.cli.gateway import gateway_app
 from finishup.cli.project import project_app
 from finishup.cli.render import (
     bounded_failure_line,
@@ -246,6 +247,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(instance_app, name="instance")
 service_app.add_typer(auto_unlock_app, name="auto-unlock")
 service_app.add_typer(recovery_app, name="recovery")
+service_app.add_typer(gateway_app, name="gateway")
 app.add_typer(ai_app, name="ai")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(credential_app, name="credential")

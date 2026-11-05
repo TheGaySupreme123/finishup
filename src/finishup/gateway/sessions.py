@@ -1,0 +1,327 @@
+"""Gateway sessions: one REST session is one ordinary control connection to the daemon.
+
+``POST /v1/sessions`` opens a session: the gateway connects to the daemon's owner-only control
+endpoint as the same user, forwards the client's hello frame byte for byte, and keeps the
+connection. Calls, cancels and ``workspace_reply`` frames are forwarded on it unchanged; a
+reader task files every frame the daemon sends — a result by its ``rpc_id``, a server frame
+(``workspace_call``) in the session's frame queue for the client's long-poll.
+
+Delivery is at most once. A result is kept per ``(sid, rpc_id)`` until it is fetched; a
+duplicate post of a pending or unfetched ``rpc_id`` is answered from that slot and never sent to
+the daemon again, and a post of an ``rpc_id`` already delivered is refused as ``frame_invalid``.
+A session ends when its upstream closes, when its key no longer authenticates, after
+``SESSION_IDLE_SECONDS`` without a request (closing the upstream so the daemon's idle relock and
+idle stop still work), or on ``DELETE``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import secrets
+import struct
+import time
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Final
+
+from finishup.protocol.rest_binding import (
+    MAX_SESSIONS_PER_KEY,
+    SESSION_IDLE_SECONDS,
+    KeyScope,
+)
+from finishup.service.control_protocol import (
+    MAX_ACTIVE_REQUESTS_PER_SESSION,
+    ControlFrame,
+    ControlProtocolError,
+    ControlStream,
+    encode_control_frame,
+    read_control_frame,
+)
+
+__all__ = [
+    "GatewaySession",
+    "SessionLimit",
+    "SessionRegistry",
+    "UpstreamStream",
+]
+
+_FRAME_QUEUE: Final = 64
+_DELIVERED_MEMORY: Final = 1_024
+
+
+type UpstreamStream = ControlStream
+
+
+class SessionLimit(Exception):
+    """The key already holds ``MAX_SESSIONS_PER_KEY`` sessions, or a session its call limit."""
+
+
+def _new_sid() -> str:
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+
+
+@dataclass(eq=False)
+class GatewaySession:
+    """One REST session and its upstream control connection."""
+
+    sid: str
+    key_id: str
+    scope: KeyScope
+    claim_bound: bool
+    agent: bool
+    upstream: UpstreamStream
+    service_instance_id: str
+    service_generation: str
+    last_seen: float = field(default_factory=time.monotonic)
+    closed: asyncio.Event = field(default_factory=asyncio.Event)
+    _results: dict[str, asyncio.Future[bytes]] = field(
+        default_factory=dict[str, "asyncio.Future[bytes]"]
+    )
+    _delivered: deque[str] = field(default_factory=deque[str])
+    _frames: asyncio.Queue[bytes] = field(
+        default_factory=lambda: asyncio.Queue[bytes](maxsize=_FRAME_QUEUE)
+    )
+    _write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _reader: asyncio.Task[None] | None = None
+
+    def touch(self) -> None:
+        self.last_seen = time.monotonic()
+
+    def start(self) -> None:
+        self._reader = asyncio.create_task(self._read_upstream())
+
+    async def _read_upstream(self) -> None:
+        try:
+            while True:
+                frame = await read_control_frame(self.upstream)
+                payload = encode_control_frame(frame)[4:]
+                if frame.get("kind") == "workspace_call":
+                    if not self.agent:
+                        return
+                    await self._frames.put(payload)
+                    continue
+                rpc_id = frame.get("rpc_id")
+                slot = self._results.get(rpc_id) if type(rpc_id) is str else None
+                if slot is None or slot.done():
+                    return
+                slot.set_result(payload)
+        except (ControlProtocolError, OSError, asyncio.CancelledError):
+            return
+        except Exception:
+            return
+        finally:
+            self.closed.set()
+
+    def delivered(self, rpc_id: str) -> bool:
+        return rpc_id in self._delivered
+
+    def slot(self, rpc_id: str) -> asyncio.Future[bytes] | None:
+        return self._results.get(rpc_id)
+
+    async def forward(self, payload: bytes) -> None:
+        """Write one already-validated frame payload upstream, prefixed, under the write lock."""
+
+        async with self._write_lock:
+            await self.upstream.send_all(struct.pack(">I", len(payload)) + payload)
+
+    async def forward_call(self, rpc_id: str, payload: bytes) -> asyncio.Future[bytes]:
+        """Forward one call once and return the slot its result lands in."""
+
+        if len(self._results) >= MAX_ACTIVE_REQUESTS_PER_SESSION:
+            raise SessionLimit
+        slot: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+        self._results[rpc_id] = slot
+        try:
+            await self.forward(payload)
+        except BaseException:
+            self._results.pop(rpc_id, None)
+            raise
+        return slot
+
+    def take(self, rpc_id: str) -> bytes | None:
+        """The finished result for ``rpc_id``, removed from its slot; ``None`` while pending."""
+
+        slot = self._results.get(rpc_id)
+        if slot is None or not slot.done() or slot.cancelled():
+            return None
+        del self._results[rpc_id]
+        self._delivered.append(rpc_id)
+        while len(self._delivered) > _DELIVERED_MEMORY:
+            self._delivered.popleft()
+        return slot.result()
+
+    async def wait_result(self, rpc_id: str, seconds: float) -> bytes | None:
+        slot = self._results.get(rpc_id)
+        if slot is None:
+            return None
+        if not slot.done():
+            closed = asyncio.ensure_future(self.closed.wait())
+            try:
+                await asyncio.wait(
+                    (asyncio.shield(slot), closed),
+                    timeout=seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                closed.cancel()
+        return self.take(rpc_id)
+
+    async def next_frame(self, seconds: float) -> bytes | None:
+        """The next server frame (``workspace_call``), or ``None`` after ``seconds``."""
+
+        with contextlib.suppress(asyncio.QueueEmpty):
+            return self._frames.get_nowait()
+        getter = asyncio.ensure_future(self._frames.get())
+        closed = asyncio.ensure_future(self.closed.wait())
+        try:
+            await asyncio.wait(
+                (getter, closed), timeout=seconds, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            closed.cancel()
+        if not getter.done():
+            # A cancelled ``Queue.get`` leaves its item queued for the next poll.
+            getter.cancel()
+            await asyncio.gather(getter, return_exceptions=True)
+        return None if getter.cancelled() else getter.result()
+
+    async def close(self) -> None:
+        self.closed.set()
+        if self._reader is not None:
+            self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
+        for slot in self._results.values():
+            if not slot.done():
+                slot.cancel()
+        with contextlib.suppress(Exception):
+            await self.upstream.aclose()
+
+
+type UpstreamConnector = Callable[[], Awaitable[UpstreamStream]]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenedSession:
+    """What opening a session produced: the HTTP status and body, and the live session."""
+
+    status: int
+    body: bytes
+    session: GatewaySession | None
+
+
+class SessionRegistry:
+    """Every live session, bounded per key, expired after idle."""
+
+    def __init__(
+        self,
+        connect_upstream: UpstreamConnector,
+        *,
+        idle_seconds: float = SESSION_IDLE_SECONDS,
+        per_key: int = MAX_SESSIONS_PER_KEY,
+    ) -> None:
+        self._connect = connect_upstream
+        self._idle = idle_seconds
+        self._per_key = per_key
+        self._sessions: dict[str, GatewaySession] = {}
+
+    def __len__(self) -> int:
+        return len(self._sessions)
+
+    def count_for(self, key_id: str) -> int:
+        return sum(1 for session in self._sessions.values() if session.key_id == key_id)
+
+    async def open(
+        self,
+        *,
+        key_id: str,
+        scope: KeyScope,
+        hello: ControlFrame,
+        hello_payload: bytes,
+        manifest_digest: str,
+    ) -> OpenedSession:
+        """Forward the hello on a fresh upstream; register the session when it was admitted.
+
+        ``201`` with the daemon's hello-result for an admitted session; ``409`` with the daemon's
+        own hello-result when it answered a manifest mismatch (it then closes the connection).
+        ``SessionLimit`` when the key holds its maximum; ``ControlProtocolError`` when the daemon
+        closed without answering.
+        """
+
+        if self.count_for(key_id) >= self._per_key:
+            raise SessionLimit
+        upstream = await self._connect()
+        try:
+            await upstream.send_all(struct.pack(">I", len(hello_payload)) + hello_payload)
+            answer = await read_control_frame(upstream, eof_reason="handshake_rejected")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await upstream.aclose()
+            raise
+        body = encode_control_frame(answer)[4:]
+        if (
+            answer.get("schema_manifest_digest") != hello.get("schema_manifest_digest")
+            or answer.get("schema_manifest_digest") != manifest_digest
+            or "workspace_binding" not in answer
+        ):
+            with contextlib.suppress(Exception):
+                await upstream.aclose()
+            return OpenedSession(409, body, None)
+        session = GatewaySession(
+            sid=_new_sid(),
+            key_id=key_id,
+            scope=scope,
+            claim_bound=answer.get("workspace_binding") == "client_claim",
+            agent=hello.get("workspace_agent") is not None,
+            upstream=upstream,
+            service_instance_id=str(answer["service_instance_id"]),
+            service_generation=str(answer["service_generation"]),
+        )
+        self._sessions[session.sid] = session
+        session.start()
+        return OpenedSession(201, body, session)
+
+    def get(self, sid: str, key_id: str) -> GatewaySession | None:
+        """The live session ``sid`` of ``key_id``; a session of another key is not found."""
+
+        session = self._sessions.get(sid)
+        if session is None or session.key_id != key_id:
+            return None
+        if session.closed.is_set():
+            asyncio.ensure_future(self.close(sid))
+            return None
+        return session
+
+    async def close(self, sid: str) -> bool:
+        session = self._sessions.pop(sid, None)
+        if session is None:
+            return False
+        await session.close()
+        return True
+
+    async def close_keys(self, key_ids: frozenset[str]) -> int:
+        """Close every session of keys that no longer authenticate; how many closed."""
+
+        doomed = [sid for sid, session in self._sessions.items() if session.key_id in key_ids]
+        for sid in doomed:
+            await self.close(sid)
+        return len(doomed)
+
+    async def sweep(self) -> int:
+        """Close sessions idle past the bound or whose upstream ended; how many closed."""
+
+        now = time.monotonic()
+        doomed = [
+            sid
+            for sid, session in self._sessions.items()
+            if session.closed.is_set() or now - session.last_seen >= self._idle
+        ]
+        for sid in doomed:
+            await self.close(sid)
+        return len(doomed)
+
+    async def close_all(self) -> None:
+        for sid in tuple(self._sessions):
+            await self.close(sid)

@@ -10,13 +10,22 @@ test beside it, which fails on any new crossing and on any ledger entry that no 
 * SERVER modules may import SERVER and SHARED modules.
 * GATEWAY modules (a same-user control client on the server host) may import SHARED modules and
   ``finishup.service.client`` only.
+* ``finishup.cli.gateway`` — the ``server_host`` commands that run the gateway and manage its
+  keys — is the one CLIENT module that may import GATEWAY modules: it launches them.
 """
 
 from __future__ import annotations
 
 from typing import Final, Literal
 
-__all__ = ["GATEWAY_SERVICE_CLIENT", "MODULE_SIDES", "Side", "allowed", "side_of"]
+__all__ = [
+    "GATEWAY_LAUNCHER",
+    "GATEWAY_SERVICE_CLIENT",
+    "MODULE_SIDES",
+    "Side",
+    "allowed",
+    "side_of",
+]
 
 type Side = Literal["SHARED", "CLIENT", "SERVER", "GATEWAY"]
 
@@ -85,6 +94,8 @@ MODULE_SIDES: Final[dict[str, Side]] = {
 
 # The one service module a gateway may import besides SHARED modules.
 GATEWAY_SERVICE_CLIENT: Final = "finishup.service.client"
+# The one client module that may import the gateway: the server-host commands that launch it.
+GATEWAY_LAUNCHER: Final = "finishup.cli.gateway"
 
 
 def side_of(module: str) -> Side:
@@ -112,5 +123,5 @@ def allowed(importer: str, imported: str) -> bool:
     if source == "GATEWAY":
         return imported == GATEWAY_SERVICE_CLIENT or target == "GATEWAY"
     if target == "GATEWAY":
-        return False
+        return importer == GATEWAY_LAUNCHER
     return source == target

@@ -126,6 +126,7 @@ __all__ = [
     "accepted_but_unresponsive",
     "connect_service",
     "connect_service_on_demand",
+    "ensure_service_running",
     "holder_version_order",
     "path_refusal_reason",
     "prepare_project_request",
@@ -1655,6 +1656,29 @@ async def _best_effort_close_stream(stream: AuthenticatedUnixStream) -> None:
     task.add_done_callback(_consume_background_task)
 
 
+def _remote_target_root() -> Path | None:
+    """The active root when a remote server target's connector serves it, else ``None``.
+
+    ADR-051 approach A: a remote target root has no service of its own; ``finishup connector``
+    binds its control endpoint and relays to the server. Local roots — the everyday install, an
+    explicitly isolated root, a named local server — answer ``None`` and keep today's path.
+    """
+
+    try:
+        root = active_root()
+    except PathSafetyError:
+        return None
+    if root is None:
+        return None
+    from finishup.client.targets import TargetError, read_target
+
+    try:
+        record = read_target(root)
+    except TargetError:
+        return None
+    return root if record is not None and record.is_remote else None
+
+
 async def _connect_service_attempt(
     client_kind: ControlClientKind,
     *,
@@ -1886,6 +1910,48 @@ def _manifest_digest_for_client() -> str:
     from finishup.protocol.schemas import schema_manifest_digest
 
     return schema_manifest_digest()
+
+
+async def ensure_service_running(
+    *, timeout_seconds: float = _SERVICE_START_TIMEOUT_SECONDS
+) -> AuthenticatedUnixStream:
+    """A raw control stream to this root's service, starting the service when none answers.
+
+    For the same-user gateway on a server host (ADR-051, approach A): it relays each client's own
+    hello, so this performs no handshake. The endpoint, its owner-only checks and the peer-UID
+    authentication are exactly ``connect_control``'s; a service is spawned only when no live
+    stamped holder keeps the singleton, and a holder is never superseded here. A remote target
+    root has no service to start (``service_unavailable``).
+    """
+
+    if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
+        raise ValueError("service_start_timeout_invalid")
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        return await connect_control()
+    except LocalControlTransportError as exc:
+        error = _transport_error(exc)
+        if error.reason != "service_unavailable":
+            raise error from exc
+    if _remote_target_root() is not None:
+        raise ControlError("service_unavailable", retryable=True)
+    holder = service_holder_identity()
+    if holder is None or _singleton_holder_lock_is_held() is not True:
+        try:
+            _spawn_service_process()
+        except PathSafetyError as exc:
+            raise _EndpointRootRefused(exc.reason_code) from exc
+        except OSError as exc:
+            raise ControlError("service_unavailable", retryable=True) from exc
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(_SERVICE_START_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        try:
+            return await connect_control()
+        except LocalControlTransportError as exc:
+            error = _transport_error(exc)
+            if error.reason != "service_unavailable":
+                raise error from exc
+    raise ControlError("service_unavailable", retryable=True)
 
 
 async def connect_service_on_demand(
