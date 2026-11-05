@@ -465,6 +465,24 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/control-hello-claim-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-hello-locator-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-hello-result-claim-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/control-native-capture-2.5.case.json",
         "canonical_vector",
         "application/json",
@@ -484,6 +502,24 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "fixtures/canonical/control-project-policy-2.7.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-git-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-observation-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-reads-2.10.case.json",
         "canonical_vector",
         "application/json",
         True,
@@ -1858,6 +1894,30 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/service/control-result-2.9.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-hello-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-hello-result-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-request-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-result-2.10.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

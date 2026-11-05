@@ -551,3 +551,64 @@ class TestLocalReasonRatchet:
     def test_non_string_input_is_refused(self) -> None:
         assert local_reason_has_disposition(None) is False
         assert local_reason_has_disposition("not_a_reason_at_all") is False
+
+
+class TestWorkspaceBindingAndServerTargetReasons:
+    """ADR-051: every binding, server-target and remote-connection reason carries a directive."""
+
+    _EXPECTED: dict[str, str] = {
+        "workspace_binding_conflict": "workspace_binding_correction",
+        "workspace_ref_not_portable": "workspace_handle_required",
+        "workspace_agent_unavailable": "workspace_agent_reconnect",
+        "workspace_agent_refused": "workspace_agent_refusal_review",
+        "requires_server_host": "server_host_command_required",
+        "target_root_is_remote": "remote_target_no_local_service",
+        "selection_overridden": "server_selection_overridden",
+        "remote_unreachable": "remote_server_test",
+        "remote_auth_failed": "remote_credential_repair",
+        "remote_identity_changed": "remote_identity_verify",
+        "remote_service_not_running": "remote_service_start_required",
+        "remote_incompatible": "remote_release_mismatch",
+    }
+
+    @pytest.mark.parametrize("reason", sorted(_EXPECTED))
+    def test_each_reason_is_registered_and_resolves_to_its_fixed_directive(
+        self, reason: str
+    ) -> None:
+        token = self._EXPECTED[reason]
+        assert reason in PROTOCOL_REASON_CODES
+        assert continuation_for_reason(reason) == token
+        assert REASON_CODE_CONTINUATIONS[reason] == token
+        entry = directive_for(token)
+        assert entry is not None
+        # Fixed repository text: no placeholder a caller value could fill, no host or path slot.
+        assert "{" not in entry.directive and "<" not in entry.directive
+        assert entry.directive.isascii()
+        # A CLI that raises the reason locally resolves it through the protocol side.
+        assert continuation_for_local_reason(reason) is None
+        assert local_reason_has_disposition(reason)
+        error = PublicOperationError(
+            PublicErrorCode.SERVICE_UNAVAILABLE,
+            "The selected FinishUP server could not serve this request.",
+            True,
+            correlation_id=_CORRELATION_ID,
+            safe_details={"reason_code": reason},
+        )
+        assert error.safe_details == {"reason_code": reason, "continuation": token}
+
+    def test_remote_connection_phases_are_their_own_reason_codes(self) -> None:
+        from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+        assert REMOTE_CONNECTION_PHASES == frozenset(
+            reason for reason in self._EXPECTED if reason.startswith("remote_")
+        )
+        assert REMOTE_CONNECTION_PHASES <= PROTOCOL_REASON_CODES
+        for phase in REMOTE_CONNECTION_PHASES:
+            assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase)
+            assert continuation_for_reason(phase) is not None
+
+    def test_the_new_tokens_are_protocol_tokens_not_local_ones(self) -> None:
+        tokens = set(self._EXPECTED.values())
+        assert tokens <= CONTINUATION_TOKENS
+        assert len(tokens) == len(self._EXPECTED)
+        assert tokens <= set(REASON_CODE_CONTINUATIONS.values())

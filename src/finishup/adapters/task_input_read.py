@@ -54,6 +54,7 @@ from finishup.observability.privacy import scan_for_sensitive_content
 from finishup.ports.change_capture import (
     MAX_TASK_INPUT_FILES,
     MAX_TASK_INPUT_TEXT_BYTES,
+    OutsideSnapshotRead,
     TaskInputFile,
     TaskInputOrigin,
     drop_space_cut_words,
@@ -528,21 +529,6 @@ def read_outside_inputs(
             if len(inputs) >= limit:
                 break
     return tuple(inputs)
-
-
-@dataclass(frozen=True, slots=True)
-class OutsideSnapshotRead:
-    """One snapshot candidate the outside read reached (#1118 unit 1).
-
-    ``text`` is the whole file when it is UTF-8 text of at most ``max_bytes``; otherwise
-    ``None`` and ``reason`` is the closed code for why no full original was kept.
-    """
-
-    root: str
-    path: str
-    size: int
-    text: bytes | None
-    reason: Literal["too_large", "not_text", "unreadable"] | None
 
 
 def snapshot_outside_inputs(

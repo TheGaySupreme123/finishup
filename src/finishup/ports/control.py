@@ -11,9 +11,19 @@ from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 from finishup.domain.coordination import CoordinationErrorCode
-from finishup.domain.values import JsonObject, validate_commitment
+from finishup.domain.values import JsonObject, freeze_json, validate_commitment
 from finishup.ports.control_reasons import CONTROL_ERROR_REASONS
-from finishup.protocol.canonical import parse_canonical_integer_string
+from finishup.ports.workspace_agent import (
+    MAX_WORKSPACE_DEADLINE_MS,
+    MAX_WORKSPACE_FRAME_BYTES,
+    WORKSPACE_AGENT_SCHEMA_VERSION,
+    WORKSPACE_OPERATION_NAMES,
+    WORKSPACE_REPLY_OUTCOMES,
+    WORKSPACE_REPLY_REASONS,
+    WorkspaceReplyOutcome,
+    outcome_for_reason,
+)
+from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.errors import SafeDetailValue, normalize_safe_details
 from finishup.protocol.ids import IdKind, validate_id
 from finishup.protocol.models import (
@@ -49,7 +59,14 @@ __all__ = [
     "ServiceStatus",
     "RepositoryIdentityKind",
     "RepositoryPrivacyContext",
+    "WORKSPACE_BINDINGS",
+    "WorkspaceAgentDeclaration",
+    "WorkspaceBinding",
+    "WorkspaceCall",
+    "WorkspaceClaim",
+    "WorkspaceIdentityKind",
     "WorkspaceLocator",
+    "WorkspaceReply",
 ]
 
 _CONTROL_PROTOCOL_VERSION = "1.0"
@@ -76,7 +93,15 @@ class ProjectionRenderMode(str, Enum):  # noqa: UP042 - exact wire enum base
     MACHINE_READABLE = "machine_readable"
 
 
-type RepositoryIdentityKind = Literal["git_common_root", "directory"]
+# What a client claims its workspace is: the kinds of the shared canonical-root rule.
+type WorkspaceIdentityKind = Literal["git_common_root", "directory"]
+# ``client_claim`` is a repository identity the service derived from a client's workspace claim;
+# it never came from a path the service resolved (ADR-051).
+type RepositoryIdentityKind = Literal["git_common_root", "directory", "client_claim"]
+# How a connection is bound to a workspace, as the service decided it at handshake.
+type WorkspaceBinding = Literal["none", "local_path", "client_claim"]
+WORKSPACE_BINDINGS: Final[frozenset[str]] = frozenset({"none", "local_path", "client_claim"})
+_CLAIM_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 type McpHostProfile = Literal["generic", "codex", "claude", "cursor"]
 
 
@@ -115,12 +140,141 @@ class RepositoryPrivacyContext:
 
     def __post_init__(self) -> None:
         validate_commitment(self.commitment)
-        if self.identity_kind not in {"git_common_root", "directory"}:
+        if self.identity_kind not in {"git_common_root", "directory", "client_claim"}:
             raise ValueError("repository_identity_kind_invalid")
         if self.workspace_locator is not None and type(self.workspace_locator) is not (
             WorkspaceLocator
         ):
             raise TypeError("workspace_locator_invalid")
+        if self.identity_kind == "client_claim" and self.workspace_locator is not None:
+            # A claim-bound identity has no path the service could read.
+            raise ValueError("repository_identity_kind_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceClaim:
+    """A client's keyed claim on its workspace, sent to a remote server in place of a path.
+
+    ``digest`` is the client's HMAC over the shared canonical-root preimage under a salt kept
+    per server target; it names no path, and the server derives its own commitment from it and
+    never resolves a directory (ADR-051). It stays out of every representation.
+    """
+
+    identity_kind: WorkspaceIdentityKind
+    digest: str = field(repr=False)
+    schema_version: Literal["1.0.0"] = "1.0.0"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0.0":
+            raise ValueError("workspace_claim_schema_version_invalid")
+        if self.identity_kind not in {"git_common_root", "directory"}:
+            raise ValueError("workspace_claim_identity_kind_invalid")
+        if type(self.digest) is not str or _CLAIM_DIGEST.fullmatch(self.digest) is None:
+            raise ValueError("workspace_claim_digest_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceAgentDeclaration:
+    """A connection's offer to answer workspace calls for its claimed workspace (ADR-051).
+
+    ``operations`` are the catalog operations it answers, byte-sorted and distinct;
+    ``max_reply_bytes`` is the largest reply frame it will send.
+    """
+
+    operations: tuple[str, ...]
+    max_reply_bytes: int
+    schema_version: Literal["1.0.0"] = "1.0.0"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != WORKSPACE_AGENT_SCHEMA_VERSION:
+            raise ValueError("workspace_agent_schema_version_invalid")
+        if (
+            type(self.operations) is not tuple
+            or not self.operations
+            or any(type(item) is not str for item in self.operations)
+            or self.operations != tuple(sorted(set(self.operations), key=str.encode))
+            or not set(self.operations) <= set(WORKSPACE_OPERATION_NAMES)
+        ):
+            raise ValueError("workspace_agent_operations_invalid")
+        if (
+            type(self.max_reply_bytes) is not int
+            or not 1 <= self.max_reply_bytes <= MAX_WORKSPACE_FRAME_BYTES
+        ):
+            raise ValueError("workspace_agent_max_reply_bytes_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCall:
+    """One server-to-client workspace callback on a connection that declared an agent.
+
+    ``arguments`` is the operation's catalog encoding (``finishup.ports.workspace_agent``); it may
+    name paths on the client's machine, so it stays out of every representation.
+    """
+
+    kind: Literal["workspace_call"]
+    protocol_version: Literal["1.0"]
+    call_id: str
+    service_instance_id: str
+    service_generation: str
+    operation: str
+    arguments: JsonObject = field(repr=False)
+    deadline_ms: int
+
+    def __post_init__(self) -> None:
+        if self.kind != "workspace_call":
+            raise ValueError("workspace_call_kind_invalid")
+        _validate_protocol_version(self.protocol_version)
+        validate_id(IdKind.CONTROL_RPC, self.call_id)
+        validate_id(IdKind.SERVICE_INSTANCE, self.service_instance_id)
+        _validate_generation(self.service_generation)
+        if type(self.operation) is not str or self.operation not in WORKSPACE_OPERATION_NAMES:
+            raise ValueError("workspace_operation_invalid")
+        arguments = freeze_json(self.arguments)
+        if type(arguments) is not JsonObject:
+            raise ValueError("workspace_call_arguments_invalid")
+        object.__setattr__(self, "arguments", arguments)
+        if (
+            type(self.deadline_ms) is not int
+            or not 1 <= self.deadline_ms <= MAX_WORKSPACE_DEADLINE_MS
+        ):
+            raise ValueError("deadline_ms_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceReply:
+    """A client's answer to one ``WorkspaceCall``, correlated by ``call_id``.
+
+    ``ok`` carries the operation's catalog-encoded ``result`` (which may be null) and no reason;
+    every other outcome carries no result and exactly one closed reason of that outcome.
+    """
+
+    kind: Literal["workspace_reply"]
+    protocol_version: Literal["1.0"]
+    call_id: str
+    outcome: WorkspaceReplyOutcome
+    result: JsonValue = field(repr=False)
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        if self.kind != "workspace_reply":
+            raise ValueError("workspace_reply_kind_invalid")
+        _validate_protocol_version(self.protocol_version)
+        validate_id(IdKind.CONTROL_RPC, self.call_id)
+        if self.outcome not in WORKSPACE_REPLY_OUTCOMES:
+            raise ValueError("workspace_reply_outcome_invalid")
+        object.__setattr__(self, "result", freeze_json(self.result))
+        if self.outcome == "ok":
+            if self.reason is not None:
+                raise ValueError("workspace_reply_reason_invalid")
+            return
+        if self.result is not None:
+            raise ValueError("workspace_reply_result_invalid")
+        if (
+            type(self.reason) is not str
+            or self.reason not in WORKSPACE_REPLY_REASONS
+            or outcome_for_reason(self.reason) != self.outcome
+        ):
+            raise ValueError("workspace_reply_reason_invalid")
 
 
 class ControlMethod(str, Enum):  # noqa: UP042 - exact wire enum base

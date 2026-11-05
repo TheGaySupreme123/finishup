@@ -28,7 +28,7 @@ import pytest
 
 import finishup.adapters.git_change_capture as capture_module
 import finishup.adapters.git_subject_state as subject_state_module
-from finishup.adapters import repository_identity
+from finishup.adapters import repository_identity, workspace_root
 from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
 from finishup.adapters.git_rev_parse import absolute_rev_parse_path
 from finishup.adapters.git_subject_state import (
@@ -227,7 +227,7 @@ def test_no_adapter_passes_an_argument_newer_than_the_minimum() -> None:
     """A ratchet: none of these options or settings may come back into an argv."""
 
     forbidden = ("--path-format", "--end-of-options", "--no-relative", "--show-scope")
-    for module in (capture_module, subject_state_module, repository_identity):
+    for module in (capture_module, subject_state_module, repository_identity, workspace_root):
         source = Path(module.__file__ or "").read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -619,7 +619,7 @@ async def test_a_commondir_the_detector_cannot_decide_is_refused_below_the_minim
 
     import threading
 
-    from finishup.adapters import repository_identity as identity_module
+    from finishup.adapters import workspace_root as identity_module
 
     bare = _bare_with_commondir(tmp_path, f"{kind}.git", kind)
     nested = bare / "refs" / "heads"
@@ -647,7 +647,7 @@ async def test_a_commondir_the_detector_cannot_decide_is_refused_below_the_minim
 def test_an_invalid_head_beside_any_commondir_is_still_not_a_git_directory(tmp_path: Path) -> None:
     """Git checks HEAD first: without a valid one, no pointer makes a Git directory."""
 
-    from finishup.adapters import repository_identity as identity_module
+    from finishup.adapters import workspace_root as identity_module
 
     for kind in ("regular", "symlinked", "nul", "empty"):
         lookalike = tmp_path / f"lookalike-{kind}"
@@ -669,7 +669,7 @@ def test_a_special_file_head_never_blocks_the_detector(tmp_path: Path) -> None:
 
     import threading
 
-    from finishup.adapters import repository_identity as identity_module
+    from finishup.adapters import workspace_root as identity_module
 
     fifo_repository = tmp_path / "fifo"
     (fifo_repository / "objects").mkdir(parents=True)
