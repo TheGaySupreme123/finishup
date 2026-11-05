@@ -14,12 +14,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol, cast
 
-from finishup.adapters.approved_checks import ApprovedCheckRunner, ApprovedCheckStatus
-from finishup.adapters.git_subject_state import (
-    GitSubjectStateAdapter,
-    list_changed_relative_paths,
-    open_local_workspace,
-)
+from finishup.adapters.approved_checks import ApprovedCheckStatus
 from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     acquire_session_lock,
@@ -34,7 +29,6 @@ from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     session_commitment_from_codex_id,
 )
-from finishup.adapters.workspace_inspect import LocalWorkspaceInspectAdapter
 from finishup.application.lineage_coordinator import LineageManifestCoordinator
 from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_PENDING_GAP,
@@ -51,10 +45,7 @@ from finishup.application.observation_advice_semantic import (
     ObservationAdviceSemanticSupervisor,
     ObservationAdviceSemanticWorker,
 )
-from finishup.application.observation_check_policy import (
-    ObservationCheckPolicyAbsent,
-    load_observation_check_policy,
-)
+from finishup.application.observation_check_policy import ObservationCheckPolicyAbsent
 from finishup.application.observation_committed import (
     action_event_committed,
     committed_event_ids,
@@ -98,6 +89,10 @@ from finishup.application.observation_verification import (
     ObservationVerificationWorker,
     VerificationDrainHandle,
     orchestrate_changed_path_inspection,
+)
+from finishup.application.observation_workspace import (
+    LocalObservationWorkspace,
+    ObservationWorkspaceAccess,
 )
 from finishup.application.projects import SourceConsentRevocationPlan
 from finishup.application.unit_of_work import (
@@ -958,6 +953,9 @@ class ObservationCoordinator:
     # evidence was offered as contact. Lineage holds the bound session's open work quiet until
     # ``observed_at`` plus ``seconds``, clamped by its setting.
     observed_quiet_hook: Callable[[str, str, str, datetime, int], Awaitable[None]] | None = None
+    # Where verification reads the observed workspace: this machine, or for a claim-bound
+    # workspace its client's agent (ADR-051). Every read runs in a worker thread.
+    workspace_access: ObservationWorkspaceAccess = field(default_factory=LocalObservationWorkspace)
     _advice_event_ref_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=_empty_advice_event_ref_cache, init=False, repr=False
     )
@@ -6603,12 +6601,14 @@ class ObservationCoordinator:
             or type(content_b64) is not str
         ):
             return None
+        access = self.workspace_access
         try:
             locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
             # The locator was retained under this workspace's observation grant; the service
-            # does not inherit the host launcher's process-local HOME exception.
-            handle = open_local_workspace(Path(locator), admitted_home_project=True)
-            policy, _raw_policy = load_observation_check_policy(Path(locator))
+            # does not inherit the host launcher's process-local HOME exception. Off the event
+            # loop: a claim-bound workspace is opened by its client's agent (ADR-051).
+            handle = await asyncio.to_thread(access.open, locator)
+            policy, _raw_policy = await asyncio.to_thread(access.load_policy, locator)
         except ObservationCheckPolicyAbsent:
             # No approved-check policy is the ordinary opt-in state, not lost content capture.
             return None
@@ -6651,7 +6651,7 @@ class ObservationCoordinator:
                 trust_ref=trust_ref,
                 trusted_at=now,
             )
-        capture = GitSubjectStateAdapter()
+        capture = access.subject_state()
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6686,7 +6686,7 @@ class ObservationCoordinator:
 
         worker = ObservationVerificationWorker(
             repository=repository,
-            runner=ApprovedCheckRunner({item.approval_commitment: item for item in policy.checks}),
+            runner=access.runner({item.approval_commitment: item for item in policy.checks}),
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,
@@ -6735,15 +6735,18 @@ class ObservationCoordinator:
             excerpt_redacted = False
             excerpt_truncated = False
             try:
-                relative_paths = list_changed_relative_paths(handle)
+                relative_paths = await asyncio.to_thread(access.list_changed, handle)
                 changed_digest = canonical_digest(
                     JsonObject({"relative_paths": list(relative_paths)})
                 )
-                orchestration = orchestrate_changed_path_inspection(
-                    workspace=handle,
-                    inspect_port=LocalWorkspaceInspectAdapter(),
-                    relative_paths=relative_paths,
-                    changed_paths_digest=changed_digest,
+                orchestration = await asyncio.to_thread(
+                    partial(
+                        orchestrate_changed_path_inspection,
+                        workspace=handle,
+                        inspect_port=access.inspect_port(),
+                        relative_paths=relative_paths,
+                        changed_paths_digest=changed_digest,
+                    )
                 )
                 if orchestration.inspect_fact is not None:
                     fact_bytes = canonical_encode(
@@ -6872,15 +6875,16 @@ class ObservationCoordinator:
             or type(content_b64) is not str
         ):
             return None
+        access = self.workspace_access
         try:
             locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
-            handle = open_local_workspace(Path(locator), admitted_home_project=True)
-            policy, _raw_policy = load_observation_check_policy(Path(locator))
+            handle = await asyncio.to_thread(access.open, locator)
+            policy, _raw_policy = await asyncio.to_thread(access.load_policy, locator)
         except Exception:
             return None
         if not store.policy_digest_is_trusted(workspace, policy.raw_digest):
             return None
-        capture = GitSubjectStateAdapter()
+        capture = access.subject_state()
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6914,7 +6918,7 @@ class ObservationCoordinator:
 
         return ObservationVerificationWorker(
             repository=repository,
-            runner=ApprovedCheckRunner({item.approval_commitment: item for item in policy.checks}),
+            runner=access.runner({item.approval_commitment: item for item in policy.checks}),
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,

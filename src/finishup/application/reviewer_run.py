@@ -39,6 +39,7 @@ from finishup.application.reviewer_loop import (
     FINAL_FORMAT_ERROR,
     FINAL_PHASE,
     FORMAT_ERROR,
+    WORKSPACE_AGENT_UNAVAILABLE_ENDING,
     ReviewerLoop,
     ReviewerModelError,
     ReviewOutcome,
@@ -357,6 +358,18 @@ def _terminal(
             )
         if outcome.status == "final" and outcome.judgment is not None:
             return last.success(SemanticResultSuccess(outcome.judgment, provenance))
+        if outcome.reason == WORKSPACE_AGENT_UNAVAILABLE_ENDING:
+            # A read the review needed from a claim-bound task's workspace agent got no answer
+            # (ADR-051): the review is unavailable, under the provenance of what was sent.
+            return last.outcome(
+                SemanticResultUnavailable(
+                    replace(
+                        provenance,
+                        status=SemanticStatus.UNAVAILABLE,
+                        failure_class=SemanticFailureClass.TRANSPORT,
+                    )
+                )
+            )
         if outcome.reason == "deadline":
             return last.outcome(
                 SemanticResultTimeout(replace(provenance, status=SemanticStatus.TIMEOUT))

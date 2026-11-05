@@ -407,7 +407,9 @@ class ObservationVerificationWorker:
             )
         finally:
             setattr(self.runner, "_output_sink", original_sink)
-        after = self.capture_subject_state(workspace)
+        # Off the event loop: the post-run hash re-reads the workspace, which for a claim-bound
+        # task is its client's agent, whose reply this loop delivers (ADR-051).
+        after = await asyncio.to_thread(self.capture_subject_state, workspace)
         current = after == job.subject_state_digest
         output, output_redacted = captured[-1] if captured else (b"", False)
         output_object_id = (

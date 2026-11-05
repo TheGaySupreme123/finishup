@@ -64,7 +64,7 @@ from finishup.protocol.coverage import (
     weakest,
 )
 from finishup.protocol.errors import ProtocolValueError
-from finishup.protocol.ids import validate_opaque_item_id
+from finishup.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     ReceiptRedactionProfile,
     SemanticReason,
@@ -115,6 +115,9 @@ __all__ = [
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASONS",
+    "CLIENT_ATTESTED",
+    "CLIENT_ATTESTED_WORKSPACE_LINE",
+    "client_attested_receipt_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
     "COMPLETION_CLAIM_OUTSIDE_PLAN_GAP",
     "COMPLETION_PLAN_NOT_CLAIMED_GAP",
@@ -468,9 +471,23 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         "no_packet_room": (
             "the review recipe's excerpt budget is too small for any part of the change."
         ),
+        # ADR-051: a claim-bound task's workspace is read only by the FinishUP workspace agent
+        # on the client machine.
+        "workspace_agent_unavailable": (
+            "the FinishUP workspace agent on the client machine did not answer the server's read "
+            "of the workspace, so the server could not see the change."
+        ),
     }
 )
 _CHECK_TIME_CHANGE_REASON_PREFIX: Final = CHECK_TIME_CHANGE_UNAVAILABLE_GAP + "_"
+# ADR-051: the provenance of workspace evidence a claim-bound task's workspace agent returned,
+# and the one fixed line every human rendering of such a task's receipt carries. Fixed words: no
+# host, user, path or target name ever joins it.
+CLIENT_ATTESTED: Final = "client_attested"
+CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
+    "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
+    "attested over the connection; the server did not read the repository itself."
+)
 CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS: Final = frozenset(
     _CHECK_TIME_CHANGE_REASON_PREFIX + reason for reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
 )
@@ -3591,4 +3608,22 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
     return (
         prefix + "no unresolved local findings were recorded. Coverage is current cooperative "
         "local evidence; this is not proof of correctness."
+    )
+
+
+def client_attested_receipt_block(service_instance_id: str, *, markdown: bool) -> str:
+    """The section a claim-bound task's text or markdown receipt ends with (ADR-051).
+
+    The fixed provenance line, then the serving service by its own instance id and the closed
+    binding token of the connection it served; nothing user-controlled.
+    """
+
+    validate_id(IdKind.SERVICE_INSTANCE, service_instance_id)
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return "\n".join(
+        (
+            heading,
+            CLIENT_ATTESTED_WORKSPACE_LINE,
+            f"Served by FinishUP service {service_instance_id} (connection: client_claim).",
+        )
     )
