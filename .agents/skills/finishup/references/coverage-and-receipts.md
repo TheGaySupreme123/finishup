@@ -591,11 +591,11 @@ first-start failure does not bypass recovery or automatically permit continuing 
    satisfy the repair exception. Do not invent a substitute workflow. Offer the user the three
    choices in [When FinishUP is not working](recovery.md): restart or fix it locally, report it, or continue
    without FinishUP.
-5. The exception to that handoff is optional FinishUP remaining unavailable after the named
-   repair/retry reaches a terminal outcome. Only then, or after a previously successful startup,
-   may ordinary authorized work continue with missing coverage disclosed, provided the user/host
-   permits it and no write or approval remains pending. A first non-retryable `start` failure alone
-   does not qualify. Required review remains unmet. The user's explicit choice to continue without
+5. The exception to that handoff is a previously successful startup. Only then may ordinary
+   authorized work continue with missing coverage disclosed, provided the user/host permits it and
+   no write or approval remains pending. A first non-retryable `start` failure alone does not
+   qualify, and neither does a first `start` whose named repair/retry reached a terminal outcome.
+   Required review remains unmet. The user's explicit choice to continue without
    FinishUP in step 4 also qualifies, for that task only; the agent never makes that choice itself.
 
 These rules take precedence over general outage fallback language below.

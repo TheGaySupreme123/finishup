@@ -34,10 +34,12 @@ claim, request a receipt, or downgrade to `deterministic_only` while approval is
 refused inspection (`mode: inspect`) requests no review and leaves nothing pending: read `status`
 instead.
 
-After a named startup repair or retry ends in terminal unavailability, continue only when FinishUP is
-optional, no write or approval is pending, and the user or host permits it; disclose the uncovered
-prefix and absence of a live receipt. A first non-retryable startup error alone does not
-qualify; the user's own choice in [When FinishUP is not working](#when-finishup-is-not-working) does.
+After a previously successful startup, if a named repair or retry ends in terminal unavailability,
+continue only when FinishUP is optional, no write or approval is pending, and the user or host
+permits it; disclose the uncovered prefix and absence of a live receipt. A first `start` that never
+succeeded, with or without a named repair, goes to the choices below. A first non-retryable startup
+error alone does not qualify; the user's own choice in
+[When FinishUP is not working](#when-finishup-is-not-working) does.
 
 Typed continuation pointers resolve to these small topics: startup and identity to
 [`startup.md`](startup.md), publication field ownership to [`publication.md`](publication.md),

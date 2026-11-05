@@ -169,3 +169,6 @@ def test_blocked_startup_offers_fix_report_or_no_finishup_and_the_user_decides()
         (_REPO_ROOT / "guidance/coverage-and-receipts.md").read_text("utf-8").split()
     )
     assert "the agent never makes that choice itself" in precedence
+    # A first `start` that never succeeded reaches the user, even after a named repair failed.
+    assert "a first `start` whose named repair/retry reached a terminal outcome" in precedence
+    assert "A first `start` that never succeeded, with or without a named repair" in recovery

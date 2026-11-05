@@ -1924,6 +1924,8 @@ async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_resu
     )
     # Cursor reads this wire message, so it must agree with the remedy other hosts receive.
     assert "unless the user asks for a restart after this failed startup" in message
+    # The message cannot carry every limit, so it must lead to the guidance that does.
+    assert "finishup://guidance/recovery.md" in message
     assert message != _ABSENT_SERVICE_MESSAGE
     text = cast(types.TextContent, result.content[0]).text
     assert "Reason: service_start_failed (stage: activation)." in text
