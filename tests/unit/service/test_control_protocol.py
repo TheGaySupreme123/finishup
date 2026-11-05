@@ -6,7 +6,7 @@ import asyncio
 import base64
 import struct
 from collections.abc import Buffer
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -24,7 +24,11 @@ from finishup.ports.control import (
     RepositoryPrivacyContext,
     ServiceState,
     ServiceStatus,
+    WorkspaceAgentDeclaration,
+    WorkspaceCall,
+    WorkspaceClaim,
     WorkspaceLocator,
+    WorkspaceReply,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.errors import PublicErrorCode
@@ -45,13 +49,21 @@ from finishup.service.control_protocol import (
     client_handshake,
     decode_control_frame,
     encode_control_frame,
+    is_workspace_call_frame,
+    is_workspace_reply_frame,
     parse_control_request,
     parse_control_result,
+    parse_workspace_call,
+    parse_workspace_reply,
     public_error_code_for_control_reason,
     read_control_frame,
     schema_for_method,
     server_handshake,
+    workspace_call_frame,
+    workspace_reply_frame,
     write_control_frame,
+    write_workspace_call,
+    write_workspace_reply,
 )
 
 _SERVICE_ID = "svc_00000000-0000-4000-8000-000000000001"
@@ -920,3 +932,469 @@ def test_transport_failed_is_a_retryable_public_service_code() -> None:
         is PublicErrorCode.SERVICE_UNAVAILABLE
     )
     assert public_error_code_for_control_reason("frame_invalid") is PublicErrorCode.INVALID_REQUEST
+
+
+# --- ADR-051: workspace claims, the session binding, and workspace-agent frames -------------
+
+_COMMITMENT = "hmac-sha256:" + "0123456789abcdef" + "e" * 48
+_CLAIM_HANDLE = "client:0123456789abcdef"
+
+
+def _claim() -> WorkspaceClaim:
+    return WorkspaceClaim("git_common_root", "sha256:" + "c" * 64)
+
+
+def _agent() -> WorkspaceAgentDeclaration:
+    return WorkspaceAgentDeclaration(("capture", "read_task_base"), 6_291_456)
+
+
+def test_a_claim_bound_handshake_records_binding_handle_and_agent_without_a_path() -> None:
+    async def exercise() -> None:
+        client, server, client_peer = _stream_pair()
+        seen: list[WorkspaceClaim] = []
+
+        async def resolve_claim(claim: WorkspaceClaim) -> RepositoryPrivacyContext:
+            seen.append(claim)
+            return RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+
+        async def no_locator(_locator: WorkspaceLocator) -> RepositoryPrivacyContext:
+            raise AssertionError("a claim-bound hello must never resolve a path")
+
+        client_session, server_session = await asyncio.gather(
+            client_handshake(
+                client,
+                ControlClientKind.MCP_BRIDGE,
+                "0.1.0",
+                workspace_claim=_claim(),
+                workspace_agent=_agent(),
+            ),
+            server_handshake(
+                server,
+                client_peer,
+                _status(),
+                repository_context_resolver=no_locator,
+                claim_context_resolver=resolve_claim,
+            ),
+        )
+        assert seen == [_claim()]
+        for session in (client_session, server_session):
+            assert session.workspace_binding == "client_claim"
+            assert session.workspace_handle == _CLAIM_HANDLE
+            assert session.workspace_agent == _agent()
+            assert "c" * 64 not in repr(session)
+        assert server_session.repository_privacy_context == RepositoryPrivacyContext(
+            _COMMITMENT, "client_claim"
+        )
+        assert client_session.repository_privacy_context is None
+        assert "c" * 64 not in repr(_claim())
+
+    asyncio.run(exercise())
+
+
+def test_a_claim_without_a_claim_resolver_is_bound_but_has_no_context_or_handle() -> None:
+    """A daemon that wires no claim resolver yet still names the binding honestly."""
+
+    async def exercise() -> None:
+        client, server, client_peer = _stream_pair()
+        client_session, server_session = await asyncio.gather(
+            client_handshake(client, ControlClientKind.CLI, "0.1.0", workspace_claim=_claim()),
+            server_handshake(server, client_peer, _status()),
+        )
+        for session in (client_session, server_session):
+            assert session.workspace_binding == "client_claim"
+            assert session.workspace_handle is None
+            assert session.workspace_agent is None
+            assert session.repository_privacy_context is None
+
+    asyncio.run(exercise())
+
+
+def test_locator_and_unbound_hellos_keep_their_shape_and_name_their_binding() -> None:
+    """Local behavior: the hello is unchanged; the answer adds only the binding."""
+
+    class _Recording(_MemoryStream):
+        def __init__(self, peer_identity: object) -> None:
+            super().__init__(peer_identity)
+            self.frames: list[bytes] = []
+
+        async def send_all(self, data: Buffer) -> None:
+            self.frames.append(bytes(data))
+            await super().send_all(data)
+
+    async def exercise(locator: WorkspaceLocator | None, binding: str) -> None:
+        client_peer = object()
+        client = _Recording(object())
+        server = _Recording(client_peer)
+        client.other, server.other = server, client
+        client_session, server_session = await asyncio.gather(
+            client_handshake(client, ControlClientKind.CLI, "0.1.0", workspace_locator=locator),
+            server_handshake(server, client_peer, _status()),
+        )
+        hello = decode_control_frame(client.frames[0])
+        expected: set[str] = {
+            "protocol_version",
+            "client_kind",
+            "client_version",
+            "connection_nonce",
+            "schema_manifest_digest",
+            "presentation_context",
+        } | ({"workspace_locator"} if locator is not None else set())
+        assert set(hello) == expected
+        answer = decode_control_frame(server.frames[0])
+        assert answer["workspace_binding"] == binding
+        assert "workspace_handle" not in answer
+        assert client_session.workspace_binding == server_session.workspace_binding == binding
+        assert client_session.workspace_handle is None
+
+    asyncio.run(exercise(WorkspaceLocator("/private/raw-repository"), "local_path"))
+    asyncio.run(exercise(None, "none"))
+
+
+def test_a_hello_with_both_a_locator_and_a_claim_is_refused_before_any_binding() -> None:
+    async def exercise() -> None:
+        client, _server, _peer = _stream_pair()
+        with pytest.raises(ValueError, match="workspace_binding_conflict"):
+            await client_handshake(
+                client,
+                ControlClientKind.CLI,
+                "0.1.0",
+                workspace_locator=WorkspaceLocator("/private/raw-repository"),
+                workspace_claim=_claim(),
+            )
+        with pytest.raises(ValueError, match="workspace_binding_conflict"):
+            await client_handshake(client, ControlClientKind.CLI, "0.1.0", workspace_agent=_agent())
+        assert client.other is not None and client.other._chunks.empty()  # pyright: ignore[reportPrivateUsage]
+
+        for extra in (
+            {
+                "workspace_locator": {"schema_version": "1.0.0", "path": "/private/raw"},
+                "workspace_claim": {
+                    "schema_version": "1.0.0",
+                    "identity_kind": "directory",
+                    "digest": "sha256:" + "d" * 64,
+                },
+            },
+            {
+                "workspace_agent": {
+                    "schema_version": "1.0.0",
+                    "operations": ["capture"],
+                    "max_reply_bytes": 1024,
+                }
+            },
+        ):
+            client, server, client_peer = _stream_pair()
+
+            async def never(_value: object) -> RepositoryPrivacyContext:
+                raise AssertionError("a conflicting hello resolves nothing")
+
+            await write_control_frame(client, {**_hello(), **extra})
+            with pytest.raises(ControlProtocolError) as refused:
+                await server_handshake(
+                    server,
+                    client_peer,
+                    _status(),
+                    repository_context_resolver=never,
+                    claim_context_resolver=never,
+                )
+            _assert_reason(refused, "workspace_binding_conflict")
+            assert server.closed
+            assert client._chunks.empty()  # pyright: ignore[reportPrivateUsage]
+
+    asyncio.run(exercise())
+    assert (
+        public_error_code_for_control_reason("workspace_binding_conflict")
+        is PublicErrorCode.INVALID_REQUEST
+    )
+
+
+def test_a_claim_resolver_must_answer_a_claim_identity() -> None:
+    async def exercise(context: object) -> BaseException:
+        client, server, client_peer = _stream_pair()
+
+        async def resolve(_claim: WorkspaceClaim) -> RepositoryPrivacyContext:
+            if isinstance(context, BaseException):
+                raise context
+            return cast(RepositoryPrivacyContext, context)
+
+        hello = asyncio.create_task(
+            client_handshake(client, ControlClientKind.CLI, "0.1.0", workspace_claim=_claim())
+        )
+        with pytest.raises(ControlProtocolError) as failed:
+            await server_handshake(server, client_peer, _status(), claim_context_resolver=resolve)
+        client.close_inbound()
+        await asyncio.gather(hello, return_exceptions=True)
+        return failed.value
+
+    path_identity = RepositoryPrivacyContext(_COMMITMENT, "directory")
+    assert cast(ControlProtocolError, asyncio.run(exercise(path_identity))).reason == (
+        "protocol_mismatch"
+    )
+    fault = asyncio.run(exercise(RuntimeError("/private/claim-store: boom")))
+    assert isinstance(fault, HandshakeServiceFault)
+    assert fault.refusal is None
+    assert "claim-store" not in f"{fault!r} {fault}"
+
+
+def test_the_client_refuses_an_answer_that_names_another_binding() -> None:
+    import finishup.service.control_protocol as proto
+
+    async def exercise(binding: str | None, handle: str | None, claim: bool) -> str:
+        client, server, _peer = _stream_pair()
+
+        async def answer() -> None:
+            await read_control_frame(server)
+            result = proto._hello_result_wire(  # pyright: ignore[reportPrivateUsage]
+                _status(),
+                proto._allowed_for(ControlClientKind.CLI),  # pyright: ignore[reportPrivateUsage]
+                workspace_binding=cast(Any, binding),
+                workspace_handle=handle,
+            )
+            await write_control_frame(server, result)
+
+        task = asyncio.create_task(answer())
+        with pytest.raises(ControlProtocolError) as refused:
+            await client_handshake(
+                client,
+                ControlClientKind.CLI,
+                "0.1.0",
+                workspace_claim=_claim() if claim else None,
+            )
+        await task
+        return refused.value.reason
+
+    assert asyncio.run(exercise(None, None, False)) == "protocol_mismatch"
+    assert asyncio.run(exercise("local_path", None, False)) == "protocol_mismatch"
+    assert asyncio.run(exercise("none", _CLAIM_HANDLE, False)) == "protocol_mismatch"
+    assert asyncio.run(exercise("none", None, True)) == "protocol_mismatch"
+
+
+def test_the_manifest_mismatch_answer_keeps_the_frozen_hello_result_shape() -> None:
+    async def exercise() -> None:
+        client, server, client_peer = _stream_pair()
+        hello = _hello()
+        hello["schema_manifest_digest"] = "sha256:" + "a" * 64
+        await write_control_frame(client, hello)
+        with pytest.raises(ControlProtocolError):
+            await server_handshake(server, client_peer, _status())
+        result = await read_control_frame(client)
+        assert "workspace_binding" not in result
+        validate_schema_instance("control-hello-result", "2.9.0", result)
+
+    asyncio.run(exercise())
+
+
+def test_session_binding_facts_are_validated_together() -> None:
+    base: dict[str, Any] = {
+        "protocol_version": "1.0",
+        "client_kind": ControlClientKind.CLI,
+        "service_instance_id": _SERVICE_ID,
+        "service_generation": "1",
+        "allowed_methods": tuple(sorted(ControlMethod, key=lambda item: item.value.encode())),
+        "peer_identity": object(),
+        "connection_nonce": "1" * 64,
+    }
+    claim_context = RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+    path_context = RepositoryPrivacyContext(_COMMITMENT, "git_common_root")
+    ControlSession(**base, workspace_binding="local_path", repository_privacy_context=path_context)
+    ControlSession(
+        **base,
+        workspace_binding="client_claim",
+        repository_privacy_context=claim_context,
+        workspace_handle=_CLAIM_HANDLE,
+        workspace_agent=_agent(),
+    )
+    invalid_cases: tuple[dict[str, Any], ...] = (
+        {"workspace_binding": "remote"},
+        {"workspace_binding": "none", "repository_privacy_context": path_context},
+        {"workspace_binding": "local_path", "repository_privacy_context": claim_context},
+        {"workspace_binding": "client_claim", "repository_privacy_context": path_context},
+        {"workspace_binding": "local_path", "workspace_handle": _CLAIM_HANDLE},
+        {"workspace_binding": "client_claim", "workspace_handle": "client:XYZ"},
+        {
+            "workspace_binding": "client_claim",
+            "repository_privacy_context": claim_context,
+            "workspace_handle": "client:ffffffffffffffff",
+        },
+        {"workspace_binding": "local_path", "workspace_agent": _agent()},
+    )
+    for invalid in invalid_cases:
+        with pytest.raises(ValueError):
+            ControlSession(**base, **invalid)
+    with pytest.raises(ValueError, match="repository_identity_kind_invalid"):
+        RepositoryPrivacyContext(
+            _COMMITMENT, "client_claim", WorkspaceLocator("/private/raw-repository")
+        )
+
+
+def _workspace_call(arguments: dict[str, JsonValue] | None = None) -> WorkspaceCall:
+    return WorkspaceCall(
+        kind="workspace_call",
+        protocol_version="1.0",
+        call_id=_rpc_id(41),
+        service_instance_id=_SERVICE_ID,
+        service_generation="1",
+        operation="read_task_base",
+        arguments=JsonObject(arguments or {"workspace": _CLAIM_HANDLE}),
+        deadline_ms=5_000,
+    )
+
+
+def test_workspace_call_and_reply_frames_round_trip_through_the_stream() -> None:
+    async def exercise() -> None:
+        client, server, _peer = _stream_pair()
+        call = _workspace_call()
+        await write_workspace_call(server, call)
+        received = await read_control_frame(client)
+        assert is_workspace_call_frame(received) and not is_workspace_reply_frame(received)
+        assert parse_workspace_call(received) == call
+        with pytest.raises(ControlProtocolError) as not_a_result:
+            parse_control_result(received)
+        _assert_reason(not_a_result, "frame_invalid")
+
+        reply = WorkspaceReply(
+            kind="workspace_reply",
+            protocol_version="1.0",
+            call_id=call.call_id,
+            outcome="ok",
+            result={"commit": "a" * 40, "object_format": "sha1"},
+            reason=None,
+        )
+        await write_workspace_reply(client, reply)
+        answered = await read_control_frame(server)
+        assert is_workspace_reply_frame(answered)
+        assert parse_workspace_reply(answered) == reply
+        with pytest.raises(ControlProtocolError) as not_a_call:
+            parse_control_request(answered)
+        _assert_reason(not_a_call, "frame_invalid")
+
+        unavailable = WorkspaceReply(
+            kind="workspace_reply",
+            protocol_version="1.0",
+            call_id=call.call_id,
+            outcome="unavailable",
+            result=None,
+            reason="not_git",
+        )
+        wire = workspace_reply_frame(unavailable)
+        assert wire["result"] is None and wire["reason"] == "not_git"
+        assert parse_workspace_reply(decode_control_frame(encode_control_frame(wire))) == (
+            unavailable
+        )
+        assert set(workspace_call_frame(call)) == {
+            "arguments",
+            "call_id",
+            "deadline_ms",
+            "kind",
+            "operation",
+            "protocol_version",
+            "service_generation",
+            "service_instance_id",
+        }
+
+    asyncio.run(exercise())
+
+
+def test_workspace_replies_are_closed_by_outcome() -> None:
+    def reply(outcome: str, result: JsonValue, reason: str | None) -> WorkspaceReply:
+        return WorkspaceReply(
+            kind="workspace_reply",
+            protocol_version="1.0",
+            call_id=_rpc_id(42),
+            outcome=cast(Any, outcome),
+            result=result,
+            reason=reason,
+        )
+
+    reply("ok", None, None)
+    reply("refused", None, "root_not_admitted")
+    reply("failed", None, "internal_error")
+    for outcome, result, reason in (
+        ("ok", None, "not_git"),
+        ("unavailable", {"partial": True}, "not_git"),
+        ("unavailable", None, "root_not_admitted"),
+        ("refused", None, "not_git"),
+        ("failed", None, "not_git"),
+        ("unavailable", None, "/private/path"),
+        ("lost", None, None),
+    ):
+        with pytest.raises(ValueError):
+            reply(outcome, result, reason)
+    for frame in (
+        {
+            "kind": "workspace_reply",
+            "protocol_version": "1.0",
+            "call_id": _rpc_id(42),
+            "outcome": "refused",
+            "result": None,
+            "reason": "not_git",
+        },
+        {
+            "kind": "workspace_reply",
+            "protocol_version": "1.0",
+            "call_id": _rpc_id(42),
+            "outcome": "ok",
+            "result": None,
+        },
+    ):
+        with pytest.raises(ControlProtocolError) as invalid:
+            encode_control_frame(frame)
+        _assert_reason(invalid, "frame_invalid")
+    with pytest.raises(ValueError, match="workspace_operation_invalid"):
+        replace_call = dict(
+            kind="workspace_call",
+            protocol_version="1.0",
+            call_id=_rpc_id(43),
+            service_instance_id=_SERVICE_ID,
+            service_generation="1",
+            operation="rm_rf",
+            arguments=JsonObject({}),
+            deadline_ms=1,
+        )
+        WorkspaceCall(**cast(Any, replace_call))
+
+
+def test_workspace_frames_may_use_the_whole_frame_and_no_more() -> None:
+    large = "A" * (2 * MAX_ORDINARY_CONTROL_FRAME_BYTES)
+    reply = {
+        "kind": "workspace_reply",
+        "protocol_version": "1.0",
+        "call_id": _rpc_id(44),
+        "outcome": "ok",
+        "result": large,
+        "reason": None,
+    }
+    encoded = encode_control_frame(reply)
+    assert len(encoded) > MAX_ORDINARY_CONTROL_FRAME_BYTES
+    assert decode_control_frame(encoded)["result"] == large
+    call = workspace_call_frame(_workspace_call({"blob": large}))
+    assert decode_control_frame(encode_control_frame(call))["arguments"] == {"blob": large}
+    with pytest.raises(ControlProtocolError) as too_large:
+        encode_control_frame({**reply, "result": "A" * MAX_CONTROL_FRAME_BYTES})
+    _assert_reason(too_large, "frame_too_large")
+    # Every other frame keeps the ordinary 1 MiB bound.
+    import finishup.service.control_protocol as proto
+
+    oversized = b"x" * (MAX_ORDINARY_CONTROL_FRAME_BYTES + 1)
+    for kind in ("call", "cancel"):
+        with pytest.raises(ControlProtocolError) as ordinary:
+            proto._validate_frame_size(oversized, JsonObject({"kind": kind}))  # pyright: ignore[reportPrivateUsage]
+        _assert_reason(ordinary, "frame_too_large")
+
+
+def test_the_workspace_agent_declaration_is_closed_and_sorted() -> None:
+    _agent()
+    for operations, size in (
+        ((), 1024),
+        (("read_task_base", "capture"), 1024),
+        (("capture", "capture"), 1024),
+        (("capture", "rm_rf"), 1024),
+        (("capture",), 0),
+        (("capture",), MAX_CONTROL_FRAME_BYTES + 1),
+    ):
+        with pytest.raises(ValueError):
+            WorkspaceAgentDeclaration(operations, size)
+    for digest in ("sha256:" + "C" * 64, "hmac-sha256:" + "c" * 64, ""):
+        with pytest.raises(ValueError, match="workspace_claim_digest_invalid"):
+            WorkspaceClaim("directory", digest)
+    with pytest.raises(ValueError, match="workspace_claim_identity_kind_invalid"):
+        WorkspaceClaim(cast(Any, "client_claim"), "sha256:" + "c" * 64)

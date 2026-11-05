@@ -3419,7 +3419,8 @@ def test_schema_catalog_reports_complete_registry() -> None:
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0; #1119: host-connection batch
     # report and ai-status 1.0.0
     # #1139: four lossless result-delivery schemas; #1170: + result-recorded 1.1.0
-    assert SCHEMA_MEMBER_COUNT == 244
+    # ADR-051: the four control envelopes 2.10.0
+    assert SCHEMA_MEMBER_COUNT == 248
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3506,8 +3507,8 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     # #1118: privacy-policy 1.3.0 (its 1.2.0 refs plus the 524,288 bound) and its control 2.9.0
     # admissions add 96.
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_342
-    )  # #1239 +8 status task_lifecycle (status-result 1.4.0 +4, inherited +4 by 1.5.0), +5 quiet period
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 9_581
+    )  # ADR-051 +239 (the control 2.10.0 envelopes carry 2.9.0's refs); #1239 +8 status task_lifecycle (status-result 1.4.0 +4, inherited +4 by 1.5.0), +5 quiet period
     # (quiet_until +1 in each status-result, event-draft +3);
     # #1241 +6 (provider-judgment and reviewer-reply freshness verdict refs);
     # #1129 +3 egress-receipt 1.1.0 capacity_exceeded (the property and its two integers);
@@ -3555,7 +3556,7 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
         "1.2.0",
         "1.3.0",
         "2.0.0",
-        "2.9.0",
+        "2.10.0",
         "7.0.0",
         "1.4.0",
         "1.5.0",

@@ -9983,6 +9983,203 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return _admit_privacy_policy_v1_2(document)
 
 
+def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Extend frozen 2.9 with workspace claims and the workspace-agent frames (ADR-051).
+
+    ``control-hello`` gains two optional members: ``workspace_claim``, a client's keyed claim on
+    its workspace sent in place of ``workspace_locator`` (the service refuses a hello carrying
+    both with ``workspace_binding_conflict``; the schema leaves that check to the handshake so the
+    refusal keeps its own reason), and ``workspace_agent``, the catalog operations the connection
+    answers. ``control-hello-result`` gains ``workspace_binding`` and ``workspace_handle``; the
+    binding is on every admitted session's answer and absent only from the manifest-mismatch
+    answer, which keeps the frozen pre-2.10 shape so an older peer still reads it and names
+    ``manifest_mismatch`` (#436). ``control-result`` gains the server-to-client
+    ``workspace_call`` frame and ``control-request`` the client-to-server ``workspace_reply``;
+    their ``arguments`` and ``result`` are the catalog codecs of
+    ``finishup.ports.workspace_agent``, which owns each operation's exact shape and byte bound.
+    """
+
+    from finishup.ports.workspace_agent import (
+        MAX_WORKSPACE_DEADLINE_MS,
+        MAX_WORKSPACE_FRAME_BYTES,
+        WORKSPACE_FAILURE_REASONS,
+        WORKSPACE_OPERATION_NAMES,
+        WORKSPACE_REFUSAL_REASONS,
+        WORKSPACE_UNAVAILABLE_REASONS,
+    )
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "schemas"
+        / entry.relative_path.replace("2.10.0", "2.9.0")
+    )
+    document = cast(dict[str, JsonValue], json.loads(source.read_bytes()))
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    rpc_id: dict[str, JsonValue] = {
+        "maxLength": 40,
+        "minLength": 40,
+        "pattern": "^rpc_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    operations = cast(list[JsonValue], list(WORKSPACE_OPERATION_NAMES))
+    if entry.schema_name == "control-hello":
+        properties = cast(dict[str, JsonValue], document["properties"])
+        if "workspace_locator" not in properties or "workspace_claim" in properties:
+            raise SchemaGenerationError(
+                "control_hello_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        properties["workspace_claim"] = {
+            "additionalProperties": False,
+            "properties": {
+                "digest": {
+                    "maxLength": 71,
+                    "minLength": 71,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string",
+                },
+                "identity_kind": {"enum": ["directory", "git_common_root"], "type": "string"},
+                "schema_version": {"const": "1.0.0"},
+            },
+            "required": ["schema_version", "identity_kind", "digest"],
+            "type": "object",
+        }
+        properties["workspace_agent"] = {
+            "additionalProperties": False,
+            "properties": {
+                "max_reply_bytes": {
+                    "maximum": MAX_WORKSPACE_FRAME_BYTES,
+                    "minimum": 1,
+                    "type": "integer",
+                },
+                "operations": {
+                    "items": {"enum": operations, "type": "string"},
+                    "maxItems": len(operations),
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": True,
+                },
+                "schema_version": {"const": "1.0.0"},
+            },
+            "required": ["schema_version", "operations", "max_reply_bytes"],
+            "type": "object",
+        }
+    elif entry.schema_name == "control-hello-result":
+        properties = cast(dict[str, JsonValue], document["properties"])
+        if "allowed_methods" not in properties or "workspace_binding" in properties:
+            raise SchemaGenerationError(
+                "control_hello_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        properties["workspace_binding"] = {
+            "enum": ["client_claim", "local_path", "none"],
+            "type": "string",
+        }
+        properties["workspace_handle"] = {
+            "maxLength": 23,
+            "minLength": 23,
+            "pattern": "^client:[0-9a-f]{16}$",
+            "type": "string",
+        }
+    elif entry.schema_name == "control-request":
+        branches = document.get("oneOf")
+        if not isinstance(branches, list):
+            raise SchemaGenerationError(
+                "control_request_schema_template_invalid", entries=(entry.relative_path,)
+            )
+
+        def reply(outcome: JsonValue, result: JsonValue, reason: JsonValue) -> JsonValue:
+            return {
+                "additionalProperties": False,
+                "properties": {
+                    "call_id": dict(rpc_id),
+                    "kind": {"const": "workspace_reply"},
+                    "outcome": outcome,
+                    "protocol_version": {"const": "1.0"},
+                    "reason": reason,
+                    "result": result,
+                },
+                "required": ["kind", "protocol_version", "call_id", "outcome", "result", "reason"],
+                "type": "object",
+            }
+
+        any_json: dict[str, JsonValue] = {
+            "type": ["array", "boolean", "integer", "null", "object", "string"]
+        }
+        branches.extend(
+            [
+                reply({"const": "ok"}, any_json, {"type": "null"}),
+                reply(
+                    {"const": "unavailable"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue],
+                            sorted(WORKSPACE_UNAVAILABLE_REASONS, key=str.encode),
+                        ),
+                        "type": "string",
+                    },
+                ),
+                reply(
+                    {"const": "refused"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue], sorted(WORKSPACE_REFUSAL_REASONS, key=str.encode)
+                        ),
+                        "type": "string",
+                    },
+                ),
+                reply(
+                    {"const": "failed"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue], sorted(WORKSPACE_FAILURE_REASONS, key=str.encode)
+                        ),
+                        "type": "string",
+                    },
+                ),
+            ]
+        )
+    elif entry.schema_name == "control-result":
+        branches = document.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            raise SchemaGenerationError(
+                "control_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        template = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branches[0])["properties"])
+        branches.append(
+            {
+                "additionalProperties": False,
+                "properties": {
+                    "arguments": {"type": "object"},
+                    "call_id": dict(rpc_id),
+                    "deadline_ms": {
+                        "maximum": MAX_WORKSPACE_DEADLINE_MS,
+                        "minimum": 1,
+                        "type": "integer",
+                    },
+                    "kind": {"const": "workspace_call"},
+                    "operation": {"enum": operations, "type": "string"},
+                    "protocol_version": {"const": "1.0"},
+                    "service_generation": copy.deepcopy(template["service_generation"]),
+                    "service_instance_id": copy.deepcopy(template["service_instance_id"]),
+                },
+                "required": [
+                    "kind",
+                    "protocol_version",
+                    "call_id",
+                    "service_instance_id",
+                    "service_generation",
+                    "operation",
+                    "arguments",
+                    "deadline_ms",
+                ],
+                "type": "object",
+            }
+        )
+    return document
+
+
 # The largest page ``privacy_receipts_list`` answers; a partial page cannot skip more rows than it
 # reads.
 _PRIVACY_RECEIPT_PAGE_MAX: Final = 100
@@ -13655,6 +13852,38 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
+        "service/control-hello-2.10.0.schema.json",
+        "control-hello",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+    ),
+    _RegistryEntry(
+        "service/control-hello-result-2.10.0.schema.json",
+        "control-hello-result",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
+    ),
+    _RegistryEntry(
+        "service/control-request-2.10.0.schema.json",
+        "control-request",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+    ),
+    _RegistryEntry(
+        "service/control-result-2.10.0.schema.json",
+        "control-result",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
+    ),
+    _RegistryEntry(
         "service/isolation-report-1.0.0.schema.json",
         "isolation-report",
         "1.0.0",
@@ -13838,6 +14067,11 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "service/control-hello-result-2.9.0.schema.json",
         "service/control-request-2.9.0.schema.json",
         "service/control-result-2.9.0.schema.json",
+        # Workspace claims and the workspace-agent frames (ADR-051).
+        "service/control-hello-2.10.0.schema.json",
+        "service/control-hello-result-2.10.0.schema.json",
+        "service/control-request-2.10.0.schema.json",
+        "service/control-result-2.10.0.schema.json",
     }
 )
 
@@ -14312,6 +14546,13 @@ def build_schema_documents(
             "service/control-result-2.9.0.schema.json",
         }:
             normalized = _control_v2_9_schema(entry)
+        elif entry.relative_path in {
+            "service/control-hello-2.10.0.schema.json",
+            "service/control-hello-result-2.10.0.schema.json",
+            "service/control-request-2.10.0.schema.json",
+            "service/control-result-2.10.0.schema.json",
+        }:
+            normalized = _control_v2_10_schema(entry)
         elif entry.relative_path == "operations/publish-work-request-1.1.0.schema.json":
             normalized = _publish_work_request_schema(entry)
         elif entry.relative_path == "operations/publish-work-request-1.2.0.schema.json":
