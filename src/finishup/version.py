@@ -134,7 +134,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # verification coverage).
 # #1275: +2 canonical status vectors on the status-result 1.5.0 wire carrying closure readiness
 # (CAN-025, CAN-026); the released 1.4.0 vectors (CAN-011, CAN-012) stay append-only.
-REVIEWED_RESOURCE_COUNT: Final = 346
+REVIEWED_RESOURCE_COUNT: Final = 352
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
