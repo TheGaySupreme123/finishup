@@ -49,7 +49,10 @@ from finishup.adapters.memory.ledger import (
     acquire_ledger_executors,
     release_ledger_executors,
 )
-from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.adapters.repository_identity import (
+    claim_repository_privacy_context,
+    resolve_repository_privacy_context,
+)
 from finishup.adapters.session_events import SessionEventMonitor
 from finishup.adapters.sqlite.connection import StorageUnsafeError
 from finishup.application.observation_await import (
@@ -124,6 +127,8 @@ from finishup.ports.control import (
     ServiceState,
     ServiceStatus,
     ServiceStopResult,
+    WorkspaceCall,
+    WorkspaceClaim,
     WorkspaceLocator,
 )
 from finishup.ports.diagnostics import StartupCheckResult
@@ -221,12 +226,15 @@ from finishup.service.control_protocol import (
     ControlStream,
     HandshakeServiceFault,
     encode_control_frame,
+    is_workspace_reply_frame,
     parse_control_request,
+    parse_workspace_reply,
     read_control_frame,
     server_handshake,
     validate_request,
     validate_result,
     write_control_frame,
+    write_workspace_call,
 )
 from finishup.service.human_control import HumanControlError, HumanControlService, PresenceScope
 from finishup.service.installation_recovery import (
@@ -253,6 +261,11 @@ from finishup.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRout
 from finishup.service.startup_failure import ServiceStartupError, record_startup_failure
 from finishup.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from finishup.service.vault import VaultError, VaultMode, VaultService
+from finishup.service.workspace_hub import (
+    WorkspaceAgentChannel,
+    WorkspaceAgentHub,
+    live_call_scope,
+)
 
 __all__ = ["ServiceComposition", "ServiceDaemon", "main", "run_service"]
 
@@ -798,6 +811,12 @@ class ServiceComposition:
     observation_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # One-use owner receipt views minted only by the human-control ceremony (ADR-009 round 3).
     owner_view_grants: OwnerViewGrants = field(default_factory=OwnerViewGrants, repr=False)
+    # The client workspace agents of claim-bound connections (ADR-051). The ready application's
+    # workspace routing calls them through this same hub.
+    workspace_hub: WorkspaceAgentHub = field(default_factory=WorkspaceAgentHub, repr=False)
+    # An edge that admits only claims (a network gateway, say) closes a hello that names a
+    # workspace path on this machine. Off by default: local clients name their path.
+    refuse_workspace_locators: bool = False
 
     def __repr__(self) -> str:
         return "ServiceComposition(<redacted>)"
@@ -883,6 +902,8 @@ class ServiceDaemon:
                 raise LifecycleError("invalid_transition")
             lifecycle = self._composition.lifecycle
             await lifecycle.acquire_singleton()
+            # Blocking workspace routing in worker threads reaches the agents through this loop.
+            self._composition.workspace_hub.bind_loop()
             # Own the process-wide ledger pools until this instance's stop() releases them; a
             # failed start releases through close() below (#1231).
             if not self._holds_ledger_pools:
@@ -1926,11 +1947,37 @@ class ServiceDaemon:
         key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
         return await resolve_repository_privacy_context(locator, key)
 
+    async def _refuse_repository_locator(
+        self, locator: WorkspaceLocator
+    ) -> RepositoryPrivacyContext | None:
+        """An edge that admits only claims never resolves a path it was sent (ADR-051)."""
+
+        del locator
+        raise ControlProtocolError("workspace_binding_conflict")
+
+    async def _resolve_claim_context(
+        self, claim: WorkspaceClaim
+    ) -> RepositoryPrivacyContext | None:
+        """Key a client's workspace claim while an installation key is ready; never a path.
+
+        The commitment is the installation MAC over the claim (``yoetz/repository-claim/v1``), so
+        the session's repository identity is ``client_claim`` and its handle is the
+        commitment's ``client:`` prefix. Nothing on this machine's disk is consulted.
+        """
+
+        vault = self._composition.vault
+        if not vault.ready:
+            return None
+        key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        return claim_repository_privacy_context(claim, key)
+
     async def _serve_control_connection(self, stream: ControlStream) -> None:
         session: ControlSession | None = None
         admission: str | None = None
         calls: dict[str, asyncio.Task[None]] = {}
         write_lock = asyncio.Lock()
+        hub = self._composition.workspace_hub
+        channel: WorkspaceAgentChannel | None = None
         try:
             try:
                 async with asyncio.timeout(_CONTROL_HANDSHAKE_DEADLINE_SECONDS):
@@ -1938,7 +1985,12 @@ class ServiceDaemon:
                         stream,
                         stream.peer_identity,
                         self.status(),
-                        repository_context_resolver=self._resolve_repository_context,
+                        repository_context_resolver=(
+                            self._refuse_repository_locator
+                            if self._composition.refuse_workspace_locators
+                            else self._resolve_repository_context
+                        ),
+                        claim_context_resolver=self._resolve_claim_context,
                     )
             except TimeoutError:
                 return
@@ -1946,7 +1998,11 @@ class ServiceDaemon:
                 _record_handshake_service_fault(fault)
                 return
             except ControlProtocolError as exc:
-                if exc.reason in {"manifest_mismatch", "protocol_mismatch"}:
+                if exc.reason in {
+                    "manifest_mismatch",
+                    "protocol_mismatch",
+                    "workspace_binding_conflict",
+                }:
                     record_public_error_without_raising(
                         component="service.daemon",
                         operation="control_handshake",
@@ -1964,9 +2020,29 @@ class ServiceDaemon:
                     reason="connection_nonce_reused",
                 )
                 return
+            if session.workspace_agent is not None and session.workspace_handle is not None:
+                # A claim-bound connection that offered a workspace agent answers this service's
+                # workspace calls for its claim (ADR-051), written under this connection's lock.
+                async def write_call(call: WorkspaceCall) -> None:
+                    async with write_lock:
+                        async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
+                            await write_workspace_call(stream, call)
+
+                channel = await hub.register(
+                    handle=session.workspace_handle,
+                    declaration=session.workspace_agent,
+                    service_instance_id=session.service_instance_id,
+                    service_generation=session.service_generation,
+                    writer=write_call,
+                )
+            agent = channel
             while not self._stop_event.is_set():
                 try:
-                    frame = await self._read_control_frame_idle_aware(stream, calls)
+                    frame = await self._read_control_frame_idle_aware(
+                        stream,
+                        calls,
+                        agent_busy=None if agent is None else (lambda: agent.pending_count > 0),
+                    )
                 except TimeoutError:
                     return
                 except ControlProtocolError as exc:
@@ -1979,6 +2055,12 @@ class ServiceDaemon:
                             reason=exc.reason,
                         )
                     return
+                if is_workspace_reply_frame(frame):
+                    if channel is None:
+                        # A reply on a connection that offered no agent answers nothing here.
+                        return
+                    hub.deliver(channel, parse_workspace_reply(frame))
+                    continue
                 request = parse_control_request(frame)
                 session.admit(request)
                 if not isinstance(request, ControlCallRequest):
@@ -1996,6 +2078,9 @@ class ServiceDaemon:
         except Exception:
             return
         finally:
+            if channel is not None:
+                # Pending workspace calls fail now, typed, instead of waiting out their deadline.
+                await hub.unregister(channel)
             if admission is not None:
                 # Revoke on disconnect: a later socket gets a fresh admission, never this one.
                 self._composition.owner_view_grants.release(admission)
@@ -2010,6 +2095,8 @@ class ServiceDaemon:
         self,
         stream: ControlStream,
         calls: dict[str, asyncio.Task[None]],
+        *,
+        agent_busy: Callable[[], bool] | None = None,
     ) -> ControlFrame:
         """Read one frame; apply inactive-session idle only when no calls are active.
 
@@ -2019,6 +2106,9 @@ class ServiceDaemon:
         calls are not cancelled merely because no additional frame arrives. Independently, a frame
         that has begun must finish within ``_CONTROL_FRAME_READ_DEADLINE_SECONDS`` even while calls
         are active, so a partial body is never held open-ended (``frame_read_timeout``).
+
+        ``agent_busy`` (a workspace agent's connection, ADR-051) keeps the session live while a
+        workspace call this service sent it is still pending: its reply is the frame awaited.
         """
 
         read_task = asyncio.create_task(
@@ -2039,6 +2129,16 @@ class ServiceDaemon:
                         if task.done():
                             calls.pop(rpc_id, None)
                     continue
+                if agent_busy is not None:
+                    try:
+                        async with asyncio.timeout(_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS):
+                            return await asyncio.shield(read_task)
+                    except TimeoutError:
+                        if agent_busy():
+                            continue
+                        read_task.cancel()
+                        await asyncio.gather(read_task, return_exceptions=True)
+                        raise
                 try:
                     async with asyncio.timeout(_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS):
                         return await read_task
@@ -2089,21 +2189,23 @@ class ServiceDaemon:
             session.output_is_controlling_tty,
             owner_view=self._consume_owner_view(session, request, admission),
         )
-        if session.repository_privacy_context is None:
-            result = await self.dispatch(
-                session.client_kind,
-                request,
-                projection_context=projection_context,
-                _defer_stop=True,
-            )
-        else:
-            result = await self.dispatch(
-                session.client_kind,
-                request,
-                projection_context=projection_context,
-                repository_privacy_context=session.repository_privacy_context,
-                _defer_stop=True,
-            )
+        # Workspace calls this dispatch makes wait the shorter bound for an agent (ADR-051).
+        with live_call_scope():
+            if session.repository_privacy_context is None:
+                result = await self.dispatch(
+                    session.client_kind,
+                    request,
+                    projection_context=projection_context,
+                    _defer_stop=True,
+                )
+            else:
+                result = await self.dispatch(
+                    session.client_kind,
+                    request,
+                    projection_context=projection_context,
+                    repository_privacy_context=session.repository_privacy_context,
+                    _defer_stop=True,
+                )
         session.correlate(result)
         try:
             async with write_lock:
@@ -4935,6 +5037,8 @@ async def _production_composition(
         diagnostics = _NullDiagnostics()
         maintenance_gate = asyncio.Lock()
         observation_gate = asyncio.Lock()
+        # One hub: the daemon registers agent connections, the ready application calls them.
+        workspace_hub = WorkspaceAgentHub()
         ready_application_factory = (
             _ready_application_factory
             if _ready_application_factory is not None
@@ -4950,6 +5054,7 @@ async def _production_composition(
                     diagnostics=diagnostics,
                     observation_gate=observation_gate,
                     startup_bundle_upgrade=_startup_bundle_upgrade,
+                    workspace_hub=workspace_hub,
                 ),
             )
         )
@@ -5009,6 +5114,7 @@ async def _production_composition(
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
             owner_view_grants=owner_view_grants,
+            workspace_hub=workspace_hub,
         )
     except BaseException:
         await listeners.close()
