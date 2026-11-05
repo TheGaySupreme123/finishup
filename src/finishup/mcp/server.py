@@ -42,6 +42,7 @@ from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
     canonical_workspace_locator,
 )
+from finishup.client.workspace_ref import start_request_for_connection
 from finishup.config.env import EnvNameConflictError, read_env
 from finishup.config.load import load_config
 from finishup.config.models import ConfigError, LoggingConfig
@@ -3131,7 +3132,12 @@ async def dispatch_start(
         arguments,
         StartRequest,
         StartResult,
-        lambda client, request: client.start(request, deadline_ms=_stage_deadline_ms("start")),
+        # ADR-051: on a connection to a server on another machine, the workspace path becomes
+        # the connection's handle here, so every attempt (a reconnect too) sends its own.
+        lambda client, request: client.start(
+            start_request_for_connection(request, client),
+            deadline_ms=_stage_deadline_ms("start"),
+        ),
         runtime,
         "start",
     )
