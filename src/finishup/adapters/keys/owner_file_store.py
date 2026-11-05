@@ -37,12 +37,24 @@ _MAX_ENTRY_BYTES: Final = 4096
 class OwnerOnlyFileCredentialStore:
     """A ``keyring``-shaped backend over one owner-only directory."""
 
-    __slots__ = ("_directory",)
+    __slots__ = ("_account_pattern", "_directory", "_service")
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        service: str = _SERVICE_NAME,
+        account_pattern: re.Pattern[str] = _ACCOUNT_PATTERN,
+    ) -> None:
+        """``service`` and ``account_pattern`` default to the auto-unlock custody; another
+        custody (a server target's credential, ADR-051) names its own fixed service and a closed
+        account shape, so an entry name is still never user-controlled text."""
+
         if not directory.is_absolute():
             raise ValueError("owner_file_store_path_invalid")
         self._directory = directory
+        self._service = service
+        self._account_pattern = account_pattern
 
     @property
     def directory(self) -> Path:
@@ -55,7 +67,7 @@ class OwnerOnlyFileCredentialStore:
             if not existing_owner_only_dir(self._directory):
                 return False
             return any(
-                _ACCOUNT_PATTERN.fullmatch(entry.name) is not None
+                self._account_pattern.fullmatch(entry.name) is not None
                 for entry in os.scandir(self._directory)
             )
         except (OSError, PathSafetyError):
@@ -159,6 +171,6 @@ class OwnerOnlyFileCredentialStore:
         return fd
 
     def _entry(self, service: str, username: str) -> str:
-        if service != _SERVICE_NAME or _ACCOUNT_PATTERN.fullmatch(username) is None:
+        if service != self._service or self._account_pattern.fullmatch(username) is None:
             raise ValueError("owner_file_entry_name_invalid")
         return username
