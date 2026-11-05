@@ -338,7 +338,11 @@ class FinishUpTui(App[int]):
         return self._stack[-1] if self._stack else None
 
     async def on_mount(self) -> None:
-        self.header_widget.set_state(version=__version__, project=str(self.runtime.project_root()))
+        self.header_widget.set_state(
+            version=__version__,
+            project=str(self.runtime.project_root()),
+            server=self.runtime.server_indicator(),
+        )
         self.composer.focus_input()
         self._flow = self.run_worker(
             self._first_run_flow() if self.first_run else self._resume_flow(),
@@ -539,6 +543,7 @@ class FinishUpTui(App[int]):
             "privacy": self.command_privacy,
             "provider": self.command_provider,
             "service": self.command_service,
+            "server": self.command_server,
             "doctor": self.command_doctor,
             "help": self.command_help,
             "quit": self.command_quit,
@@ -546,12 +551,35 @@ class FinishUpTui(App[int]):
         handler = handlers.get(name)
         if handler is None:
             return
+        if not self._server_host_allows(name):
+            return
         try:
             await handler()
         except asyncio.CancelledError:
             raise
         except RuntimeError_ as error:
             self._report(error)
+
+    def _server_host_allows(self, name: str) -> bool:
+        """Refuse a server-host command while a remote server target is selected (ADR-051)."""
+
+        from finishup.cli.command_scope import (
+            ServerHostRequired,
+            require_server_host,
+            server_host_refusal_line,
+        )
+
+        try:
+            require_server_host(f"/{name}")
+        except ServerHostRequired as error:
+            self.say(
+                Level.BLOCKED,
+                f"/{name} runs on the FinishUP server host",
+                (server_host_refusal_line(error),),
+                details=(f"reason={error.reason}", f"target={error.target_id}"),
+            )
+            return False
+        return True
 
     def _report(self, error: RuntimeError_) -> None:
         from finishup.cli.render import render_local_recovery_lines
@@ -1484,6 +1512,7 @@ class FinishUpTui(App[int]):
             project=middle_truncate(str(self.runtime.project_root()), 48),
             harness=state,
             privacy=privacy.summary,
+            server=self.runtime.server_indicator(),
         )
         self.footer_widget.set_state(right=self._footer_right(privacy.summary, vault.ready))
 
@@ -2926,6 +2955,82 @@ class FinishUpTui(App[int]):
             else:
                 self.say(Level.OPTIONAL, "The service is still running.")
 
+    async def command_server(self) -> None:
+        """List server targets, show one's status, or switch, as ``finishup server`` does."""
+
+        rows, lines = await self.runtime.server_rows()
+        self.say(Level.ACTIVE, "FinishUP servers", lines)
+        options = [
+            Option(
+                f"use:{row.name}",
+                f"Use {row.name}",
+                "asks you to confirm on this terminal" if row.remote else row.kind,
+            )
+            for row in rows
+            if not row.selected
+        ]
+        options.extend(
+            (
+                Option("status", "Show the selected server's status"),
+                Option("add", "Add a server"),
+                Option("remove", "Remove a server"),
+                Option("login", "Store an HTTPS server's API key"),
+            )
+        )
+        choice = await self.ask(
+            SelectionView(name="server", options=options, hint="enter to choose · esc to go back")
+        )
+        if choice is None:
+            return
+        if choice == "status":
+            self.say(Level.ACTIVE, "Server status", await self.runtime.server_status_lines())
+            return
+        if choice in {"add", "remove", "login"}:
+            self.say(Level.OPTIONAL, "Run this in your shell", _SERVER_SHELL_COMMANDS[choice])
+            return
+        name = choice.removeprefix("use:")
+        row = next(row for row in rows if row.name == name)
+        if row.remote:
+            confirmed = await self.ask(
+                ApprovalView(
+                    name="server-use",
+                    title=f"Use the server {row.name}?",
+                    body=(
+                        "FinishUP will hand this terminal to its confirmation prompt.",
+                        "It shows what is sent to that server; type the server's",
+                        "name there to authorize it.",
+                    ),
+                    approve_label="Continue to confirmation",
+                    decline_label="Not now",
+                    default_to_safe=True,
+                )
+            )
+            if confirmed != "approve":
+                self.say(Level.OPTIONAL, "The selected server is unchanged.")
+                return
+            try:
+                indicator = await self.hand_over_terminal(lambda: self.runtime.use_server(name))
+            except SuspendNotSupported:
+                self.say(
+                    Level.UNPROVEN,
+                    "This terminal cannot hand over for the confirmation",
+                    ("Run this from your shell instead:", "", f"    finishup server use {name}"),
+                )
+                return
+        else:
+            indicator = await self.runtime.use_server(name)
+        self.say(
+            Level.VERIFIED,
+            "Using this computer's everyday server"
+            if indicator == "everyday"
+            else f"Using the server {row.name}",
+            (
+                "New hooks and commands use it now. Restart open agent sessions: a running",
+                "FinishUP MCP bridge keeps the server it started with.",
+            ),
+        )
+        await self._refresh_header()
+
     async def command_work(self) -> None:
         recent = self.runtime.opened_titles
         rows = [Option(f"task:{title}", title, "opened in this session") for title in recent]
@@ -3134,6 +3239,20 @@ class FinishUpTui(App[int]):
             return self._active_task_title
         await self.command_work()
         return self._active_task_title
+
+
+# ``/server`` prints these for the changes that belong on the command line (ADR-051).
+_SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
+    "add": (
+        "    finishup server add NAME --local",
+        "    finishup server add NAME ssh://user@host",
+        "    finishup server add NAME https://host",
+        "",
+        "Then select it with /server or 'finishup server use NAME'.",
+    ),
+    "remove": ("    finishup server remove NAME",),
+    "login": ("    finishup server login NAME",),
+}
 
 
 def _efforts_with_default(default: str) -> tuple[str, ...]:

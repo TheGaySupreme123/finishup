@@ -37,6 +37,7 @@ from finishup.cli.bootstrap import (
 from finishup.cli.bootstrap import (
     stdout_json as _shared_stdout_json,
 )
+from finishup.cli.command_scope import install_server_host_guards
 from finishup.cli.exits import (
     exit_code_for,
     lifecycle_public_code,
@@ -55,6 +56,7 @@ from finishup.cli.render import (
     render_human_status,
     render_local_recovery_lines,
 )
+from finishup.cli.server import server_app
 from finishup.domain.values import JsonObject
 from finishup.legacy_names import RENAME_NOTE
 from finishup.ports.control import (
@@ -261,6 +263,7 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(observe_app, name="observe")
 observe_app.add_typer(observe_checks_app, name="checks")
 app.add_typer(project_app, name="project")
+app.add_typer(server_app, name="server")
 
 
 def _recommend_operation(name: str) -> Callable[..., None]:
@@ -2610,6 +2613,104 @@ def _service_command(method: str) -> Callable[..., None]:
 service_app.command("status")(_service_command("service_status"))
 service_app.command("lock")(_service_command("lock"))
 service_app.command("stop")(_service_command("stop"))
+
+
+async def _service_start(json_output: bool) -> int:
+    """Start this root's service only when none answers, then report its status."""
+
+    from finishup.service.client import connect_service_on_demand
+
+    try:
+        client = await connect_service_on_demand(ControlClientKind.CLI, workspace_locator=None)
+        try:
+            status = await client.service_status()
+        finally:
+            await client.close()
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    _human_or_json(status, json_output=json_output)
+    return 0
+
+
+@service_app.command("start")
+def service_start(json_output: _JSON = False) -> None:
+    """Start the service on demand when it is not running, then show its status.
+
+    Idempotent: a running service is left as it is. ``finishup service stop`` is the reverse.
+    """
+
+    _finish(run_async(lambda: _service_start(json_output)))
+
+
+def _runtime_dir_session_bound(runtime: Path) -> bool:
+    """Whether the endpoint directory is removed when the owner's last login session ends."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    roots = {Path(f"/run/user/{os.getuid()}")}
+    variable = os.environ.get("XDG_RUNTIME_DIR")
+    if variable:
+        roots.add(Path(variable))
+    return any(runtime == root or root in runtime.parents for root in roots)
+
+
+def _linger_state() -> Literal["enabled", "disabled", "unknown", "not_applicable"]:
+    if not sys.platform.startswith("linux"):
+        return "not_applicable"
+    import pwd
+
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return "unknown"
+    directory = Path("/var/lib/systemd/linger")
+    if not directory.is_dir():
+        return "unknown"
+    return "enabled" if (directory / user).exists() else "disabled"
+
+
+@service_app.command("endpoint")
+def service_endpoint(json_output: _JSON = False) -> None:
+    """Show where this server host's control endpoint is and how long it lives.
+
+    Reports the endpoint path, the absolute launcher, the release, the schema-manifest digest,
+    whether the runtime directory ends with the login session, and the Linux linger state.
+    Connection-free: nothing is started.
+    """
+
+    from finishup.adapters.control.unix_socket import CONTROL_ENDPOINT_BASENAME
+    from finishup.adapters.integrations.launcher import (
+        invoking_launcher,
+        resolve_finishup_launcher,
+    )
+    from finishup.config.paths import PathSafetyError, runtime_dir
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    try:
+        runtime = runtime_dir()
+    except PathSafetyError as error:
+        _stderr(f"isolation_invalid: {error.reason_code}")
+        raise typer.Exit(2) from None
+    try:
+        launcher: JsonValue = list(resolve_finishup_launcher(invoking_launcher()))
+    except ValueError:
+        launcher = None
+    report: dict[str, JsonValue] = {
+        # ADR-048 tag namespace, like the isolation report.
+        "schema": "yoetz.service-endpoint/1",
+        "endpoint": str(runtime / CONTROL_ENDPOINT_BASENAME),
+        "launcher": launcher,
+        "release": __version__,
+        "schema_manifest_digest": schema_manifest_digest(),
+        "runtime_dir_session_bound": _runtime_dir_session_bound(runtime),
+        "linger": _linger_state(),
+    }
+    if json_output:
+        _stdout_json(cast(JsonValue, report))
+    else:
+        for key, value in report.items():
+            typer.echo(f"{key}: {canonical_encode(value).decode('utf-8')}")
+    _finish(0)
 
 
 async def _service_restart(json_output: bool) -> int:
@@ -5923,6 +6024,10 @@ def root(
     if version:
         typer.echo(__version__)
         raise typer.Exit(0)
+    if privacy or set_provider:
+        # The root wizards configure the server host's own privacy policy and provider, like
+        # ``privacy setup`` and ``provider``; a remote server target refuses them (ADR-051).
+        _require_server_host_or_exit("privacy setup" if privacy else "provider")
     if privacy:
         if context.invoked_subcommand is not None:
             raise typer.BadParameter("--privacy cannot be combined with a subcommand")
@@ -6402,3 +6507,22 @@ def elevated_authorize(
         return 0
 
     _finish(run_async(_run))
+
+
+def _require_server_host_or_exit(command: str) -> None:
+    from finishup.cli.command_scope import (
+        ServerHostRequired,
+        require_server_host,
+        server_host_refusal_line,
+    )
+
+    try:
+        require_server_host(command)
+    except ServerHostRequired as error:
+        _stderr(server_host_refusal_line(error))
+        raise typer.Exit(exit_code_for(PublicErrorCode.INVALID_REQUEST)) from None
+
+
+# Every ``server_host`` command refuses a remote server target before it runs (ADR-051). This
+# runs once, after every command above is registered; a local root calls straight through.
+install_server_host_guards(app)

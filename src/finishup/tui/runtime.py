@@ -42,6 +42,7 @@ from finishup.tui.models import (
     ProviderPosture,
     ReadinessLayer,
     ReceiptSummary,
+    ServerRow,
     StatusSnapshot,
     TaskStatusPage,
     VaultPosture,
@@ -412,6 +413,21 @@ class RuntimeError_(Exception):
         self.reason = reason
         self.message = message
         self.details = tuple(details)
+
+
+def _server_failure(error: Exception) -> RuntimeError_:
+    """Map a refused ``finishup server`` step to its closed reason and fixed message."""
+
+    from finishup.cli.server import ROOT_UNUSABLE_MESSAGE, ServerCommandRefused, refusal_message
+    from finishup.client.targets import TargetError
+    from finishup.config.paths import PathSafetyError
+
+    if isinstance(error, TargetError):
+        error = ServerCommandRefused(error.reason)
+    elif isinstance(error, PathSafetyError):
+        error = ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE)
+    assert isinstance(error, ServerCommandRefused)
+    return RuntimeError_(error.reason, refusal_message(error))
 
 
 class ObservationCapacityUnavailable(RuntimeError_):
@@ -1445,6 +1461,78 @@ class FinishUpRuntime:
                 "the capacity change was not applied",
             ) from error
         return cast(Mapping[str, object], raw)
+
+    # -- server targets ---------------------------------------------------
+
+    def server_indicator(self) -> str | None:
+        """The selected server target as ``<kind> <id>``; ``None`` for the everyday server.
+
+        Header text only: a name the owner typed never appears there, and a root that cannot be
+        resolved shows nothing rather than a guess (the next operation reports it).
+        """
+
+        from finishup.client.targets import TargetError, active_target_record
+
+        try:
+            record = active_target_record()
+        except TargetError:
+            return None
+        return None if record is None else f"{record.kind} {record.target_id}"
+
+    async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
+        """Every server target (``local`` first) and the ``finishup server list`` lines."""
+
+        import asyncio
+
+        from finishup.cli.server import ServerCommandRefused, render_target_rows, target_rows
+        from finishup.client.targets import TargetError
+        from finishup.config.paths import PathSafetyError
+
+        try:
+            rows, source = await asyncio.to_thread(target_rows)
+        except (ServerCommandRefused, TargetError, PathSafetyError) as error:
+            raise _server_failure(error) from None
+        return (
+            tuple(
+                ServerRow(row.name, row.kind, row.target_id, row.location, row.selected)
+                for row in rows
+            ),
+            render_target_rows(rows, source),
+        )
+
+    async def server_status_lines(self, name: str | None = None) -> tuple[str, ...]:
+        """``finishup server status`` for ``name`` (or the selected server), probed once."""
+
+        import asyncio
+
+        from finishup.cli.server import ServerCommandRefused, build_status_document, status_lines
+        from finishup.client.targets import TargetError
+        from finishup.config.paths import PathSafetyError
+
+        try:
+            document = await asyncio.to_thread(build_status_document, name)
+        except (ServerCommandRefused, TargetError, PathSafetyError) as error:
+            raise _server_failure(error) from None
+        return status_lines(document)
+
+    async def use_server(self, name: str) -> str:
+        """Select ``name`` (``local``: the everyday server), as ``finishup server use`` does.
+
+        A remote target asks for the same typed confirmation on the trusted console, so the
+        caller runs this with the terminal handed over. Returns the new header indicator text.
+        """
+
+        import asyncio
+
+        from finishup.cli.server import ServerCommandRefused, use_target
+        from finishup.client.targets import TargetError
+        from finishup.config.paths import PathSafetyError
+
+        try:
+            record = await asyncio.to_thread(use_target, name)
+        except (ServerCommandRefused, TargetError, PathSafetyError) as error:
+            raise _server_failure(error) from None
+        return "everyday" if record is None else f"{record.kind} {record.target_id}"
 
     # -- service --------------------------------------------------------
 

@@ -26,6 +26,7 @@ from finishup.tui.models import (
     ProviderPosture,
     ReadinessLayer,
     ReceiptSummary,
+    ServerRow,
     StatusSnapshot,
     TaskStatusPage,
     VaultPosture,
@@ -160,6 +161,12 @@ class FakeRuntime:
     progress_reads: list[str] = field(default_factory=lambda: [])
     task_views: list[tuple[str, str]] = field(default_factory=lambda: [])
     receipts: list[tuple[str, str, bool]] = field(default_factory=lambda: [])
+    # Server targets (ADR-051): ``local`` plus any named targets, the header indicator, and the
+    # names ``use_server`` was asked to select.
+    servers: tuple[ServerRow, ...] = (ServerRow("local", "local", None, None, True),)
+    server_selected: str | None = None
+    server_uses: list[str] = field(default_factory=lambda: [])
+    server_error: RuntimeError_ | None = None
 
     def project_root(self) -> Path:
         return Path("/tmp/project")
@@ -484,6 +491,30 @@ class FakeRuntime:
 
     async def service_stop(self) -> str:
         return "draining"
+
+    def server_indicator(self) -> str | None:
+        return self.server_selected
+
+    async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
+        if self.server_error is not None:
+            raise self.server_error
+        lines = tuple(
+            f"{'*' if row.selected else ' '} {row.name}  {row.kind}  {row.target_id or '-'}"
+            for row in self.servers
+        )
+        return self.servers, lines
+
+    async def server_status_lines(self, name: str | None = None) -> tuple[str, ...]:
+        return (f"Server: {name or 'local'} (local); chosen by: ambient", "State: ready")
+
+    async def use_server(self, name: str) -> str:
+        if self.server_error is not None:
+            raise self.server_error
+        self.server_uses.append(name)
+        row = next(row for row in self.servers if row.name == name)
+        self.servers = tuple(replace(item, selected=item.name == name) for item in self.servers)
+        self.server_selected = None if row.target_id is None else f"{row.kind} {row.target_id}"
+        return "everyday" if row.target_id is None else f"{row.kind} {row.target_id}"
 
     async def status_snapshot(self) -> StatusSnapshot:
         return StatusSnapshot(

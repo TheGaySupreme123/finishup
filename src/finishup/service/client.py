@@ -25,8 +25,8 @@ from finishup.config.env import canonical_env_name
 from finishup.config.paths import (
     ISOLATED_ROOT_ENV_NAMES,
     PathSafetyError,
+    active_root,
     ensure_owner_only_dir,
-    isolated_root,
     log_dir,
 )
 from finishup.domain.privacy import (
@@ -217,9 +217,10 @@ def _service_environment() -> dict[str, str]:
     # A runtime pin resolves the root without the variable (issue #604). The detached service
     # runs the same interpreter and would resolve the same pin, but forwarding the resolved root
     # explicitly keeps the chain visible and identical to the environment-selected case. Both
-    # spellings carry it (ADR-048), so the child agrees with itself under either name.
+    # spellings carry it (ADR-048), so the child agrees with itself under either name. A server
+    # selection (ADR-051) is forwarded the same way: the spawned service is that target's own.
     try:
-        root = isolated_root()
+        root = active_root()
     except PathSafetyError:
         root = None
     if root is not None:

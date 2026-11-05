@@ -13895,6 +13895,33 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             ).IsolationReportContract
         ),
     ),
+    # ADR-051: ``binding`` gains ``selection`` (the owner-only server selection); the released
+    # 1.0.0 enum is closed, so it stays byte-frozen and this successor carries the new value.
+    _RegistryEntry(
+        "service/isolation-report-1.1.0.schema.json",
+        "isolation-report",
+        "1.1.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.isolation_report", fromlist=["IsolationReportContract"]
+            ).IsolationReportContract
+        ),
+    ),
+    # ADR-051: ``finishup server status --json``.
+    _RegistryEntry(
+        "service/server-target-status-1.0.0.schema.json",
+        "server-target-status",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.server_target_status", fromlist=["ServerTargetStatusContract"]
+            ).ServerTargetStatusContract
+        ),
+    ),
     _RegistryEntry(
         "service/service-status-1.0.0.schema.json",
         "service-status",
@@ -14434,6 +14461,7 @@ def build_schema_documents(
             "findings/semantic-provenance-1.0.0.schema.json",
             "operations/check-result-1.0.0.schema.json",
             "operations/receipt-result-1.0.0.schema.json",
+            "service/isolation-report-1.0.0.schema.json",
         }:
             # Released contracts whose owning model has since moved on stay byte-frozen.
             normalized = _frozen_schema(entry)
