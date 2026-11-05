@@ -6,9 +6,11 @@ connection. Calls, cancels and ``workspace_reply`` frames are forwarded on it un
 reader task files every frame the daemon sends — a result by its ``rpc_id``, a server frame
 (``workspace_call``) in the session's frame queue for the client's long-poll.
 
-Delivery is at most once. A result is kept per ``(sid, rpc_id)`` until it is fetched; a
-duplicate post of a pending or unfetched ``rpc_id`` is answered from that slot and never sent to
-the daemon again, and a post of an ``rpc_id`` already delivered is refused as ``frame_invalid``.
+Delivery is at most once. A result is kept per ``(sid, rpc_id)`` until it is fetched, and stays
+readable for a minute afterwards (bounded in bytes) so a client whose answer was lost in transit
+polls it instead of posting again; a duplicate post of a pending or unfetched ``rpc_id`` is
+answered from that slot and never sent to the daemon again, and a post of an ``rpc_id`` already
+delivered is refused as ``frame_invalid``.
 A session ends when its upstream closes, when its key no longer authenticates, after
 ``SESSION_IDLE_SECONDS`` without a request (closing the upstream so the daemon's idle relock and
 idle stop still work), or on ``DELETE``.
@@ -50,6 +52,10 @@ __all__ = [
 
 _FRAME_QUEUE: Final = 64
 _DELIVERED_MEMORY: Final = 1_024
+# A delivered result stays readable this long, within this many bytes per session, so a client
+# whose answer was lost in transit can fetch it by polling instead of posting the call again.
+_RETAIN_SECONDS: Final = 60.0
+_RETAIN_BYTES: Final = 8 * 1_048_576
 
 
 type UpstreamStream = ControlStream
@@ -81,6 +87,9 @@ class GatewaySession:
         default_factory=dict[str, "asyncio.Future[bytes]"]
     )
     _delivered: deque[str] = field(default_factory=deque[str])
+    _retained: dict[str, tuple[bytes, float]] = field(
+        default_factory=dict[str, tuple[bytes, float]]
+    )
     _frames: asyncio.Queue[bytes] = field(
         default_factory=lambda: asyncio.Queue[bytes](maxsize=_FRAME_QUEUE)
     )
@@ -121,6 +130,24 @@ class GatewaySession:
     def slot(self, rpc_id: str) -> asyncio.Future[bytes] | None:
         return self._results.get(rpc_id)
 
+    def known(self, rpc_id: str) -> bool:
+        """Whether a result for ``rpc_id`` is pending, unfetched, or recently delivered."""
+
+        self._expire_retained()
+        return rpc_id in self._results or rpc_id in self._retained
+
+    def _expire_retained(self) -> None:
+        now = time.monotonic()
+        for rpc_id, (_payload, expires) in tuple(self._retained.items()):
+            if expires <= now:
+                del self._retained[rpc_id]
+
+    def _retain(self, rpc_id: str, payload: bytes) -> None:
+        self._expire_retained()
+        self._retained[rpc_id] = (payload, time.monotonic() + _RETAIN_SECONDS)
+        while sum(len(held) for held, _expires in self._retained.values()) > _RETAIN_BYTES:
+            del self._retained[next(iter(self._retained))]
+
     async def forward(self, payload: bytes) -> None:
         """Write one already-validated frame payload upstream, prefixed, under the write lock."""
 
@@ -145,18 +172,23 @@ class GatewaySession:
         """The finished result for ``rpc_id``, removed from its slot; ``None`` while pending."""
 
         slot = self._results.get(rpc_id)
-        if slot is None or not slot.done() or slot.cancelled():
+        if slot is None:
+            retained = self._retained.get(rpc_id)
+            return None if retained is None else retained[0]
+        if not slot.done() or slot.cancelled():
             return None
         del self._results[rpc_id]
         self._delivered.append(rpc_id)
         while len(self._delivered) > _DELIVERED_MEMORY:
             self._delivered.popleft()
-        return slot.result()
+        payload = slot.result()
+        self._retain(rpc_id, payload)
+        return payload
 
     async def wait_result(self, rpc_id: str, seconds: float) -> bytes | None:
         slot = self._results.get(rpc_id)
         if slot is None:
-            return None
+            return self.take(rpc_id)
         if not slot.done():
             closed = asyncio.ensure_future(self.closed.wait())
             try:
