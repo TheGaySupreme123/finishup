@@ -142,6 +142,7 @@ __all__ = [
     "accepted_but_unresponsive",
     "connect_service",
     "connect_service_on_demand",
+    "ensure_service_running",
     "holder_version_order",
     "path_refusal_reason",
     "prepare_project_request",
@@ -2362,6 +2363,49 @@ async def _connect_remote_on_demand(
         if not await start_remote_service(transport, deadline - time.monotonic()):
             raise
     return await attempt()
+
+
+async def ensure_service_running(
+    *, timeout_seconds: float = _SERVICE_START_TIMEOUT_SECONDS
+) -> ControlStream:
+    """A raw control stream to this root's service, starting the service when none answers.
+
+    For the same-user gateway on a server host (ADR-051, approach A): it relays each client's own
+    hello, so this performs no handshake. The endpoint, its owner-only checks and the peer-UID
+    authentication are exactly ``connect_control``'s; a service is spawned only when no live
+    stamped holder keeps the singleton, and a holder is never superseded here. A remote target
+    root has no service to start (``service_unavailable``).
+    """
+
+    if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
+        raise ValueError("service_start_timeout_invalid")
+    deadline = time.monotonic() + timeout_seconds
+    if _control_transport().target is not None:
+        # A remote target root has no local endpoint and no service of its own to start.
+        raise ControlError("service_unavailable", retryable=True)
+    try:
+        return await connect_control()
+    except LocalControlTransportError as exc:
+        error = _transport_error(exc)
+        if error.reason != "service_unavailable":
+            raise error from exc
+    holder = service_holder_identity()
+    if holder is None or _singleton_holder_lock_is_held() is not True:
+        try:
+            _spawn_service_process()
+        except PathSafetyError as exc:
+            raise _EndpointRootRefused(exc.reason_code) from exc
+        except OSError as exc:
+            raise ControlError("service_unavailable", retryable=True) from exc
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(_SERVICE_START_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        try:
+            return await connect_control()
+        except LocalControlTransportError as exc:
+            error = _transport_error(exc)
+            if error.reason != "service_unavailable":
+                raise error from exc
+    raise ControlError("service_unavailable", retryable=True)
 
 
 async def connect_service_on_demand(
