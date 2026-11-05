@@ -3506,8 +3506,8 @@ encoding, length prefix, hash prepass, normalization, or delimiter.
 CLI/UI-only `lock`/`stop`, and `close`. Shared closed types are `ControlClientKind`
 (`cli|mcp_bridge|ui`), `ControlMethod`, `ControlRequest`, `ControlResult`, `ServiceState`
 (`starting|locked|unlocking|ready|draining|failed`), and `ServiceStatus`. The method registry has
-exactly thirty-one calls: the six workflow operations plus twenty-five support/preview/execute,
-lifecycle, observation-control, and CLI/UI-only methods. The privacy subset is exactly
+exactly thirty-two calls: the six workflow operations plus twenty-six support/preview/execute,
+lifecycle, observation-control, privacy, and CLI/UI-only methods. The privacy subset is exactly
 `privacy_get_setup|privacy_get_effective|privacy_propose_policy|privacy_tighten_policy|
 privacy_pending_list|privacy_receipts_list|privacy_receipts_get`. The observation subset is exactly
 `observation_ingest|observation_status|observation_pause|observation_resume|observation_revoke`
@@ -3586,7 +3586,9 @@ connection's `start` and `check` calls; it is never stored, logged, projected or
 Branches and
 linked worktrees share one commitment; independent clones and unrelated repositories do not. An
 older hello decoder or omitted locator produces an unbound session and cannot create, migrate, or
-consume repository disclosure authority.
+consume repository disclosure authority. From control envelopes 2.10.0 a client of a remote target
+sends a `workspace_claim` instead of the locator, never both; the service commits the claim without
+resolving any path (see "Server targets, selection, and the workspace agent" below, ADR-051).
 
 The version 2 hello also carries one closed optional `presentation_context(render_mode,
 output_is_controlling_tty)` produced by the authenticated local client from its actual rendering
@@ -4500,6 +4502,197 @@ replaces only the authenticated envelope. Manual rotation stages the user-select
 agent-authorized rotation stages a locally generated replacement. Startup reconciliation tries
 the active and staged scoped credential entries and retains only the candidate that authenticates
 the committed envelope.
+
+### Server targets, selection, and the workspace agent (ADR-051)
+
+[ADR-051](adr/ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) owns every
+name in this section. With no selection file and no target, none of them changes local behaviour:
+clients still send a `workspace_locator`, never declare a workspace agent, and reach the ambient
+service exactly as described above.
+
+**Target records.** Both are owner-only, symlink-free canonical JSON in the ADR-048 tag namespace,
+never inside a repository, with exact field sets.
+
+| Record | Location | Fields |
+|---|---|---|
+| `yoetz.server-target/1` | `<ambient state dir>/servers/t_<8 hex>/target.json` | `schema`, `target_id` (`t_` + 8 lowercase hex), `name`, `kind`, `created_at`. `ssh` adds `user`, `host`, `port`, `remote_root`, `remote_launcher`. `https` and `local_port` add `base_url`, one of `ca_file` or `tls_pin` (`sha256:<64 hex>`), and `credential` (`keyring\|file`). Every remote kind adds `claim_salt` (32 random bytes), `authorized_at` and `disclosure_version`. |
+| `yoetz.server-selection/1` | `<ambient config dir>/server-selection.json` | `schema`, `target_id`. Absent means the ambient service. |
+
+A target name matches `[a-z0-9][a-z0-9-]{0,15}` and `local` is reserved. The name appears only in
+`target.json` and in owner displays (`server list`, `server status`, `server test`); errors, logs,
+hook output, MCP text and receipts name a target by `target_id` only, and never print a host,
+address or path.
+
+**Target kinds** (closed): `local` (a named persistent instance root with its own service),
+`local_port` (`https://127.0.0.1:<port>` or `https://[::1]:<port>`), `ssh`
+(`ssh://[user@]host[:port]`, optional remote isolated root and absolute remote launcher) and
+`https` (`https://host[:port][/base]`; no userinfo, query or fragment; plain `http` refused). Every
+kind except `local` is a remote kind.
+
+**Root resolution.** `config.paths.active_root()` resolves `FINISHUP_ISOLATED_ROOT` (or
+`YOETZ_ISOLATED_ROOT`), then the ADR-028 runtime pin, then the selection file, else `None`
+(ambient). It is memoized once per process and imports only `json` and `os`. `isolated_root()` is
+unchanged and keeps meaning "explicitly isolated". State, runtime, config, log, cache and bundle
+roots derive from `active_root()`; registrations, launch lines, the Codex RECORD proof and the
+upgrade guard stay on `isolated_root()`, and an AST test locks that classification of every call
+site. `isolation_binding()` is the closed set
+`ambient|environment|runtime_pin|environment_and_pin|selection`; isolation report schema
+`service/isolation-report-1.1.0` adds `selection` to `binding`. A selection naming a missing or
+unsafe root fails with `isolation_root_invalid` and never resolves to ambient.
+
+**Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
+login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
+`server-target-status-1.0.0` and names the deciding root source, never a credential.
+`connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
+`ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
+kind; the foundation registers `local` and each approach registers its remote kinds. The
+server-host commands `finishup service start` and `finishup service endpoint --json` are added.
+
+**Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
+`server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
+active root is a remote target, with `requires_server_host`.
+
+**Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
+target's credential, so a later OAuth source can replace the API key. `KeyringOrFileCredential`
+uses the OS credential store (service `yoetz.server-credential.v1`, account = `target_id`) and,
+where none is usable, the owner-only file store at `<target root>/config/credential`. The
+credential never appears in argv, the environment, `target.json`, a registration, a log, hook
+output, an MCP frame or JSON output.
+
+**Control envelopes 2.10.0.** All four control envelopes move together.
+
+- Hello: optional `workspace_claim` `{schema_version: "1.0.0", identity_kind:
+  "git_common_root"|"directory", digest: "sha256:<64 hex>"}`, mutually exclusive with
+  `workspace_locator` (`workspace_binding_conflict`); optional `workspace_agent`
+  `{schema_version: "1.0.0", operations: [<operation>...], max_reply_bytes: <int>}`.
+- Client claim: `HMAC-SHA256(claim_salt, "yoetz/workspace-claim/v1\0" ‖ identity_kind ‖ 0x00 ‖
+  canonical root)`, the canonical root from `adapters/workspace_root.py`.
+- Server commitment: the installation MAC under domain `yoetz/repository-claim/v1` over
+  `identity_kind ‖ digest`, giving `RepositoryPrivacyContext(identity_kind="client_claim",
+  workspace_locator=None)`. No path is resolved for a claim-bound connection.
+- Hello-result: required `workspace_binding: "none"|"local_path"|"client_claim"`; optional
+  `workspace_handle` = `client:` + the first 16 hex of the commitment.
+- `workspace_call` (server→client, a control-result branch): `kind`, `protocol_version: "1.0"`,
+  `call_id`, `service_instance_id`, `service_generation`, `operation`, `arguments` (JSON object),
+  `deadline_ms`. Sent only to a connection whose hello carried `workspace_agent`.
+- `workspace_reply` (client→server, a control-request branch): `kind`, `protocol_version: "1.0"`,
+  `call_id`, `outcome: "ok"|"unavailable"|"refused"|"failed"`, `result` (JSON or `null`),
+  `reason` (closed token or `null`).
+- On a claim-bound connection `start.workspace_ref` must equal the handle; an absolute path is
+  `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute `workspace_ref` to
+  the handle before sending.
+
+**Workspace-agent operation catalog** (`ports/workspace_agent.py`, the single source of truth).
+Each operation fixes its argument and result codecs and an argument byte bound and a result byte
+bound, both under the 6 MiB frame; this table names the seam each one mirrors and its result.
+Bytes travel as base64 strings inside canonical JSON, and every codec round-trips exactly.
+
+| Operation | Family | Mirrors (the existing local seam) | Result |
+|---|---|---|---|
+| `read_task_base` | git | `ChangeCapturePort.read_task_base` | `TaskChangeBase` (`encode_task_change_base`) |
+| `capture` | git | `ChangeCapturePort.capture` | `CheckChangeCapture` (`encode_check_change`) |
+| `capture_metadata` | git | `capture_metadata` | `CheckChangeMetadata` (new codec) |
+| `probe_requested_paths` | git | `probe_requested_paths` | `RequestedPathProbe` tuple |
+| `count_change_lines` | git | `count_change_lines` | `ChangeLineCounts` |
+| `classify_undeclared_references` | git | `classify_undeclared_references` | reference triples |
+| `read_outside_inputs` | reads | `task_input_read.read_outside_inputs` | `TaskInputFile` tuple |
+| `snapshot_outside_inputs` | reads | `task_input_read.snapshot_outside_inputs` | `OutsideSnapshotRead` tuple |
+| `read_declared_test` | reads | `task_input_read.read_declared_test` | bytes or absent |
+| `read_text_beneath` | reads | `task_input_read.read_text_beneath` | `(bytes, size)` or absent |
+| `list_beneath` | reads | `task_input_read.list_beneath` | bounded listing |
+| `lstat_candidates` | reads | the outside-input admission `lstat` helper | per-candidate link-free stat facts |
+| `open_workspace` | observation | `open_local_workspace` | opaque remote handle |
+| `load_check_policy` | observation | `load_observation_check_policy` | raw policy bytes |
+| `subject_state_capture` | observation | `SubjectStateCapturePort.capture` | `SubjectStateCaptureResult` |
+| `list_changed_paths` | observation | `list_changed_relative_paths` | workspace-relative paths |
+| `inspect` | observation | `WorkspaceInspectPort.inspect` | `WorkspaceInspectResult` |
+| `run_approved_check` | observation | `ApprovedCheckRunner.run` | `ApprovedCheckResult` plus output bytes |
+
+The client handler (`finishup.client.workspace_agent`) runs these against the real local adapters
+with their existing fences, refuses unknown operations, refuses a workspace other than its own
+claimed root, keeps outside reads inside the admitted roots the server names and the existing
+exclusions, and runs only commands from the repository's owner-approved `.finishup/checks.toml`.
+A closed failure maps to the existing `ChangeCaptureUnavailable` reason where one exists.
+
+**Hub and routing.** `service.workspace_hub.WorkspaceAgentHub` registers a channel per workspace
+handle at handshake and unregisters it on close. `async call(handle, operation, arguments,
+deadline)` sends one `workspace_call` under the session's write lock and awaits the correlated
+reply; with no channel it waits at most 5 seconds inside a live call and 30 seconds for background
+work, then raises `WorkspaceAgentUnavailable`. A dropped channel fails its pending calls. Calls per
+channel and reply bytes are bounded and the hub logs closed tokens only.
+`service/workspace_routing.py` wraps every workspace port and callable the composition injects: an
+absolute-path workspace goes to the unchanged local adapter, a `client:<16 hex>` handle to the hub.
+
+**Provenance.** Workspace evidence obtained through the hub is labelled `client_attested`. For a
+non-local service connection, the text, markdown, MCP and terminal receipt renderings add exactly
+one line: "Workspace evidence was read on the client machine by the FinishUP workspace agent and
+attested over the connection; the server did not read the repository itself." Status and receipts
+name the producing service by `service_instance_id` and a closed transport token.
+
+**Closed tokens** (`protocol/errors.py` protocol reason codes, each with an ADR-030 directive in
+`protocol/recovery.py`):
+
+| Token | Raised when | Recovery |
+|---|---|---|
+| `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator` | client defect; reconnect with one binding |
+| `workspace_ref_not_portable` | a claim-bound `start` names an absolute `workspace_ref` | send the connection's `workspace_handle` |
+| `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
+| `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
+| `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, the shown `ssh -t` command) |
+| `target_root_is_remote` | `service run` or `service start` is asked to serve a remote target's root | the service runs on the server; use `finishup server test` here |
+| `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
+
+The five remote connection phases ride as `phase` on a retryable `service_unavailable`
+(`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,
+`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running` and
+`remote_incompatible` (whose text names both releases). The check-time change gains the
+unavailable reason `workspace_agent_unavailable`, so
+`check_time_change_unavailable_workspace_agent_unavailable` joins
+`CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
+
+<!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with
+its resource-shaped API. -->
+**HTTPS binding v1** (`https` and `local_port` targets). Each body is the exact canonical JSON a
+socket frame carries after its length prefix. Every request carries `Authorization: Bearer
+fuk_<12 hex key id>_<43 base64url secret>` and `FinishUP-Binding: 1.0`; a request with an `Origin`
+header is refused, and no route answers without authentication. A hello carrying
+`workspace_locator` is refused. The `server-info-1.0.0` and `rest-error-1.0.0` schemas are
+hand-authored with their `schemas/manifest.json` digests, and the `rest-binding-1.0` fixture binds
+an HTTP body to its frame bytes; where this table and those artifacts differ, they win.
+
+| Method and path | Body in | Response |
+|---|---|---|
+| `GET /v1/server` | none | `200` `server-info-1.0.0`: release, manifest digest, key id, scope, accepted bindings |
+| `POST /v1/sessions` | control-hello 2.10.0 | `201` control-hello-result and `Location: /v1/sessions/{sid}`; `409` with the daemon's hello-result on a manifest mismatch |
+| `POST /v1/sessions/{sid}/calls?wait_ms=` (≤ 25000) | control-request (`kind: call`) | `200` control-result, or `202` while pending |
+| `GET /v1/sessions/{sid}/results/{rpc_id}?wait_ms=` (≤ 25000) | none | long-poll for that call's control-result |
+| `GET /v1/sessions/{sid}/frames?wait_ms=` (≤ 25000) | none | long-poll for pending server frames, including `workspace_call` frames for a session whose hello declared `workspace_agent` |
+| `POST /v1/sessions/{sid}/frames` | control-request (`kind: workspace_reply`) | `202` |
+| `POST /v1/sessions/{sid}/cancel` | control-request (`kind: cancel`) | `202` |
+| `DELETE /v1/sessions/{sid}` | none | `204`; closes the session's one upstream control connection |
+
+A session id is 32 random bytes bound to its key and holds one upstream control connection; it
+expires after 120 seconds idle, and one key holds at most 64 sessions. Workflow outcomes —
+`vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
+a `200` control-result, byte-identical to the socket. Transport and authentication failures use
+`rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:
+
+| Status | Reasons |
+|---|---|
+| 400 | `frame_invalid` |
+| 401 | `api_key_invalid`, `api_key_revoked`, `api_key_expired` |
+| 403 | `origin_forbidden`, `workspace_locator_forbidden` |
+| 404 | `session_unknown` |
+| 413 | `frame_too_large` |
+| 429 | `session_limit` |
+| 503 | `service_unavailable` |
+
+A key's scope bounds its methods: `agent` allows the six workflow methods, `service_status` and
+claim-bound `observation_ingest`; `operator` adds `project`, `review`, `import_codex_jsonl`,
+`observation_status`, the read and tighten privacy methods and `service_lock`. `service_stop`,
+`backup_*`, `restore_*`, `migrate_*`, `integration_*`, `observation_pause|resume|revoke` and the
+human-control and secret channels are never reachable over HTTPS; an out-of-scope call returns the
+existing `method_forbidden`.
 
 ### Several-agent setup batches (issue #1119)
 
