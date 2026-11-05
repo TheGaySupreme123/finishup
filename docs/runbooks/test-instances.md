@@ -141,6 +141,35 @@ built, and `instance status` reports `runtime_provenance: drifted` if the runtim
 package version the marker recorded no longer matches. Create a new snapshot for newer code; do
 not reinstall into an existing one.
 
+## Named servers versus provisioned instances (ADR-051)
+
+`finishup server add NAME --local` and a provisioned test instance both give a FinishUP its own
+root, vault and service, but they answer different questions and must not be mixed up.
+
+| | Named local server | Provisioned test instance |
+|---|---|---|
+| Purpose | Everyday use: a second FinishUP the owner switches to with `finishup server use` | Testing one exact revision without touching the everyday install |
+| Root | `<ambient state dir>/servers/t_<8 hex>/`, a persistent instance root | `<base>/<tag>/state`, a persistent or disposable instance root |
+| How it is selected | The owner-only selection file, the lowest-precedence root source | The runtime pin in its own `runtime`, and `FINISHUP_ISOLATED_ROOT` when exported |
+| Runtime | The everyday installation's launcher | Its own wheel and runtime, built from the revision under test |
+| Removed by | `finishup server remove NAME` | `scripts/provision_test_instance.py dispose` |
+
+Precedence keeps them apart: the isolation variable, then the runtime pin, then the selection
+file, then ambient. A pinned instance therefore never sees the selection, so selecting a server
+for everyday work cannot redirect a test run, and `finishup server use` run through a pinned
+launcher or under an exported root refuses with `selection_overridden`. `finishup server status`
+names the source that decided the root.
+
+To exercise server targets end to end, provision separate instances for the server and the client
+from the same revision (lockstep: the handshake refuses a release mismatch with
+`remote_incompatible`). Keep the server's and the client's roots disjoint, run real SSH or TLS
+between them as the approach's topology section describes, and register any host with the client
+instance's absolute launcher. A target is itself an isolated root, so a process tree can also be
+pointed at a target root explicitly with `FINISHUP_ISOLATED_ROOT`, which always wins over the
+selection. Never point either instance at the everyday install's directories, and stop only the
+processes you started (`finishup server disconnect`, `finishup instance dispose`), never by
+pattern.
+
 ## Concurrency
 
 - One tag per worker or job. Two workers must never share a `<base>/<tag>`; the second `create`

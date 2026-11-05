@@ -1469,6 +1469,41 @@ descriptors remain limited to the frozen v1.0 draft union. The CLI command uses 
 request and service boundary. Neither Codex hooks nor imported observations synthesize, replace,
 or supersede claims.
 
+## Server targets (ADR-051)
+
+Decision: **no Codex registration changes.** The external `codex mcp add` entry and the plugin
+activation-cache `.mcp.json` keep their exact launcher, arguments and isolation environment;
+project-source `.mcp.json` and every plugin hook stay the bare `finishup`. What each process talks
+to follows the FinishUP server the owner selected with `finishup server use` (see the
+[servers guide](../usage/servers.md)):
+
+| Process | Learns its target from |
+|---|---|
+| External and activation-cache MCP connected under explicit isolation | the stamped `--env` isolation root (the selection never overrides it) |
+| External and activation-cache MCP connected without isolation | the selection file |
+| Bare-`PATH` plugin hooks (`hooks observe`, `session-start`, `user-prompt-submit`, `post-tool-use`, `spool`) | the inherited environment; otherwise the selection file |
+| Agent-shell CLI calls (`finishup publish-work`, `closure-prepare`, …) | the inherited environment; otherwise the selection file |
+
+Connecting Codex while a target is selected does not stamp that target into a registration, and
+existing ambient registrations do not show as drift. `finishup server use local` returns every
+later process to the default service.
+
+- **Switching mid-session.** The MCP bridge keeps the target it started with; hooks and shell
+  calls follow a new selection at once. Restart open Codex sessions after `finishup server use`.
+- **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and
+  the client's workspace agent serves the server's workspace reads; receipts carry the
+  `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
+  by the client over the ordinary control channel, not by the server's sweeper.
+- **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
+  runs. A remote server needs its own Codex installation and login on the server host; this
+  machine's Codex home is never used for its reviews.
+- **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
+  `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
+  applies: put the intended launcher first on `PATH`.
+- **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
+  runs for each target kind are recorded with the pull request that lands the chosen approach. No
+  Codex cell is claimed for a remote target until that evidence exists.
+
 ## Legacy Yoetz registrations
 
 FinishUP was named Yoetz through 0.2.5 (ADR-048). A Codex home and project connected by Yoetz carry
