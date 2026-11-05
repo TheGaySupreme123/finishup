@@ -429,3 +429,11 @@ def test_an_approval_this_policy_does_not_hold_is_refused_before_anything_is_sen
     assert refused.outcome is ApprovedCheckOutcome.NOT_APPROVED
     assert stale.status is ApprovedCheckStatus.STALE
     assert [call[1] for call in hub.calls] == [WorkspaceOperation.OPEN_WORKSPACE]
+
+
+def test_an_agent_call_never_waits_past_the_catalog_deadline() -> None:
+    hub = _Hub(answer=_BASE)
+    _routed(hub).read_task_base(_HANDLE)
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
+    reads.snapshot_outside_inputs(("/srv",), ("/srv/a",), limit=1, max_bytes=1, seconds=299.0)
+    assert all(0 < call[3] <= 300.0 for call in hub.calls)

@@ -61,6 +61,7 @@ from finishup.ports.subject_state import (
     SubjectStateCaptureResult,
 )
 from finishup.ports.workspace_agent import (
+    MAX_WORKSPACE_DEADLINE_MS,
     ApprovedCheckRun,
     CaptureArguments,
     CaptureMetadataArguments,
@@ -126,7 +127,9 @@ def _call(
 ) -> Any:  # noqa: ANN401 - the operation's own result type
     if hub is None:
         raise WorkspaceAgentUnavailable("hub_unavailable")
-    return hub.call_blocking(handle, operation, arguments, timeout_seconds=timeout_seconds)
+    # A long approved check plus its grace never asks for more than one call may wait.
+    bounded = min(timeout_seconds, MAX_WORKSPACE_DEADLINE_MS / 1000)
+    return hub.call_blocking(handle, operation, arguments, timeout_seconds=bounded)
 
 
 def _capture_call(
