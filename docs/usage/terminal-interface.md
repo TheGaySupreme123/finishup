@@ -129,6 +129,7 @@ Type `/` to open the filtered command list.
 | `/privacy` | choose what may leave this computer |
 | `/provider` | configure optional deeper review |
 | `/service` | manage the protected local service |
+| `/server` | list FinishUP servers and choose which one to use |
 | `/observe` | show observation selection and change local retention capacity |
 | `/doctor` | diagnose installation problems |
 | `/help` | show what FinishUP can do here |
@@ -320,6 +321,15 @@ when the check is allowed but fails, the line is unproven with "could not check 
 FinishUP finds folders under both its current and its former name, the installation folders line
 is blocked with the [upgrade guide's remedy](upgrading.md#if-something-refuses-after-the-rename)
 and the checks that would need those folders are skipped. **It never changes anything.**
+
+### `/server`
+
+`/server` lists the FinishUP servers you added — other FinishUP services on this computer, on a
+port of it, over SSH or on the web — with the one in use marked, and each one's kind, short id and
+reachability. Choosing one switches to it; choosing a server on another machine, a port or the web
+asks you to type its name, exactly as `finishup server use` does. Adding, removing and signing in
+to a server happen on the command line, so for those `/server` shows the command to run. The
+header always shows the kind and short id of the server in use. See [FinishUP servers](servers.md).
 
 ### `/observe`
 
