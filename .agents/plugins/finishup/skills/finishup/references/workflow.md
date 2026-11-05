@@ -435,7 +435,8 @@ the coordinator performs a named repair.
 For `vault_initialization_required`, setup/settings changes, credential or vault operations,
 import, or a recommendation, read [Setup and consent](request-templates.md#setup-and-consent)
 before acting. Preserve exact request and pending identities. Never run service lifecycle commands
-for `INTERNAL_ERROR` or a message that did not name that command, unless the user asks for it.
+for `INTERNAL_ERROR` or a message that did not name that command, unless the user asks for that
+restart after a failed startup ([When FinishUP is not working](recovery.md)).
 
 Use the operating card for the ordinary procedure. Read only the owner for the current branch:
 [start/plan](startup.md), [batch/claim](publication.md), [finding/approval](review.md),
