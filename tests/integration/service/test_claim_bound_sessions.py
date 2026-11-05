@@ -926,3 +926,34 @@ async def test_a_pending_workspace_call_keeps_an_idle_agent_connection_open(
         assert not service.hub.has_agent(handle)
     finally:
         await client.close()
+
+
+async def test_a_claim_on_a_locked_service_binds_no_handle_and_registers_no_agent(
+    tmp_path: Path,
+) -> None:
+    from integration.service import test_daemon_clients as clients
+
+    daemon, _application, vault, _listener = clients._daemon()  # pyright: ignore[reportPrivateUsage]
+    await daemon.start()
+    vault.ready = False  # no installation key: the claim cannot be keyed yet
+    client_stream, server_stream = _pair()
+    served = asyncio.create_task(
+        daemon._serve_control_connection(server_stream)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    )
+    try:
+        session = await client_handshake(
+            client_stream,  # pyright: ignore[reportArgumentType]
+            ControlClientKind.CLI,
+            "0.3.0",
+            workspace_claim=_claim_for(tmp_path),
+            workspace_agent=fake_declaration(),
+        )
+        assert session.workspace_binding == "client_claim"
+        assert session.workspace_handle is None
+        hub = daemon.composition.workspace_hub
+        assert hub._channels == {}  # pyright: ignore[reportPrivateUsage]
+    finally:
+        await client_stream.aclose()
+        served.cancel()
+        await asyncio.gather(served, return_exceptions=True)
+        await daemon.close()
