@@ -34,6 +34,7 @@ __all__ = [
     "ProviderPosture",
     "ReadinessLayer",
     "ReceiptSummary",
+    "ServerRow",
     "TaskStatusPage",
     "StatusSnapshot",
     "StorageChoice",
@@ -292,6 +293,24 @@ class StorageChoice(Enum):
 
     SYSTEM_KEYRING = "system_keyring"
     PASSPHRASE = "passphrase"
+
+
+@dataclass(frozen=True, slots=True)
+class ServerRow:
+    """One FinishUP server this computer can use, as ``finishup server list`` shows it.
+
+    ``name`` and ``location`` are owner-typed display text for this owner's own terminal only.
+    """
+
+    name: str
+    kind: str
+    target_id: str | None
+    location: str | None
+    selected: bool
+
+    @property
+    def remote(self) -> bool:
+        return self.kind != "local"
 
 
 @dataclass(frozen=True, slots=True)
