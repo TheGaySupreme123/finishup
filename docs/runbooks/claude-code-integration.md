@@ -462,6 +462,39 @@ latches that availability failure for the process and serializes the first on-de
 concurrent tool calls share one diagnostic (issues #469, #476); that behaviour is shared across
 hosts that use this bridge, not Claude-Code-specific.
 
+## Server targets (ADR-051)
+
+Decision: **no Claude Code registration changes.** The plugin's MCP entry and hook commands keep
+their exact launcher and arguments and carry no environment block, as described above. They follow
+the FinishUP server the owner selected with `finishup server use` (see the
+[servers guide](../usage/servers.md)): with no isolation variable exported by the session and no
+runtime pin, every hook process and the MCP bridge read the owner-only selection file and talk to
+that target. A session that exported `FINISHUP_ISOLATED_ROOT`, or a pinned launcher, keeps its
+explicit root; the selection never overrides it. Connecting Claude Code while a target is selected
+does not record that target in the plugin, and `finishup server use local` returns every later
+process to the default service.
+
+- **Switching mid-session.** The MCP bridge reads the selection once per process and keeps that
+  target for the life of the session; hooks follow a new selection at once. Restart open Claude
+  Code sessions after `finishup server use`. In required startup mode a target that cannot be
+  reached denies tracked tools exactly as an unreachable local service does; it never falls back to
+  the local service.
+- **Workspace.** For a remote target the bridge and hooks send a workspace claim instead of the
+  project path, and the bridge rewrites an absolute `workspace_ref` to the connection's handle
+  before `start`. The client's workspace agent serves the server's change capture, reviewer reads,
+  task inputs, declared tests, observation verification and approved checks for
+  `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line.
+- **Routes.** A strict route (`--semantic off`) stays allowed on a remote target, and the server
+  enforces it. On the policy route the initialize instructions say that AI-powered review is
+  decided by the selected server, named by its target id, not by a local provider.
+- **Budgets.** Hook budgets are not relaxed for a remote target. `finishup server test` measures
+  the round trip and warns when the required startup gate would likely deny.
+- **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
+  `remote_incompatible`, naming both releases.
+- **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
+  runs for each target kind are recorded with the pull request that lands the chosen approach. No
+  Claude Code cell is claimed for a remote target until that evidence exists.
+
 ## Legacy Yoetz registrations
 
 FinishUP was named Yoetz through 0.2.5 (ADR-048). A project connected by Yoetz carries the

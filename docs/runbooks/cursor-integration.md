@@ -635,6 +635,38 @@ before its frozen opaque branch can classify the new pair. Fully restart the exa
 and re-prove descriptor plus correlated model use after upgrading before reporting the capability
 as active.
 
+## Server targets (ADR-051)
+
+Decision: **no Cursor registration changes.** The MCP entry, the project MCP entry and the hook
+commands keep their exact launcher, arguments and isolation environment. Which FinishUP server
+they use follows the owner's choice (see the [servers guide](../usage/servers.md)):
+
+- A Cursor connection made under **explicit isolation** carries both isolation-root spellings in
+  its MCP `env` and inline in each hook command; that stamped root always wins, and the selection
+  file never overrides it.
+- A Cursor connection made **without isolation** carries no root, so its bridge and hooks read the
+  owner-only selection file and talk to the selected target.
+
+Connecting Cursor while a target is selected does not stamp that target into a registration (the
+stamp comes only from an explicit isolation variable or pin), and existing ambient registrations
+do not show as drift. `finishup server use local` returns every later unstamped process to the
+default service.
+
+- **Roots.** The Cursor bridge still decodes only local `file:` roots (ADR-010); a root that is
+  itself remote stays refused. For a remote target the bridge sends a workspace claim derived from
+  that local root instead of the path, rewrites an absolute `workspace_ref` to the connection's
+  handle before `start`, and the client's workspace agent serves the server's workspace reads;
+  receipts carry the `client_attested` line.
+- **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
+  selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
+  use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an
+  unreachable local service; nothing falls back to the local service.
+- **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
+  `remote_incompatible`, naming both releases.
+- **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
+  runs for each target kind are recorded with the pull request that lands the chosen approach. No
+  Cursor cell is claimed for a remote target until that evidence exists.
+
 ## Legacy Yoetz registrations
 
 FinishUP was named Yoetz through 0.2.5 (ADR-048). A Cursor configuration connected by Yoetz carries

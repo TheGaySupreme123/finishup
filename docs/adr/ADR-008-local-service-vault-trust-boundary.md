@@ -526,3 +526,52 @@ weakens the at-rest boundary on those machines.
   - A pre-existing entry still blocks initialization rather than being adopted.
   - The agent-chat `vault_initialize` lane (ADR-015) now succeeds on these machines through the
     same helper-generated secret.
+
+## Amendment proposed by ADR-051 (2026-11-05)
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets a client
+use a FinishUP service on another machine that the same owner runs. Once it is accepted, this
+record changes as follows. The vault, its states, the confidential channels and the local
+ceremonies are unchanged on whichever host runs the service.
+
+- **The trusted authority is the selected target's service.** The trust-boundary row "Per-user
+  local FinishUP service" reads "the selected target's FinishUP service": the ambient local
+  service by default, a named local service, or the owner's service on another machine. A client
+  machine using a remote target holds no vault, ledger or decrypted state.
+- **Invariant 6, for the shared decisions.** Human-control (YZH1) and secret-ingress (YZS1)
+  endpoints are never forwarded, tunnelled or exposed beyond the service host; unlock, consent and
+  the owner receipt view run only there. The ordinary control channel is reached from another
+  machine only through the route the target's kind defines, never through a caller-selected
+  endpoint or caller content.
+- **The workspace agent.** A new narrowly trusted client-side component answers bounded workspace
+  calls for its own claimed workspace, using the existing local adapters and their fences. It has
+  no vault, storage, policy, provider or ceremony authority, and it never runs a command outside
+  the repository's owner-approved check policy. Its results are client-attested evidence, not
+  service reads.
+- **A new credential class: the target credential.** An API key (later an OAuth token) that
+  authenticates a client to a remote edge. It is kept in the OS credential store under
+  `yoetz.server-credential.v1`, or in the owner-only file store where none is usable; it never
+  appears in argv, the environment, `target.json`, a registration, a log, hook output, an MCP frame
+  or JSON output. It grants no vault, unlock or policy authority, and its scope bounds the methods
+  it reaches. As with auto-unlock custody (2026-10-19 amendment), software running as the same
+  user can read it.
+- **Selection (lines on the peer model).** "It never accepts a caller-selected endpoint" still
+  holds: owner-written target configuration alone selects the endpoint, and nothing an agent,
+  request body, repository or environment variable supplies can switch it.
+
+<!-- APPROACH-TOPOLOGY: each approach's pull request replaces or adjusts the items below. -->
+The items below carry the edge-relay wording of the design (approach A). Approach B keeps the
+gateway row and moves the credential into client processes; approach C replaces invariant 6 at
+its root, because its service is itself network-reachable.
+
+- **Invariant 6 becomes:** "The *service's* control transport is never TCP or network-reachable.
+  Another machine reaches it only through sshd stream-local forwarding into the owner-only
+  endpoint, or through a same-user gateway that authenticates a key, applies a scope and re-enters
+  through that endpoint. Human-control and secret endpoints are never forwarded."
+- **Trust table rows added.** *Target connector* (client host, per target, no vault): narrowly
+  trusted to relay control frames for one owner-selected target and to hold its target
+  credential; no storage, vault, policy or provider authority. *Service gateway* (server host,
+  same UID as the service): narrowly trusted to authenticate API keys, apply their scope, refuse
+  locators and `Origin` headers, and re-enter through the owner-only control endpoint as an
+  ordinary client; no vault, storage or policy authority.
+- **Who reads the target credential:** only the connector, started with a scrubbed environment.

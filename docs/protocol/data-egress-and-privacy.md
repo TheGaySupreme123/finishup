@@ -14,6 +14,13 @@ the egress gateway, key access, and structural receipts. CLI, MCP, a future UI, 
 and provider adapters are callers with bounded capabilities. An MCP caller or agent is never a
 local-human authorization principal, even when its request asserts that the user consented.
 
+When the owner selects a FinishUP server on another machine
+([ADR-051](../adr/ADR-051-client-server-cut-and-server-targets.md), Proposed), that server's
+service is this trusted service and this protocol runs there unchanged. The hop between the
+owner's FinishUP client and that server is the owner-authorized FinishUP server hop: it is not one
+of the five network channels below, enabling it enables none of them, and it is refused in the
+zero-network state (the ADR-009 amendment proposed by ADR-051).
+
 ## Content classes
 
 Every candidate item is classified before policy evaluation as exactly one of:
