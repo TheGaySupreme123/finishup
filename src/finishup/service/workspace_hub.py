@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Generator
 from contextvars import ContextVar
 from typing import Any, Final
 
+from finishup.domain.receipts import CLIENT_ATTESTED
 from finishup.observability.logging import record_bounded_event_without_raising
 from finishup.ports.control import WorkspaceAgentDeclaration, WorkspaceCall, WorkspaceReply
 from finishup.ports.workspace_agent import (
@@ -367,10 +368,13 @@ class WorkspaceAgentHub:
             _record("workspace_call", reason)
             raise WorkspaceAgentUnavailable(reason, reply.reason)
         try:
-            return spec.decode_result(reply.result)
+            decoded = spec.decode_result(reply.result)
         except WorkspaceCodecError:
             _record("workspace_call", "reply_invalid")
             raise WorkspaceAgentUnavailable("reply_invalid") from None
+        # What the agent answered is the client's attestation, never a read of this machine.
+        _record("workspace_evidence", CLIENT_ATTESTED)
+        return decoded
 
     async def _exchange(
         self,

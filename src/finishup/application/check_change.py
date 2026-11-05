@@ -1767,7 +1767,7 @@ async def requested_output_states(
         probes = cast(tuple[object, ...], raw_probes)
         if len(probes) != len(bounded):
             raise TypeError("requested_path_probe_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return unverified
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -1911,7 +1911,7 @@ async def _with_declared_line_counts(
             base_paths
         ):
             raise TypeError("change_line_counts_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return states
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -2121,7 +2121,7 @@ async def undeclared_references(
             tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1])))),
             tuple(sorted(ambiguous.items(), key=lambda item: os.fsencode(item[0]))),
         )
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return empty
     except Exception as exc:
         record_unexpected_exception_without_raising(

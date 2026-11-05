@@ -10,7 +10,8 @@ workspace. The service never resolves a handle to a path on its own disk.
 The adapters here are synchronous because the ports they stand in for are: their callers run
 them in worker threads (``asyncio.to_thread``), and a blocking call reaches the hub's event loop
 from there (``WorkspaceAgentHub.call_blocking``). What the agent returns is the client's
-attestation, labelled ``client_attested`` wherever it reaches a receipt.
+attestation (``CLIENT_ATTESTED``): the hub records each answer it delivers under that label,
+and a claim-bound task's human receipts say so in a fixed line.
 
 Failures keep their meaning. An agent answer that is one of change capture's own closed reasons
 raises the same ``ChangeCaptureUnavailable`` a local read would; an agent that does not answer
@@ -38,6 +39,7 @@ from finishup.application.observation_workspace import (
     LocalObservationWorkspace,
     ObservationWorkspaceAccess,
 )
+from finishup.domain.receipts import CLIENT_ATTESTED
 from finishup.ports.approved_checks import ApprovedCheckApproval, ApprovedCheckResult
 from finishup.ports.change_capture import (
     CHANGE_CAPTURE_UNAVAILABLE_REASONS,
@@ -101,9 +103,6 @@ __all__ = [
     "WorkspaceRouting",
     "client_bound",
 ]
-
-# The provenance label of workspace evidence a client's agent returned (ADR-051).
-CLIENT_ATTESTED: Final = "client_attested"
 
 # Bounds on one agent answer, by family. Each exceeds the local adapter's own read bound so the
 # agent's own fences, not this wait, decide a slow read; the round trip adds the rest.
