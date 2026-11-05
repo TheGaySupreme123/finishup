@@ -165,3 +165,27 @@ async def test_the_salt_is_checked_before_anything_is_read(tmp_path: Path) -> No
     # A bad salt is refused even for a locator that would not resolve: nothing is read first.
     with pytest.raises(ValueError, match="workspace_claim_salt_invalid"):
         await workspace_claim(WorkspaceLocator(os.fspath(tmp_path / "missing")), b"short")
+
+
+@pytest.mark.anyio
+async def test_the_remote_binding_claims_and_optionally_serves_the_workspace(
+    tmp_path: Path,
+) -> None:
+    from finishup.client.remote_binding import remote_workspace_binding
+    from finishup.client.workspace_agent import WorkspaceAgentHandler
+
+    repository = _repository(tmp_path / "repository")
+    locator = WorkspaceLocator(os.fspath(repository))
+    expected = await workspace_claim(locator, _SALT_A)
+
+    claim_only = await remote_workspace_binding(locator, _SALT_A, serve_workspace=False)
+    assert claim_only.claim == expected and claim_only.agent is None
+
+    served = await remote_workspace_binding(
+        locator, _SALT_A, protected=(os.fspath(tmp_path / "state"),)
+    )
+    assert served.claim == expected
+    assert type(served.agent) is WorkspaceAgentHandler
+    assert served.agent.declaration.operations[0] == "capture"
+    with pytest.raises(ValueError, match="workspace_claim_salt_invalid"):
+        await remote_workspace_binding(locator, b"short")
