@@ -526,12 +526,12 @@ vault setup are not this case; finish them first. Then offer three choices and l
    the current session keeps running the previous version. Never kill FinishUP processes by name or pattern, and never edit or delete files in FinishUP's data folder.
 2. **Report it.** If it looks like a FinishUP defect, offer an issue at
    <https://github.com/orgFinishUP/finishup/issues>. Search for an existing one first. Include
-   `finishup version`, the OS, the agent, the error code, the correlation id, the failing stage and
-   the steps; leave out source, prompts, transcripts, private paths and credentials. File it only
-   after the user approves the exact text.
+   `finishup version`, the OS, the agent, the error code, the correlation id, the failing stage, the
+   exception class and the steps; leave out source, prompts, transcripts, private paths and
+   credentials. File it only after the user approves the exact text.
 3. **Continue without FinishUP.** Only when the user chooses it, for this task: do the work, claim
-   no FinishUP task, check or receipt for it, and say at the end that FinishUP recorded none of the
-   work done without it. Under required startup, tools stay blocked until the owner returns startup to optional.
+   no FinishUP task, finding, check or receipt for it, and say at the end that FinishUP recorded
+   none of the work done without it. Under required startup, tools stay blocked until the owner returns startup to optional.
 
 
 ## Required startup
