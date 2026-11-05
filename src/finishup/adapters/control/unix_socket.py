@@ -34,6 +34,7 @@ __all__ = [
     "close_endpoint",
     "connect_control",
     "connect_human_control",
+    "connect_owner_only_endpoint",
     "connect_secret",
     "remove_stale_endpoint",
 ]
@@ -529,6 +530,47 @@ async def _connect(kind: EndpointKind) -> AuthenticatedUnixStream:
 
 async def connect_control() -> AuthenticatedUnixStream:
     return await _connect(EndpointKind.CONTROL)
+
+
+async def connect_owner_only_endpoint(path: Path) -> AuthenticatedUnixStream:
+    """Connect to an owner-only socket at an explicit ``path`` with the fixed endpoints' checks.
+
+    A relay's upstream socket (ADR-051: OpenSSH binds ``run/upstream.sock`` beside the target
+    root's control endpoint) gets the same fences as ``connect_control``: its directory is
+    owner-owned with mode 0700 and no symlink, the socket is owner-owned with mode 0600 and one
+    link, the peer authenticates as this effective user, and the inode is unchanged after
+    connecting. Failures carry only the bounded transport reasons, never the path.
+    """
+
+    try:
+        directory = path.parent.lstat()
+    except FileNotFoundError as exc:
+        raise LocalControlTransportError("endpoint_missing") from exc
+    except OSError as exc:
+        raise LocalControlTransportError("runtime_directory_unsafe") from exc
+    if (
+        not path.is_absolute()
+        or not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != _current_effective_uid()
+        or stat.S_IMODE(directory.st_mode) != RUNTIME_DIRECTORY_MODE
+    ):
+        raise LocalControlTransportError("runtime_directory_unsafe")
+    expected_inode = _verify_endpoint(path)
+    raw_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    raw_socket.setblocking(False)
+    raw_socket.set_inheritable(False)
+    try:
+        await asyncio.get_running_loop().sock_connect(raw_socket, os.fspath(path))
+        peer = authenticate_peer(raw_socket)
+        if _verify_endpoint(path) != expected_inode:
+            raise LocalControlTransportError("endpoint_unsafe")
+    except LocalControlTransportError:
+        raw_socket.close()
+        raise
+    except OSError as exc:
+        raw_socket.close()
+        raise LocalControlTransportError("connection_failed") from exc
+    return AuthenticatedUnixStream(raw_socket, peer)
 
 
 async def connect_secret() -> AuthenticatedUnixStream:

@@ -199,8 +199,21 @@ class LocalTargetRuntime:
             return anyio.run(probe)
 
 
+def _connector_runtime() -> TargetRuntime:
+    """Approach A: a remote target's runtime is its connector (``client.connector_runtime``)."""
+
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+
+    return ConnectorTargetRuntime()
+
+
 # Kind -> loader. The foundation ships ``local``; each approach adds its remote kinds here.
-_RUNTIME_LOADERS: dict[str, Callable[[], TargetRuntime]] = {"local": LocalTargetRuntime}
+_RUNTIME_LOADERS: dict[str, Callable[[], TargetRuntime]] = {
+    "local": LocalTargetRuntime,
+    "local_port": _connector_runtime,
+    "ssh": _connector_runtime,
+    "https": _connector_runtime,
+}
 
 
 def register_target_runtime(kind: TargetKind, loader: Callable[[], TargetRuntime]) -> None:

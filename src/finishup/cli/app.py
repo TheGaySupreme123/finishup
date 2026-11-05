@@ -38,6 +38,7 @@ from finishup.cli.bootstrap import (
     stdout_json as _shared_stdout_json,
 )
 from finishup.cli.command_scope import install_server_host_guards
+from finishup.cli.connector import connector_app
 from finishup.cli.exits import (
     exit_code_for,
     lifecycle_public_code,
@@ -266,6 +267,7 @@ app.add_typer(observe_app, name="observe")
 observe_app.add_typer(observe_checks_app, name="checks")
 app.add_typer(project_app, name="project")
 app.add_typer(server_app, name="server")
+app.add_typer(connector_app, name="connector")
 
 
 def _recommend_operation(name: str) -> Callable[..., None]:

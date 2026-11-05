@@ -111,7 +111,9 @@ COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "service start": "server_host",
         "service unlock": "server_host",
         "setup vault": "server_host",
-        # This machine's host registrations and server targets.
+        # This machine's host registrations and server targets, and the relay a remote target's
+        # endpoint runs on this machine (ADR-051, approach A).
+        "connector": "client_only",
         "integrate admission": "client_only",
         "integrate mcp": "client_only",
         "integrate plugin": "client_only",

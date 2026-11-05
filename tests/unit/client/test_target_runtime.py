@@ -1,4 +1,4 @@
-"""``TargetRuntime`` dispatch: the local runtime is built in; remote kinds fail closed by token."""
+"""``TargetRuntime`` dispatch: local and connector runtimes; an unregistered kind fails closed."""
 
 from __future__ import annotations
 
@@ -21,7 +21,21 @@ def test_the_local_kind_has_the_built_in_runtime() -> None:
 
 
 @pytest.mark.parametrize("kind", ["local_port", "ssh", "https"])
-def test_an_unregistered_remote_kind_is_a_closed_refusal(kind: str) -> None:
+def test_remote_kinds_run_through_the_connector(kind: str) -> None:
+    """Approach A registers the connector runtime for every remote kind."""
+
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+
+    assert isinstance(runtime_for(kind), ConnectorTargetRuntime)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("kind", ["local_port", "ssh", "https"])
+def test_an_unregistered_remote_kind_is_a_closed_refusal(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loaders = dict(target_runtime._RUNTIME_LOADERS)  # pyright: ignore[reportPrivateUsage]
+    del loaders[kind]
+    monkeypatch.setattr(target_runtime, "_RUNTIME_LOADERS", loaders)
     with pytest.raises(TargetRuntimeError) as raised:
         runtime_for(kind)  # type: ignore[arg-type]
     assert (raised.value.reason, raised.value.phase) == (
