@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import timedelta
 
 from finishup.adapters.providers.data_use_catalog import (
     data_use_record_for_endpoint,
@@ -16,13 +16,12 @@ def test_openai_record_is_route_specific_and_has_fixed_evidence_lifetime() -> No
 
     assert record.route_qualifier.startswith("OpenAI API Responses")
     assert record.official_source_urls
-    assert record.profile.reviewed_at == datetime(2026, 8, 4, tzinfo=UTC)
-    assert record.profile.expires_at == datetime(2026, 11, 4, tzinfo=UTC)
+    assert record.profile.expires_at - record.profile.reviewed_at == timedelta(days=92)
     assert endpoint_profile_data_use_recommendation_eligible(
-        "openai-responses", now=datetime(2026, 8, 4, tzinfo=UTC)
+        "openai-responses", now=record.profile.reviewed_at
     )
     assert not endpoint_profile_data_use_recommendation_eligible(
-        "openai-responses", now=datetime(2026, 11, 4, tzinfo=UTC)
+        "openai-responses", now=record.profile.expires_at
     )
 
 
@@ -31,7 +30,7 @@ def test_unreviewed_route_never_inherits_another_provider_posture() -> None:
 
     assert record.profile.customer_content_training == "unknown"
     assert not endpoint_profile_data_use_recommendation_eligible(
-        "openrouter-openai-chat-completions", now=datetime(2026, 8, 4, tzinfo=UTC)
+        "openrouter-openai-chat-completions", now=record.profile.reviewed_at
     )
 
 
@@ -44,22 +43,24 @@ def test_codex_subscription_has_explicit_unknown_plan_specific_posture() -> None
     assert record.official_source_urls
     assert "upstream OpenAI request" in " ".join(record.caveats)
     assert not endpoint_profile_data_use_recommendation_eligible(
-        "codex-chatgpt-subscription", now=datetime(2026, 8, 30, tzinfo=UTC)
+        "codex-chatgpt-subscription", now=record.profile.reviewed_at
     )
 
 
 def test_fireworks_store_false_and_xai_direct_routes_are_recommendation_eligible() -> None:
-    now = datetime(2026, 8, 5, tzinfo=UTC)
-
     fireworks = data_use_record_for_endpoint("fireworks-responses")
     assert fireworks.profile.customer_content_training == "prohibited"
     assert fireworks.profile.retention == "none"
     assert "store=false" in fireworks.route_qualifier
-    assert endpoint_profile_data_use_recommendation_eligible("fireworks-responses", now=now)
+    assert endpoint_profile_data_use_recommendation_eligible(
+        "fireworks-responses", now=fireworks.profile.reviewed_at
+    )
 
     xai = data_use_record_for_endpoint("xai-openai-chat-completions")
     assert xai.profile.retention_days_ceiling == 30
-    assert endpoint_profile_data_use_recommendation_eligible("xai-openai-chat-completions", now=now)
+    assert endpoint_profile_data_use_recommendation_eligible(
+        "xai-openai-chat-completions", now=xai.profile.reviewed_at
+    )
 
 
 def test_all_exposed_ambiguous_routes_have_explicit_conservative_records() -> None:
@@ -74,7 +75,7 @@ def test_all_exposed_ambiguous_routes_have_explicit_conservative_records() -> No
         assert record.endpoint_profile_id == endpoint_profile_id
         assert record.profile.data_use_profile_id != "unreviewed-provider-route"
         assert not endpoint_profile_data_use_recommendation_eligible(
-            endpoint_profile_id, now=datetime(2026, 8, 5, tzinfo=UTC)
+            endpoint_profile_id, now=record.profile.reviewed_at
         )
 
 
@@ -84,7 +85,7 @@ def test_unrecognized_endpoint_returns_the_conservative_unknown_record() -> None
     assert record.profile.data_use_profile_id == "unreviewed-provider-route"
     assert record.official_source_urls == ()
     assert not endpoint_profile_data_use_recommendation_eligible(
-        "not-a-packaged-endpoint", now=datetime(2026, 8, 5, tzinfo=UTC)
+        "not-a-packaged-endpoint", now=record.profile.reviewed_at
     )
 
 

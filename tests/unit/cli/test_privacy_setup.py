@@ -12,6 +12,7 @@ from typing import Literal
 import pytest
 
 from builders.privacy_policies import local_only_policy
+from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
 from finishup.cli.privacy_setup import (
     PrivacyRecipe,
     PrivacySetupAnswers,
@@ -31,6 +32,28 @@ from finishup.domain.privacy import (
 from finishup.domain.values import JsonObject
 from finishup.protocol.models import DataCategory
 from finishup.service.confidential_protocol import PrivacyDecisionResult
+
+# Inside the packaged evidence window, whatever dates the current review carries (#1304).
+_EVIDENCE_NOW = data_use_record_for_endpoint(
+    OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID
+).profile.reviewed_at
+
+
+class _EvidenceClock:
+    """Stands in for `datetime` in setup, which reads the real clock for evidence currency."""
+
+    @staticmethod
+    def now(tz: object) -> datetime:
+        return _EVIDENCE_NOW
+
+
+@pytest.fixture(autouse=True)
+def setup_runs_inside_the_evidence_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without this, these tests fail on the day the packaged evidence expires."""
+
+    import finishup.cli.privacy_setup as module
+
+    monkeypatch.setattr(module, "datetime", _EvidenceClock)
 
 
 def _answers(**overrides: object) -> PrivacySetupAnswers:
@@ -292,9 +315,7 @@ def test_recommendation_is_assisted_for_fireworks_store_false_route() -> None:
     from finishup.cli.privacy_setup import recommended_privacy_recipe
 
     assert (
-        recommended_privacy_recipe(
-            _answers().external_provider, now=datetime(2026, 8, 5, tzinfo=UTC)
-        )
+        recommended_privacy_recipe(_answers().external_provider, now=_EVIDENCE_NOW)
         == "assisted_review"
     )
 
@@ -310,10 +331,7 @@ def test_recommendation_is_assisted_for_an_eligible_exact_provider_route() -> No
         "external",
     )
 
-    assert (
-        recommended_privacy_recipe(binding, now=datetime(2026, 8, 5, tzinfo=UTC))
-        == "assisted_review"
-    )
+    assert recommended_privacy_recipe(binding, now=_EVIDENCE_NOW) == "assisted_review"
 
 
 def test_recommendation_is_private_for_router_without_constrained_downstream() -> None:
@@ -327,7 +345,7 @@ def test_recommendation_is_private_for_router_without_constrained_downstream() -
         "external",
     )
 
-    assert recommended_privacy_recipe(binding, now=datetime(2026, 8, 5, tzinfo=UTC)) == "private"
+    assert recommended_privacy_recipe(binding, now=_EVIDENCE_NOW) == "private"
 
 
 def test_router_route_cannot_receive_standing_assisted_authority() -> None:
@@ -345,7 +363,7 @@ def test_router_route_cannot_receive_standing_assisted_authority() -> None:
                 require_current_provider_data_use_evidence=False,
                 request_confirmation=False,
             ),
-            now=datetime(2026, 8, 5, tzinfo=UTC),
+            now=_EVIDENCE_NOW,
         )
 
 
@@ -368,7 +386,7 @@ def test_router_route_remains_available_with_per_request_confirmation() -> None:
             content_data_classes=(DataClass.PUBLIC_STRUCTURAL,),
             request_confirmation=True,
         ),
-        now=datetime(2026, 8, 5, tzinfo=UTC),
+        now=_EVIDENCE_NOW,
     )
 
     llm = next(
@@ -1318,7 +1336,7 @@ def test_informed_assisted_override_discloses_unknown_facts_and_guard_off(
             ),
             require_current_provider_data_use_evidence=False,
         ),
-        now=datetime(2026, 8, 5, tzinfo=UTC),
+        now=_EVIDENCE_NOW,
     )
 
     _render_review(candidate)
