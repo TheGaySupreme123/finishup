@@ -8,7 +8,9 @@
 FinishUP is designed around one trusted persistent local service. The service—not the CLI, MCP,
 an agent, an LLM, or a future ordinary UI—owns encryption keys, decrypted local state, privacy
 policy, provider credentials, and outbound dispatch. Normal clients exchange only bounded control
-requests and results.
+requests and results. By default that service runs on your own machine. If you choose a FinishUP
+server on another machine, that server's service holds this authority on its machine instead; see
+[FinishUP servers on another machine](#finishup-servers-on-another-machine).
 
 ## Planned default and disclosure path
 
@@ -61,7 +63,9 @@ policy until a replacement is committed. True FinishUP zero-network mode is the
 composite of `local_only`, the global ceiling off, and all five network channels disabled (including
 turning update checks off). That mode still permits only exact release-profiled local IPC required
 for the FinishUP service, confidential helper, approved local model, OS credential/user-presence
-service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations.
+service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations. A
+FinishUP server on another machine, on a local port, or on the web cannot be added, selected, or
+used in that mode.
 
 An independent review-context profile controls which potentially useful material is selected before
 those disclosure rules run: `structural`, `goal_aware`, `assisted`, `expanded`, or `custom`. The
@@ -284,6 +288,39 @@ A claim with concrete checked-in test or fixture coverage is flagged `evidenced`
 CI. A claim whose own wording names still-missing capability or drill evidence remains explicitly
 “not yet evidenced” and is not asserted as release evidence.
 
+## FinishUP servers on another machine
+
+By default nothing in this document leaves your machine through FinishUP except what your privacy
+policy authorizes. You may instead choose to use a FinishUP server you run elsewhere — reached over
+SSH, over HTTPS on the web, or over HTTPS on a local port. That choice is its own decision, outside
+the LLM profiles and the four non-LLM channels above, and enabling it enables none of them:
+
+- **You confirm each server yourself.** Adding or choosing such a server shows what will leave this
+  machine and asks you to type the server's name, in a terminal you are typing in. An agent cannot
+  add or choose one. The confirmation is recorded with the disclosure version it covered, and a new
+  disclosure asks again. It is a terminal confirmation, not a vault reauthentication, because a
+  machine that only uses a server may have no vault of its own.
+- **What travels to the server:** your agents' FinishUP calls and their results (task statements,
+  published work, evidence, checks, responses, receipts), consented hook observations, a keyed
+  fingerprint of the project folder instead of its path, and the bounded workspace evidence the
+  server asks for — the change since the task started, facts about files the task names, files the
+  reviewer reads, task inputs, declared tests, observation checks, and results of checks you
+  approved — read on your machine by FinishUP's workspace agent within the usual limits.
+- **What does not:** the project folder's path, your vault passphrase, the server's API key, and
+  the unlock, consent, and owner-view prompts, which run only on the server's own machine.
+- **The server's policy governs AI-powered review.** Whether anything is sent on to an AI-powered
+  review provider is decided by the server's own privacy policy, repository permissions, and
+  never-send fence, which apply minimization, redaction, and scanning there before any external
+  disclosure, exactly as on one machine.
+- **Credentials.** A web server's API key is kept in your system's credential store, or in a file
+  only you can read where none is usable; it never appears in a command line, an environment
+  variable, a settings file, a log, or anything an agent can read. Software running as your own
+  account can read it, as it can read other owner-only files.
+- **Zero-network mode refuses it.** While your policy forbids all network use, no such server can
+  be added, chosen, or used.
+- **Receipts say so.** A receipt from such a server states that workspace evidence was read on your
+  machine by the FinishUP workspace agent and attested over the connection.
+
 ## How to inspect or report a privacy problem
 
 Everything FinishUP decides about your data is designed to be inspectable locally. Privacy policy
@@ -291,7 +328,8 @@ answers are plain reviewed configuration you can read and edit; every terminal o
 and physical attempt leaves a local structural egress receipt; and the installation privacy
 catalog keeps encrypted proposal objects and their structural sidecars enumerable for the
 supported installation-data lifetime. No control surface is required to trust a summary: the
-receipts, catalog, and policy file are the evidence, and they live on your machine.
+receipts, catalog, and policy file are the evidence, and they live on the machine that runs your
+FinishUP service — your own, unless you chose a FinishUP server on another machine.
 
 If you believe FinishUP has disclosed, retained, or logged something these commitments forbid,
 treat it as a security report: use GitHub private vulnerability reporting or email
