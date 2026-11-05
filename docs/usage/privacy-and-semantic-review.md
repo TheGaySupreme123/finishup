@@ -5,6 +5,11 @@ is [`docs/protocol/data-egress-and-privacy.md`](../protocol/data-egress-and-priv
 [ADR-009](../adr/ADR-009-data-egress-privacy.md). This page is the operator's view: what the
 defaults are, and what changes when you turn something on.
 
+Throughout this page, "your machine" is the machine that runs your FinishUP service. If you use a
+[FinishUP server](servers.md) on another machine, the policy, records and receipts described here
+live on that server, and what travels to it is listed under
+[What leaves this computer](servers.md#what-leaves-this-computer).
+
 ## Two defaults, deliberately separate
 
 An unconfigured installation is **external-LLM-egress-free and local-only**. No task content
