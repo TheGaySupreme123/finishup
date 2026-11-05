@@ -114,6 +114,25 @@ def test_client_targets_module_is_hook_safe() -> None:
     assert not offenders, f"finishup.client.targets eagerly imported {offenders}"
 
 
+# What loads only inside an HTTPS dial (ADR-051, approach B): the binding stream, its HTTP client,
+# and the credential store the key is read from.
+_HTTPS_DIAL_ONLY: Final = (
+    "httpx",
+    "httpcore",
+    "keyring",
+    "finishup.client.credentials",
+    "finishup.client.https_binding",
+)
+
+
+def test_direct_dial_transports_load_no_network_client() -> None:
+    """ADR-051 approach B: choosing a transport is lean; HTTPS loads only when a target dials."""
+
+    loaded = set(_modules("import finishup.client.transports, finishup.client.agent_session"))
+    offenders = sorted(loaded & set(_HTTPS_DIAL_ONLY))
+    assert not offenders, f"the direct-dial transport modules eagerly imported {offenders}"
+
+
 def test_finishup_application_package_import_is_lazy() -> None:
     eager = _modules("import finishup.application")
     assert "finishup.application.publish_work" not in eager, (
@@ -241,6 +260,7 @@ def test_ordinary_native_hooks_call_entry_without_loading_full_cli(
         assert "finishup.cli.app" not in loaded
         assert "typer" not in loaded
         assert "pydantic" not in loaded
+        assert not loaded & set(_HTTPS_DIAL_ONLY), "a local root never loads the HTTPS dial"
         assert completed.stdout == (
             b'{"permission":"allow"}\n' if command[1] == "cursor-observe" else b"{}\n"
         )
@@ -279,6 +299,7 @@ def test_required_startup_hooks_keep_the_import_diet(
         assert "finishup.cli.app" not in loaded
         assert "typer" not in loaded
         assert "pydantic" not in loaded
+        assert not loaded & set(_HTTPS_DIAL_ONLY), "a local root never loads the HTTPS dial"
         json.loads(completed.stdout.decode("utf-8"))
     finally:
         shutil.rmtree(root, ignore_errors=True)
