@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import shutil
 import signal
 import subprocess
@@ -2168,19 +2169,23 @@ def _unkeyed_claim(session: ControlSession) -> ControlError:
 
 async def _target_binding(
     target: ServerTarget, workspace_locator: WorkspaceLocator, *, serve_workspace: bool
-) -> ClientWorkspaceBinding:
+) -> ClientWorkspaceBinding | None:
     """The binding a connection to the remote ``target`` sends for ``workspace_locator``.
 
     The workspace is claimed under the target's own salt; with ``serve_workspace`` the hello
     also offers the workspace agent that answers for it. A record whose salt cannot be read
     refuses as the transport choice does; a workspace the shared root rule cannot resolve fails
-    the handshake as a local service's own resolution failure does. The locator is never sent.
+    the handshake as a local service's own resolution failure does. The filesystem root is never
+    claimed: a CLI or bridge started at ``/`` names no workspace (``None``) and connects unbound,
+    as the other approaches' connections do. The locator is never sent.
     """
 
     from finishup.adapters.workspace_root import RepositoryIdentityError
     from finishup.client.remote_binding import binding_for_target
     from finishup.client.targets import TargetError
 
+    if posixpath.normpath(workspace_locator.path) == "/":
+        return None
     try:
         return await binding_for_target(target, workspace_locator, serve_workspace=serve_workspace)
     except TargetError as exc:

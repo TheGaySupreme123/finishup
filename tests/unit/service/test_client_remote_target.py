@@ -680,6 +680,39 @@ def test_a_connection_without_a_workspace_needs_no_handle(
     assert asyncio.run(exercise()) == "none"
 
 
+def test_a_connection_started_at_the_filesystem_root_names_no_workspace(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The filesystem root is never claimed: a CLI or bridge started at "/" connects unbound, as
+    # the other approaches' connections do, instead of failing its handshake.
+    taps: list[TapStream] = []
+
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        tap = TapStream(server_end)
+        taps.append(tap)
+        asyncio.get_running_loop().create_task(_serve(tap, keyed=False))
+        return client_end
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> tuple[object, str]:
+        serving = await client_module.serving_workspace_binding(WorkspaceLocator("/"))
+        client = await client_module.connect_service(
+            ControlClientKind.CLI, workspace_locator=WorkspaceLocator("/")
+        )
+        try:
+            await client.service_status()
+        finally:
+            await client.close()
+        return serving, client.workspace_binding
+
+    assert asyncio.run(exercise()) == (None, "none")
+    (tap,) = taps
+    assert b'"workspace_claim"' not in tap.received
+    assert b'"workspace_agent"' not in tap.received
+
+
 def test_the_retryable_lock_reasons_are_the_services_own() -> None:
     from finishup.service import daemon
 
