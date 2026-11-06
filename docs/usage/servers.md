@@ -208,7 +208,11 @@ another machine end with a line saying that workspace evidence was read on your 
 FinishUP workspace agent and attested over the connection, and a line naming the FinishUP service
 that answered by its id (such as `svc_…`) and how this computer reached it (for example `ssh` or
 `https`). This holds in the `finishup` command, in what your agent reads, and in the terminal
-interface; JSON output does not carry these lines.
+interface; JSON output does not carry these lines. A receipt never leaves the workspace evidence
+section out: if the server cannot read the record that opened the task's session, it refuses the
+receipt before recording anything and you can try again once its storage reads normally; if that
+record was redacted or its key is no longer available, the receipt says it cannot tell where the
+workspace evidence was read.
 
 ## The workspace agent
 

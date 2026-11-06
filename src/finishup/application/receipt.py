@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Final, Literal, Protocol, cast
 
 from finishup.application import closure_basis as _closure_basis
@@ -21,6 +22,7 @@ from finishup.domain.events import (
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
+    RedactionState,
     SessionOpenedPayload,
     encode_payload,
     media_type_for,
@@ -35,6 +37,7 @@ from finishup.domain.receipts import (
     receipt_document_from_json,
     receipt_document_to_json,
     render_receipt_human,
+    workspace_provenance_unknown_block,
 )
 from finishup.domain.values import (
     Actor,
@@ -117,6 +120,17 @@ _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
         "receipt_redaction_profile_mismatch",
     }
 )
+# Application-derived facts a classified storage error records as its closed diagnostic reason:
+# the replay mismatches, and a session opening event the ledger holds but could not read.
+_RECEIPT_DIAGNOSTIC_REASONS: Final = _RECEIPT_REPLAY_MISMATCH_REASONS | frozenset(
+    {"session_opened_payload_unavailable"}
+)
+
+
+class _Provenance(Enum):
+    """A claim binding that the session's opening event cannot establish (ADR-051)."""
+
+    UNKNOWN = "unknown"
 
 
 class Application(Protocol):
@@ -249,11 +263,11 @@ def _classified_storage_error(
             request_id=request_id,
         )
     else:
-        if diagnostic_reason not in _RECEIPT_REPLAY_MISMATCH_REASONS:
+        if diagnostic_reason not in _RECEIPT_DIAGNOSTIC_REASONS:
             raise ValueError("receipt_diagnostic_reason_invalid") from exc
-        # Replay integrity mismatches are application-derived facts, not exception classes. Keep
-        # their reason closed and structural while recording the same application-site correlation
-        # contract as object-store exceptions.
+        # Replay integrity mismatches and an unread opening event are application-derived facts,
+        # not exception classes. Keep their reason closed and structural while recording the same
+        # application-site correlation contract as object-store exceptions.
         correlation_id = record_public_error_without_raising(
             component="application.receipt",
             operation=operation,
@@ -496,11 +510,13 @@ def _internal_result(
     receipt_ref: ObjectRef,
     digest: str,
     result_frontier: Frontier,
-    attested_by: str | None = None,
+    attested_by: str | _Provenance | None = None,
 ) -> ReceiptInternalResult:
     """The result of one receipt; ``attested_by`` is the serving service's instance id when the
     task is claim-bound, so its text and markdown renderings end with the fixed client-attested
-    workspace-evidence block (ADR-051). The stored document never carries it."""
+    workspace-evidence block (ADR-051), or ``_Provenance.UNKNOWN`` when the session's opening
+    event cannot say, so they end with the fixed provenance-unknown block instead. The stored
+    document never carries either."""
 
     document_json = cast(JsonValue, receipt_document_to_json(document))
     markdown = request.format is ReceiptFormat.MARKDOWN
@@ -509,7 +525,9 @@ def _internal_result(
         if request.format is ReceiptFormat.JSON
         else render_receipt_human(document, markdown=markdown)
     )
-    if human is not None and attested_by is not None:
+    if human is not None and attested_by is _Provenance.UNKNOWN:
+        human = human + "\n\n" + workspace_provenance_unknown_block(markdown=markdown)
+    elif human is not None and type(attested_by) is str:
         human = (
             human
             + "\n\n"
@@ -621,22 +639,33 @@ async def read_recorded_receipt(
     )
 
 
-async def _attested_by(runtime: TaskRuntime, *, request_id: str | None = None) -> str | None:
+async def _attested_by(
+    runtime: TaskRuntime, *, request_id: str | None = None
+) -> str | _Provenance | None:
     """The serving service's instance id when the task is claim-bound, else None (ADR-051).
 
     A claim-bound task's session opened with its connection's ``client:`` handle, so every piece
     of workspace evidence it holds came from the client's workspace agent. Read from the
-    session's own opening event, a durable fact, so a replay renders the same block. None means
-    the read succeeded and found no claim-bound session; a read that fails is a classified
-    storage error, never None, so a claim-bound receipt never loses its client-attested block.
+    session's own opening event, found by its schema name, a durable fact, so a replay renders
+    the same block. None means that event was read and names no handle, or the session has none.
+
+    A read that fails is a classified storage error, never None, so a claim-bound receipt never
+    loses its client-attested block: an ``OSError`` is a retryable ``STORAGE_UNSAFE`` and a
+    malformed record ``STORAGE_CORRUPT``. An opening event whose envelope says ``present`` but
+    that comes back without its payload is a failed read too (a recovering SQLite ledger keeps a
+    payload it could not read as None rather than fail), so it is a retryable ``STORAGE_UNSAFE``.
+    An opening event that is redacted, whose key is unavailable, or whose version this service
+    cannot read answers ``_Provenance.UNKNOWN``: a retry cannot change that, so the receipt is
+    still built and its human renderings say the binding is unknown. ``execute_receipt`` reads
+    this before it stages or appends anything.
     """
 
+    opening: LedgerRecord | None = None
     try:
         async for record in runtime.ledger.load_events(runtime.session_id):
-            if isinstance(record.payload, SessionOpenedPayload):
-                if workspace_handle_valid(record.payload.workspace_ref):
-                    return runtime.fence.service_instance_id
-                return None
+            if record.schema.name == "session_opened":
+                opening = record
+                break
     except OSError as exc:
         raise _classified_storage_error(
             PublicErrorCode.STORAGE_UNSAFE,
@@ -654,7 +683,25 @@ async def _attested_by(runtime: TaskRuntime, *, request_id: str | None = None) -
             request_id=request_id,
             operation="receipt_attestation_read",
         ) from exc
-    return None
+    if opening is None:
+        return None
+    payload = opening.payload
+    if isinstance(payload, SessionOpenedPayload):
+        if workspace_handle_valid(payload.workspace_ref):
+            return runtime.fence.service_instance_id
+        return None
+    if payload is None and opening.redaction is RedactionState.PRESENT:
+        unread = LookupError("session_opened_payload_unavailable")
+        raise _classified_storage_error(
+            PublicErrorCode.STORAGE_UNSAFE,
+            "The task ledger is unavailable.",
+            unread,
+            retryable=True,
+            request_id=request_id,
+            operation="receipt_attestation_read",
+            diagnostic_reason="session_opened_payload_unavailable",
+        ) from unread
+    return _Provenance.UNKNOWN
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.
@@ -696,6 +743,9 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             int(request.expected_frontier.sequence), request.expected_frontier.head_digest
         )
         records, projection = await _records_through(runtime, frontier)
+        # Read before anything is staged or appended: a failed read refuses the receipt with
+        # no durable write, never after its event has committed.
+        attested_by = await _attested_by(runtime, request_id=request.request_id)
         availability = await runtime.ledger.load_case_availability(
             runtime.session_id, frontier, projection
         )
@@ -844,7 +894,7 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             receipt_ref,
             digest,
             result.result_frontier,
-            await _attested_by(runtime, request_id=request.request_id),
+            attested_by,
         )
     except ProtocolValueError as exc:
         raise _error(

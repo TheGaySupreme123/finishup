@@ -118,7 +118,9 @@ __all__ = [
     "CLIENT_ATTESTED",
     "CLIENT_ATTESTED_OBSERVATION_LINE",
     "CLIENT_ATTESTED_WORKSPACE_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
     "client_attested_receipt_block",
+    "workspace_provenance_unknown_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
     "COMPLETION_CLAIM_OUTSIDE_PLAN_GAP",
     "COMPLETION_PLAN_NOT_CLAIMED_GAP",
@@ -495,6 +497,14 @@ CLIENT_ATTESTED: Final = "client_attested"
 CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
     "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
     "attested over the connection; the server did not read the repository itself."
+)
+# ADR-051: the line a human receipt ends with instead when its session's opening event is
+# redacted, has no readable key, or is a version this service cannot read, so whether the task
+# is claim-bound is unknown. The section is never silently left out.
+WORKSPACE_PROVENANCE_UNKNOWN_LINE: Final = (
+    "Where this task's workspace evidence was read is unknown: the record that opened its "
+    "session is redacted or unreadable here, so this receipt cannot say whether the server read "
+    "the repository itself or a client's workspace agent attested it."
 )
 # ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
 # committed on the client; the service accepted them as attested and verified neither.
@@ -3646,3 +3656,15 @@ def client_attested_receipt_block(
             f"Served by FinishUP service {service_instance_id} (connection: client_claim).",
         )
     )
+
+
+def workspace_provenance_unknown_block(*, markdown: bool) -> str:
+    """The section a text or markdown receipt ends with when its claim binding is unknown.
+
+    The session's opening event is redacted, has no readable key, or is a version this service
+    cannot read (ADR-051), so the receipt says it cannot tell whose reads its workspace evidence
+    came from rather than leave the section out. Fixed words; nothing user-controlled.
+    """
+
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return f"{heading}\n{WORKSPACE_PROVENANCE_UNKNOWN_LINE}"
