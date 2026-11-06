@@ -359,6 +359,35 @@ def test_login_and_logout_with_an_owner_only_key_file(
     assert again.exit_code == 0 and "No API key was stored" in again.stdout
 
 
+def test_remove_never_deletes_a_target_whose_connection_did_not_stop(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+    root = targets.target_root(targets.list_targets()[0].target_id)
+    stops: list[Path | None] = []
+
+    def stuck(_self: ConnectorTargetRuntime, target: Path | None) -> None:
+        stops.append(target)
+        raise TargetRuntimeError("service_unavailable", phase="connector_stop")
+
+    monkeypatch.setattr(ConnectorTargetRuntime, "stop", stuck)
+    refused = _invoke("remove", "fu")
+    assert refused.exit_code != 0
+    assert refused.stderr.startswith("target_still_connected:")
+    assert root.is_dir() and [record.name for record in targets.list_targets()] == ["fu"]
+
+    def stopped(_self: ConnectorTargetRuntime, target: Path | None) -> None:
+        stops.append(target)
+
+    monkeypatch.setattr(ConnectorTargetRuntime, "stop", stopped)
+    assert _invoke("remove", "fu").exit_code == 0
+    assert not root.exists() and not targets.list_targets()
+    assert stops == [root, root]
+
+
 def test_login_prefers_the_platform_store(
     home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -94,6 +94,10 @@ _PUMP_CHUNK: Final = 65_536
 # One extra remote ``service start`` per this window at most (an SSH target whose service
 # stopped while idle).
 _RESTART_WINDOW_SECONDS: Final = 30.0
+# The last delivery as the connector stops is bounded, so a stop (``server disconnect``,
+# ``server remove``, a newer client) finishes within the stopper's wait on a slow network; what
+# is left stays in this client's outbox for the next delivery.
+_SHUTDOWN_DRAIN_SECONDS: Final = 2.0
 
 
 type Dial = Callable[[], Awaitable[AuthenticatedUnixStream]]
@@ -484,7 +488,9 @@ class Connector:
                 task.cancel()
             await asyncio.gather(accept, warm, watch, return_exceptions=True)
             # A last delivery of what was captured, while the upstream is still open.
-            await self._drain()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(_SHUTDOWN_DRAIN_SECONDS):
+                    await self._drain()
             with contextlib.suppress(Exception):
                 await listener.aclose()
             # Background agents first, so none dials again while the relays are torn down.

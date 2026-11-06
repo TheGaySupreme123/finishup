@@ -351,6 +351,46 @@ def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
         asyncio.run(exercise())
 
 
+def test_a_stop_is_not_held_up_by_a_slow_last_delivery(home: Path) -> None:
+    """``server disconnect`` and ``server remove`` wait 5 seconds for the connector's lock; the
+    last delivery over a degraded network must not outlast that."""
+
+    import time
+
+    record, root = _ssh_target(home)
+
+    class _SlowAgent(_Agent):
+        async def drain(self) -> None:
+            self.drains += 1
+            await asyncio.sleep(60)  # an ingest stuck on a degraded network
+
+    agent = _SlowAgent()
+
+    async def opener(_root: Path, _claim: WorkspaceClaim, _dial: object) -> _Agent:
+        return agent
+
+    async def exercise() -> float:
+        listener = await bind_control_listener()
+        connector = Connector(root, record, agent_opener=opener, drain_interval=3_600)
+        await connector._observe_claim(  # pyright: ignore[reportPrivateUsage]
+            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST)
+        )
+        master = _StubMaster(root, restarts=[])
+        connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        serving = asyncio.create_task(connector.serve(listener))
+        await asyncio.sleep(0.1)
+        started = time.monotonic()
+        connector.request_stop()
+        async with asyncio.timeout(10):
+            assert await serving == "stop_requested"
+        return time.monotonic() - started
+
+    with selection_override(root):
+        elapsed = asyncio.run(exercise())
+    assert agent.drains == 1 and agent.alive is False
+    assert elapsed < 4.0
+
+
 def test_the_connector_command_serves_only_a_remote_targets_own_root(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

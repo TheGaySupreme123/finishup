@@ -204,6 +204,11 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "the server's FinishUP gateway answers but its service does not; its operator starts it",
         _UNAVAILABLE,
     ),
+    "target_still_connected": (
+        "the connection this client runs for that target did not stop in time, so nothing was "
+        "removed; run the same command again",
+        _UNAVAILABLE,
+    ),
     "remote_launcher_unknown": (
         "no absolute finishup launcher could be found on the server; pass --remote-launcher "
         "with the absolute path of the server's finishup",
@@ -977,8 +982,11 @@ def server_remove(
     if record.is_remote:
         try:
             runtime_for(record.kind).stop(root)
-        except TargetRuntimeError:
-            pass
+        except TargetRuntimeError as error:
+            if error.phase != "runtime_unavailable":
+                # Never delete a root under a connector still serving it: its endpoint, status,
+                # lock and SSH master would go while it runs.
+                raise ServerCommandRefused("target_still_connected") from None
         from finishup.client.credentials import CredentialError, KeyringOrFileCredential
 
         try:

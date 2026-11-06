@@ -129,8 +129,9 @@ finishup server remove devbox --select-local
 
 `remove` disconnects, deletes the stored key and removes everything FinishUP kept on this computer
 for that server. It refuses the server you are using unless you add `--select-local`, which
-switches back to the default first. Removing a local server deletes its tasks and vault; removing
-a server on another machine leaves that server untouched.
+switches back to the default first. If the connection to that server does not close in time,
+`remove` changes nothing and asks you to run it again. Removing a local server deletes its tasks
+and vault; removing a server on another machine leaves that server untouched.
 
 ## What leaves this computer
 
