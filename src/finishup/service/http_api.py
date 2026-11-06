@@ -622,7 +622,7 @@ class NetworkApi:
                 if existing.owner_key != caller.owner_key:
                     raise _Refusal("header_invalid")
                 return await self._answer(existing, wait_ms)
-        _binding, context = await self._claim(request, caller)
+        binding, context = await self._claim(request, caller)
         handle = None if context is None else workspace_handle_for_commitment(context.commitment)
         addressed = self._generation(request)
         rpc_id = operation_id or new_id(IdKind.CONTROL_RPC)
@@ -639,6 +639,8 @@ class NetworkApi:
             )
             return self._result_response(forbidden, operation_id=rpc_id, workspace_handle=handle)
         body = _json_object(await _read_body(request, _MAX_CALL_BODY_BYTES))
+        if method is ControlMethod.START:
+            self._require_portable_start(body, caller, binding, handle)
         call = self._call_request(request, method, body, rpc_id, addressed)
         self._purge()
         pending = sum(
@@ -658,6 +660,31 @@ class NetworkApi:
         operation.task.add_done_callback(lambda _task: self._finished(operation))
         self._operations[call.rpc_id] = operation
         return await self._answer(operation, wait_ms)
+
+    @staticmethod
+    def _require_portable_start(
+        body: Mapping[str, JsonValue],
+        caller: _Caller,
+        binding: WorkspaceBinding,
+        handle: str | None,
+    ) -> None:
+        """A start over the network never names a path, and a keyed one carries its claim.
+
+        The only workspace a network start may name is this request's own ``client:`` handle; a
+        path (or another handle) is refused before dispatch, so the service never resolves a path
+        for a network caller, with or without a claim. A keyed caller must also send its claim:
+        its tasks are then keyed by its principal's commitment, so it can neither create nor
+        attach to a task bound to another principal's repository, the server owner's included.
+        The owner's API socket (SSH, owner-equivalent) may start without a claim.
+        """
+
+        reference = body.get("workspace_ref")
+        if reference is not None and (handle is None or reference != handle):
+            _audit("network_call", "workspace_ref_not_portable", {"control_method": "start"})
+            raise _Refusal("frame_invalid")
+        if caller.key_id is not None and binding == "none":
+            _audit("network_call", "workspace_claim_required", {"control_method": "start"})
+            raise _Refusal("workspace_claim_required")
 
     async def _dispatch(
         self,

@@ -495,6 +495,12 @@ SSH (owner-equivalent, no key)
   `X-FinishUP-Workspace-Claim: <identity_kind>:sha256:<64 hex>`. The service keys the claim by the
   key's principal before resolving it (`sha256("yoetz/claim-principal/v1\0" ‖ principal ‖ 0x00 ‖
   digest)`), so two principals never reach each other's repositories, and never resolves a path.
+  A `start` over the network may name no workspace but the request's own `client:` handle: a path,
+  or any other handle, is refused `frame_invalid` before dispatch, with or without a claim. A keyed
+  `start` must also carry its claim (`workspace_claim_required` otherwise), so its task is keyed by
+  its principal's commitment and it can neither create nor attach to a task bound to another
+  principal's repository, the server owner's included; only the owner's `api.sock` (SSH) may start
+  without one.
 - `POST /v1/{method}`: the body is the method's existing request body and the answer is the
   existing control-result body, byte-identical to the socket frame's `body`, with
   `FinishUP-Outcome: ok|error` and the service instance and generation as headers. A call addressed

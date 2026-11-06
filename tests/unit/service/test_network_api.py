@@ -543,3 +543,81 @@ async def test_an_accepted_tcp_connection_has_nagle_off() -> None:
             assert await asyncio.wait_for(accepted, timeout=10.0) != 0
         finally:
             writer.close()
+
+
+def _start_body(**fields: object) -> bytes:
+    body: dict[str, object] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "actor": {"actor_id": "harness:pytest", "actor_type": "harness"},
+        "client": {
+            "kind": "cooperative_agent",
+            "version": "0.1.0",
+            "integration": "cooperative_mcp",
+        },
+        "request_id": new_id(IdKind.REQUEST),
+        "mode": "create_or_attach",
+        "task_title": "Change the app module",
+        "requested_view": "compact",
+        **fields,
+    }
+    return canonical_encode(cast(dict[str, object], body))  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_a_network_start_never_names_a_path_and_a_keyed_one_carries_its_claim(
+    keys: ApiKeyStore,
+) -> None:
+    # A key holder that sends a hook-shaped start naming the server owner's path, with or
+    # without a claim, never reaches a task by that path: nothing is dispatched.
+    service = FakeService()
+    _record, token = keys.create("ci", "agent")
+    workspace = claim("repo")
+    header = {"x-finishup-workspace-claim": encode_claim_header(workspace)}
+    path = "/home/srv/proj"
+    async with _client(make_api(service, keys)) as client:
+        for headers in (_bearer(token), {**_bearer(token), **header}):
+            refused = await client.post(
+                "/v1/start",
+                headers=headers,
+                content=_start_body(workspace_ref=path, external_ref="x"),
+            )
+            assert (refused.status_code, _reason(refused)) == (400, "frame_invalid")
+            assert path not in refused.text
+        # Another principal's handle is not this request's either.
+        foreign = await client.post(
+            "/v1/start",
+            headers={**_bearer(token), **header},
+            content=_start_body(workspace_ref="client:0123456789abcdef", external_ref="x"),
+        )
+        assert (foreign.status_code, _reason(foreign)) == (400, "frame_invalid")
+        # A keyed start without a claim cannot reach tasks keyed to no principal.
+        unclaimed = await client.post(
+            "/v1/start", headers=_bearer(token), content=_start_body(mode="create")
+        )
+        assert (unclaimed.status_code, _reason(unclaimed)) == (403, "workspace_claim_required")
+        assert service.seen == []
+        info = parse_server_info(
+            (await client.get("/v1/server", headers={**_bearer(token), **header})).content
+        )
+        assert info.workspace_handle is not None
+        for fields in (
+            {"workspace_ref": info.workspace_handle, "external_ref": "x"},
+            {"mode": "create"},
+        ):
+            accepted = await client.post(
+                "/v1/start", headers={**_bearer(token), **header}, content=_start_body(**fields)
+            )
+            assert accepted.status_code == 200
+    assert len(service.seen) == 2
+    assert all(seen[2] is not None for seen in service.seen)
+    # The owner's socket (SSH) may start without a claim, but never by a path.
+    owner = FakeService()
+    async with _client(make_api(owner, keys), "unix") as client:
+        refused = await client.post(
+            "/v1/start", content=_start_body(workspace_ref=path, external_ref="x")
+        )
+        assert (refused.status_code, _reason(refused)) == (400, "frame_invalid")
+        accepted = await client.post("/v1/start", content=_start_body(mode="create"))
+        assert accepted.status_code == 200
+    assert [seen[2] for seen in owner.seen] == [None]
