@@ -1175,6 +1175,9 @@ def test_the_client_refuses_an_answer_that_names_another_binding() -> None:
     assert asyncio.run(exercise(None, None, False)) == "protocol_mismatch"
     assert asyncio.run(exercise("local_path", None, False)) == "protocol_mismatch"
     assert asyncio.run(exercise("none", None, True)) == "protocol_mismatch"
+    # A handle on a session this client did not claim: a well-formed claim answer, sent to a
+    # hello that carried no claim, is refused by the client's own guard.
+    assert asyncio.run(exercise("client_claim", _CLAIM_HANDLE, False)) == "protocol_mismatch"
     # A handle outside a claim breaks the 2.10.0 contract itself: neither side can frame it.
     for binding in ("none", "local_path"):
         assert asyncio.run(exercise(binding, _CLAIM_HANDLE, False)) == "frame_invalid"

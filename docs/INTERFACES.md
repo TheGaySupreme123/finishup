@@ -4635,8 +4635,11 @@ output, an MCP frame or JSON output.
   `workspace_handle` = `client:` + the first 16 hex of `SHA-256("yoetz/workspace-handle/v1\0" ‖
   commitment ‖ 0x00 ‖ worktree digest)` (`ports.workspace_agent.workspace_handle_for_claim(
   commitment, worktree)`), one per claimed worktree, carried only with `workspace_binding:
-  "client_claim"` (the 2.10.0 schema enforces it). `ControlSession.workspace_worktree` keeps
-  the claim's worktree digest on both sides.
+  "client_claim"` (the 2.10.0 schema enforces it). The client refuses an answer whose binding is
+  not the one its hello asked for as `protocol_mismatch`, so a handle on a session it did not
+  claim is refused there; a handle beside any other binding fails frame validation first as
+  `frame_invalid`, and the client's own handle check stays behind it as defence in depth.
+  `ControlSession.workspace_worktree` keeps the claim's worktree digest on both sides.
 - `workspace_call` (server→client, a control-result branch): `kind`, `protocol_version: "1.0"`,
   `call_id`, `service_instance_id`, `service_generation`, `operation`, `arguments` (JSON object),
   `deadline_ms`. Sent only to a connection whose hello carried `workspace_agent`.
