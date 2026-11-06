@@ -236,7 +236,7 @@ async def test_the_attestation_is_mirrored_into_the_claims_own_store(harness: _H
         media_type="text/plain",
         part_index=0,
         part_count=1,
-        content=b"/home/dev/project",
+        content=b"/srv/dev/project",
     )
     result = await router.ingest(_context(), _request(_attestation(), chunks=(chunk,)))
     assert result.reason == "paused"  # the fake coordinator's answer, passed through as is
@@ -385,7 +385,7 @@ def test_an_unattested_session_never_matches_a_client_commitment(tmp_path: Path)
     assert store.session_commitment(_HOST_SESSION) == _CLIENT_SESSION
     assert "client:" not in repr(store) and os.fspath(state) not in repr(store)
     with pytest.raises(ValueError, match="workspace_handle_invalid"):
-        ClientAttestedObservationStore(handle="/home/dev", _state=state)
+        ClientAttestedObservationStore(handle="/srv/dev", _state=state)
 
 
 async def test_the_support_handler_routes_only_claim_bound_rows_to_the_claims() -> None:

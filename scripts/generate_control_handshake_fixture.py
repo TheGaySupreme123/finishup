@@ -224,7 +224,7 @@ def _reads_exchanges() -> list[dict[str, Any]]:
     text = _call(
         0x2104_01,
         WorkspaceOperation.READ_TEXT_BENEATH,
-        ReadTextBeneathArguments("/home/dev/project", "src/app.py", ("/home/dev/.finishup",)),
+        ReadTextBeneathArguments("/srv/dev/project", "src/app.py", ("/srv/dev/.finishup",)),
     )
     outside = _call(
         0x2104_02,
@@ -400,7 +400,7 @@ def _fixtures() -> tuple[tuple[str, str, dict[str, Any]], ...]:
             _single_frame_fixture(
                 "CTL-2100",
                 "control-hello",
-                _hello(workspace_locator={"path": "/home/dev/project", "schema_version": "1.0.0"}),
+                _hello(workspace_locator={"path": "/srv/dev/project", "schema_version": "1.0.0"}),
                 "ADR-051:locator-hello-unchanged",
                 "A hello bound by a workspace locator keeps its pre-2.10 members on control 2.10.",
             ),

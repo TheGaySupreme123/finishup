@@ -39,7 +39,7 @@ def _ssh_record(**overrides: object) -> ServerTarget:
         "host": "lab.example",
         "port": 2222,
         "remote_endpoint": "/srv/finishup/run/api.sock",
-        "remote_launcher": "/home/owner/.local/bin/finishup",
+        "remote_launcher": "/srv/owner/.local/bin/finishup",
         "remote_root": None,
     }
     values.update(overrides)
@@ -118,7 +118,7 @@ def test_discovery_reads_the_api_socket_and_the_launcher_that_answered(
         "network": {"api_socket": "/run/user/1000/finishup/api.sock", "listen": [], "tls": False},
     }
     recorder = _Recorder(
-        (0, b"/home/owner/.local/bin/finishup\n" + json.dumps(report).encode(), b"")
+        (0, b"/srv/owner/.local/bin/finishup\n" + json.dumps(report).encode(), b"")
     )
     monkeypatch.setattr(rest_runtime, "_run", recorder)
     found = discover_ssh_endpoint(
@@ -126,7 +126,7 @@ def test_discovery_reads_the_api_socket_and_the_launcher_that_answered(
     )
     assert (found.api_socket, found.launcher) == (
         "/run/user/1000/finishup/api.sock",
-        "/home/owner/.local/bin/finishup",
+        "/srv/owner/.local/bin/finishup",
     )
     ((argv, detaches),) = recorder.calls
     assert not detaches
@@ -204,7 +204,7 @@ def ssh_root(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[ServerTarget, Pa
                 user="owner",
                 host="lab.example",
                 port=2222,
-                remote_launcher="/home/owner/.local/bin/finishup",
+                remote_launcher="/srv/owner/.local/bin/finishup",
             )
         record = replace(record, remote_endpoint="/srv/finishup/run/api.sock")
         targets.write_target(root, record)
@@ -268,7 +268,7 @@ def test_an_idle_stopped_remote_service_is_started_with_its_launcher(
     monkeypatch.setattr(rest_runtime, "_run", recorder)
     SshTargetRuntime().start_remote_service(record, root)
     ((argv, _detaches),) = recorder.calls
-    assert argv[-2:] == ["owner@lab.example", "/home/owner/.local/bin/finishup service start"]
+    assert argv[-2:] == ["owner@lab.example", "/srv/owner/.local/bin/finishup service start"]
     assert argv[:3] == ["ssh", "-S", str(root / "run" / "m")]
 
 

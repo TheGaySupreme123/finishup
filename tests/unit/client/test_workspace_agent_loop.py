@@ -49,7 +49,7 @@ from finishup.ports.control import (
 from finishup.ports.workspace_agent import WORKSPACE_OPERATION_NAMES
 from finishup.service.network_protocol import claim_principal_digest
 
-_WORKSPACE = WorkspaceLocator("/home/me/repo")
+_WORKSPACE = WorkspaceLocator("/srv/me/repo")
 
 
 @pytest.fixture
@@ -369,7 +369,7 @@ def test_noting_a_workspace_keeps_its_path_local_and_owner_only(
     note_workspace(root, _WORKSPACE)
     (noted,) = (root / "state" / "agent-workspaces").iterdir()
     assert noted.stat().st_mode & 0o777 == 0o600
-    assert noted.read_bytes() == b'{"path":"/home/me/repo","schema":"yoetz.agent-workspace/1"}\n'
+    assert noted.read_bytes() == b'{"path":"/srv/me/repo","schema":"yoetz.agent-workspace/1"}\n'
     assert "repo" not in noted.name
 
 

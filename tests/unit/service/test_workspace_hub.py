@@ -288,7 +288,7 @@ async def test_an_agent_of_another_worktree_is_never_admitted_under_a_handle() -
     # Another connection from the same worktree is admitted beside it.
     await _register(hub, lambda call: _ok(call, _BASE), worktree=_WORKTREE_MAIN)
     with pytest.raises(ValueError, match="workspace_worktree_invalid"):
-        await _register(hub, lambda call: _ok(call, _BASE), worktree="/home/dev/repo")
+        await _register(hub, lambda call: _ok(call, _BASE), worktree="/srv/dev/repo")
 
 
 async def test_a_live_call_prefers_its_own_connections_agent() -> None:
@@ -413,7 +413,7 @@ async def test_arguments_the_catalog_refuses_are_typed_and_never_sent() -> None:
 
 def test_unavailability_reasons_are_closed_and_name_nothing() -> None:
     with pytest.raises(ValueError, match="workspace_agent_unavailable_reason_invalid"):
-        WorkspaceAgentUnavailable("/home/dev/repo")
+        WorkspaceAgentUnavailable("/srv/dev/repo")
     with pytest.raises(ValueError, match="workspace_agent_reason_invalid"):
         WorkspaceAgentUnavailable("agent_refused", "not a token")
     with pytest.raises(ValueError, match="workspace_agent_reason_invalid"):

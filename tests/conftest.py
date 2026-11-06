@@ -132,8 +132,11 @@ def _fresh_server_selection() -> Iterator[None]:  # pyright: ignore[reportUnused
     the next test in the same process.
     """
 
-    from finishup.config.paths import reset_selection_memo
-
+    try:
+        from finishup.config.paths import reset_selection_memo
+    except ImportError:
+        yield
+        return
     reset_selection_memo()
     yield
     reset_selection_memo()

@@ -15,7 +15,7 @@ from finishup.protocol.models import StartRequest, StartResult
 
 _REQUEST = "req_00000000-0000-4000-8000-000000000051"
 _HANDLE = "client:0123456789abcdef"
-_PATH = "/home/dev/private-project"
+_PATH = "/srv/dev/private-project"
 
 
 @pytest.fixture

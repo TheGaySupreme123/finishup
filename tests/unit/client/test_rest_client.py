@@ -275,7 +275,7 @@ async def test_connect_service_uses_the_api_for_a_remote_root_and_never_spawns(
     monkeypatch.setattr(service_client, "_spawn_service_process", no_spawn)
     plain = await service_client.connect_service(ControlClientKind.CLI)
     on_demand = await service_client.connect_service_on_demand(
-        ControlClientKind.UI, workspace_locator=WorkspaceLocator("/home/me/repo")
+        ControlClientKind.UI, workspace_locator=WorkspaceLocator("/srv/me/repo")
     )
     try:
         assert type(plain) is RestServiceClient and type(on_demand) is RestServiceClient
@@ -286,8 +286,8 @@ async def test_connect_service_uses_the_api_for_a_remote_root_and_never_spawns(
     # The locator is bound at the connect seam (a claim only: the target's agent answers) and
     # noted for this target's agent, again once the server answered (so an agent waiting out a
     # retry registers now); its path stays on this machine.
-    assert bound == [("/home/me/repo", False)]
-    assert noted == [(Path("/x/t"), "/home/me/repo")] * 2
+    assert bound == [("/srv/me/repo", False)]
+    assert noted == [(Path("/x/t"), "/srv/me/repo")] * 2
     assert on_demand.workspace_binding == "client_claim"
     assert plain.workspace_binding == "none"
     assert service.seen[-1][0] is ControlClientKind.UI

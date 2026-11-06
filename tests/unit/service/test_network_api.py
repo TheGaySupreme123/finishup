@@ -261,10 +261,10 @@ async def test_a_claim_is_keyed_by_the_principal_and_binds_the_call(keys: ApiKey
     bad = make_api(FakeService(), keys)
     async with _client(bad) as client:
         refused = await client.get(
-            "/v1/server", headers={**_bearer(token), "x-finishup-workspace-claim": "/home/x/repo"}
+            "/v1/server", headers={**_bearer(token), "x-finishup-workspace-claim": "/srv/x/repo"}
         )
         assert (refused.status_code, _reason(refused)) == (400, "header_invalid")
-        assert "/home/x" not in refused.text
+        assert "/srv/x" not in refused.text
 
 
 @pytest.mark.anyio
@@ -576,7 +576,7 @@ async def test_a_network_start_never_names_a_path_and_a_keyed_one_carries_its_cl
     _record, token = keys.create("ci", "agent")
     workspace = claim("repo")
     header = {"x-finishup-workspace-claim": encode_claim_header(workspace)}
-    path = "/home/srv/proj"
+    path = "/srv/server/proj"
     async with _client(make_api(service, keys)) as client:
         for headers in (_bearer(token), {**_bearer(token), **header}):
             refused = await client.post(

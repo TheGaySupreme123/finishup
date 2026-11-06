@@ -68,7 +68,7 @@ def authorized(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
         # Approach C asks an SSH server for its API socket; no ssh runs in these tests.
         from finishup.client.rest_runtime import SshEndpoint
 
-        launcher = address["remote_launcher"] or "/home/owner/.local/bin/finishup"
+        launcher = address["remote_launcher"] or "/srv/owner/.local/bin/finishup"
         return SshEndpoint("/srv/finishup/run/api.sock", cast(str, launcher))
 
     monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: False)

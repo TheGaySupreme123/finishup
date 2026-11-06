@@ -33,7 +33,8 @@ _EXPECTED_MEMBER_COUNT = 250  # #1239 +1 contact-expectation-declared 1.0.0;
 # +1 privacy-policy 1.3.0;
 # #1119 +2 host-connection batch report and ai-status 1.0.0;
 # ADR-051 +4 control envelopes 2.10.0, +1 isolation-report 1.1.0, +1 server-target-status 1.0.0
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 58  # #1118 reviewer-reply; #1119 batch, ai-status; ADR-051 server-target-status
+# #1118 reviewer-reply; #1119 batch, ai-status; ADR-051 server-target-status
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 58
 _EXPECTED_EVENT_VERSION_COUNT = 30  # #1239 +1 contact-expectation-declared
 
 

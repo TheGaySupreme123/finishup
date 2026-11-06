@@ -187,7 +187,7 @@ async def test_the_seam_claims_a_locator_and_never_serves_on_the_call_connection
 
     monkeypatch.setattr("finishup.client.remote_binding.binding_for_active_root", binding_for)
     remote_claim = service_client._remote_claim  # pyright: ignore[reportPrivateUsage]
-    assert await remote_claim(WorkspaceLocator("/home/me/repo"), None) is claim
+    assert await remote_claim(WorkspaceLocator("/srv/me/repo"), None) is claim
     assert seen == [False]
     # A caller's own binding is used as given; no locator means no claim.
     other = WorkspaceClaim("directory", "sha256:" + "d" * 64, _WORKTREE)
@@ -208,7 +208,7 @@ async def test_the_seam_never_falls_back_to_a_path(monkeypatch: pytest.MonkeyPat
     remote_claim = service_client._remote_claim  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr("finishup.client.remote_binding.binding_for_active_root", unresolvable)
     # No claim, and no path either: the requests name no workspace.
-    assert await remote_claim(WorkspaceLocator("/home/me/repo"), None) is None
+    assert await remote_claim(WorkspaceLocator("/srv/me/repo"), None) is None
 
     async def unreadable(
         locator: WorkspaceLocator | None, *, serve_workspace: bool
@@ -218,7 +218,7 @@ async def test_the_seam_never_falls_back_to_a_path(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr("finishup.client.remote_binding.binding_for_active_root", unreadable)
     with pytest.raises(ControlError) as raised:
-        await remote_claim(WorkspaceLocator("/home/me/repo"), None)
+        await remote_claim(WorkspaceLocator("/srv/me/repo"), None)
     assert (raised.value.reason, raised.value.phase) == (
         "service_unavailable",
         "remote_unreachable",

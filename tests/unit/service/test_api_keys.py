@@ -154,13 +154,13 @@ def test_claim_headers_round_trip_and_refuse_paths() -> None:
     assert parse_claim_header(header) == workspace
     digest = "sha256:" + "0" * 64
     for raw in (
-        "/home/me/repo",
+        "/srv/me/repo",
         "git_common_root:" + "0" * 64,
         "repo:sha256:" + "0" * 64,
         # A claim without its worktree digest (the first 2.10.0 cut) names no one worktree.
         "git_common_root:" + digest,
         f"git_common_root:{digest}:{digest}:{digest}",
-        f"git_common_root:{digest}:/home/me/repo",
+        f"git_common_root:{digest}:/srv/me/repo",
     ):
         with pytest.raises(ValueError):
             parse_claim_header(raw)
