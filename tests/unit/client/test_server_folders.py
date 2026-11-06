@@ -1,13 +1,15 @@
 """The folders a remote target's server may read here: this client's own record (ADR-051).
 
-``finishup server folders add`` records them under the target's root; the workspace agent reads
-the active target's record on every outside read and admits nothing when it cannot. The record
+``finishup server folders add`` records them under the target's root; a workspace agent is bound
+to its own target's record when it is built, reads it on every outside read, and admits nothing
+when it cannot. The record
 is owner-only canonical JSON bound to its target, and a folder that holds the home directory, or
 lies in its private trees, is never admitted.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import stat
 from collections.abc import Iterator
@@ -21,14 +23,15 @@ from finishup.client.server_folders import (
     FOLDERS_SCHEMA,
     MAX_FOLDERS,
     FolderError,
-    active_target_folders,
     add_folder,
     clear_folders,
     folder_covers,
     folder_holds_home,
     folders_path,
+    folders_reader,
     read_folders,
     remove_folder,
+    target_folders,
 )
 from finishup.config.paths import reset_selection_memo
 
@@ -199,18 +202,61 @@ def test_the_active_target_record_admits_and_fails_closed(
     record, root = remote
     add_folder(root, record.target_id, folder)
     # Not selected: this process uses the everyday installation, which admits nothing here.
-    assert active_target_folders() == ()
+    assert folders_reader()() == ()
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    assert active_target_folders() == (folder,)
+    assert folders_reader()() == (folder,)
     folders_path(root).chmod(0o644)  # an unreadable record admits nothing
-    assert active_target_folders() == ()
+    assert folders_reader()() == ()
     folders_path(root).chmod(0o600)
     # A named local server reads with its own service: no folder record applies to it.
     with targets.registry_lock():
         local, _local_root = targets.new_local_target("bench")
         targets.write_selection(local)
     reset_selection_memo()
-    assert active_target_folders() == ()
+    assert folders_reader()() == ()
     del home
+
+
+def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
+    remote: tuple[targets.ServerTarget, Path], folder: str, home: Path
+) -> None:
+    del home
+    record, root = remote
+    with targets.registry_lock():
+        targets.write_selection(record)
+    reset_selection_memo()
+    by_selection = folders_reader()
+    by_root = folders_reader(root)
+    salt = base64.b64decode(record.claim_salt or "", validate=True)
+    by_salt = folders_reader(claim_salt=salt)
+    assert by_selection() == by_root() == by_salt() == ()
+    add_folder(root, record.target_id, folder)  # read at the next call, never cached
+    assert (
+        by_selection()
+        == by_root()
+        == by_salt()
+        == (folder,)
+        == target_folders(root, record.target_id)
+    )
+    # Bound when built: another selection later changes nothing for these readers.
+    with targets.registry_lock():
+        other, other_root = targets.new_remote_target(
+            "bench", "https", base_url="https://b.example"
+        )
+        targets.write_selection(other)
+    reset_selection_memo()
+    assert by_selection() == (folder,)
+    assert folders_reader()() == ()
+    # A salt that is not the selected target's, a local root and a missing root admit nothing.
+    assert folders_reader(claim_salt=salt)() == ()
+    assert folders_reader(other_root, claim_salt=salt)() == ()
+    assert folders_reader(root, claim_salt=b"x" * 32)() == ()
+    assert folders_reader(root.parent / "t_00000000")() == ()
+    # A record that cannot be read admits nothing, and a removal takes effect at once.
+    folders_path(root).chmod(0o644)
+    assert by_root() == () == target_folders(root, record.target_id)
+    folders_path(root).chmod(0o600)
+    remove_folder(root, record.target_id, folder)
+    assert by_root() == ()

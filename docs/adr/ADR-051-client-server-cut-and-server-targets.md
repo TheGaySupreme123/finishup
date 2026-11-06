@@ -308,11 +308,13 @@ answers bounded `workspace_call`s on a connection that declared it.
   and never the home directory, a folder that holds it, or one in its private trees. `server
   folders remove NAME FOLDER|--all` is the way out and takes effect at the next call; `server
   folders list NAME` and `server status` show the folders. The record is owner-only
-  (`<target root>/config/folders.json`) and never sent to the server. The agent reads the active
-  target's record off the event loop on every outside read; a record that cannot be read admits
-  nothing. A read root the server names must have the shape an owner may admit, and what the read
-  reaches must lie inside the claimed worktree or at or beneath an admitted folder; otherwise the
-  read is `root_not_admitted`. For a
+  (`<target root>/config/folders.json`) and never sent to the server. Each agent is bound, when
+  it is built, to the record of the target its connection's claim was made for (the target in use
+  then, whose claim salt must be the claim's); a later change of the process's selection never
+  switches it to another target's record. The agent reads that record off the event loop on every
+  outside read; a record that cannot be read admits nothing. A read root the server names must
+  have the shape an owner may admit, and what the read reaches must lie inside the claimed
+  worktree or at or beneath an admitted folder; otherwise the read is `root_not_admitted`. For a
   single-root read (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it
   the read names. For a task-input read (`read_outside_inputs`, `snapshot_outside_inputs`) it is
   every path the task names beneath a named root: one the owner did not admit refuses the whole

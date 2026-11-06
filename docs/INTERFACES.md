@@ -4666,12 +4666,16 @@ confinement rules:
   `client.workspace_claim.workspace_claim` refuses it with `repository_locator_invalid`, so a
   connection started at `/` names no workspace.
 - Outside admission is this client's own record (`client.server_folders`, ADR-051 decision 5).
-  `outside_folders` answers the admitted folders on each call; by default
-  `active_target_folders()` reads the active remote target's `yoetz.server-folders/1` record and
-  answers `()` for a local root or a record that cannot be read. Every read root must pass
-  `admitted_input_root_valid` (the shape an owner may admit), and what it reaches must lie inside
-  the claimed worktree or at or beneath an admitted folder (`folder_covers`, exact spelling); the
-  record narrows the server's roots, never widens them:
+  `outside_folders` answers the admitted folders on each call. By default the handler is bound,
+  when it is built, to the record of the remote target this process uses then
+  (`folders_reader()`); `remote_workspace_binding` binds it with `folders_reader(claim_salt=...)`,
+  so the target must also be the one whose salt the claim was made under. A later change of the
+  process's selection (`server use`, a `selection_override` probe of another target) never
+  switches an agent to another target's record. A local root, a mismatched salt, or a record that
+  cannot be read admits nothing. Every read root must pass `admitted_input_root_valid` (the shape
+  an owner may admit), and what it reaches must lie inside the claimed worktree or at or beneath
+  an admitted folder (`folder_covers`, exact spelling); the record narrows the server's roots,
+  never widens them:
   - `read_text_beneath` and `list_beneath` on an absolute root are admitted when the root lies
     inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
     `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a

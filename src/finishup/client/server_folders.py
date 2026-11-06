@@ -18,11 +18,14 @@ modules only.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hmac
 import os
 import posixpath
 import secrets
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final, cast
 
@@ -35,14 +38,15 @@ __all__ = [
     "FOLDERS_SCHEMA",
     "MAX_FOLDERS",
     "FolderError",
-    "active_target_folders",
     "add_folder",
     "clear_folders",
     "folder_covers",
     "folder_holds_home",
     "folders_path",
+    "folders_reader",
     "read_folders",
     "remove_folder",
+    "target_folders",
 ]
 
 FOLDERS_SCHEMA: Final = "yoetz.server-folders/1"
@@ -320,27 +324,62 @@ def clear_folders(root: Path) -> bool:
     return True
 
 
-def active_target_folders() -> tuple[str, ...]:
-    """The folders admitted for the remote target this process uses; ``()`` otherwise. Never raises.
+def target_folders(root: Path, target_id: str) -> tuple[str, ...]:
+    """The folders admitted for the target ``target_id`` at ``root``; ``()`` when none can be.
 
-    The workspace agent asks this on every outside read, in its worker thread, so a removal takes
-    effect at once. It fails closed: a root that cannot be resolved, a target record or folders
-    record that cannot be read, and a root that is not a remote target all admit nothing.
+    Never raises: a record that cannot be read, or is another target's, admits nothing. A folder
+    that holds the home directory is never admitted here; one recorded under another home
+    directory than this process's is left out rather than read.
+    """
+
+    try:
+        folders = read_folders(root, target_id)
+    except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
+        return ()
+    return tuple(folder for folder in folders if not folder_holds_home(folder))
+
+
+def _admit_nothing() -> tuple[str, ...]:
+    return ()
+
+
+def _salt_matches(recorded: str | None, claim_salt: bytes) -> bool:
+    try:
+        salt = base64.b64decode(recorded or "", validate=True)
+    except (TypeError, ValueError, binascii.Error):
+        return False
+    return bool(salt) and hmac.compare_digest(salt, claim_salt)
+
+
+def folders_reader(
+    root: Path | None = None, *, claim_salt: bytes | None = None
+) -> Callable[[], tuple[str, ...]]:
+    """A reader of the folders admitted for one remote target, bound to that target now.
+
+    The workspace agent of a connection is built with one; it reads the record on every outside
+    read, in the agent's worker thread, so a removal takes effect at the next call. The target is
+    fixed here, when the agent is built: ``root``, or by default the root this process uses now.
+    A later change of this process's selection (``server use``, or another target probed under
+    ``selection_override``) therefore never makes the agent read another target's record. With
+    ``claim_salt`` (the salt the connection's claim was made under) the target must also be the
+    one whose salt that is. A root that is not a remote target, a target record that cannot be
+    read and a salt that does not match all bind a reader that admits nothing. Never raises.
     """
 
     from finishup.client.targets import read_target
     from finishup.config.paths import active_root
 
     try:
-        root = active_root()
-        if root is None:
-            return ()
-        record = read_target(root)
-        if record is None or not record.is_remote:
-            return ()
-        folders = read_folders(root, record.target_id)
-    except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
-        return ()
-    # A folder that holds the home directory is never admitted here; one recorded under another
-    # home directory than this process's is left out rather than read.
-    return tuple(folder for folder in folders if not folder_holds_home(folder))
+        where = active_root() if root is None else root
+        record = None if where is None else read_target(where)
+    except Exception:  # noqa: BLE001 - an unreadable target admits nothing (fail closed)
+        return _admit_nothing
+    if (
+        where is None
+        or record is None
+        or not record.is_remote
+        or (claim_salt is not None and not _salt_matches(record.claim_salt, claim_salt))
+    ):
+        return _admit_nothing
+    bound_root, target_id = where, record.target_id
+    return lambda: target_folders(bound_root, target_id)
