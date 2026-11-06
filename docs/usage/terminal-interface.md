@@ -328,8 +328,11 @@ and the checks that would need those folders are skipped. **It never changes any
 port of it, over SSH or on the web — with the one in use marked, and each one's kind, short id and
 reachability. Choosing one switches to it; choosing a server on another machine, a port or the web
 asks you to type its name, exactly as `finishup server use` does. Adding, removing and signing in
-to a server happen on the command line, so for those `/server` shows the command to run. The
-header always shows the kind and short id of the server in use. See [FinishUP servers](servers.md).
+to a server, and letting a server on another machine read a folder outside your projects, happen
+on the command line, so for those `/server` shows the command to run (`finishup server folders
+add`, `list` and `remove` for folders). Its status view also lists the folders outside your
+projects that the server may read on this computer. The header always shows the kind and short id
+of the server in use. See [FinishUP servers](servers.md).
 
 ### `/observe`
 

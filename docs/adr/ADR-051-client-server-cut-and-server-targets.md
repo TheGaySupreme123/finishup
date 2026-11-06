@@ -307,7 +307,8 @@ answers bounded `workspace_call`s on a connection that declared it.
   directory named by its absolute, normalized, link-free path; never hidden or a system tree),
   and never the home directory, a folder that holds it, or one in its private trees. `server
   folders remove NAME FOLDER|--all` is the way out and takes effect at the next call; `server
-  folders list NAME` and `server status` show the folders. The record is owner-only
+  folders list NAME` and `server status` show the folders. `add` checks the home rules before it
+  asks, so the owner never consents to a folder that is then refused. The record is owner-only
   (`<target root>/config/folders.json`) and never sent to the server. Each agent is bound, when
   it is built, to the record of the target its connection's claim was made for (the target in use
   then, whose claim salt must be the claim's); a later change of the process's selection never
