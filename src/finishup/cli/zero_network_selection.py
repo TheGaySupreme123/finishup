@@ -10,6 +10,8 @@ selected, FinishUP tells the owner and lets them decide; it never switches serve
   switch to this computer's everyday FinishUP now, or keep using the server. Enter, end of input,
   an interrupt or any other answer keeps the server: switching is the one choice that is never
   made for the owner, and under zero-network it cannot be undone without relaxing the policy.
+  The choice is read on the calling thread with Ctrl-C answering it at once, never in a worker
+  thread that an interrupt cannot reach.
 * Without that console, or for a machine-readable answer, it switches nothing and prints the same
   facts on standard error with the one command that switches, ``finishup server use local``, and
   the reminder that open agent sessions must be restarted after switching.
@@ -23,15 +25,27 @@ sessions use. A process whose root an isolation variable or runtime pin decides 
 its own root's policy, not the everyday installation's, and the selection is not used there:
 nothing is surfaced in it. A selection that cannot be read is reported with its closed reason and
 a continuation, never as "no server". This computer's policy is the everyday installation's
-effective machine-scope policy, read from its running service; while it cannot be read, nothing
-here claims the zero-network state either way. Targets are named by their generated id and closed
-kind only: a name the owner typed never appears.
+effective machine-scope policy, read from its running service; while it cannot be read (that
+service is stopped or locked, as it becomes once idle, and nothing on this computer uses it while
+another server is selected), nothing here claims the zero-network state either way, so the item
+is not shown. Targets are named by their generated id and closed kind only: a name the owner
+typed never appears.
+
+While a remote server is selected, a fresh FinishUP command does not change this computer's
+policy: the server-host privacy commands (the privacy ceremonies, ``decide-policy``, the setting
+commands, ``ai``, ``elevated-bootstrap`` and the terminal interface's ``/privacy``) are refused
+(``requires_server_host``), and ``privacy tighten`` or ``propose`` change the selected server's
+policy. The choice therefore appears when this computer's policy is changed by a FinishUP process
+that resolved this computer's server before the remote one was selected: an open terminal
+interface or menu, or a privacy step or setup run already under way.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -54,6 +68,8 @@ __all__ = [
     "find_zero_network_selection",
     "find_zero_network_selection_async",
     "interactive_terminal",
+    "machine_readable_answer",
+    "machine_readable_requested",
     "read_selection_on_disk",
     "still_selected",
     "surface_after_policy_change",
@@ -80,6 +96,10 @@ _KIND_TEXT: Final[Mapping[str, str]] = {
     "local_port": "behind a port on this computer, which can forward anywhere",
 }
 _CHOICE_PROMPT: Final = "Choose 1 or 2 (Enter keeps the server): "
+# Set while a command answers in JSON (``machine_readable_answer``): the choice is never offered.
+_MACHINE_READABLE: ContextVar[bool] = ContextVar(
+    "finishup_zero_network_machine_readable", default=False
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,8 +228,14 @@ def everyday_network_state() -> NetworkState:
     cannot be read). ``no_policy`` for a computer whose everyday FinishUP was never set up: it is a
     client of the server it names, and that server's own policy governs its data.
 
-    Runs its own event loop, so call it off any running loop (``asyncio.to_thread``).
+    Runs its own event loop, so call it off any running loop (``asyncio.to_thread``). That loop
+    runs in a fresh ``contextvars`` context: ``asyncio.to_thread`` copies the caller's context
+    into the worker, and under ``anyio.run`` (every CLI command) that context names the running
+    async library, so a nested ``anyio.run`` would refuse with "Already running asyncio in this
+    thread". The everyday policy read needs nothing from the caller's context.
     """
+
+    import contextvars
 
     import anyio
 
@@ -244,7 +270,7 @@ def everyday_network_state() -> NetworkState:
         except MachineScopeError:
             permitted = None
         else:
-            permitted = anyio.run(effective, request)
+            permitted = contextvars.Context().run(anyio.run, effective, request)
     if permitted is None:
         return "unreadable"
     return "network_permitted" if permitted else "zero_network"
@@ -337,13 +363,45 @@ def still_selected(item: ZeroNetworkSelection) -> bool:
     )
 
 
+@contextmanager
+def _interrupt_answers_the_prompt() -> Generator[None]:
+    """While the choice is read, Ctrl-C raises ``KeyboardInterrupt`` at the read itself.
+
+    An event loop's runner (``asyncio.run``, ``anyio.run``) answers the first SIGINT by cancelling
+    its main task and returning, so a console read blocked on this thread resumes and waits for
+    another line (PEP 475): the owner's interrupt would be lost, and a later "1" would still
+    switch. Here an interrupt is an answer, and it keeps the server. Python's default handler is
+    installed for the read and the previous handler restored after; only on the main thread, and
+    only over a handler set from Python (an ignored or default SIGINT is left as it is).
+    """
+
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.getsignal(signal.SIGINT)
+    if not callable(previous) or previous is signal.default_int_handler:
+        yield
+        return
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def _ask_on_trusted_console(item: ZeroNetworkSelection) -> Literal["switch", "keep"] | None:
-    """Offer the choice on the trusted console; ``None`` when there is no such console."""
+    """Offer the choice on the trusted console; ``None`` when there is no such console.
+
+    Runs on the calling thread: an interrupt reaches the read and keeps the server.
+    """
 
     from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 
     try:
-        with TrustedForegroundConsole() as console:
+        with _interrupt_answers_the_prompt(), TrustedForegroundConsole() as console:
             console.write("\n")
             for line in item.lines()[:2]:
                 console.write(line + "\n")
@@ -354,11 +412,17 @@ def _ask_on_trusted_console(item: ZeroNetworkSelection) -> Literal["switch", "ke
             except TrustedConsoleError as error:
                 if error.reason == "trusted_console_required":
                     raise
+                if error.reason in {"cancelled", "eof", "interrupted"}:
+                    # No newline was echoed for Ctrl-C or Ctrl-D: end the prompt's line.
+                    console.write("\n")
                 # Enter, end of input, an interrupt or another answer: the safe default keeps it.
                 return "keep"
             return "switch" if chosen == b"1" else "keep"
     except TrustedConsoleError:
         return None
+    except KeyboardInterrupt:
+        # Ctrl-C while the choice was shown but before the read began: it keeps the server too.
+        return "keep"
 
 
 def _switch_to_local() -> bool:
@@ -386,13 +450,19 @@ def surface_after_policy_change(*, interactive: bool) -> SurfaceOutcome:
     ``interactive`` says the caller may prompt (a human terminal, not a machine-readable answer).
     Returns ``clear`` when there is nothing to say, ``switched`` or ``kept`` for the owner's choice,
     and ``warned`` when the facts were printed on standard error without a choice. Never switches
-    without the owner's explicit answer. Runs its own event loop when it asks the service.
+    without the owner's explicit answer. Runs its own event loop when it asks the service, so call
+    ``surface_after_policy_change_async`` from a running one.
     """
 
-    item = find_zero_network_selection()
+    return _surface(find_zero_network_selection(), interactive=interactive)
+
+
+def _surface(item: ZeroNetworkSelection | None, *, interactive: bool) -> SurfaceOutcome:
+    """Say ``item`` and, on the trusted console, let the owner decide (on the calling thread)."""
+
     if item is None:
         return "clear"
-    if interactive and item.reason == REMOTE_SELECTED:
+    if interactive and not machine_readable_requested() and item.reason == REMOTE_SELECTED:
         choice = _ask_on_trusted_console(item)
         if choice == "switch":
             if _switch_to_local():
@@ -414,11 +484,41 @@ def surface_after_policy_change(*, interactive: bool) -> SurfaceOutcome:
 
 
 async def surface_after_policy_change_async(*, interactive: bool) -> SurfaceOutcome:
-    """``surface_after_policy_change`` from a running event loop (in a worker thread)."""
+    """``surface_after_policy_change`` from a running event loop.
+
+    Only the selection and policy read runs in a worker thread (it runs its own event loop). The
+    owner's choice is read on this, the loop's, thread, as every other console ceremony is: a
+    console read in a worker thread cannot be interrupted, so Ctrl-C would leave the command
+    waiting for another line and a later "1" would still switch.
+    """
 
     import asyncio
 
-    return await asyncio.to_thread(surface_after_policy_change, interactive=interactive)
+    item = await asyncio.to_thread(find_zero_network_selection)
+    return _surface(item, interactive=interactive)
+
+
+@contextmanager
+def machine_readable_answer(enabled: bool = True) -> Generator[None]:
+    """While the command answers in JSON, a policy change here never offers the choice.
+
+    ADR-051 decision 8: for a machine-readable answer nothing switches and standard output keeps
+    the document alone; the facts and ``finishup server use local`` go to standard error. A
+    command whose policy change happens several calls down (the privacy setting commands) sets
+    this once around them, for the current task's context only.
+    """
+
+    token = _MACHINE_READABLE.set(enabled)
+    try:
+        yield
+    finally:
+        _MACHINE_READABLE.reset(token)
+
+
+def machine_readable_requested() -> bool:
+    """Whether the running command asked for a machine-readable answer (see above)."""
+
+    return _MACHINE_READABLE.get()
 
 
 def interactive_terminal() -> bool:
