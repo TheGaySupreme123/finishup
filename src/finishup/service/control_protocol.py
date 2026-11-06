@@ -1191,7 +1191,11 @@ async def client_handshake(
         if allowed != _allowed_for(client_kind):
             _fail("method_forbidden")
         # An admitted session's answer always names its binding, and it must be the one this
-        # hello asked for; a handle comes only with a claim.
+        # hello asked for; a handle comes only with a claim. A handle on a session this client
+        # did not claim fails the first test (the answer says ``client_claim``, the hello asked
+        # for no claim). The second is defence in depth: the 2.10.0 hello-result schema already
+        # refuses a handle beside any other binding as ``frame_invalid`` before this runs, so it
+        # cannot fire today, and it keeps the refusal should a later schema loosen that rule.
         raw_handle = result.get("workspace_handle")
         if result.get("workspace_binding") != expected_binding or (
             raw_handle is not None and expected_binding != "client_claim"
