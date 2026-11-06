@@ -12,6 +12,9 @@ or agent daemon on the client machine:
   semantic check, reviewer reads, observation verification).
 * **CLI-only use.** ``finishup server connect NAME --agent`` keeps one agent connection open in the
   foreground (``run_foreground_agent``) for an owner who runs no MCP bridge.
+* **Background drain.** The MCP bridge, the long-lived client process of this approach, also
+  drains what hooks captured under a remote root (the observation outbox and the legacy spool) to
+  the server between hook passes (``start_remote_background_work``).
 
 ``serve_workspace_calls`` is the frame loop of an agent-only connection: it reads
 ``workspace_call`` frames, answers each in a worker thread, and writes the ``workspace_reply``
@@ -64,8 +67,10 @@ __all__ = [
     "WorkspaceAnswer",
     "open_agent_session",
     "remote_workspace_binding",
+    "remote_background_drain",
     "run_foreground_agent",
     "serve_workspace_calls",
+    "start_remote_background_work",
 ]
 
 # Calls one agent connection answers at once; the hub bounds its own side too.
@@ -262,3 +267,36 @@ async def run_foreground_agent(
     finally:
         with contextlib.suppress(Exception):
             await stream.aclose()
+
+
+async def remote_background_drain(target: ServerTarget, root: Path) -> None:
+    """INTEGRATION POINT — wired after split/client merges.
+
+    The MCP bridge runs this for the life of its process when its active root is a remote target
+    (``start_remote_background_work``), so what hooks captured under ``<root>/state`` (the
+    observation outbox and the legacy spool) reaches the server between hook passes. After the
+    merge it loops over split/client's drain helper on a ``connect_service`` connection, with a
+    bounded pause between passes, until cancelled. Until then there is nothing to drain and it
+    returns at once; hooks still drain their own pass.
+    """
+
+    del target, root
+
+
+def start_remote_background_work() -> asyncio.Task[None] | None:
+    """Start the bridge's background work for a remote active root; ``None`` for a local root.
+
+    A local root (the everyday server, an isolated root, a named local server) starts nothing,
+    and a root whose record cannot be read starts nothing either: the bridge's own connection
+    reports that refusal.
+    """
+
+    from finishup.client.targets import TargetError, active_target_record, target_root
+
+    try:
+        record = active_target_record()
+    except TargetError:
+        return None
+    if record is None or not record.is_remote:
+        return None
+    return asyncio.create_task(remote_background_drain(record, target_root(record.target_id)))

@@ -4640,9 +4640,16 @@ def _initialization_options(
 
 
 async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
-    """Run bounded stdio and let the SDK negotiate protocol versions conformantly."""
+    """Run bounded stdio and let the SDK negotiate protocol versions conformantly.
+
+    For a remote server target the bridge is also the long-lived client process that drains what
+    hooks captured (ADR-051, direct dial); a local root starts no background work.
+    """
+
+    from finishup.client.agent_session import start_remote_background_work
 
     active_server = server if runtime is BRIDGE_RUNTIME else _build_server(runtime)
+    background = start_remote_background_work()
     async with bounded_stdio_server(drain_pending_responses=True) as (read_stream, write_stream):
         try:
             await active_server.run(
@@ -4652,6 +4659,9 @@ async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
                 raise_exceptions=False,
             )
         finally:
+            if background is not None:
+                background.cancel()
+                await asyncio.gather(background, return_exceptions=True)
             await close_bridge_runtime(runtime)
 
 

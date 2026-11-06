@@ -213,3 +213,40 @@ def test_the_foreground_agent_refuses_before_dialling_until_wired(
             )
         )
     assert raised.value.reason == "workspace_agent_unavailable"
+
+
+def test_only_a_remote_root_starts_the_bridges_background_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+    from finishup.client.agent_session import start_remote_background_work
+    from finishup.config.paths import reset_selection_memo
+
+    drained: list[tuple[str, Path]] = []
+
+    async def drain(target: object, root: Path) -> None:
+        drained.append((getattr(target, "target_id"), root))
+
+    monkeypatch.setattr(agent_session, "remote_background_drain", drain)
+
+    async def started() -> bool:
+        task = start_remote_background_work()
+        if task is None:
+            return False
+        await task
+        return True
+
+    with ambient_home(monkeypatch):
+        assert asyncio.run(started()) is False  # the everyday server
+        with targets.registry_lock():
+            local, _local_root = targets.new_local_target("work")
+            targets.write_selection(local)
+        reset_selection_memo()
+        assert asyncio.run(started()) is False  # a named local server
+        with targets.registry_lock():
+            remote, root = targets.new_remote_target("lab", "https", base_url="https://fu.example")
+            targets.write_selection(remote)
+        reset_selection_memo()
+        assert asyncio.run(started()) is True
+    assert drained == [(remote.target_id, root)]
