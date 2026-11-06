@@ -1,8 +1,10 @@
-"""A receipt's workspace-provenance read happens before it writes, and never drops its block.
+"""A receipt's workspace-provenance read never refuses the receipt and never drops its block.
 
 ADR-051: a claim-bound task's text and markdown receipts end with the client-attested block,
-decided from the session's opening event. These drive the real ``Application`` facade over the
-memory and SQLite ledgers of the respond/status/receipt harness.
+decided from the session's opening event. Decision D4: when that event cannot be read, the
+receipt is still built and its section says what happened, why it matters and what to do; a
+retry once the read succeeds renders the binding. These drive the real ``Application`` facade
+over the memory and SQLite ledgers of the respond/status/receipt harness.
 """
 
 from __future__ import annotations
@@ -13,11 +15,18 @@ from typing import Any, Literal, cast
 import pytest
 
 from builders.ledger_adapters import MemoryObjects, ownership_fence
+from builders.start_application import start_request
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.domain.events import LedgerRecord, RedactionState
-from finishup.domain.receipts import workspace_provenance_unknown_block
+from finishup.domain.receipts import (
+    CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    client_attested_receipt_block,
+    workspace_provenance_unknown_block,
+)
+from finishup.ports.control import RepositoryPrivacyContext
 from finishup.ports.objects import ObjectKind, ObjectRef
-from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 from finishup.protocol.models import ReceiptRequest
 from integration.application.test_respond_status_receipt import (  # pyright: ignore[reportPrivateUsage]
     _bootstrap_finding,  # pyright: ignore[reportPrivateUsage]
@@ -26,6 +35,13 @@ from integration.application.test_respond_status_receipt import (  # pyright: ig
 )
 
 pytestmark = pytest.mark.anyio
+
+_COMMITMENT = "hmac-sha256:" + "c" * 64
+_CLAIM = RepositoryPrivacyContext(
+    _COMMITMENT,
+    "client_claim",
+    workspace_handle=workspace_handle_for_claim(_COMMITMENT, "sha256:" + "a1" * 32),
+)
 
 
 class _OpeningObjectFails:
@@ -172,10 +188,11 @@ class _AttestationReadFails:
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-async def test_a_failed_attestation_read_refuses_the_receipt_before_any_write(
+async def test_a_failed_attestation_read_records_the_receipt_and_a_retry_recovers(
     backend: Literal["memory", "sqlite"],
 ) -> None:
-    """The read comes before staging and append, so a refusal leaves nothing recorded."""
+    """Decision D4: a failed lookup never refuses; the receipt says what happened and a retry
+    once the fault clears renders the binding the opening event records."""
 
     app, runtime, _ = _build_app(seed_offset=49, ledger_backend=backend)
     started, checked, _obligation = await _bootstrap_finding(app, seed=5600)
@@ -183,8 +200,6 @@ async def test_a_failed_attestation_read_refuses_the_receipt_before_any_write(
     faulty = _AttestationReadFails(ledger)
     runtime.resources[started.task_id] = (cast(Any, faulty), objects)
     receipts_before = objects.refs_for_kind(ObjectKind.RECEIPT)
-    payloads_before = objects.refs_for_kind(ObjectKind.EVENT_PAYLOAD)
-    head_before = await ledger.load_frontier()
     wire = _receipt_wire(
         5610,
         task_id=started.task_id,
@@ -193,33 +208,90 @@ async def test_a_failed_attestation_read_refuses_the_receipt_before_any_write(
         frontier=checked.result_frontier,
     )
     request = ReceiptRequest.model_validate({**wire, "format": "text"})
+    unknown_block = "\n\n" + workspace_provenance_unknown_block(markdown=False)
 
-    with pytest.raises(PublicOperationError) as refused:
-        await app.receipt(request)
-    assert refused.value.code is PublicErrorCode.STORAGE_UNSAFE
-    assert refused.value.retryable is True
-    assert objects.refs_for_kind(ObjectKind.RECEIPT) == receipts_before
-    assert objects.refs_for_kind(ObjectKind.EVENT_PAYLOAD) == payloads_before
-    assert await ledger.load_frontier() == head_before
-    assert await ledger.lookup_operation(started.writer_id, request.request_id) is None
-
-    # The fault clears, and the same request records the receipt.
-    faulty.failing = False
     recorded = await app.receipt(request)
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
+    assert await ledger.lookup_operation(started.writer_id, request.request_id) is not None
     assert recorded.human_text is not None
-    assert "Workspace evidence" not in recorded.human_text
+    assert recorded.human_text.endswith(unknown_block)
+    assert recorded.human_text.count("Workspace evidence") == 1
 
-    # Its replay reads the event too, and refuses the same way rather than drop the block.
-    faulty.failing = True
-    with pytest.raises(PublicOperationError) as replay_refused:
-        await app.receipt(request)
-    assert replay_refused.value.code is PublicErrorCode.STORAGE_UNSAFE
-    assert replay_refused.value.retryable is True
+    # The fault clears: running the same receipt again reads the opening, and this task is
+    # not claim-bound, so the replay carries no workspace-evidence section at all.
     faulty.failing = False
     replayed = await app.receipt(request)
     assert replayed.receipt_id == recorded.receipt_id
-    assert replayed.human_text == recorded.human_text
+    assert replayed.human_text is not None
+    assert replayed.human_text == recorded.human_text.removesuffix(unknown_block)
+    assert "Workspace evidence" not in replayed.human_text
+
+    # A fault on the replay is shown the same way, never a refusal of a recorded receipt.
+    faulty.failing = True
+    again = await app.receipt(request)
+    assert again.receipt_id == recorded.receipt_id
+    assert again.human_text == recorded.human_text
+    assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
+
+    # A new receipt after the fault clears is built with its binding read.
+    faulty.failing = False
+    fresh = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    5611,
+                    task_id=started.task_id,
+                    session=started.session_id,
+                    writer=started.writer_id,
+                    frontier=recorded.result_frontier,
+                ),
+                "format": "markdown",
+            }
+        )
+    )
+    assert fresh.receipt_id != recorded.receipt_id
+    assert fresh.human_text is not None
+    assert "Workspace evidence" not in fresh.human_text
+
+
+async def test_a_claim_bound_receipt_shows_unknown_then_its_attested_block_on_retry() -> None:
+    """The retry path of a claim-bound task: unknown while the lookup fails, then the
+    client-attested block naming the serving service once it reads."""
+
+    app, runtime, _ = _build_app(seed_offset=50)
+    started = await app.start(
+        start_request(5700, title="Claim-bound receipt"), repository_privacy_context=_CLAIM
+    )
+    ledger, objects = runtime.resources[started.task_id]
+    faulty = _AttestationReadFails(ledger)
+    runtime.resources[started.task_id] = (cast(Any, faulty), objects)
+    request = ReceiptRequest.model_validate(
+        {
+            **_receipt_wire(
+                5710,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=started.frontier,
+            ),
+            "format": "text",
+        }
+    )
+
+    unknown = await app.receipt(request)
+    assert unknown.human_text is not None
+    assert unknown.human_text.endswith("\n\n" + workspace_provenance_unknown_block(markdown=False))
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in unknown.human_text
+
+    faulty.failing = False
+    attested = await app.receipt(request)
+    assert attested.receipt_id == unknown.receipt_id
+    assert attested.human_text is not None
+    assert attested.human_text.endswith(
+        "\n\n"
+        + client_attested_receipt_block(ownership_fence().service_instance_id, markdown=False)
+    )
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE not in attested.human_text
 
 
 @pytest.mark.parametrize("receipt_format", ["text", "markdown", "json"])
