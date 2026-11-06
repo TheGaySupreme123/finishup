@@ -268,13 +268,14 @@ answers bounded `workspace_call`s on a connection that declared it.
   background work such as the detached review and recovered jobs — then raises the typed
   `WorkspaceAgentUnavailable`, whose reason is closed. Each call is bounded by the catalog's call
   deadline, a channel serves at most four calls at once, and pending argument bytes are bounded. A
-  dropped channel fails its pending calls; a pending call keeps its connection out of idle close;
-  a reply on a connection that declared no agent closes it. The hub logs closed tokens only.
-  Every channel under one handle serves the same worktree: a connection whose claim names
-  another worktree is closed rather than admitted under a handle that already has a live channel
-  (`workspace_agent_worktree_conflict`), and a live control call prefers the agent its own
-  connection offered. With no channel for a task's handle the call fails `no_agent`; another
-  worktree's agent never answers it.
+  dropped channel fails its pending calls, except that a read whose channel dropped is sent once
+  more to another live channel of the same handle (never an approved check, which may already have
+  run); a pending call keeps its connection out of idle close; a reply on a connection that
+  declared no agent closes it. The hub logs closed tokens only. Every channel under one handle
+  serves the same worktree: a connection whose claim names another worktree is closed rather than
+  admitted under a handle that already has a live channel (`workspace_agent_worktree_conflict`),
+  and a live control call prefers the agent its own connection offered. With no channel for a
+  task's handle the call fails `no_agent`; another worktree's agent never answers it.
 - **Routing.** `service/workspace_routing.py` wraps every workspace port and callable the service
   composes. An absolute-path workspace goes to the existing local adapter unchanged; a
   `client:<16 hex>` handle goes to the hub, and no local adapter is ever handed it. Callers that

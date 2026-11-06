@@ -16,7 +16,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -659,6 +659,116 @@ def test_opened_workspaces_are_bounded_and_unknown_handles_are_reported(
     assert _refused(
         handler, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(first)
     ) == ("unavailable", "handle_unknown")
+
+
+def _keyed_handler(repository: Path, protected: Path, key: bytes) -> WorkspaceAgentHandler:
+    return WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        check_sandbox=_ReadySandbox(),
+        opened_handle_key=key,
+    )
+
+
+def test_a_keyed_opened_handle_is_answered_by_another_agent_of_the_client(
+    repository: Path, protected: Path
+) -> None:
+    """Several connections of one client serve a worktree; any of them answers its handle."""
+
+    _change(repository)
+    key = b"k" * 32
+    opener = _keyed_handler(repository, protected, key)
+    other = _keyed_handler(repository, protected, key)
+    opened = _open(opener)
+    # The same open gives the same keyed handle, for this root only.
+    assert _open(opener) == opened
+    assert _open(other) == opened
+    fresh = _keyed_handler(repository, protected, key)
+    changed = _ok(fresh, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened))
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
+    # Without the key, or with another, the handle names nothing this agent opened.
+    for stranger in (
+        _handler(repository, protected),
+        _keyed_handler(repository, protected, b"x" * 32),
+    ):
+        assert _refused(
+            stranger, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened)
+        ) == ("unavailable", "handle_unknown")
+    # A well-formed handle the key never made is refused, never opened.
+    forged = "rws_" + "0" * 32
+    assert _refused(
+        fresh, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(forged)
+    ) == ("unavailable", "handle_unknown")
+
+
+def test_a_keyed_handle_in_use_is_never_forgotten(repository: Path, protected: Path) -> None:
+    """A verification keeps its handle while ingests open the workspace again and again."""
+
+    _change(repository)
+    handler = _keyed_handler(repository, protected, b"k" * 32)
+    opened = _open(handler)
+    for admitted_home_project in (True, False) * 8:
+        _ok(
+            handler,
+            WorkspaceOperation.OPEN_WORKSPACE,
+            OpenWorkspaceArguments(_HANDLE, admitted_home_project),
+        )
+    changed = _ok(handler, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened))
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
+
+
+def test_a_handle_opened_on_one_connection_is_answered_on_a_newer_one(
+    repository: Path, protected: Path
+) -> None:
+    """The hub routes a later call to the newest channel; that agent answers the handle."""
+
+    import asyncio
+
+    from finishup.service.workspace_hub import WorkspaceAgentHub, live_call_scope
+    from finishup.service.workspace_routing import RoutedObservationWorkspace
+
+    _change(repository)
+    key = b"k" * 32
+    older, newer = (_keyed_handler(repository, protected, key) for _ in range(2))
+    answered: list[str] = []
+
+    async def exercise() -> tuple[str, ...]:
+        hub = WorkspaceAgentHub(inline_wait_seconds=1.0, background_wait_seconds=1.0)
+
+        async def register(handler: WorkspaceAgentHandler, name: str) -> object:
+            holder: list[Any] = []
+
+            async def writer(call: WorkspaceCall) -> None:
+                answered.append(name)
+                reply = await asyncio.to_thread(handler.answer, call, workspace_handle=_HANDLE)
+                hub.deliver(holder[0], reply)
+
+            channel = await hub.register(
+                handle=_HANDLE,
+                declaration=handler.declaration,
+                service_instance_id=_SERVICE,
+                service_generation="1",
+                writer=writer,
+            )
+            holder.append(channel)
+            return channel
+
+        first = await register(older, "older")
+        await register(newer, "newer")
+        access = RoutedObservationWorkspace(hub)
+        with live_call_scope(cast(Any, first)):
+            opened = await asyncio.to_thread(access.open, _HANDLE)
+        # Background work later: the newest channel answers the handle the older one opened.
+        return await asyncio.to_thread(access.list_changed, opened)
+
+    changed = asyncio.run(exercise())
+    assert answered == ["older", "newer"]
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
+
+
+def test_an_opened_handle_key_must_be_32_bytes(repository: Path, protected: Path) -> None:
+    with pytest.raises(ValueError, match="opened_handle_key_invalid"):
+        _keyed_handler(repository, protected, b"short")
 
 
 def test_opening_a_directory_without_git_reports_the_closed_limitation(

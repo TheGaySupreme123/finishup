@@ -64,6 +64,14 @@ MAX_CALLS_PER_CHANNEL: Final = 4
 MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL: Final = 2 * MAX_WORKSPACE_FRAME_BYTES
 # Room past a call's own deadline for its reply frame to arrive and be read.
 _REPLY_GRACE_SECONDS: Final = 1.0
+# Operations that read and change nothing on the client: one whose connection dropped before it
+# answered is sent once more to another live connection of the same claim. An approved check may
+# already have run, so it is never sent twice.
+_REPLAYABLE_OPERATIONS: Final = frozenset(
+    operation
+    for operation in WorkspaceOperation
+    if operation is not WorkspaceOperation.RUN_APPROVED_CHECK
+)
 _COMPONENT: Final = "service.workspace_hub"
 _WORKTREE_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 
@@ -371,6 +379,18 @@ class WorkspaceAgentHub:
             raise WorkspaceAgentUnavailable("operation_not_declared")
         return None
 
+    def _other_live_channel(
+        self, handle: str, operation: WorkspaceOperation, previous: WorkspaceAgentChannel
+    ) -> WorkspaceAgentChannel | None:
+        """Another live connection that declares ``operation`` for ``handle``, right now."""
+
+        live = [
+            channel
+            for channel in self._channels.get(handle, ())
+            if channel is not previous and not channel.closed and channel.declares(operation)
+        ]
+        return live[-1] if live else None
+
     async def _channel_for(
         self,
         handle: str,
@@ -445,7 +465,20 @@ class WorkspaceAgentHub:
         preferred = None if scope is None else scope.channel
         try:
             channel = await self._channel_for(handle, spec.operation, wait, preferred)
-            reply = await self._exchange(channel, spec.operation, wire, size, timeout_seconds)
+            try:
+                reply = await self._exchange(channel, spec.operation, wire, size, timeout_seconds)
+            except WorkspaceAgentUnavailable as exc:
+                # Several connections of one client may serve a handle's one worktree (ADR-051):
+                # when the one asked drops mid-call and another is live now, a read is asked
+                # there once more.
+                other = self._other_live_channel(handle, spec.operation, channel)
+                if (
+                    exc.reason != "agent_disconnected"
+                    or spec.operation not in _REPLAYABLE_OPERATIONS
+                    or other is None
+                ):
+                    raise
+                reply = await self._exchange(other, spec.operation, wire, size, timeout_seconds)
         except WorkspaceAgentUnavailable as exc:
             _record("workspace_call", exc.reason)
             raise

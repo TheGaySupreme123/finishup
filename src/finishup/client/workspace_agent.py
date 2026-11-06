@@ -29,6 +29,8 @@ reply carries one closed reason; logs carry closed tokens only, never a path, ar
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import posixpath
 import threading
@@ -120,8 +122,14 @@ __all__ = [
 
 _COMPONENT: Final = "client.workspace_agent"
 # Opened workspaces (``open_workspace``) this handler keeps; the oldest is forgotten first, and a
-# call naming a forgotten one is answered ``handle_unknown`` so the server opens it again.
+# call naming a forgotten one is answered ``handle_unknown`` so the server opens it again
+# (``workspace_routing`` reopens once). A keyed handler holds at most its two keyed handles.
 _MAX_OPEN_WORKSPACES: Final = 8
+# Domain of a keyed opened-workspace handle (``opened_handle_key``): the MAC over the open's
+# admitted-HOME flag and this agent's own root, so any agent of this client for the same workspace
+# recomputes it, and nothing else can.
+_OPENED_HANDLE_DOMAIN: Final = b"yoetz/opened-workspace/v1\x00"
+_OPENED_HANDLE_KEY_BYTES: Final = 32
 
 
 class _Outcome(Exception):
@@ -225,6 +233,7 @@ class WorkspaceAgentHandler:
         "_inspect",
         "_opened",
         "_opened_guard",
+        "_opened_key",
         "_operations",
         "_protected",
         "_root",
@@ -241,12 +250,21 @@ class WorkspaceAgentHandler:
         operations: Iterable[str] | None = None,
         max_reply_bytes: int = MAX_WORKSPACE_FRAME_BYTES,
         check_sandbox: CheckSandboxPort | None = None,
+        opened_handle_key: bytes | None = None,
     ) -> None:
         """``workspace`` is the locator the connection's claim was computed from.
 
         ``protected`` defaults to ``client_protected_directories()``; ``operations`` to the whole
         catalog. ``check_sandbox`` replaces the platform's network-denying sandbox only where a
         caller supplies an equally enforcing one.
+
+        ``opened_handle_key`` (32 bytes, a client secret the server never sees) makes the handle
+        ``open_workspace`` answers a keyed digest of this root instead of a random one, so that
+        when several of this client's connections serve the same worktree (a CLI command, the MCP
+        bridge, a background agent, a reconnect), a later call naming the handle may be answered
+        by any of them: an agent that did not open it recomputes it for its own root and opens it
+        again, and the bounded table can never forget a handle still in use. Without a key, a
+        handle is known only to the agent that opened it.
         """
 
         if type(workspace) is not WorkspaceLocator:
@@ -273,6 +291,12 @@ class WorkspaceAgentHandler:
         self._subject_state = GitSubjectStateAdapter()
         self._inspect = LocalWorkspaceInspectAdapter()
         self._sandbox = check_sandbox
+        if opened_handle_key is not None and (
+            type(opened_handle_key) is not bytes
+            or len(opened_handle_key) != _OPENED_HANDLE_KEY_BYTES
+        ):
+            raise ValueError("opened_handle_key_invalid")
+        self._opened_key = opened_handle_key
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -407,10 +431,46 @@ class WorkspaceAgentHandler:
     def _opened_workspace(self, handle: str) -> LocalWorkspaceHandle:
         with self._opened_guard:
             opened = self._opened.get(handle)
-            if opened is None:
-                raise _Outcome("handle_unknown")
+            if opened is not None:
+                self._opened.move_to_end(handle)
+                return opened
+        # Opened by another agent of this client for the same workspace (another connection):
+        # a keyed handle is recomputed for this root and the workspace opened here again.
+        for admitted_home_project in (False, True):
+            expected = self._keyed_opened_handle(admitted_home_project)
+            if expected is not None and hmac.compare_digest(expected, handle):
+                return self._remember_opened(
+                    handle, self._open_local(admitted_home_project=admitted_home_project)
+                )
+        raise _Outcome("handle_unknown")
+
+    def _keyed_opened_handle(self, admitted_home_project: bool) -> str | None:
+        key = self._opened_key
+        if key is None:
+            return None
+        message = (
+            _OPENED_HANDLE_DOMAIN
+            + (b"1" if admitted_home_project else b"0")
+            + b"\x00"
+            + os.fsencode(self._root)
+        )
+        return "rws_" + hmac.new(key, message, hashlib.sha256).hexdigest()[:32]
+
+    def _open_local(self, *, admitted_home_project: bool) -> LocalWorkspaceHandle:
+        try:
+            return open_local_workspace(
+                Path(self._root), admitted_home_project=admitted_home_project
+            )
+        except ValueError as exc:
+            raise _Outcome(_unavailable(str(exc))) from None
+
+    def _remember_opened(self, handle: str, opened: LocalWorkspaceHandle) -> LocalWorkspaceHandle:
+        with self._opened_guard:
+            self._opened[handle] = opened
             self._opened.move_to_end(handle)
-            return opened
+            while len(self._opened) > _MAX_OPEN_WORKSPACES:
+                self._opened.popitem(last=False)
+        return opened
 
     # --- git --------------------------------------------------------------------------------
 
@@ -534,18 +594,12 @@ class WorkspaceAgentHandler:
     # --- observation ------------------------------------------------------------------------
 
     def _open_workspace(self, arguments: OpenWorkspaceArguments, call: _Call) -> object:
-        root = self._workspace(arguments.workspace, call)
-        try:
-            opened = open_local_workspace(
-                Path(root), admitted_home_project=arguments.admitted_home_project
-            )
-        except ValueError as exc:
-            raise _Outcome(_unavailable(str(exc))) from None
-        handle = new_remote_workspace_handle()
-        with self._opened_guard:
-            self._opened[handle] = opened
-            while len(self._opened) > _MAX_OPEN_WORKSPACES:
-                self._opened.popitem(last=False)
+        self._workspace(arguments.workspace, call)
+        opened = self._open_local(admitted_home_project=arguments.admitted_home_project)
+        handle = self._keyed_opened_handle(arguments.admitted_home_project)
+        if handle is None:
+            handle = new_remote_workspace_handle()
+        self._remember_opened(handle, opened)
         return handle
 
     def _load_check_policy(self, arguments: WorkspaceOnlyArguments, call: _Call) -> object:

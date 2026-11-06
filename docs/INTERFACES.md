@@ -4629,7 +4629,8 @@ root)` maps them on the client (`client_location_valid(value, *, relative=True)`
 Outside-input roots and `lstat` candidates stay absolute.
 
 **Workspace agent (client side).** `finishup.client.workspace_agent.WorkspaceAgentHandler(workspace,
-*, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None)` answers the
+*, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None,
+opened_handle_key=None)` answers the
 catalog against the real local adapters with their existing fences: Git hardening and ownership
 checks, ignore rules, credential-named and hidden-path refusals, byte and time bounds, and the
 network-denying check sandbox. `answer(call, *, workspace_handle)` is synchronous and runs in a
@@ -4678,6 +4679,21 @@ a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(
   `MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL` argument bytes in flight. A pending call keeps its
   connection out of idle close, and a `workspace_reply` on a connection that declared no agent
   closes that connection.
+- **Several connections per worktree.** A live call goes first to the agent its own connection
+  offered, otherwise to the newest live channel for the handle that declares its operation; every
+  channel under one handle serves the same worktree. When that channel drops before answering and
+  another live channel for the same handle declares the operation, a read (every operation but
+  `run_approved_check`, which may already have run) is sent once more to that channel; otherwise
+  the call fails `agent_disconnected` at once.
+- **Opened workspaces.** An agent built with an `opened_handle_key` answers `open_workspace` with
+  a keyed handle (`rws_` + the first 32 hex of `HMAC-SHA256(key, "yoetz/opened-workspace/v1\0" ‖
+  admitted-HOME flag ‖ 0x00 ‖ its root)`), so any agent of the same client for the same worktree
+  recomputes and answers it; `remote_workspace_binding` derives that key from the target's claim
+  salt (`HMAC-SHA256(claim_salt, "yoetz/opened-workspace-key/v1")`), which the server never sees.
+  An agent without a key keeps random handles in a bounded table. As a backstop, the routing
+  (`RoutedObservationWorkspace` and its subject-state, inspect, changed-path and approved-check
+  calls) reopens a workspace whose handle the answering agent reports `handle_unknown`, keeps the
+  new handle and retries the call once; nothing else is retried there.
 - **Typed loss.** Every failure is `ports.workspace_agent.WorkspaceAgentUnavailable(reason,
   agent_reason=None)`, `reason` in `WORKSPACE_AGENT_UNAVAILABLE_REASONS`: `no_agent`,
   `agent_disconnected`, `deadline_exceeded`, `agent_busy`, `operation_not_declared`,

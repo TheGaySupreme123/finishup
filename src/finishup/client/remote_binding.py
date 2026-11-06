@@ -13,13 +13,18 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 from collections.abc import Sequence
-from typing import cast
+from typing import Final, cast
 
 from finishup.client.targets import TargetError, active_target_record
 from finishup.client.workspace_claim import workspace_claim
 from finishup.ports.control import WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
+
+# Derives the agents' opened-workspace handle key from the target's claim salt (a client secret).
+_OPENED_HANDLE_KEY_DOMAIN: Final = b"yoetz/opened-workspace-key/v1"
 
 __all__ = ["binding_for_active_root", "is_remote_active_root", "remote_workspace_binding"]
 
@@ -44,7 +49,13 @@ async def remote_workspace_binding(
         return ClientWorkspaceBinding(claim)
     from finishup.client.workspace_agent import WorkspaceAgentHandler
 
-    return ClientWorkspaceBinding(claim, WorkspaceAgentHandler(workspace, protected=protected))
+    # Every agent of this client for this target keys its opened-workspace handles alike, so a
+    # handle one connection opened is answered by another (each process serves its own calls).
+    opened_key = hmac.new(claim_salt, _OPENED_HANDLE_KEY_DOMAIN, hashlib.sha256).digest()
+    return ClientWorkspaceBinding(
+        claim,
+        WorkspaceAgentHandler(workspace, protected=protected, opened_handle_key=opened_key),
+    )
 
 
 def is_remote_active_root() -> bool:

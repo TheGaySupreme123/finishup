@@ -7,10 +7,12 @@ from collections.abc import Callable
 
 import pytest
 
+from finishup.ports.approved_checks import ApprovedCheckApproval, approval_commitment
 from finishup.ports.change_capture import TaskChangeBase
 from finishup.ports.control import WorkspaceAgentDeclaration, WorkspaceCall, WorkspaceReply
 from finishup.ports.workspace_agent import (
     WORKSPACE_OPERATION_NAMES,
+    RunApprovedCheckArguments,
     WorkspaceAgentUnavailable,
     WorkspaceOnlyArguments,
     WorkspaceOperation,
@@ -321,6 +323,54 @@ async def test_a_live_call_prefers_its_own_connections_agent() -> None:
             timeout_seconds=1.0,
         )
     assert (len(own), len(newer), len(elsewhere)) == (2, 2, 1)
+
+
+async def test_a_read_whose_connection_dropped_is_asked_once_of_another_live_one() -> None:
+    """Two connections of one client serve the claim; the newest goes away mid-call."""
+
+    hub = _hub()
+    older: list[WorkspaceCall] = []
+    await _register(hub, lambda call: _ok(call, _BASE), sent=older)
+    newest = await _register(hub, lambda _call: None)
+    pending = asyncio.create_task(
+        hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=5.0)
+    )
+    while newest.pending_count == 0:
+        await asyncio.sleep(0)
+    await hub.unregister(newest)
+    assert await asyncio.wait_for(pending, 1.0) == _BASE
+    assert [call.operation for call in older] == ["read_task_base"]
+
+
+async def test_an_approved_check_whose_connection_dropped_is_never_run_twice() -> None:
+    hub = _hub()
+    older: list[WorkspaceCall] = []
+    await _register(hub, lambda _call: None, sent=older)
+    newest = await _register(hub, lambda _call: None)
+    arguments = RunApprovedCheckArguments(
+        "rws_" + "0" * 32,
+        ApprovedCheckApproval(
+            approval_id="unit",
+            argv=("/usr/bin/true",),
+            allow_network=False,
+            timeout_seconds=10.0,
+            approval_commitment=approval_commitment(
+                "unit", ("/usr/bin/true",), allow_network=False
+            ),
+        ),
+        "sha256:" + "4" * 64,
+        None,
+    )
+    pending = asyncio.create_task(
+        hub.call(_HANDLE, WorkspaceOperation.RUN_APPROVED_CHECK, arguments, timeout_seconds=5.0)
+    )
+    while newest.pending_count == 0:
+        await asyncio.sleep(0)
+    await hub.unregister(newest)
+    with pytest.raises(WorkspaceAgentUnavailable) as caught:
+        await asyncio.wait_for(pending, 1.0)
+    assert caught.value.reason == "agent_disconnected"
+    assert older == []
 
 
 async def test_a_blocking_call_from_a_worker_thread_reaches_the_loop() -> None:
