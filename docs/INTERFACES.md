@@ -4665,6 +4665,10 @@ a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(
   `MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL` argument bytes in flight. A pending call keeps its
   connection out of idle close, and a `workspace_reply` on a connection that declared no agent
   closes that connection.
+- **Several connections per claim.** A call goes to the newest live channel that declares its
+  operation. When that channel drops before answering and another live channel for the same handle
+  declares the operation, a read (every operation but `run_approved_check`, which may already have
+  run) is sent once more to that channel; otherwise the call fails `agent_disconnected` at once.
 - **Typed loss.** Every failure is `ports.workspace_agent.WorkspaceAgentUnavailable(reason,
   agent_reason=None)`, `reason` in `WORKSPACE_AGENT_UNAVAILABLE_REASONS`: `no_agent`,
   `agent_disconnected`, `deadline_exceeded`, `agent_busy`, `operation_not_declared`,
