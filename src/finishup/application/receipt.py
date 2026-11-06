@@ -509,8 +509,9 @@ def _internal_result(
     """The result of one receipt; ``attested_by`` is the serving service's instance id when the
     task is claim-bound, so its text and markdown renderings end with the fixed client-attested
     workspace-evidence block (ADR-051), or ``_Provenance.UNKNOWN`` when the session's opening
-    event cannot say, so they end with the fixed provenance-unknown block instead. The stored
-    document never carries either."""
+    event could not be read or cannot say, so they end with the fixed provenance-unknown block
+    instead: what happened, why it matters, what to do (decision D4). The stored document never
+    carries either."""
 
     document_json = cast(JsonValue, receipt_document_to_json(document))
     markdown = request.format is ReceiptFormat.MARKDOWN
@@ -643,48 +644,42 @@ async def _attested_by(
     session's own opening event, found by its schema name, a durable fact, so a replay renders
     the same block. None means that event was read and names no handle, or the session has none.
 
-    A read that fails is a classified storage error, never None, so a claim-bound receipt never
-    loses its client-attested block: an ``OSError`` is a retryable ``STORAGE_UNSAFE`` and a
-    malformed record ``STORAGE_CORRUPT``. ``execute_receipt`` reads this before it stages or
-    appends anything, so either refusal leaves no write.
+    ``_Provenance.UNKNOWN`` means the opening event could not say, and the receipt is built
+    anyway (owner decision D4: a receipt never refuses over this lookup). Its "Workspace
+    evidence" section then says the provenance is unknown, why that matters and what to do,
+    never nothing and never a guess. That is the answer when:
 
-    An opening event that comes back without a decoded ``session_opened`` payload answers
-    ``_Provenance.UNKNOWN``: it is redacted, its key is unavailable, its version is one this
-    service cannot decode, or its envelope says ``present`` but its payload is None. The last is
-    the payload object a SQLite ledger could not read (missing, failed verification, or an
-    environmental fault) while it recovered the task; the ledger keeps that gap for as long as it
-    holds the task open, so neither this read nor a retry against the same ledger can tell a
-    transient fault from a lost object. Refusing the receipt would claim a retry helps when it
-    cannot, and would lock a task out of receipts it got before; so the receipt is built and its
-    human renderings say the binding is unknown. A replay reads the event again, so once the
-    task is reopened and the object reads, the same request renders the binding it records.
+    * the read itself fails, whatever the failure (an ``OSError`` from storage, a malformed
+      record, a ledger that refuses with its own classified error). It is recorded as one
+      bounded diagnostic under operation ``receipt_attestation_read``, so an operator can find
+      it, and never reaches the caller as a refusal;
+    * the event comes back without a decoded ``session_opened`` payload: it is redacted, its key
+      is unavailable, its version is one this service cannot decode, or its envelope says
+      ``present`` but its payload is None. The last is the payload object a SQLite ledger could
+      not read (missing, failed verification, or an environmental fault) while it recovered the
+      task; the ledger keeps that gap for as long as it holds the task open.
+
+    Every receipt and every replay reads the event again, so once the read succeeds (a transient
+    fault clears, or the service reopens the task after a restart and the object reads) the same
+    request renders the binding the event records. ``execute_receipt`` reads this before it
+    stages or appends anything. Cancellation is never caught.
     """
 
-    opening: LedgerRecord | None = None
     try:
         async for record in runtime.ledger.load_events(runtime.session_id):
             if record.schema.name == "session_opened":
-                opening = record
+                opening: LedgerRecord = record
                 break
-    except OSError as exc:
-        raise _classified_storage_error(
-            PublicErrorCode.STORAGE_UNSAFE,
-            "The task ledger is unavailable.",
+        else:
+            return None
+    except Exception as exc:  # noqa: BLE001 - D4: a lookup failure is shown, never a refusal
+        record_classified_exception_without_raising(
             exc,
-            retryable=True,
-            request_id=request_id,
+            component="application.receipt",
             operation="receipt_attestation_read",
-        ) from exc
-    except (KeyError, TypeError, ValueError) as exc:
-        raise _classified_storage_error(
-            PublicErrorCode.STORAGE_CORRUPT,
-            "The task ledger is unreadable.",
-            exc,
             request_id=request_id,
-            operation="receipt_attestation_read",
-        ) from exc
-    if opening is None:
-        return None
+        )
+        return _Provenance.UNKNOWN
     payload = opening.payload
     if isinstance(payload, SessionOpenedPayload):
         if workspace_handle_valid(payload.workspace_ref):
@@ -732,8 +727,8 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             int(request.expected_frontier.sequence), request.expected_frontier.head_digest
         )
         records, projection = await _records_through(runtime, frontier)
-        # Read before anything is staged or appended: a failed read refuses the receipt with
-        # no durable write, never after its event has committed.
+        # Read before anything is staged or appended. It never refuses: a read that fails or an
+        # opening that cannot say renders the provenance-unknown section (decision D4).
         attested_by = await _attested_by(runtime, request_id=request.request_id)
         availability = await runtime.ledger.load_case_availability(
             runtime.session_id, frontier, projection

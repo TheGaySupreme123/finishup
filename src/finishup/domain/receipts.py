@@ -118,7 +118,10 @@ __all__ = [
     "CLIENT_ATTESTED",
     "CLIENT_ATTESTED_OBSERVATION_LINE",
     "CLIENT_ATTESTED_WORKSPACE_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_LINES",
+    "WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE",
     "client_attested_receipt_block",
     "workspace_provenance_unknown_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
@@ -508,13 +511,29 @@ CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
     "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
     "attested over the connection; the server did not read the repository itself."
 )
-# ADR-051: the line a human receipt ends with instead when its session's opening event is
-# redacted, has no readable key, could not be read, or is a version this service cannot decode,
-# so whether the task is claim-bound is unknown. The section is never silently left out.
+# ADR-051 (owner decision D4): the lines a receipt's "Workspace evidence" section holds instead
+# when the record that opened its session could not be read (the ledger read failed, or the
+# record is redacted, has no readable key, lost its payload object, or is a version this service
+# cannot decode), so whether the task is claim-bound is unknown. A receipt is never refused for
+# it and the section is never silently left out: the lines say what happened, why it matters and
+# what to do. Fixed words; no host, user, path or target name ever joins them. The first line is
+# the marker a client reads to keep its own "read on the client machine" line off the receipt.
 WORKSPACE_PROVENANCE_UNKNOWN_LINE: Final = (
-    "Where this task's workspace evidence was read is unknown: the record that opened its "
-    "session is redacted or unreadable here, so this receipt cannot say whether the server read "
-    "the repository itself or a client's workspace agent attested it."
+    "Provenance unknown: the record of how this task's session was opened could not be read "
+    "from the server's ledger."
+)
+WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE: Final = (
+    "Why it matters: FinishUP cannot confirm whether this task's workspace evidence was read on "
+    "the client machine."
+)
+WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE: Final = (
+    "What to do: run receipt again. If this persists, restart the server's FinishUP service "
+    "(`finishup service restart` on the server host), then run receipt again."
+)
+WORKSPACE_PROVENANCE_UNKNOWN_LINES: Final = (
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
 )
 # ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
 # committed on the client; the service accepted them as attested and verified neither.
@@ -3703,13 +3722,14 @@ def client_attested_receipt_block(
 
 
 def workspace_provenance_unknown_block(*, markdown: bool) -> str:
-    """The section a text or markdown receipt ends with when its claim binding is unknown.
+    """The section a receipt ends with when its claim binding is unknown (ADR-051, decision D4).
 
-    The session's opening event is redacted, has no readable key, could not be read, or is a
-    version this service cannot decode (ADR-051), so the receipt says it cannot tell whose reads
-    its workspace evidence came from rather than leave the section out. Fixed words; nothing
+    The record that opened the task's session could not be read: the ledger read failed, or the
+    record is redacted, has no readable key, lost its payload object, or is a version this
+    service cannot decode. The receipt is still built, and this section says what happened, why
+    it matters and what to do, rather than leave the section out. Fixed words; nothing
     user-controlled.
     """
 
     heading = "## Workspace evidence" if markdown else "Workspace evidence"
-    return f"{heading}\n{WORKSPACE_PROVENANCE_UNKNOWN_LINE}"
+    return "\n".join((heading, *WORKSPACE_PROVENANCE_UNKNOWN_LINES))

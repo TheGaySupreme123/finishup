@@ -554,22 +554,27 @@ answers bounded `workspace_call`s on a connection that declared it.
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
     client_claim).` The stored receipt document and JSON receipts are unchanged. The service
     finds the opening event by its schema name and reads it before the receipt stages or appends
-    anything, so a ledger read that fails refuses the receipt with no write and the section is
-    never dropped: an environmental fault is a retryable `STORAGE_UNSAFE`, and a malformed record
-    is `STORAGE_CORRUPT`. An opening event that is redacted, whose key is unavailable, whose
-    version the service cannot read, or whose payload object the ledger could not read when it
-    recovered the task (the object is missing, fails verification, or hit an environmental fault;
-    the recovered ledger keeps the event as present with no payload, does not say which, and
-    keeps that gap for as long as it holds the task) cannot say whether the task is claim-bound,
-    and no retry of the receipt changes that. A retryable refusal would promise what a retry
-    cannot do, and any refusal would shut such a task out of receipts — a task that is not
-    claim-bound got a correct one before — until the service reopens it, and for good when the
-    object is gone. So the receipt is built and its "Workspace evidence" section holds one fixed
-    line instead: "Where this task's workspace evidence was read is unknown: the record that
-    opened its session is redacted or unreadable here, so this receipt cannot say whether the
-    server read the repository itself or a client's workspace agent attested it." A replay reads
-    the opening event again, so after the service reopens the task (it drops an idle task, or
-    restarts) and the object reads, the same receipt renders the binding the event records.
+    anything. Owner decision D4: a receipt never refuses because of this lookup; it says clearly
+    what happened, why, and that a retry may help. When the read fails, whatever the failure (an
+    environmental fault, a malformed record, the ledger's own classified refusal; each is
+    recorded as one bounded diagnostic an operator can find), or the opening event cannot say
+    whether the task is claim-bound (it is redacted, its key is unavailable, its version the
+    service cannot read, or its payload object the ledger could not read when it recovered the
+    task: the object is missing, fails verification, or hit an environmental fault, and the
+    recovered ledger keeps the event as present with no payload, does not say which, and keeps
+    that gap for as long as it holds the task), the receipt is built and its "Workspace
+    evidence" section holds three fixed lines instead: "Provenance unknown: the record of how
+    this task's session was opened could not be read from the server's ledger." (what
+    happened), "Why it matters: FinishUP cannot confirm whether this task's workspace evidence
+    was read on the client machine." (why), and "What to do: run receipt again. If this
+    persists, restart the server's FinishUP service (`finishup service restart` on the server
+    host), then run receipt again." The section is never dropped and never says the evidence was
+    read on the client. A refusal would shut a task out of receipts — a task that is not
+    claim-bound got a correct one before — for as long as the fault lasts, and for good when the
+    object is gone. Every receipt and every replay reads the opening event again, so once the
+    read succeeds (a transient fault clears, or the service reopens the task after it drops an
+    idle task or restarts, and the object reads) the same receipt renders the binding the event
+    records.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP

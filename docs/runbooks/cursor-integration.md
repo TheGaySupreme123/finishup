@@ -675,6 +675,10 @@ default service.
   `finishup observe ...` administers them here. Each row a remote target receives carries the
   client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
   receipts with hook-observed evidence carry one more fixed line.
+- **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
+  still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
+  line it ends with the fixed provenance-unknown section (what happened, why it matters, run
+  `receipt` again or restart the server's service).
 - **Zero-network with a remote target selected** (maintainer decision, 2026-11-06; ADR-051 decision
   8). Setting this computer's privacy policy to zero-network does not stop Cursor's traffic to a
   selected remote target. FinishUP surfaces it after the policy change (on the owner's terminal:
