@@ -3241,6 +3241,105 @@ async def test_a_lock_whose_caller_stops_waiting_never_strands_the_soft_lock_rer
     await daemon.close()
 
 
+class _UnwindGatedVault(_KeyedPassphraseVault):
+    """A keyed vault whose ``lock`` of an already locked vault waits on a gate once armed.
+
+    A cancelled activation locks the vault itself; the re-ready's unwind then locks it again,
+    and that second ``lock`` holds the unwind open until the test opens the gate.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+        self.unwinding = asyncio.Event()
+        self.unwind_gate = asyncio.Event()
+
+    async def lock(self) -> None:
+        if self.armed and not self.ready:
+            self.unwinding.set()
+            await self.unwind_gate.wait()
+        await super().lock()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ended_by", ["its_deadline", "a_session_lock"])
+async def test_a_cancelled_reready_keeps_its_soft_reason_while_it_unwinds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ended_by: str
+) -> None:
+    # A cancelled activation records the terminal ``unlock_failed`` as it unwinds, and the
+    # re-ready restored its soft-lock reason only after its own unwind had waited once. Until
+    # then status reported a hard lock, and a request arriving meanwhile was refused as not
+    # retryable, which the MCP bridge treats as a lock no retry lifts.
+    deadlines = _soft_reready_deadlines(monkeypatch)
+    vault = _UnwindGatedVault()
+    secret = b"correct horse battery staple!!"
+    vault.expect_secret(secret)
+    activating = asyncio.Event()
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        activating.set()
+        await asyncio.Event().wait()  # an activation that never finishes by itself
+        raise AssertionError("unreachable")
+
+    _patch_auto_unlock_store(monkeypatch, secret)
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+    waiting = asyncio.ensure_future(
+        daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+    )
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await activating.wait()
+
+    vault.armed = True
+    locking: asyncio.Future[None] | None = None
+    if ended_by == "its_deadline":
+        deadlines[0].reschedule(asyncio.get_running_loop().time())
+    else:
+        locking = asyncio.ensure_future(daemon.lock("user_session_locked"))
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await vault.unwinding.wait()
+
+    # The unwind is under way: status already shows the soft lock, never a hard one.
+    assert daemon.status().state is ServiceState.LOCKED
+    assert daemon.status().state_reason == "idle_relock"
+
+    # A request arriving now decides on the soft reason: it joins the attempt still unwinding,
+    # or, with a lock applying, is refused at once, and either way as retryable.
+    deciding = asyncio.Event()
+    owned = daemon._soft_lock_auto_ready_owned  # pyright: ignore[reportPrivateUsage]
+
+    async def observed_owned() -> bool:
+        deciding.set()
+        return await owned()
+
+    monkeypatch.setattr(daemon, "_soft_lock_auto_ready_owned", observed_owned)
+    call = asyncio.ensure_future(
+        daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(daemon, ControlMethod.START, _start_body()),
+        )
+    )
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await deciding.wait()
+    vault.unwind_gate.set()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        refused = await call
+        assert await waiting is None
+        if locking is not None:
+            await locking
+    assert refused.outcome == "error"
+    assert isinstance(refused.body, ControlError)
+    assert refused.body.reason == "vault_locked"
+    assert refused.body.retryable is True
+    assert daemon.status().state is ServiceState.LOCKED
+    assert daemon.status().state_reason == (
+        "idle_relock" if ended_by == "its_deadline" else "user_session_locked"
+    )
+    await daemon.close()
+
+
 class _SlowClosingApplication(_Application):
     """An application whose ``close`` waits until the test opens its gate."""
 
