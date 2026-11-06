@@ -240,10 +240,12 @@ backup, restore and migration belong to the server. On this computer those comma
 
 Observation settings stay on this computer. Your hooks run here, so the observation consent you
 give, the content you allow, the checks you approve and the observations waiting to be delivered
-all live here, and `finishup observe …` changes them here whichever server you use. Each
-observation this computer delivers carries those settings with it; the server accepts them as
-your computer's own statement and does not check them itself. Receipts of such a task say so in
-one more line.
+all live here, and `finishup observe …` changes them here whichever server you use. They are
+kept for each server separately: consent you gave while one server was in use does not send
+observations to another, so after `finishup server use` run `finishup observe grant` (and trust
+your approved checks) again for the projects you want observed there. Each observation this
+computer delivers carries those settings with it; the server accepts them as your computer's own
+statement and does not check them itself. Receipts of such a task say so in one more line.
 
 For an SSH server you can run the service commands through SSH, from a terminal:
 
