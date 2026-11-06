@@ -4550,7 +4550,10 @@ server-host commands `finishup service start` and `finishup service endpoint --j
 
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
-active root is a remote target, with `requires_server_host`.
+active root is a remote target, with `requires_server_host` (`ServerHostRequired`). A root that
+resolves but whose `target.json` cannot be read fails closed with `ServerTargetUnreadable` (a
+`ServerHostRequired` whose `reason` is the record's `target_root_unsafe` or
+`target_record_invalid`); `targets.active_target_record()` raises `TargetRecordUnreadable` for it.
 
 **Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
 target's credential, so a later OAuth source can replace the API key. `KeyringOrFileCredential`

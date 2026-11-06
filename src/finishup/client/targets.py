@@ -70,6 +70,7 @@ __all__ = [
     "ServerTarget",
     "TargetError",
     "TargetKind",
+    "TargetRecordUnreadable",
     "active_target_record",
     "clear_selection",
     "find_target",
@@ -165,6 +166,25 @@ class TargetError(Exception):
             raise ValueError("target_reason_invalid")
         self.reason = reason
         super().__init__(reason)
+
+
+class TargetRecordUnreadable(TargetError):
+    """The active root resolves, but the server target record it holds cannot be read.
+
+    Its ``reason`` is the record's own closed refusal (``target_root_unsafe`` or
+    ``target_record_invalid``). Whether such a root is this machine's server or a remote one is
+    unknown, so a caller deciding where something may run fails closed on it, while a root that
+    cannot be resolved at all stays a plain ``TargetError`` its own path reports. ``target_id`` is
+    the root's generated ``t_<8 hex>`` folder name when it has one, never other folder text.
+    """
+
+    target_id: str | None
+
+    def __init__(self, reason: str, target_id: str | None) -> None:
+        super().__init__(reason)
+        self.target_id = (
+            target_id if target_id is not None and _TARGET_ID.match(target_id) else None
+        )
 
 
 def _absolute_text(value: str | None, *, required: bool = False) -> None:
@@ -863,7 +883,8 @@ def active_target_record() -> ServerTarget | None:
     """The target record of the root this process uses, or ``None`` for an ordinary local root.
 
     ``None`` covers the everyday server and an explicitly isolated root that is not a target.
-    A path-safety refusal of the root is reported as ``target_root_unsafe``.
+    A path-safety refusal of the root is reported as ``target_root_unsafe``; a root that resolves
+    but holds a record that cannot be read raises ``TargetRecordUnreadable``.
     """
 
     try:
@@ -872,4 +893,7 @@ def active_target_record() -> ServerTarget | None:
         raise TargetError("target_root_unsafe") from None
     if root is None:
         return None
-    return read_target(root)
+    try:
+        return read_target(root)
+    except TargetError as error:
+        raise TargetRecordUnreadable(error.reason, root.name) from None

@@ -108,8 +108,11 @@ typed outcomes when the client side cannot be reached.
   when the outbox moves out of that module.
 - A command-scope registry labels every CLI and terminal-interface command `any`, `server_host`
   or `client_only`. One guard, `require_server_host()`, refuses a `server_host` command while a
-  remote target is active, with `requires_server_host`. A test walks the command tree and the
-  interface's command registry and fails on an unlabelled command.
+  remote target is active, with `requires_server_host`. It fails closed when the active root
+  resolves but its `target.json` cannot be read (unsafe mode, or a record it cannot parse): the
+  command is refused with the record's own reason (`target_root_unsafe`,
+  `target_record_invalid`), because such a root may be a remote target's. A test walks the command
+  tree and the interface's command registry and fails on an unlabelled command.
 - New client-side code lives in `finishup.client`. Hooks may load target selection, but never
   `httpx` or a client transport module, at import time; the hook import-diet packaging test locks
   that.
