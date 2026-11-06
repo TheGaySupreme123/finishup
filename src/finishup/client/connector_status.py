@@ -87,6 +87,8 @@ _CORRELATION: Final = "err_"
 _STOP_POLL_SECONDS: Final = 0.05
 # The connector's scrubbed environment: what OpenSSH and the interpreter need, nothing secret.
 # ``SSH_AUTH_SOCK`` lets an SSH target use the owner's agent; the key itself stays in OpenSSH.
+# The XDG base directories decide where this machine's server registry lives, so the connector
+# resolves the same target root its client did.
 _ENVIRONMENT_NAMES: Final = (
     "HOME",
     "LANG",
@@ -97,6 +99,11 @@ _ENVIRONMENT_NAMES: Final = (
     "SSH_AUTH_SOCK",
     "TMPDIR",
     "USER",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "XDG_STATE_HOME",
 )
 
 

@@ -119,6 +119,8 @@ def test_the_environment_carries_no_product_variable_or_secret(
     assert environment.get("SSH_AUTH_SOCK") == "/run/agent.sock"
     assert "FINISHUP_ISOLATED_ROOT" not in environment
     assert "OPENAI_API_KEY" not in environment
+    # The XDG base directories travel so the connector resolves its client's registry.
+    assert environment.get("XDG_STATE_HOME") == os.environ["XDG_STATE_HOME"]
     assert set(environment) <= {
         "HOME",
         "LANG",
@@ -129,4 +131,9 @@ def test_the_environment_carries_no_product_variable_or_secret(
         "SSH_AUTH_SOCK",
         "TMPDIR",
         "USER",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "XDG_STATE_HOME",
     }
