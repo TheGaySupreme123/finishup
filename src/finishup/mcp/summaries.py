@@ -50,6 +50,10 @@ from finishup.domain.review_mode_render import (
 )
 from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.domain.task_lifecycle_render import status_task_lifecycle_line
+from finishup.domain.workspace_provenance import (
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    WORKSPACE_PROVENANCE_UNKNOWN_NOTICE,
+)
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
@@ -3088,6 +3092,21 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
     return parts
 
 
+def _workspace_provenance_parts(source: Mapping[str, object]) -> list[Part]:
+    """ADR-051 decision D4: the fixed unknown-provenance lines, required, when the receipt says so.
+
+    Only the exact fixed notice is admitted; the lines rendered are this module's own constants.
+    """
+
+    member = source.get("workspace_provenance")
+    if not isinstance(member, Mapping):
+        return []
+    notice = cast(Mapping[str, object], member).get("notice")
+    if notice != WORKSPACE_PROVENANCE_UNKNOWN_NOTICE:
+        return []
+    return [_req(line) for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES]
+
+
 def summary_for_receipt(envelope: object) -> str:
     """Compose the receipt text: conclusion, frontier, limitation count and pairing first.
 
@@ -3113,6 +3132,7 @@ def summary_for_receipt(envelope: object) -> str:
     gap_codes = _safe_gap_codes(source)
     parts: list[Part | None] = [
         _req(f"Receipt conclusion: {conclusion};"),
+        *_workspace_provenance_parts(source),
         _req(_receipt_correctness_advisory_clause(source)),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),

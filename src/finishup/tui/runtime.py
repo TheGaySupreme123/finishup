@@ -2713,6 +2713,7 @@ class FinishUpRuntime:
 
         from finishup.cli.render import render_human_receipt
         from finishup.client.attribution import attribution_lines, connection_attribution
+        from finishup.domain.receipts import workspace_provenance_unknown_block
         from finishup.protocol.canonical import canonical_encode
         from finishup.protocol.coverage import CheckType
         from finishup.protocol.models import ReceiptRequestModel
@@ -2742,11 +2743,19 @@ class FinishUpRuntime:
         coverage = getattr(success, "coverage", None)
         gaps = tuple(str(item) for item in getattr(coverage, "known_gaps", ()) or ())
         semantic = CheckType.SEMANTIC_MODEL_DERIVED in success.coverage.check_types
+        # ADR-051 decision D4: a JSON receipt whose provenance is unknown shows the same fixed
+        # section a text receipt ends with, and no "read on the client machine" line.
+        provenance_unknown = success.workspace_provenance is not None
         rendered = (
             "\n".join(
                 (
                     canonical_encode(success.document).decode("utf-8"),
-                    *attribution_lines(attribution),
+                    *(
+                        (workspace_provenance_unknown_block(markdown=False),)
+                        if provenance_unknown
+                        else ()
+                    ),
+                    *attribution_lines(attribution, provenance_unknown=provenance_unknown),
                 )
             )
             if success.document is not None

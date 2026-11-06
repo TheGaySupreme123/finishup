@@ -15,6 +15,7 @@ from finishup.domain.receipts import (
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
     UNRESOLVED_VERIFICATION_GAP,
     UNRESOLVED_VERIFICATION_LIMITATION,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
     limitations_name_coordinator_failure,
@@ -22,6 +23,7 @@ from finishup.domain.receipts import (
     review_deferred_before_first_edit,
     semantic_redacted_value_agent_lines,
     semantic_redacted_value_text,
+    workspace_provenance_unknown_block,
 )
 from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
@@ -1235,6 +1237,11 @@ def render_human_receipt(
     ``attribution`` is the connection's (``finishup.client.attribution``): a claim-bound
     connection's receipt ends with the fixed workspace-evidence line, unless the service's own
     text already carries it, and the producing service.
+
+    A receipt whose ``workspace_provenance`` says the provenance is unknown (decision D4) shows
+    the fixed "Workspace evidence" section saying what happened, why it matters and what to do,
+    unless its text already carries it (a JSON receipt, or one whose text was withheld, has no
+    such text); the connection's "read on the client machine" line is then left out.
     """
 
     if type(result) is not ReceiptSuccessModel:
@@ -1297,10 +1304,14 @@ def render_human_receipt(
             )
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
+    provenance_unknown = result.workspace_provenance is not None
+    if provenance_unknown and WORKSPACE_PROVENANCE_UNKNOWN_LINE not in shown:
+        # ADR-051 decision D4: fixed words only; a text or markdown receipt already ends with it.
+        lines.append(workspace_provenance_unknown_block(markdown=False))
     if result.agent_closing_prompt is not None:
         # #1240 D5: the same closing line the MCP reply carries (fixed words and counts only).
         lines.append(result.agent_closing_prompt)
-    lines.extend(attribution_lines(attribution, shown=shown))
+    lines.extend(attribution_lines(attribution, shown=shown, provenance_unknown=provenance_unknown))
     return "\n".join(lines)
 
 

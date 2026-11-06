@@ -56,6 +56,12 @@ from finishup.domain.verification_coverage import (
     verification_coverage_lines,
     verification_coverage_to_json,
 )
+from finishup.domain.workspace_provenance import (
+    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.coverage import (
     Coverage,
@@ -512,29 +518,9 @@ CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
     "attested over the connection; the server did not read the repository itself."
 )
 # ADR-051 (owner decision D4): the lines a receipt's "Workspace evidence" section holds instead
-# when the record that opened its session could not be read (the ledger read failed, or the
-# record is redacted, has no readable key, lost its payload object, or is a version this service
-# cannot decode), so whether the task is claim-bound is unknown. A receipt is never refused for
-# it and the section is never silently left out: the lines say what happened, why it matters and
-# what to do. Fixed words; no host, user, path or target name ever joins them. The first line is
-# the marker a client reads to keep its own "read on the client machine" line off the receipt.
-WORKSPACE_PROVENANCE_UNKNOWN_LINE: Final = (
-    "Provenance unknown: the record of how this task's session was opened could not be read "
-    "from the server's ledger."
-)
-WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE: Final = (
-    "Why it matters: FinishUP cannot confirm whether this task's workspace evidence was read on "
-    "the client machine."
-)
-WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE: Final = (
-    "What to do: run receipt again. If this persists, restart the server's FinishUP service "
-    "(`finishup service restart` on the server host), then run receipt again."
-)
-WORKSPACE_PROVENANCE_UNKNOWN_LINES: Final = (
-    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-)
+# when the record that opened its session could not be read, so whether the task is claim-bound is
+# unknown: what happened, why it matters and what to do (``domain.workspace_provenance``, which
+# also gives every receipt format its ``workspace_provenance`` member).
 # ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
 # committed on the client; the service accepted them as attested and verified neither.
 CLIENT_ATTESTED_OBSERVATION_LINE: Final = (

@@ -198,6 +198,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/receipt-result-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/operations/status-request-1.3.0.schema.json",
         "json_schema",
         "application/schema+json",

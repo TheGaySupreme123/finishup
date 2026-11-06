@@ -552,7 +552,7 @@ answers bounded `workspace_call`s on a connection that declared it.
     child attached by its attach handle — opens with that connection's handle too, recorded in the
     opening event only, never in the request's identity) with a "Workspace evidence" section:
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
-    client_claim).` The stored receipt document and JSON receipts are unchanged. The service
+    client_claim).` The stored receipt document is unchanged. The service
     finds the opening event by its schema name and reads it before the receipt stages or appends
     anything. Owner decision D4: a receipt never refuses because of this lookup; it says clearly
     what happened, why, and that a retry may help. When the read fails, whatever the failure (an
@@ -569,9 +569,14 @@ answers bounded `workspace_call`s on a connection that declared it.
     was read on the client machine." (why), and "What to do: run receipt again. If this
     persists, restart the server's FinishUP service (`finishup service restart` on the server
     host), then run receipt again." The section is never dropped and never says the evidence was
-    read on the client. A refusal would shut a task out of receipts — a task that is not
-    claim-bound got a correct one before — for as long as the fault lasts, and for good when the
-    object is gone. Every receipt and every replay reads the opening event again, so once the
+    read on the client. Every receipt format, JSON included, also carries the result member
+    `workspace_provenance` (receipt-result 1.5.0; 1.4.0 shipped in v0.3.0 and is never amended):
+    `status` `unknown`, the closed `reason` `session_opening_unreadable`, and `notice`, the same
+    three lines; it is absent whenever the binding was read. A receipt the service pages for an
+    agent delivers it whole at the head of its first page. A refusal would shut a task out of
+    receipts — a task that is not claim-bound got a correct one before — for as long as the
+    fault lasts, and for good when the object is gone. Every receipt and every replay reads the
+    opening event again, so once the
     read succeeds (a transient fault clears, or the service reopens the task after it drops an
     idle task or restarts, and the object reads) the same receipt renders the binding the event
     records.
@@ -579,24 +584,23 @@ answers bounded `workspace_call`s on a connection that declared it.
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
     service <service_instance_id> (transport: <token>).` A receipt whose service text carries the
-    provenance-unknown line keeps only the second: the client's line is a fact about its
+    provenance-unknown line, or whose result carries `workspace_provenance`, keeps only the
+    second: the client's line is a fact about its
     connection, the service's is about the task's own opening event, and the client does not
     overrule the service by saying the evidence was read on its machine. Every delivery page of a
     receipt the service paged for an agent (the first from `receipt`, the rest from `status`
     continuations) keeps only the second too: the receipt's section is cut into fragments with
     the rest of its text and lands on at most one page, so no page can show which statement it
-    holds, and the agent reads it whole before the set is actionable-complete. The client reads
-    the receipt's provenance only from the text it renders: a JSON receipt, or one whose text the
-    service withheld, has no section to read, so its human rendering keeps both lines even when
-    the service could not establish the task's provenance, and only a text or markdown receipt
-    says so. (A provenance field on the receipt result would carry it to every page and format;
-    it would change the receipt result body, which this cut leaves unchanged.) The id is the one
-    the hello-result named.
+    holds, and the agent reads it whole before the set is actionable-complete. A JSON receipt, or
+    one whose text the service withheld, has no section of its own, so the client's human
+    rendering shows the same fixed section from `workspace_provenance`: the CLI after the
+    receipt's other lines, the terminal interface after the document, and the MCP text carries
+    the member in its canonical copy. The id is the one the hello-result named.
     The token is a closed set supplied by whoever builds the connection: `unix` (the default, a
     service's local control endpoint), `connector` (a local relay that carries the connection on),
     `ssh` (an SSH channel the client process opened) or `https` (HTTPS the client process speaks).
-    The MCP structured result, CLI JSON output and a local connection's output are unchanged
-    byte for byte.
+    The connection's lines never enter the MCP structured result, CLI JSON output or a local
+    connection's output.
 - **Typed gaps when no agent is reachable.** An operation that ends `workspace_agent_unavailable`
   fires the existing gap for what it would have read, and the new reason
   `workspace_agent_unavailable` joins the check-time change unavailable reasons

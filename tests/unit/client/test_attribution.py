@@ -125,6 +125,16 @@ def test_a_receipt_whose_provenance_is_unknown_names_only_the_producing_service(
     )
 
 
+def test_a_receipt_whose_result_says_the_provenance_is_unknown_names_only_the_producer() -> None:
+    """Decision D4: a JSON receipt has no section to read; its ``workspace_provenance`` member
+    says the provenance is unknown, so the client's own line is left out."""
+
+    attribution = ServiceAttribution(_SERVICE_ID, "ssh")
+    assert attribution_lines(attribution, provenance_unknown=True) == (attribution.lines()[1],)
+    assert attribution_lines(attribution) == attribution.lines()
+    assert attribution_lines(None, provenance_unknown=True) == ()
+
+
 @pytest.mark.parametrize(
     "shown",
     [

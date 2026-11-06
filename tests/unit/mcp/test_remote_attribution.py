@@ -21,10 +21,13 @@ from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
+from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.mcp.summaries import summary_for_receipt
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import ReceiptResultModel, StatusResultModel, public_model_to_wire
 
@@ -97,6 +100,46 @@ def test_a_receipt_whose_provenance_is_unknown_gets_only_the_producing_service(
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in attributed
 
 
+def _unknown_json_receipt() -> ReceiptResultModel:
+    wire = _receipt_result_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    return ReceiptResultModel.model_validate(wire)
+
+
+def test_a_json_receipt_of_unknown_provenance_says_so_and_names_only_the_service() -> None:
+    """Decision D4: the member is in the structured result and its canonical text copy, and the
+    client adds no "read on the client" line beside it."""
+
+    receipt = _unknown_json_receipt()
+    local = bridge.result_from_public_model(receipt)
+    attributed = bridge.result_from_public_model(receipt, attribution=_ATTRIBUTION)
+    structured = cast(dict[str, JsonValue], attributed.structuredContent)
+    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire()
+    assert attributed.structuredContent == local.structuredContent
+    assert _text(attributed) == "\n".join((_text(local), _REACHED))
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(attributed)
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in _text(attributed)
+
+
+def test_the_member_alone_keeps_the_client_line_off_any_receipt_text() -> None:
+    """The bridge reads the result's member, not only the text, so a rendering that does not
+    spell the section (a withheld text, a summary) still names only the producing service."""
+
+    assert bridge._attributed_text("Receipt", _ATTRIBUTION, provenance_unknown=True) == (
+        "Receipt\n" + _REACHED
+    )
+    assert bridge._attributed_text("Receipt", _ATTRIBUTION) == "\n".join(
+        ("Receipt", CLIENT_ATTESTED_WORKSPACE_LINE, _REACHED)
+    )
+
+
+def test_the_receipt_summary_says_an_unknown_provenance_in_fixed_words() -> None:
+    summary = summary_for_receipt(_unknown_json_receipt())
+    for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES:
+        assert line in summary
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE not in summary_for_receipt(_receipt())
+
+
 # --- the bridge attributes the connection that answered -----------------------------------------
 
 
@@ -106,6 +149,7 @@ class _Client:
         self.workspace_handle = "client:0123456789abcdef" if binding == "client_claim" else None
         self.service_instance_id = _SERVICE_ID
         self.transport = "https"
+        self.provenance_unknown = False
 
     async def connect(self) -> None:
         return None
@@ -116,7 +160,7 @@ class _Client:
 
     async def receipt(self, request: object, **_kwargs: object) -> ReceiptResultModel:
         del request
-        return _receipt()
+        return _unknown_json_receipt() if self.provenance_unknown else _receipt()
 
     async def close(self) -> None:
         return None
@@ -175,6 +219,21 @@ async def test_a_claim_bound_answer_names_its_producer(
 
 
 @pytest.mark.anyio
+async def test_a_claim_bound_receipt_of_unknown_provenance_names_only_its_producer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _Client("client_claim")
+    client.provenance_unknown = True
+    _wire(monkeypatch, tmp_path, client)
+    result = await bridge.dispatch_receipt(_receipt_arguments(), bridge.build_bridge_runtime())
+    assert result.isError is False
+    structured = cast(dict[str, JsonValue], result.structuredContent)
+    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire()
+    assert _text(result).endswith("\n" + _REACHED)
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(result)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["status", "receipt"])
 async def test_a_local_answer_is_not_attributed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, operation: str
@@ -193,13 +252,17 @@ async def test_a_local_answer_is_not_attributed(
 # --- a receipt past the host budget arrives in pages --------------------------------------------
 
 
-def _paged_receipt(block: str) -> tuple[str, list[dict[str, JsonValue]]]:
+def _paged_receipt(
+    block: str, *, provenance_unknown: bool = False
+) -> tuple[str, list[dict[str, JsonValue]]]:
     """A text receipt past the host budget whose text ends with ``block``, cut into the pages the
     service gives an agent: the first from ``receipt``, the rest from ``status`` continuations."""
 
     wire = _receipt_result_wire()
     wire["format"] = "text"
     wire["document"] = None
+    if provenance_unknown:
+        wire["workspace_provenance"] = workspace_provenance_unknown_wire()
     prose = "\n".join(f"Section line {i}: " + "plain receipt prose. " * 6 for i in range(150))
     human_text = prose + "\n\n" + block
     wire["human_text"] = human_text
@@ -258,7 +321,7 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
         if provenance == "unknown"
         else client_attested_receipt_block(_SERVICE_ID, markdown=False)
     )
-    human_text, pages = _paged_receipt(block)
+    human_text, pages = _paged_receipt(block, provenance_unknown=provenance == "unknown")
     assert len(pages) > 2
     _wire(monkeypatch, tmp_path, _PagingClient(pages))
     runtime = bridge.build_bridge_runtime()
@@ -283,3 +346,21 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
     # The service's section reaches the agent whole, before the set is actionable_complete.
     assert delivered == human_text
     assert delivered.endswith(block)
+    # Decision D4: the member leads the first page, whole, and no later page repeats it.
+    first = cast(list[dict[str, JsonValue]], pages[0]["items"])
+    members = [
+        [item for item in cast(list[dict[str, JsonValue]], page["items"])]
+        for page in pages
+        if any(
+            cast(str, item["path"]).startswith("/workspace_provenance")
+            for item in cast(list[dict[str, JsonValue]], page["items"])
+        )
+    ]
+    if provenance == "unknown":
+        assert len(members) == 1 and members[0] == first
+        assert first[1] == {
+            "path": "/workspace_provenance",
+            "value": cast(JsonValue, workspace_provenance_unknown_wire()),
+        }
+    else:
+        assert members == []
