@@ -22,10 +22,14 @@ from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
+from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
 from finishup.protocol.models import (
+    ReceiptRequest,
+    ReceiptResultModel,
     ReceiptSuccessModel,
     StatusRequest,
     StatusResultModel,
@@ -90,6 +94,52 @@ def test_a_text_receipt_whose_provenance_is_unknown_gets_only_the_transport() ->
     assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in rendered
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+
+
+# --- decision D4: every format says when the provenance is unknown ------------------------------
+
+
+def _unknown(receipt: ReceiptSuccessModel) -> ReceiptSuccessModel:
+    wire = receipt.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    return ReceiptSuccessModel.model_validate(wire)
+
+
+def test_a_json_receipt_of_unknown_provenance_shows_the_section_and_only_the_transport() -> None:
+    """A JSON receipt has no text section, so the CLI shows the fixed one from the result."""
+
+    receipt = _unknown(_json_receipt())
+    local = render_human_receipt(receipt)
+    block = workspace_provenance_unknown_block(markdown=False)
+    assert local == render_human_receipt(_json_receipt()) + "\n" + block
+    rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
+    assert rendered == local + "\n" + _REACHED
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+    for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES:
+        assert rendered.count(line) == 1
+
+
+def test_a_text_receipt_of_unknown_provenance_shows_its_section_once() -> None:
+    receipt = _unknown(_text_receipt(workspace_provenance_unknown_block(markdown=False)))
+    rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
+    assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
+    assert rendered.count(WORKSPACE_PROVENANCE_UNKNOWN_LINE) == 1
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+
+
+def test_a_withheld_text_receipt_of_unknown_provenance_still_shows_the_section() -> None:
+    wire = _text_receipt().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    wire["human_text"] = {
+        "omitted": True,
+        "category": "finding_summary",
+        "reason": "local_disclosure_not_authorized",
+    }
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    receipt = ReceiptSuccessModel.model_validate(wire)
+    rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
+    assert workspace_provenance_unknown_block(markdown=False) in rendered
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+    assert rendered.endswith("\n" + _REACHED)
 
 
 # --- the command wires the connection's attribution ---------------------------------------------
@@ -175,3 +225,66 @@ def test_json_status_is_never_attributed(
     assert json.loads(out) == json.loads(json.dumps(public_model_to_wire(result)))
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in out
     assert _SERVICE_ID not in out
+
+
+_RECEIPT_REQUEST = json.dumps(
+    {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": "req_00000000-0000-4000-8000-000000000094",
+        "actor": {"actor_id": "harness:cli", "actor_type": "harness"},
+        "client": {"kind": "yoetz_cli", "version": "0.1.0", "integration": "local_cli"},
+        "task_id": "tsk_00000000-0000-4000-8000-000000000094",
+        "session_id": "ses_00000000-0000-4000-8000-000000000094",
+        "writer_id": "wri_00000000-0000-4000-8000-000000000094",
+        "expected_frontier": {"sequence": "1", "head_digest": "sha256:" + "0" * 64},
+        "format": "json",
+        "include": "standard",
+        "redaction_profile": "default_local_export",
+    }
+)
+
+
+class _ReceiptClient(_Client):
+    def __init__(self, binding: str, result: ReceiptResultModel) -> None:
+        super().__init__(binding, compact_status().result)
+        self.receipt_result = result
+
+    async def receipt(self, request: object, *, deadline_ms: int | None = None) -> object:
+        del request, deadline_ms
+        return self.receipt_result
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_the_receipt_command_says_an_unknown_provenance_in_every_output(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], json_output: bool
+) -> None:
+    """Decision D4: a claim-bound JSON receipt of unknown provenance shows the fixed section and
+    no "read on the client" line on a terminal; JSON output carries the member itself."""
+
+    wire = _receipt_result_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    result = ReceiptResultModel.model_validate(wire)
+    client = _ReceiptClient("client_claim", result)
+
+    async def build(*_args: object, **_kwargs: object) -> object:
+        return client
+
+    monkeypatch.setattr(app_module, "build_service_client", build)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    code = asyncio.run(
+        app_module._call_workflow(  # pyright: ignore[reportPrivateUsage]
+            "receipt", ReceiptRequest, None, _RECEIPT_REQUEST, json_output, None
+        )
+    )
+    assert code == 0
+    assert client.closed
+    out = capsys.readouterr().out
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in out
+    if json_output:
+        assert json.loads(out)["workspace_provenance"] == workspace_provenance_unknown_wire()
+        return
+    success = cast(ReceiptSuccessModel, result.root)
+    assert out == render_human_receipt(success, attribution=_ATTRIBUTION) + "\n"
+    assert workspace_provenance_unknown_block(markdown=False) in out
+    assert out.endswith(_REACHED + "\n")

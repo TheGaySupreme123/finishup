@@ -21,8 +21,10 @@ from finishup.cli.render import render_human_status
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
     workspace_provenance_unknown_block,
 )
+from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import (
     ReceiptRequestModel,
@@ -49,6 +51,7 @@ class _BoundClient(_Client):
         self.service_instance_id = _SERVICE_ID
         self.transport = "connector"
         self.human_text: str | None = None
+        self.provenance_unknown = False
 
     async def receipt(self, request: ReceiptRequestModel) -> object:
         self.requests.append(request)
@@ -57,6 +60,8 @@ class _BoundClient(_Client):
             wire["format"] = "text"
             wire["document"] = None
             wire["human_text"] = self.human_text
+        if self.provenance_unknown:
+            wire["workspace_provenance"] = workspace_provenance_unknown_wire()
         return ReceiptResultModel.model_validate(wire)
 
 
@@ -132,4 +137,34 @@ async def test_a_claim_bound_receipt_of_unknown_provenance_names_only_its_produc
     summary = await runtime.build_receipt(_SESSION, "text")
     assert summary.rendered_lines[-1] == _REACHED
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in summary.rendered_lines
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines
+
+
+@pytest.mark.parametrize("binding", ["client_claim", "local_path"])
+async def test_a_json_receipt_of_unknown_provenance_shows_the_section_after_the_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, binding: str
+) -> None:
+    """Decision D4: the terminal interface's JSON receipt says what happened, why and what to do,
+    and a claim-bound connection adds only the producing service."""
+
+    runtime, client = await _runtime(monkeypatch, tmp_path, binding)
+    client.provenance_unknown = True
+    summary = await runtime.build_receipt(_SESSION, "json")
+    section = ("Workspace evidence", *WORKSPACE_PROVENANCE_UNKNOWN_LINES)
+    expected = (*_document_lines(), *section)
+    if binding == "client_claim":
+        expected = (*expected, _REACHED)
+    assert summary.rendered_lines == expected
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines
+
+
+async def test_a_text_receipt_of_unknown_provenance_shows_its_section_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime, client = await _runtime(monkeypatch, tmp_path, "client_claim")
+    client.human_text = "Receipt\n\n" + workspace_provenance_unknown_block(markdown=False)
+    client.provenance_unknown = True
+    summary = await runtime.build_receipt(_SESSION, "text")
+    assert summary.rendered_lines.count(WORKSPACE_PROVENANCE_UNKNOWN_LINE) == 1
+    assert summary.rendered_lines[-1] == _REACHED
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines

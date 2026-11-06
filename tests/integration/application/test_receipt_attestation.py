@@ -17,6 +17,11 @@ import pytest
 from builders.ledger_adapters import MemoryObjects, ownership_fence
 from builders.start_application import start_request
 from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.service import (
+    ClientProjectionContext,
+    ControlProjectionBinding,
+    ProjectionRenderMode,
+)
 from finishup.domain.events import LedgerRecord, RedactionState
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
@@ -24,10 +29,12 @@ from finishup.domain.receipts import (
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
-from finishup.ports.control import RepositoryPrivacyContext
+from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.ports.control import ControlClientKind, ControlMethod, RepositoryPrivacyContext
 from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.ports.workspace_agent import workspace_handle_for_claim
-from finishup.protocol.models import ReceiptRequest
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.models import ReceiptRequest, ReceiptResultModel, ReceiptSuccessModel
 from integration.application.test_respond_status_receipt import (  # pyright: ignore[reportPrivateUsage]
     _bootstrap_finding,  # pyright: ignore[reportPrivateUsage]
     _build_app,  # pyright: ignore[reportPrivateUsage]
@@ -318,7 +325,27 @@ async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_bl
         writer=started.writer_id,
         frontier=checked.result_frontier,
     )
-    result = await app.receipt(ReceiptRequest.model_validate({**wire, "format": receipt_format}))
+    request = ReceiptRequest.model_validate({**wire, "format": receipt_format})
+    result = await app.receipt(request)
+    # Decision D4: every format, JSON included, carries the fixed member. This harness's JSON
+    # document predates the children section the public model requires, so the client
+    # projection is driven for text and markdown; the unit tests admit the member on JSON.
+    assert result.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire()
+    for context in (
+        ()
+        if receipt_format == "json"
+        else (
+            ClientProjectionContext(
+                ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+            ),
+            ClientProjectionContext(
+                ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+            ),
+        )
+    ):
+        projected = await _project(app, request, result, context)
+        assert projected.workspace_provenance is not None
+        assert projected.workspace_provenance.model_dump() == workspace_provenance_unknown_wire()
     if receipt_format == "json":
         assert result.human_text is None
         return
@@ -326,3 +353,68 @@ async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_bl
     block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown")
     assert result.human_text.endswith("\n\n" + block)
     assert result.human_text.count("Workspace evidence") == 1
+
+
+@pytest.mark.parametrize("receipt_format", ["text", "markdown"])
+async def test_a_receipt_whose_binding_was_read_carries_no_provenance_member(
+    receipt_format: Literal["text", "markdown", "json"],
+) -> None:
+    app, _runtime, _ = _build_app(seed_offset=51)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=5800)
+    request = ReceiptRequest.model_validate(
+        {
+            **_receipt_wire(
+                5810,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=checked.result_frontier,
+            ),
+            "format": receipt_format,
+        }
+    )
+    result = await app.receipt(request)
+    assert "workspace_provenance" not in result.as_json()
+    projected = await _project(
+        app,
+        request,
+        result,
+        ClientProjectionContext(
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+        ),
+    )
+    assert projected.workspace_provenance is None
+
+
+async def _project(
+    app: Any,  # noqa: ANN401
+    request: ReceiptRequest,
+    result: Any,  # noqa: ANN401
+    context: ClientProjectionContext,
+) -> ReceiptSuccessModel:
+    """The public receipt a client receives: the service's own projection and validation."""
+
+    facts = await app.projection_binding_facts(ControlMethod.RECEIPT, request, result)
+    rpc_id = "rpc_00000000-0000-4000-8000-000000005901"
+    service_instance_id = ownership_fence().service_instance_id
+    binding = ControlProjectionBinding(
+        rpc_id,
+        ControlMethod.RECEIPT,
+        service_instance_id,
+        1,
+        facts.original_request_id,
+        facts.route_identity_digest,
+        canonical_encode(
+            {
+                "rpc_id": rpc_id,
+                "method": "receipt",
+                "service_instance_id": service_instance_id,
+                "service_generation": "1",
+            }
+        ),
+    )
+    projected = await app.project_result_for_client(context, binding, result)
+    assert isinstance(projected, ReceiptResultModel)
+    success = projected.root
+    assert isinstance(success, ReceiptSuccessModel)
+    return success

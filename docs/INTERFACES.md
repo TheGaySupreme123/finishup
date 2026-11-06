@@ -5162,8 +5162,8 @@ user-controlled is ever rendered beside it.
   connection's handle there through `execute_start(..., session_workspace_ref=)`, outside the
   request identity) ends with `client_attested_receipt_block(
   service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
-  FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
-  unchanged. `application.receipt._attested_by` finds the opening record by
+  FinishUP service <svc_…> (connection: client_claim).` The stored document is unchanged.
+  `application.receipt._attested_by` finds the opening record by
   `schema.name == "session_opened"`, never by payload type, and `execute_receipt` calls it before
   it stages or appends anything (a replay through `read_recorded_receipt` reads it the same way).
   It never refuses a receipt (owner decision D4): any `Exception` from the ledger read (an
@@ -5183,6 +5183,19 @@ user-controlled is ever rendered beside it.
   be read from the server's ledger."), `WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE` (why it
   matters) and `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` (run receipt again; if it persists,
   `finishup service restart` on the server host, then run receipt again), never with no section.
+  The words live in `domain.workspace_provenance` (standard library only, so the protocol models
+  admit exactly them) and `domain.receipts` re-exports them.
+  Every receipt format, JSON included, also carries the result member `workspace_provenance`
+  (receipt-result 1.5.0, `ReceiptSuccessModel.workspace_provenance`,
+  `ReceiptWorkspaceProvenanceModel`; 1.4.0 shipped in v0.3.0 and is never amended; control-result
+  2.10.0 carries 1.5.0 bodies), built by `workspace_provenance_unknown_wire()`: `status` `unknown`;
+  `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS`, today only
+  `session_opening_unreadable` (the record that opened the task's session could not be read or
+  could not say whether the session is claim-bound); and `notice`, exactly
+  `WORKSPACE_PROVENANCE_UNKNOWN_NOTICE` (the three lines joined by newlines). It is optional and
+  non-null: absent whenever the binding was read, never an explicit null. Its three leaves are
+  `public_structural`. `result_delivery` places it right after `conclusion` among the actionable
+  items, so a paged receipt delivers it whole at the head of its first page.
   Every receipt and replay reads the opening record again, so once the read succeeds (a transient
   fault clears, or the task's ledger is opened afresh after the runtime evicts the idle entry or
   the service restarts, and the object reads) the same request renders the binding the record
@@ -5193,19 +5206,24 @@ user-controlled is ever rendered beside it.
   malformed facts raises `service_attribution_invalid` instead of dropping its provenance.
   `ServiceAttribution(service_instance_id, transport).lines()` is the fixed line plus `This client
   reached FinishUP service <svc_…> (transport: <token>).`; `attribution_lines(attribution, shown=,
-  receipt_page=)` omits a line the rendered text already carries, and omits
-  `CLIENT_ATTESTED_WORKSPACE_LINE` when that text carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE` or
-  `receipt_page` is set, so a receipt of unknown provenance gains only the `This client reached …`
-  line. `result_from_public_model` sets `receipt_page` for every `delivery_page` whose
-  `source_operation` is `receipt`, the first page from `receipt` and each `status` continuation
-  alike: the receipt's "Workspace evidence" section is fragmented with the rest of `human_text`
-  and lands on at most one page. No result field carries provenance, so a JSON receipt or one
-  whose `human_text` is an omission has no section to read, and its human rendering keeps both
-  lines even when the service could not establish the provenance. `render_human_status` and
+  receipt_page=, provenance_unknown=)` omits a line the rendered text already carries, and omits
+  `CLIENT_ATTESTED_WORKSPACE_LINE` when that text carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE`,
+  `receipt_page` is set, or `provenance_unknown` says the receipt result carries
+  `workspace_provenance`, so a receipt of unknown provenance gains only the
+  `This client reached …` line. `result_from_public_model` sets `receipt_page` for every
+  `delivery_page` whose `source_operation` is `receipt`, the first page from `receipt` and each
+  `status` continuation alike: the receipt's "Workspace evidence" section is fragmented with the
+  rest of `human_text` and lands on at most one page; it sets `provenance_unknown` for a receipt
+  that carries `workspace_provenance`. A JSON receipt, or one whose `human_text` is an omission,
+  has no section of its own: `render_human_receipt` appends
+  `workspace_provenance_unknown_block(markdown=False)` from the member unless the text already
+  carries it, the terminal interface's JSON receipt shows it after the document, the MCP
+  canonical text carries the member, and `summary_for_receipt` admits the three lines as required
+  parts only when the member's `notice` is the exact fixed text. `render_human_status` and
   `render_human_receipt` (CLI), `result_from_public_model(..., attribution=)` for the MCP `status`
   and `receipt` text and its canonical fallback, and the terminal interface's task views and
-  receipt (through `FinishUpRuntime`) end with these lines. Structured MCP content, CLI JSON and
-  every local connection's output are unchanged.
+  receipt (through `FinishUpRuntime`) end with these lines. The connection's lines never enter
+  structured MCP content, CLI JSON or a local connection's output.
 - Transport tokens (`CONNECTION_TRANSPORTS`, closed): `unix` (default; a service's local control
   endpoint), `connector` (a local relay process carries the connection on), `ssh` (an SSH channel
   the client process opened) and `https` (HTTPS the client process speaks). Whoever builds the
@@ -14296,8 +14314,8 @@ unchanged. The receipt Summary appends "Reviewer notes: N; not answered: M (K ma
 gate asks it once per key, after the premise ask and trimmed before it, also on an
 already-continued Stop within the per-turn cap (`advice_recheck` item,
 `closure_gate_advice_asked` diagnostic, whose row also names the asked key as `advice_set`).
-The receipt result (receipt-result 1.3.0 in place, inherited by 1.4.0) carries the optional
-`agent_closing_prompt` (D5): "Tell the user in your final message: receipt conclusion
+The receipt result (receipt-result 1.3.0 in place, inherited by 1.4.0 and 1.5.0) carries the
+optional `agent_closing_prompt` (D5): "Tell the user in your final message: receipt conclusion
 <conclusion>[; reviewer notes: T, not answered: U[, declined: D]][; name each note not answered or
 declined]." It is derived from the stored document alone (conclusion, `correctness_advisory_counts`
 and the Summary tally for `declined`, left out when unreadable), so a replay reads the same; the

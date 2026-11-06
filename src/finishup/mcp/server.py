@@ -1332,13 +1332,23 @@ _ATTRIBUTED_OPERATIONS: Final = frozenset({"status", "receipt"})
 
 
 def _attributed_text(
-    text: str, attribution: ServiceAttribution | None, *, receipt_page: bool = False
+    text: str,
+    attribution: ServiceAttribution | None,
+    *,
+    receipt_page: bool = False,
+    provenance_unknown: bool = False,
 ) -> str:
     """``text`` followed by a claim-bound connection's provenance lines (ADR-051), unchanged for
     any other connection. A line the text already carries is not repeated, and a page of a paged
-    receipt names only the producing service (``attribution_lines``)."""
+    receipt, or a receipt whose ``workspace_provenance`` says it is unknown, names only the
+    producing service (``attribution_lines``)."""
 
-    lines = attribution_lines(attribution, shown=text, receipt_page=receipt_page)
+    lines = attribution_lines(
+        attribution,
+        shown=text,
+        receipt_page=receipt_page,
+        provenance_unknown=provenance_unknown,
+    )
     if not lines:
         return text
     return "\n".join((text, *lines) if text else lines)
@@ -1358,17 +1368,23 @@ def result_from_public_model(
     text, and its canonical fallback, then end with the fixed workspace-evidence line and the
     producing service. A delivery page of a receipt, whether ``receipt`` or a ``status``
     continuation returned it, ends with the producing service only: the receipt's own
-    "Workspace evidence" section is on at most one page. The structured result never carries it.
+    "Workspace evidence" section is on at most one page. So does a receipt whose
+    ``workspace_provenance`` member says the provenance is unknown (decision D4); that member is
+    in the canonical text and, paged, on the first page. The structured result never carries
+    the connection's lines.
     """
 
     wire = public_model_to_wire(result)
     receipt_page = (
         wire.get("state") == "delivery_page" and wire.get("source_operation") == "receipt"
     )
+    # ADR-051 decision D4: every receipt format, JSON included, says when its provenance is unknown.
+    provenance_unknown = "receipt_id" in wire and "workspace_provenance" in wire
     rendered = _attributed_text(
         _result_text(wire, host_profile=host_profile, request_id=request_id, operation=operation),
         attribution,
         receipt_page=receipt_page,
+        provenance_unknown=provenance_unknown,
     )
     # The service budgets canonical text plus structured content. A small result's prose can
     # repeat several fields more often: fall back to that complete canonical text if needed.
@@ -1377,7 +1393,10 @@ def result_from_public_model(
     rendered_bytes = mcp_delivery_bytes(wire, text=rendered)
     if rendered_bytes > HOST_RESULT_BUDGET_BYTES:
         canonical = _attributed_text(
-            canonical_encode(wire).decode("utf-8"), attribution, receipt_page=receipt_page
+            canonical_encode(wire).decode("utf-8"),
+            attribution,
+            receipt_page=receipt_page,
+            provenance_unknown=provenance_unknown,
         )
         if mcp_delivery_bytes(wire, text=canonical) < rendered_bytes:
             rendered = canonical

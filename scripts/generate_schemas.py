@@ -7902,6 +7902,43 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """ADR-051 decision D4: 1.4.0 plus the optional ``workspace_provenance`` member.
+
+    1.4.0 shipped in v0.3.0, so it is never amended; a 1.4.0 reader keeps rejecting the member.
+    The member is present, on every receipt format, exactly when the record that opened the
+    task's session could not be read or could not say whether the task is claim-bound. Its
+    ``status``, ``reason`` and ``notice`` admit only the fixed values of
+    ``finishup.domain.workspace_provenance``: nothing user-controlled.
+    """
+
+    from finishup.domain.workspace_provenance import (
+        WORKSPACE_PROVENANCE_REASONS,
+        WORKSPACE_PROVENANCE_UNKNOWN,
+        WORKSPACE_PROVENANCE_UNKNOWN_NOTICE,
+    )
+
+    document = _load_versioned_template(entry, "operations/receipt-result-1.4.0.schema.json")
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    success = cast(dict[str, JsonValue], definitions["success"])
+    properties = cast(dict[str, JsonValue], success["properties"])
+    if "workspace_provenance" in properties:
+        raise SchemaGenerationError(
+            "receipt_result_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    properties["workspace_provenance"] = {
+        "additionalProperties": False,
+        "properties": {
+            "notice": {"const": WORKSPACE_PROVENANCE_UNKNOWN_NOTICE, "type": "string"},
+            "reason": {"enum": list(WORKSPACE_PROVENANCE_REASONS), "type": "string"},
+            "status": {"const": WORKSPACE_PROVENANCE_UNKNOWN, "type": "string"},
+        },
+        "required": ["status", "reason", "notice"],
+        "type": "object",
+    }
+    return document
+
+
 def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _simple_versioned_schema(
         entry,
@@ -10017,7 +10054,17 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         / "schemas"
         / entry.relative_path.replace("2.10.0", "2.9.0")
     )
-    document = cast(dict[str, JsonValue], json.loads(source.read_bytes()))
+    # ADR-051 decision D4 (in place on the unreleased 2.10.0): the receipt bodies it carries are
+    # receipt-result 1.5.0, which adds the optional ``workspace_provenance`` member.
+    document = cast(
+        dict[str, JsonValue],
+        json.loads(
+            source.read_bytes().replace(
+                b"operations/receipt-result-1.4.0.schema.json",
+                b"operations/receipt-result-1.5.0.schema.json",
+            )
+        ),
+    )
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
     rpc_id: dict[str, JsonValue] = {
         "maxLength": 40,
@@ -13338,6 +13385,20 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             ).ReceiptResultModel
         ),
     ),
+    # ADR-051 decision D4: 1.4.0 shipped in v0.3.0 and is frozen; 1.5.0 adds the optional
+    # ``workspace_provenance`` member.
+    _RegistryEntry(
+        "operations/receipt-result-1.5.0.schema.json",
+        "receipt-result",
+        "1.5.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
+        ),
+    ),
     _RegistryEntry(
         "operations/status-result-1.5.0.schema.json",
         "status-result",
@@ -14763,6 +14824,8 @@ def build_schema_documents(
             )
         elif entry.relative_path == "operations/receipt-result-1.3.0.schema.json":
             normalized = _receipt_result_v1_3_schema(entry)
+        elif entry.relative_path == "operations/receipt-result-1.5.0.schema.json":
+            normalized = _receipt_result_v1_5_schema(entry)
         elif entry.relative_path == "operations/start-result-1.0.0.schema.json":
             normalized = _start_result_schema(entry)
         elif entry.relative_path == "operations/start-result-1.1.0.schema.json":

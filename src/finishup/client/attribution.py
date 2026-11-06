@@ -10,10 +10,10 @@ every page of a receipt delivered in pages, keep only the second line. Nothing u
 joins either line: no target name, host, address or path. JSON output stays unattributed. A
 connection that is not claim-bound renders nothing here, so local output keeps its exact bytes.
 
-The client reads a receipt's provenance only from the rendered text it is given; no field of the
-result carries it. A JSON receipt, or one whose text the service withheld, has no "Workspace
-evidence" section to read, so its rendering keeps both lines even when the service could not
-establish the task's provenance; only a text or markdown receipt can say that.
+The client reads a receipt's unknown provenance from the rendered text it is given or from the
+result's ``workspace_provenance`` member, which every receipt format carries when the service
+could not establish it (decision D4), JSON included; a receipt whose text the service withheld
+still carries the member.
 
 Transport tokens (closed; whoever builds the connection supplies one, ``unix`` by default):
 
@@ -96,15 +96,21 @@ def connection_attribution(connection: object) -> ServiceAttribution | None:
 
 
 def attribution_lines(
-    attribution: ServiceAttribution | None, *, shown: str = "", receipt_page: bool = False
+    attribution: ServiceAttribution | None,
+    *,
+    shown: str = "",
+    receipt_page: bool = False,
+    provenance_unknown: bool = False,
 ) -> tuple[str, ...]:
     """The lines a status or receipt rendering ends with; none without an attribution.
 
     A line that ``shown`` already carries is not repeated: the service's own text and markdown
     receipt of a claim-bound task already ends with the fixed provenance line. When ``shown``
-    carries the service's provenance-unknown line instead, the task's own opening record could not
-    say where its workspace evidence was read, so the connection's fixed provenance line, which
-    would say the opposite, is left out too and only the producing service is named (ADR-051).
+    carries the service's provenance-unknown line instead, or ``provenance_unknown`` says the
+    receipt result carries ``workspace_provenance`` (every format, JSON included; decision D4),
+    the task's own opening record could not say where its workspace evidence was read, so the
+    connection's fixed provenance line, which would say the opposite, is left out too and only
+    the producing service is named (ADR-051).
 
     ``receipt_page`` marks ``shown`` as one delivery page of a receipt the service paged. The
     receipt's "Workspace evidence" section is cut into fragments with the rest of its text and
@@ -116,7 +122,7 @@ def attribution_lines(
 
     if attribution is None:
         return ()
-    withheld = receipt_page or WORKSPACE_PROVENANCE_UNKNOWN_LINE in shown
+    withheld = receipt_page or provenance_unknown or WORKSPACE_PROVENANCE_UNKNOWN_LINE in shown
     return tuple(
         line
         for line in attribution.lines()

@@ -703,7 +703,8 @@ default service.
 - **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
   still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
   line it ends with the fixed provenance-unknown section (what happened, why it matters, run
-  `receipt` again or restart the server's service).
+  `receipt` again or restart the server's service), and every receipt format, JSON included,
+  carries the same words as its `workspace_provenance` member.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an
