@@ -4843,6 +4843,42 @@ async def test_production_composition_starts_locked_before_ready_only_state(
     await daemon.close()
 
 
+@pytest.mark.anyio
+async def test_production_composition_shares_the_staged_reconcile_with_the_human_effects(
+    tmp_path: Path,
+) -> None:
+    # A passphrase rotation's open waits for the staged-slot reconcile a soft re-ready started
+    # (#492 review). The daemon records that reconcile in the composition's tracker; human
+    # effects holding any other tracker would never see it and would open beside it.
+    metadata = tmp_path / "state"
+    paths = daemon_module._ProductionPaths(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "data",
+        metadata / "service-generation.json",
+        metadata / "unlock-throttle.json",
+        metadata / "service.lock",
+        metadata,
+    )
+
+    async def bind() -> _Listener:
+        return _Listener()
+
+    binders = daemon_module._ListenerBinders(cast(Any, bind), cast(Any, bind), cast(Any, bind))  # pyright: ignore[reportPrivateUsage]
+    composition = await daemon_module._production_composition(  # pyright: ignore[reportPrivateUsage]
+        _config=FinishUpConfig(),
+        _paths=paths,
+        _binders=binders,
+    )
+    daemon = ServiceDaemon(_composition=composition)
+    await daemon.start()
+    try:
+        effects = composition.human_control_service._effects  # pyright: ignore[reportPrivateUsage]
+        assert type(effects) is daemon_module._LockedHumanEffects  # pyright: ignore[reportPrivateUsage]
+        assert effects._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
+        assert daemon._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
+    finally:
+        await daemon.close()
+
+
 def test_installation_marker_round_trip_is_canonical_and_self_authenticated(
     tmp_path: Path,
 ) -> None:
