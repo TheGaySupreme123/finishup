@@ -435,9 +435,14 @@ answers bounded `workspace_call`s on a connection that declared it.
   without a trusted console.
 - The hop is refused in the zero-network state, for every remote kind (`local_port` included).
   This computer's own FinishUP decides: when its everyday installation was set up (its vault was
-  initialized), its running service's effective policy decides, and a policy that does not permit
-  network egress refuses the hop. When that policy cannot be read (the service is stopped, locked
-  or does not answer), the hop is refused with `network_policy_unreadable`, never allowed. A
+  initialized), its running service's effective machine-scope policy decides
+  (`privacy_get_effective` for the installation's machine scope; the question names no
+  repository), and a policy that does not permit network egress refuses the hop. When that
+  policy cannot be read (the service is stopped, locked or does not answer, or the installation's
+  identity cannot be read), the hop is refused with `network_policy_unreadable`, never allowed.
+  (Amended 2026-11-06 again, from the real-environment run: the check first read
+  `privacy_get_setup` on a connection that names no repository, which the service refuses, so
+  every remote hop from a set-up computer was refused.) A
   computer whose everyday FinishUP was never set up has no policy of its own, so this check
   does not refuse it: the selected server's own policy governs the work sent to it. (Amended
   2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted

@@ -421,34 +421,38 @@ def _zero_network_in_force() -> bool:
 
     Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
     This computer's own FinishUP decides. When its everyday installation was set up, its running
-    service's effective policy decides, and a policy that does not permit network egress is the
-    zero-network state; when that policy cannot be read (the service is stopped, locked, or does
-    not answer) the hop is refused with ``network_policy_unreadable``, never allowed. A computer
-    whose everyday FinishUP was never set up has no policy of its own, so nothing here refuses
-    it: it is a client of the server it names, and that server's own policy governs its data.
+    service's effective machine-scope policy decides (``privacy_get_effective`` for this
+    installation's machine scope: a computer-wide question, so no repository is named), and a
+    policy that does not permit network egress is the zero-network state; when that policy cannot
+    be read (the service is stopped, locked, or does not answer, or the installation's identity
+    cannot be read) the hop is refused with ``network_policy_unreadable``, never allowed. A
+    computer whose everyday FinishUP was never set up has no policy of its own, so nothing here
+    refuses it: it is a client of the server it names, and that server's own policy governs its
+    data.
     """
 
     import anyio
 
+    from finishup.cli.provider_status import MachineScopeError, machine_scope_request
     from finishup.config.paths import selection_override
     from finishup.domain.values import JsonObject
     from finishup.ports.control import ControlClientKind, ControlError
     from finishup.service.client import connect_service
 
-    async def effective() -> bool | None:
+    async def effective(request: JsonObject) -> bool | None:
         try:
             with anyio.fail_after(3.0):
                 client = await connect_service(ControlClientKind.CLI, workspace_locator=None)
         except (ControlError, TimeoutError):
             return None
         try:
-            response = await client.privacy_get_setup(JsonObject({"schema_version": "2.0.0"}))
+            response = await client.privacy_get_effective(request)
         except ControlError:
             return None
         finally:
             await client.close()
         # The reply is a frozen ``JsonObject`` (a ``Mapping``, not a ``dict``) on the wire.
-        policy = response.get("composed_policy")
+        policy = response.get("policy")
         if not isinstance(policy, Mapping):
             return None
         return cast(Mapping[str, object], policy).get("network_egress_permitted") is not True
@@ -456,7 +460,12 @@ def _zero_network_in_force() -> bool:
     with selection_override(None):
         if not _everyday_installation_exists():
             return False
-        answer = anyio.run(effective)
+        try:
+            request = machine_scope_request()
+        except MachineScopeError:
+            answer = None
+        else:
+            answer = anyio.run(effective, request)
     if answer is None:
         raise ServerCommandRefused("network_policy_unreadable")
     return answer
