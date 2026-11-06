@@ -585,6 +585,31 @@ def test_declared_tests_resolve_beneath_the_claimed_root(repository: Path, prote
     ) == ("refused", "workspace_not_claimed")
 
 
+def test_a_declared_test_outside_the_claimed_workspace_is_refused(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    """The server names a declared test's location with no admitted root (ADR-051 decision 5)."""
+
+    handler = _handler(repository, protected)
+    outside = f"{shared}/spec.md"
+    # A local read of the same file succeeds: the refusal is the agent's confinement alone.
+    assert read_declared_test(outside, excluded=(os.fspath(protected),)) == b"SPEC_MARKER\n"
+    sibling = repository.parent / (repository.name + "-other")
+    sibling.mkdir()
+    (sibling / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    for location in (
+        outside,
+        f"{sibling}/test_x.py",
+        f"{repository.parent}/{repository.name.upper()}/tests/test_app.py",
+        os.fspath(repository),
+    ):
+        assert _refused(
+            handler,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(location),
+        ) == ("refused", "root_not_admitted"), location
+
+
 def test_lstat_reports_only_outside_candidates(
     repository: Path, protected: Path, shared: Path
 ) -> None:

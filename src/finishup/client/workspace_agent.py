@@ -15,7 +15,8 @@ Two confinements hold on top of the adapters':
 * **Outside reads stay outside.** Reads beyond the workspace are confined to the admitted roots
   the server names (each must pass the owner-policy rule ``admitted_input_root_valid``) and never
   enter the claimed workspace through an outside root, or this client's own FinishUP directories
-  at all, whatever the server lists as excluded.
+  at all, whatever the server lists as excluded. A declared test names no root, so it is read
+  only inside the claimed workspace (``root_not_admitted`` elsewhere).
 
 An approved check runs only when the repository's own ``.finishup/checks.toml`` (read here, by
 the existing policy loader) approves exactly the argv the server asked for; anything else is
@@ -565,9 +566,23 @@ class WorkspaceAgentHandler:
         )
 
     def _read_declared_test(self, arguments: ReadDeclaredTestArguments, call: _Call) -> object:
+        """One declared test file, read only inside the claimed workspace (ADR-051 decision 5).
+
+        A local service reads the test file its own agent declared, outside the workspace too
+        (#1220). Here the server names the location, with no admitted root for it, and this agent
+        cannot tell whether the agent declared that path, so an outside location is refused
+        (``root_not_admitted``) rather than read on the server's word. Inside the claimed
+        workspace, named by its handle or by its absolute path, the read is the local one. The
+        comparison is exact: a differently cased spelling is refused, never let in.
+        """
+
         location = self._location(arguments.location, call)
         if posixpath.normpath(location) != location:
             raise _Outcome("arguments_invalid")
+        if not location.startswith(self._root.rstrip("/") + "/"):
+            raise _Outcome("root_not_admitted")
+        if call.handle is None:
+            raise _Outcome("workspace_not_claimed")
         return read_declared_test(
             location,
             excluded=self._excluded(arguments.excluded, call, outside=False),
