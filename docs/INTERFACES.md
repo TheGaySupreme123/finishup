@@ -4613,8 +4613,11 @@ server-host guard runs, so the service never reads a selection its spawner did n
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` and `finishup server folders add NAME FOLDER|list NAME|remove
 NAME FOLDER|--all|mode NAME local|listed` (`cli/server.py`). `server folders mode NAME local`
-asks on the trusted console unless `local` is already the target's mode; `mode NAME listed` is
-its reverse and asks nothing; any other value is `outside_read_mode_invalid`. `server folders add`
+records `local` only after the typed name on the trusted console, unless the owner already set
+`local`, and even where `local` is the target's default, since a recorded mode outlives a change
+of default; without the console a target whose default is `local` is left unrecorded (it says so
+and exits 0) and any other is `trusted_console_required`. `mode NAME listed` is its reverse and
+asks nothing; any other value is `outside_read_mode_invalid`. `server folders add`
 refuses a folder that `client.server_folders.folder_admissible` rejects (`folder_invalid`: not the
 input-root shape, the home directory, a folder holding it by spelling or identity, or one in its
 private trees) before it asks on the trusted console, and `add_folder` applies the same rule again
