@@ -1,8 +1,8 @@
 """The ordinary client serves workspace calls only on a claim-bound connection that declared an agent.
 
 Without an agent the client is unchanged: a ``workspace_call`` frame is still a protocol fault.
-With one, each call is answered in a bounded worker pool and written back under the write lock,
-beside the connection's own calls and results (ADR-051).
+With one, each call is answered in a bounded set of daemon worker threads and written back under
+the write lock, beside the connection's own calls and results (ADR-051).
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import asyncio
 import threading
 import time
 from collections.abc import Buffer, Callable
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -501,3 +502,117 @@ async def test_on_demand_connections_carry_the_binding_on_every_attempt(
     )
     assert connected is expected
     assert attempts == [binding]
+
+
+@pytest.mark.anyio
+async def test_agent_work_runs_in_daemon_threads() -> None:
+    """A worker never keeps a finished process open: it is a daemon thread (ADR-051)."""
+
+    seen: list[bool] = []
+
+    def record(call: WorkspaceCall) -> WorkspaceReply:
+        seen.append(threading.current_thread().daemon)
+        return WorkspaceReply("workspace_reply", "1.0", call.call_id, "ok", {"n": 1}, None)
+
+    stream = _FakeStream()
+    client = _client(stream, _Agent(reply=record))
+    await _feed_call(stream, _call())
+    await _until(lambda: len(_replies(stream)) == 1)
+    assert seen == [True]
+    await client.close()
+
+
+# A CLI-shaped process: its connection carries an agent, a long workspace call arrives, the command
+# ends and closes the connection. The process must exit then, not when the call's work finishes.
+_SHORT_LIVED_CLI = """
+import asyncio, sys, threading, time
+from typing import cast
+from finishup.adapters.control.unix_socket import AuthenticatedUnixStream
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
+    ControlClientKind, ControlMethod, WorkspaceAgentDeclaration, WorkspaceCall, WorkspaceReply,
+)
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service import client as client_module
+from finishup.service.control_protocol import (
+    ControlSession, encode_control_frame, workspace_call_frame,
+)
+
+HANDLE = "client:0123456789abcdef"
+SERVICE = "svc_00000000-0000-4000-8000-000000000001"
+started = threading.Event()
+
+class Stream:
+    peer_identity = object()
+    def __init__(self):
+        self.buffer = bytearray()
+        self.closed = False
+        self.ready = asyncio.Event()
+    def feed(self, data):
+        self.buffer.extend(data)
+        self.ready.set()
+    async def receive(self, max_bytes):
+        while not self.buffer and not self.closed:
+            self.ready.clear()
+            await self.ready.wait()
+        chunk = bytes(self.buffer[:max_bytes])
+        del self.buffer[:max_bytes]
+        return chunk
+    async def send_all(self, data):
+        return None
+    async def aclose(self):
+        self.closed = True
+        self.ready.set()
+
+class Agent:
+    declaration = WorkspaceAgentDeclaration(("read_task_base",), 6_291_456)
+    def answer(self, call, *, workspace_handle):
+        started.set()
+        threading.Event().wait(120)  # a long approved check or capture
+        return WorkspaceReply("workspace_reply", "1.0", call.call_id, "ok", {}, None)
+
+async def main():
+    stream = Stream()
+    agent = Agent()
+    session = ControlSession(
+        protocol_version="1.0", client_kind=ControlClientKind.CLI, service_instance_id=SERVICE,
+        service_generation="1",
+        allowed_methods=tuple(sorted(ControlMethod, key=lambda m: m.value.encode())),
+        peer_identity=stream.peer_identity, connection_nonce="0" * 64,
+        workspace_binding="client_claim", workspace_handle=HANDLE,
+        workspace_agent=agent.declaration,
+    )
+    client = client_module._connected_client(
+        cast(AuthenticatedUnixStream, stream), session, ControlClientKind.CLI, agent
+    )
+    call = WorkspaceCall(
+        kind="workspace_call", protocol_version="1.0", call_id=new_id(IdKind.CONTROL_RPC),
+        service_instance_id=SERVICE, service_generation="1", operation="read_task_base",
+        arguments=JsonObject({"workspace": HANDLE}), deadline_ms=300_000,
+    )
+    stream.feed(encode_control_frame(workspace_call_frame(call)))
+    while not started.is_set():
+        await asyncio.sleep(0.005)
+    await client.close()
+
+asyncio.run(main())
+print("closed", flush=True)
+"""
+
+
+def test_a_short_lived_cli_exits_without_waiting_for_agent_work(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    script = tmp_path / "short_lived_cli.py"
+    script.write_text(_SHORT_LIVED_CLI, encoding="utf-8")
+    started = time.monotonic()
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter and a test-owned script
+        (sys.executable, "-I", str(script)),
+        capture_output=True,
+        timeout=60,  # far below the 120 s the agent's work would take
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == b"closed\n"
+    assert time.monotonic() - started < 60

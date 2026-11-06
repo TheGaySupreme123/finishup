@@ -4713,9 +4713,11 @@ the connection's `workspace_call` frames. `connect_service`, `connect_service_on
 `_connect_service_attempt` take `workspace_binding=`; passing it with a locator raises
 `workspace_binding_conflict`. `ServiceClient.workspace_binding` and `ServiceClient.workspace_handle`
 expose the hello-result's answer. A client with an agent runs at most four workspace calls at once
-in worker threads and writes each reply under its write lock, answering busy, deadline,
+in daemon worker threads and writes each reply under its write lock, answering busy, deadline,
 reply-too-large and internal-error cases with closed reasons; a client without one still treats a
-`workspace_call` as `frame_invalid`.
+`workspace_call` as `frame_invalid`. Closing the connection never waits for a running call: its
+daemon worker finishes or ends with the process, so a short-lived CLI exits after its command (an
+approved check such a worker started stays in its own process group).
 
 - `finishup.client.workspace_claim`: `workspace_claim(locator, salt)` (awaitable) and
   `workspace_claim_for_root(root, salt)` compute the claim; `new_claim_salt()` mints a salt of

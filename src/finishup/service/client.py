@@ -8,9 +8,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -1079,7 +1079,6 @@ class ServiceClient(ControlClientPort):
         "_agent",
         "_agent_busy",
         "_agent_calls",
-        "_agent_executor",
         "_client_kind",
         "_closed",
         "_last_project_request",
@@ -1118,7 +1117,6 @@ class ServiceClient(ControlClientPort):
         self._agent = workspace_agent
         self._agent_busy = 0
         self._agent_calls: dict[str, asyncio.Task[None]] = {}
-        self._agent_executor: ThreadPoolExecutor | None = None
         self._stream = stream
         self._session = session
         self._transport: ConnectionTransport = transport
@@ -1292,28 +1290,43 @@ class ServiceClient(ControlClientPort):
     async def _run_workspace_call(self, agent: WorkspaceCallHandler, call: WorkspaceCall) -> bytes:
         """The encoded reply: the agent's, or ``deadline_exceeded`` once the call's deadline passes.
 
-        The agent runs in this connection's own bounded worker pool. A call past its deadline is
-        answered without waiting; its worker keeps its slot until the adapter's own bound ends it.
+        The agent runs in a daemon worker thread of its own, at most ``_MAX_WORKSPACE_CALLS`` at a
+        time per connection. A call past its deadline is answered without waiting; its worker
+        keeps its slot until the adapter's own bound ends it. Being daemon threads, workers never
+        hold a finished process open (a short-lived CLI exits after its command, not after a
+        background check its connection happened to be serving); work still running at exit
+        ends with the process, and an approved check it started stays in its own process group.
         """
 
-        executor = self._agent_executor
-        if executor is None:
-            executor = ThreadPoolExecutor(
-                max_workers=_MAX_WORKSPACE_CALLS, thread_name_prefix="finishup-workspace-agent"
-            )
-            self._agent_executor = executor
-        work = asyncio.get_running_loop().run_in_executor(
-            executor,
-            partial(
-                _answer_in_worker,
-                agent,
-                call,
-                self._session.workspace_handle,
-                agent.declaration.max_reply_bytes,
-            ),
+        loop = asyncio.get_running_loop()
+        work: asyncio.Future[bytes] = loop.create_future()
+        answer = partial(
+            _answer_in_worker,
+            agent,
+            call,
+            self._session.workspace_handle,
+            agent.declaration.max_reply_bytes,
         )
+
+        def deliver(encoded: bytes) -> None:
+            if not work.done():
+                work.set_result(encoded)
+
+        def run() -> None:
+            encoded = answer()
+            try:
+                loop.call_soon_threadsafe(deliver, encoded)
+            except RuntimeError:
+                # The loop already closed: the connection, and its answer, are gone.
+                return
+
         self._agent_busy += 1
         work.add_done_callback(self._release_workspace_slot)
+        try:
+            threading.Thread(target=run, name="finishup-workspace-agent", daemon=True).start()
+        except RuntimeError:
+            # No thread could be started (a process thread limit): nothing runs, the slot frees.
+            work.set_result(_encoded_workspace_reply(call.call_id, "agent_busy"))
         try:
             async with asyncio.timeout(call.deadline_ms / 1_000):
                 return await asyncio.shield(work)
@@ -1336,11 +1349,9 @@ class ServiceClient(ControlClientPort):
             current = asyncio.current_task()
             for task in tuple(self._agent_calls.values()):
                 # Unanswered workspace calls are the server's to fail when the connection drops.
+                # Their daemon workers finish (or end with the process) without being waited for.
                 if task is not current:
                     task.cancel()
-            executor, self._agent_executor = self._agent_executor, None
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
             await _best_effort_close_stream(self._stream)
         if not from_receiver and self._receiver is not asyncio.current_task():
             self._receiver.cancel()

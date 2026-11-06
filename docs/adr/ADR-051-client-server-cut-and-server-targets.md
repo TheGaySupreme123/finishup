@@ -284,7 +284,8 @@ answers bounded `workspace_call`s on a connection that declared it.
   and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
   root, so every approach decides the same way. A client that serves an agent answers at most four
-  workspace calls at once in worker threads; a client without one still rejects a `workspace_call`
+  workspace calls at once in daemon worker threads, which never keep a finished process open; a
+  client without one still rejects a `workspace_call`
   as a malformed frame, so a local connection is unchanged.
 - **Observation over claims.** Observation verification and approved checks for a `client:`
   locator route through the hub, and the client drains the outbox and spool it captured for a
