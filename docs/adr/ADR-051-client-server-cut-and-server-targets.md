@@ -312,19 +312,26 @@ answers bounded `workspace_call`s on a connection that declared it.
   and never the home directory, a folder that holds it, or one in its private trees. `server
   folders remove NAME FOLDER|--all` is the way out and takes effect at the next call; `server
   folders list NAME` and `server status` show the folders. The record is owner-only
-  (`<target root>/config/folders.json`), never sent to the server, and read by the agent off the
-  event loop on every outside read; a record that cannot be read admits nothing. A read root the
-  server names must have the shape an owner may admit and lie inside the claimed worktree or at or
-  beneath an admitted folder. Beyond that, a single-root read (`read_text_beneath`,
-  `list_beneath`) is `root_not_admitted`; a task-input read (`read_outside_inputs`,
-  `snapshot_outside_inputs`) reads beneath its admitted roots only and passes over the others like
-  a file that fails a fence, so the check-time change it rides on stays available. The server's
-  own privacy policy still decides which roots it asks for: the client's record narrows it, never
-  widens it. A declared test is read strictly beneath the claimed root, or beneath an admitted
-  folder, so the local parity of #1220 holds within what the owner admitted; anywhere else it is
-  `root_not_admitted`, never read on the server's word, and the reviewer is not offered it. Both
-  comparisons use the spelling the local read walks: a first component that is a link root owns
-  (macOS `/tmp`, `/var`) counts as its target, so such a spelling never falsely refuses.
+  (`<target root>/config/folders.json`) and never sent to the server. The agent reads the active
+  target's record off the event loop on every outside read; a record that cannot be read admits
+  nothing. A read root the server names must have the shape an owner may admit, and what the read
+  reaches must lie inside the claimed worktree or at or beneath an admitted folder; otherwise the
+  read is `root_not_admitted`. For a
+  single-root read (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it
+  the read names. For a task-input read (`read_outside_inputs`, `snapshot_outside_inputs`) it is
+  every path the task names beneath a named root: one the owner did not admit refuses the whole
+  call, which the server records as the check's `workspace_agent_refused`, so an input is never
+  passed over in silence, and a named root beneath which the task names nothing is left
+  unopened. The server's own privacy policy still decides which roots it asks for: the client's
+  record narrows it, never widens it, and a folder narrower than the server's root admits what
+  lies beneath that folder alone. A declared test is read strictly beneath the claimed root, or
+  beneath an admitted folder, so the local parity of #1220 holds within what the owner admitted;
+  anywhere else it is `root_not_admitted`, never read on the server's word, and the reviewer is
+  not offered it. One admitted through a folder is an outside read, which excludes the claimed
+  workspace by identity and case-folded spelling, so another spelling of the workspace beneath
+  that folder never skips Git's ignore rule. Both comparisons use the spelling the local read
+  walks: a first component that is a link root owns (macOS `/tmp`, `/var`) counts as its target,
+  so such a spelling never falsely refuses.
 - **Ignore rules on the agent** (amended 2026-11-06, same review). The server's reviewer broker
   asks the agent whether Git ignores a workspace path before it reads it; a server that skipped
   that question received an ignored file's bytes. The agent now asks Git itself before a
@@ -343,9 +350,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   system or protected directory, and list the names in its directories. Anywhere on this machine,
   it can learn the metadata (existence, type, size and times, never content) of a path the local
   outside-input candidate rule would look at (`lstat_candidates`), which the server's
-  outside-input hint needs. The owner admits only folders they would let that server see. When
-  the server's policy admits a root the client has not, the task input is passed over without a
-  hint naming the client's record; a hint is later work.
+  outside-input hint needs. The owner admits only folders they would let that server see. A
+  refused task-input read reaches the receipt as `workspace_agent_refused`, but a refused
+  reviewer read or declared test reads as absent on the server, and nothing on the client tells
+  the owner which folder was asked for; such a hint is later work.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a
   connection that declared the agent registers at handshake and unregisters on close.
   `WorkspaceAgentHub.call(handle, operation, arguments, *, timeout_seconds)` sends a

@@ -4745,21 +4745,33 @@ confinement rules:
 - Outside admission is this client's own record (`client.server_folders`, ADR-051 decision 5).
   `outside_folders` answers the admitted folders on each call; by default
   `active_target_folders()` reads the active remote target's `yoetz.server-folders/1` record and
-  answers `()` for a local root or a record that cannot be read. A read root must pass
-  `admitted_input_root_valid` (the shape an owner may admit) and lie inside the claimed worktree
-  or at or beneath an admitted folder (`folder_covers`, exact spelling). Beyond that,
-  `read_text_beneath` and `list_beneath` are `root_not_admitted`, and `read_outside_inputs` and
-  `snapshot_outside_inputs` read beneath their admitted roots only (a root of an inadmissible
-  shape still refuses the call). Outside reads never enter the claimed workspace through an
-  outside root and never enter a protected directory, whatever the server lists as excluded; an
-  `lstat` candidate inside either is reported as not found. An exclusion naming a directory this
-  user cannot examine does not empty the read.
+  answers `()` for a local root or a record that cannot be read. Every read root must pass
+  `admitted_input_root_valid` (the shape an owner may admit), and what it reaches must lie inside
+  the claimed worktree or at or beneath an admitted folder (`folder_covers`, exact spelling); the
+  record narrows the server's roots, never widens them:
+  - `read_text_beneath` and `list_beneath` on an absolute root are admitted when the root lies
+    inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
+    `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a
+    narrower folder included).
+  - `read_outside_inputs` and `snapshot_outside_inputs` are `root_not_admitted` when any value at
+    or beneath a named root lies neither inside the claimed worktree nor at or beneath an admitted
+    folder. The server records that as the check's `workspace_agent_refused` (an input the owner
+    did not admit is never passed over in silence). Otherwise they walk the named roots that are
+    admitted or hold an admitted folder, and each input keeps the server's own root
+    (`TaskInputFile.root`); a named root with no value beneath it is left out unopened.
+  Outside reads never enter the claimed workspace through an outside root and never enter a
+  protected directory, whatever the server lists as excluded; an `lstat` candidate inside either
+  is reported as not found. An exclusion naming a directory this user cannot examine does not
+  empty the read.
 - `read_declared_test` reads a location strictly beneath the claimed root (handle-relative, or
   absolute under the root's spelling) or at or beneath an admitted folder; anything else is
   `root_not_admitted`. Both comparisons are made on the location as written and as the local read
   walks it (`task_input_read.declared_test_top`: a first component that is a root-owned link to a
   directory at most two levels deep, macOS `/tmp` or `/var`, is replaced by its target). The read
-  is the local `read_declared_test`, with its own fences.
+  is the local `read_declared_test`, with its own fences; one admitted through a folder also
+  excludes the claimed root, by case-folded spelling and by device and inode, as every other
+  outside read does, so another spelling of the workspace (another case on a case-insensitive
+  volume, a bind mount) never reaches a file Git would report ignored.
 - A workspace file read (`read_text_beneath` on the handle, and `read_declared_test` inside the
   claimed root) first asks `probe_requested_paths` for that path, relative to the claimed root, as
   the reviewer broker does; a path Git reports ignored reads as absent. Where Git cannot answer
