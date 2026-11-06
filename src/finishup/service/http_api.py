@@ -991,7 +991,10 @@ def _tls_context(cert: str, key: str) -> ssl.SSLContext:
 
 def _bind_tcp(address: NetworkListenAddress) -> socket.socket:
     family = socket.AF_INET6 if ":" in address.host else socket.AF_INET
-    raw = socket.socket(family, socket.SOCK_STREAM)
+    # Name TCP explicitly: asyncio turns Nagle off (TCP_NODELAY) only for accepted sockets whose
+    # protocol is IPPROTO_TCP, and an accepted socket inherits the listener's. With protocol 0
+    # every TLS response waited on the client's delayed ACK, about 40 ms per request.
+    raw = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
     try:
         raw.set_inheritable(False)
         raw.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

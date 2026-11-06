@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import socket
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -515,3 +516,30 @@ async def test_an_agent_whose_lease_ran_out_or_key_was_revoked_is_ended(
 
 def test_owner_principal_is_a_fixed_token() -> None:
     assert OWNER_PRINCIPAL == "p_owner"
+
+
+@pytest.mark.anyio
+async def test_an_accepted_tcp_connection_has_nagle_off() -> None:
+    # A listener bound with protocol 0 left Nagle on for every accepted connection, so each TLS
+    # response waited on the client's delayed ACK (about 40 ms per request, seen in a real run).
+    from finishup.config.models import NetworkListenAddress
+    from finishup.service.http_api import _bind_tcp  # pyright: ignore[reportPrivateUsage]
+
+    listener = _bind_tcp(NetworkListenAddress("127.0.0.1", 0))
+    accepted: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+    class _Probe(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            raw = cast(socket.socket, transport.get_extra_info("socket"))
+            accepted.set_result(raw.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+            transport.close()
+
+    server = await asyncio.get_running_loop().create_server(_Probe, sock=listener)
+    async with server:
+        port = int(listener.getsockname()[1])
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            assert listener.proto == socket.IPPROTO_TCP
+            assert await asyncio.wait_for(accepted, timeout=10.0) != 0
+        finally:
+            writer.close()
