@@ -351,7 +351,11 @@ class Connector:
                 return
             claim = _claim_from(hello)
             if claim is not None and not own:
-                asyncio.ensure_future(self._observe_claim(claim))
+                # Held like a relay: the loop keeps only a weak reference to a task, and
+                # ``serve`` cancels and awaits it at shutdown.
+                observe = asyncio.create_task(self._observe_claim(claim))
+                self._connections.add(observe)
+                observe.add_done_callback(self._connections.discard)
             encoded = encode_control_frame(hello)
             if self._ssh is not None:
                 # Only a client's own connection is demand for the remote service.

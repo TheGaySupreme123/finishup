@@ -415,3 +415,52 @@ def test_the_connector_command_serves_only_a_remote_targets_own_root(
     other.mkdir(mode=0o700)
     monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(other))
     assert run_connector(root) == 2
+
+
+def test_a_background_agent_still_opening_is_held_and_ended_when_the_connector_stops(
+    home: Path,
+) -> None:
+    """A relayed claim opens its workspace's background agent beside the client's relay. The
+    loop keeps only a weak reference to that task, so the connector holds it, and ``serve``
+    cancels and awaits it as it stops instead of leaving it running."""
+
+    record, root = _ssh_target(home)
+    ended: list[str] = []
+
+    async def exercise() -> None:
+        opening = asyncio.Event()
+        never = asyncio.Event()
+
+        async def opener(_root: Path, _claim: WorkspaceClaim, _dial: object) -> _Agent:
+            opening.set()
+            try:
+                await never.wait()  # a server slow to answer the agent's hello
+            except asyncio.CancelledError:
+                ended.append("cancelled")
+                raise
+            return _Agent()
+
+        listener = await bind_control_listener()
+        connector = Connector(root, record, agent_opener=opener)
+        master = _StubMaster(root, restarts=[])
+        master.failure = "remote_unreachable"
+        connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        serving = asyncio.create_task(connector.serve(listener))
+        client = await connect_control()
+        claim: dict[str, JsonValue] = {
+            "schema_version": "1.0.0",
+            "identity_kind": "directory",
+            "digest": CLAIM_DIGEST,
+            "worktree": WORKTREE_DIGEST,
+        }
+        await client.send_all(_hello(workspace_claim=claim))
+        async with asyncio.timeout(5):
+            await opening.wait()
+        connector.request_stop()
+        async with asyncio.timeout(10):
+            assert await serving == "stop_requested"
+        assert ended == ["cancelled"]
+        await client.aclose()
+
+    with selection_override(root):
+        asyncio.run(exercise())
