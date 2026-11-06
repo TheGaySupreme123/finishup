@@ -124,7 +124,12 @@ typed outcomes when the client side cannot be reached.
 
 - **Roots.** Each target is one root at `<ambient state dir>/servers/t_<8 hex>/` holding
   `target.json` (tag `yoetz.server-target/1`, ADR-048 namespace). The short id keeps every socket
-  path beneath the root inside the AF_UNIX limit even under `~/Library/Application Support/`. A
+  path beneath the root inside the AF_UNIX limit even under `~/Library/Application Support/`.
+  Creating a target refuses a root whose longest socket would not fit (`target_root_too_long`),
+  against the platform's usable `sun_path` bytes (107 on Linux, 103 on Darwin), the one bound
+  `instance_root_too_long` also uses: a `local` root against the service's
+  `run/secret-ingress.sock`, a remote root against the longest socket a client binds there,
+  OpenSSH's ControlMaster `run/m` under its 17-byte temporary suffix. A
   `local` target's root is a persistent ADR-028 instance root with its own vault, ledger, config,
   endpoints and on-demand service. A remote target's root holds only client state: startup gates,
   hook memos, the bridge↔hook records, the observation outbox and spool, and whatever its
