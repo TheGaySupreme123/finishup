@@ -338,6 +338,9 @@ class FinishUpTui(App[int]):
         return self._stack[-1] if self._stack else None
 
     async def on_mount(self) -> None:
+        # Before any command can run: whether a remote server is still selected while this
+        # computer forbids network use (ADR-051 decision 8), for the header and ``/server``.
+        await self.runtime.refresh_zero_network_item()
         self.header_widget.set_state(
             version=__version__,
             project=str(self.runtime.project_root()),
@@ -2960,6 +2963,10 @@ class FinishUpTui(App[int]):
 
         rows, lines = await self.runtime.server_rows()
         self.say(Level.ACTIVE, "FinishUP servers", lines)
+        zero_network = await self.runtime.refresh_zero_network_item()
+        if zero_network:
+            # ADR-051 decision 8: the choice is the owner's; "Use local" below switches.
+            self.say(Level.UNPROVEN, "Zero-network does not stop the selected server", zero_network)
         options = [
             Option(
                 f"use:{row.name}",

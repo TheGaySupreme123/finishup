@@ -53,6 +53,7 @@ from finishup.tui.models import (
 if TYPE_CHECKING:  # Runtime imports stay lazy; annotations still type-check.
     from finishup.adapters.integrations.observation_local import LocalObservationStore
     from finishup.application.harness_mcp import HarnessMcpService
+    from finishup.cli.zero_network_selection import ZeroNetworkSelection
     from finishup.domain.observation_budget import CapacityRequest
     from finishup.domain.observation_settings import ObservationDetailProfile
     from finishup.ports.harness_mcp import HarnessBinary, McpRegistrationPreview
@@ -685,6 +686,9 @@ class FinishUpRuntime:
         self._check_request_ids: dict[str, str] = {}
         # The evaluator runtime setup last offered as its default (see setup_codex_subscription).
         self._offered_codex_executable: Path | None = None
+        # A remote server still selected while this computer forbids network use (ADR-051
+        # decision 8), as last read by ``refresh_zero_network_item``.
+        self._zero_network: ZeroNetworkSelection | None = None
 
     # -- discovery ------------------------------------------------------
 
@@ -918,7 +922,7 @@ class FinishUpRuntime:
             prompt_credential_probe_authorization() if credential_probe else False
         )
         try:
-            return await run_privacy_setup(
+            report = await run_privacy_setup(
                 recipe_hint=cast(
                     Literal[
                         "private",
@@ -941,6 +945,10 @@ class FinishUpRuntime:
                 getattr(error, "reason", "privacy_setup_failed"),
                 "the trusted privacy ceremony could not be completed",
             ) from error
+        # The ceremony itself told the owner on this terminal when the change leaves a remote
+        # server selected under zero-network (ADR-051 decision 8); the header follows it.
+        await self.refresh_zero_network_item()
+        return report
 
     def privacy_recommendation(
         self, posture: PrivacyPosture | None = None
@@ -1476,8 +1484,40 @@ class FinishUpRuntime:
         try:
             record = active_target_record()
         except TargetError:
-            return None
-        return None if record is None else f"{record.kind} {record.target_id}"
+            record = None
+        indicator = None if record is None else f"{record.kind} {record.target_id}"
+        return self._zero_network_indicator(indicator)
+
+    def _zero_network_indicator(self, indicator: str | None) -> str | None:
+        """The header names the zero-network item while the selection on disk still shows it.
+
+        Only the selection file is read again here; a selection switched or cleared elsewhere
+        drops the item rather than keeping a stale one (ADR-051 decision 8).
+        """
+
+        from finishup.cli.zero_network_selection import still_selected
+
+        item = self._zero_network
+        if item is None:
+            return indicator
+        if not still_selected(item):
+            self._zero_network = None
+            return indicator
+        return item.indicator()
+
+    async def refresh_zero_network_item(self) -> tuple[str, ...]:
+        """Whether this computer forbids network use while a remote server is selected.
+
+        Reads the selection file afresh and, only when it names a remote server, asks this
+        computer's everyday service for its policy (in a worker thread). Returns the item's lines
+        for ``/server``, empty when there is nothing to say; the header shows it until the
+        selection changes.
+        """
+
+        from finishup.cli.zero_network_selection import find_zero_network_selection_async
+
+        self._zero_network = await find_zero_network_selection_async()
+        return () if self._zero_network is None else self._zero_network.lines()
 
     async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
         """Every server target (``local`` first) and the ``finishup server list`` lines."""
