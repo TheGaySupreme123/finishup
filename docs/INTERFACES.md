@@ -4072,14 +4072,17 @@ The re-ready runs as one daemon-owned task: a caller that stops waiting (a claim
 lifecycle `unlocking` or turns a cancelled activation into `unlock_failed`; a caller that arrives
 meanwhile waits on the same attempt. A lock outranks it: `SERVICE_LOCK`, a session lock, suspend or
 monitor loss cancels the attempt in flight and lets none start until the lock has applied, then
-records its own reason; shutdown cancels it too. The attempt also has its own 30-second deadline,
-the budget an on-demand client gives a cold start for the same unlock and activation, so a stalled
-keyring read or activation never holds the lifecycle `unlocking` or a lock waiting. A cancelled or
-expired attempt locks the vault and returns to `locked`; an expired one keeps its soft-lock reason,
-so the next request tries again. The attempt is background work: it starts in an empty context, so
-neither it nor the READY maintenance it starts carries the triggering call's live-call scope or
-agent channel. Scoped-entry candidates that a cancelled read returns afterwards from its worker
-thread are overwritten as they arrive. An unexpected failure of the attempt is recorded as
+records its own reason. A lock whose own caller stops waiting (a `SERVICE_LOCK` whose connection
+closed) leaves the unwind to finish without it and does not apply. Shutdown cancels the attempt
+too, and its `shutdown_requested` stands over any lock racing it. The attempt also has its own
+30-second deadline, the budget an on-demand client gives a cold start for the same unlock and
+activation, so a stalled keyring read or activation never holds the lifecycle `unlocking` or a
+lock waiting. A cancelled or expired attempt always finishes its unwind, even when cancelled again
+meanwhile: it locks the vault and returns to `locked`, and an expired one keeps its soft-lock
+reason, so a later request tries again. The attempt is background work: it starts in an empty
+context, so neither it nor the READY maintenance it starts carries the triggering call's live-call
+scope or agent channel. Scoped-entry candidates that a cancelled read returns afterwards from its
+worker thread are overwritten as they arrive. An unexpected failure of the attempt is recorded as
 `service.daemon` operation `soft_lock_reready`, whether or not a caller still waits on it.
 The resulting `VAULT_LOCKED` error is retryable only while this automatic recovery path remains
 eligible. `explicit_lock`, `monitor_lost`, and hard `auto_unlock_*` /

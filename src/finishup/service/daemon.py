@@ -1261,6 +1261,10 @@ class ServiceDaemon:
         try:
             await self._cancel_soft_reready()
             async with self._activation_lock:
+                if self._stopping or self._closed:
+                    # Shutdown began while this lock waited: it locks and drains everything
+                    # itself, and its reason stands.
+                    return
                 if lifecycle.state is ServiceState.READY:
                     await lifecycle.request_lock(reason)
                 elif lifecycle.state is ServiceState.UNLOCKING:
@@ -1288,10 +1292,15 @@ class ServiceDaemon:
                 # to LOCKED and releases the lock it holds.
                 await self._cancel_soft_reready()
                 await self._check_waits.close()
-                self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
+                stop_reason = reason if reason == "internal_error" else "shutdown_requested"
+                self._state_reason = stop_reason
                 lifecycle = self._composition.lifecycle
                 if self._started:
                     async with self._activation_lock:
+                        # Whoever held the activation lock before shutdown did (a lock applying,
+                        # or a re-ready a lock cancelled and that was still unwinding) may have
+                        # recorded its own reason meanwhile; shutdown's stands.
+                        self._state_reason = stop_reason
                         if lifecycle.state is ServiceState.UNLOCKING:
                             await self._composition.vault.lock()
                             await lifecycle.transition(ServiceState.LOCKED)
@@ -2917,14 +2926,27 @@ class ServiceDaemon:
         if task is None or task.done():
             return
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Waits for the unwind without passing this caller's own cancellation (a SERVICE_LOCK
+        # whose connection closed) on to it, as ``asyncio.gather`` would.
+        await asyncio.wait((task,))
 
     async def _abandon_soft_reready(self, soft_lock_reason: str) -> None:
         """Unwind a cancelled re-ready: vault locked, lifecycle LOCKED, the soft reason kept.
 
-        A lock that cancelled the attempt then records its own reason, and so does ``stop``.
+        The unwind runs to its end even if the attempt is cancelled again meanwhile (a lock or
+        shutdown cancelling an attempt whose deadline already ended it): cut short, it left the
+        lifecycle UNLOCKING, where no later re-ready or unlock could start. The caller then
+        re-raises the cancellation that ended the attempt. A lock that cancelled the attempt
+        records its own reason afterwards, and so does ``stop``.
         """
 
+        unwind = asyncio.ensure_future(self._unwind_soft_reready(soft_lock_reason))
+        while not unwind.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait((unwind,))
+        unwind.result()
+
+    async def _unwind_soft_reready(self, soft_lock_reason: str) -> None:
         with contextlib.suppress(Exception):
             await self._composition.vault.lock()
         await self._return_to_locked_after_soft_unlock()
