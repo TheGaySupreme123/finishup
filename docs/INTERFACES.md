@@ -4882,18 +4882,61 @@ is the reverse; all three are `server_host`. Failures are `ApiKeyError` reasons
 `api_key_limit`, `api_keys_unsafe`, `api_keys_damaged`). `finishup service endpoint --json` adds
 `network: {api_socket, listen, tls}` only when `[network]` is configured.
 
+**Server bindings.** `ServiceDaemon._network_api_bindings() -> NetworkApiBindings` gives the API
+`status`, a `dispatch` that runs `ServiceDaemon.dispatch` inside
+`service.workspace_hub.live_call_scope()` with the machine-readable projection, the idle-hold
+`activity`, `claim_resolver=ServiceDaemon._resolve_claim_context` (the installation MAC under
+`yoetz/repository-claim/v1`, applied after the principal keying) and
+`agent_hub=ServiceComposition.workspace_hub`, the same hub claim-bound socket connections and the
+ready application's workspace routing use. A `POST /v1/agents` registration is one
+`WorkspaceAgentHub.register` channel whose writer queues calls for the agent's next poll.
+
 **Client.** `connect_service` and `connect_service_on_demand` return
 `client.rest_client.RestServiceClient` (a `ServiceClient` subclass with the same methods and
-`ControlError`s, plus `transport_kind`, `workspace_binding` and `workspace_handle`) for a root
-whose `target.json` names a remote kind; a remote root never spawns or supersedes a service.
-Remote failures are `service_unavailable` with phase `remote_unreachable`, `remote_auth_failed`,
-`remote_identity_changed`, `remote_service_not_running` or `remote_incompatible`. SSH targets
-(`client.rest_runtime.SshTargetRuntime`) keep one master at `<troot>/run/m` forwarding
-`<troot>/run/api.sock` to the server's `api.sock` (`remote_endpoint` in `target.json`), learned by
-`server add` from `service endpoint --json`. The workspace agent, `finishup agent run --root
-<troot>` (`client_only`), keeps `<troot>/state/agent.lock` (stamped pid) and the noted workspaces
-`<troot>/state/agent-workspaces/w_<32 hex>.json` (`yoetz.agent-workspace/1`, path only, never
-sent).
+`ControlError`s, plus `transport_kind`, `workspace_binding`, `workspace_handle`,
+`service_instance_id` and `transport` — `https`, also for `local_port`, or `ssh`) for a root whose
+`target.json` names a remote kind; a remote root never spawns or supersedes a service.
+`connect_rest_service(client_kind, *, record, root, claim=None)` builds one. At the seam
+(`service.client._connect_remote`) a `workspace_locator` is claimed with
+`binding_for_active_root(locator, serve_workspace=False)` (`_remote_claim`; a caller's
+`workspace_binding` is used as given; an unresolvable locator gives no claim, never a path), noted
+for the agent (`client.agent.note_workspace`) and the agent started when none runs
+(`client.agent.ensure_agent`). An SSH target's master is ensured on every connect; only an
+on-demand connect starts an idle-stopped remote service. `RestServiceClient.call` refuses a
+`start` whose `workspace_ref` is still an absolute path (`WorkspaceRefNotPortable`, nothing
+sent). Remote failures are `service_unavailable` with phase `remote_unreachable`,
+`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running` or
+`remote_incompatible`. SSH targets (`client.rest_runtime.SshTargetRuntime`) keep one master at
+`<troot>/run/m` forwarding `<troot>/run/api.sock` to the server's `api.sock` (`remote_endpoint` in
+`target.json`), learned by `server add` from `service endpoint --json`.
+
+**Workspace agent.** `finishup agent run --root <troot>` (`client_only`,
+`client.agent.run_workspace_agent`) keeps `<troot>/state/agent.lock` (stamped pid) and reads the
+noted workspaces `<troot>/state/agent-workspaces/w_<32 hex>.json` (`yoetz.agent-workspace/1`, path
+only, never sent). `WorkspaceAgentLoop(root, record, *, claim_factory, handler_factory,
+delivery_factory, …)` serves each noted workspace with, from `client.remote_workspace`:
+`claim_for_workspace(record, locator) -> WorkspaceClaim | None` (`workspace_claim` under
+`claim_salt(record)`, the same claim a client process sends), `handler_for_workspace(locator,
+root) -> WorkspaceAgentHandler` (the target root added to its protected directories), and
+`CapturedObservationDelivery(record, root, locator, claim, *, connect=None)` whose `deliver()` runs
+one `ClientObservationDrain` pass (state `<troot>/state`) over one claim-bound `RestServiceClient`
+kept between passes and released after a pass that stopped at a control failure.
+
+**Hooks and drains.** On a remote root a hook pass's drains connect with the hook's workspace
+locator (`cli.observe_hooks._claim_bound_drain_connector`; without a workspace nothing is sent and
+the rows stay pending) and `finishup observe drain` covers the named or current workspace over a
+claim-bound connection (`cli.observe._claim_bound_drain`), so every row is attested. Other roots
+connect exactly as before.
+
+**Remedies.** `client.remote_remedy`: `remote_root_selected() -> bool` (hook-safe; an unreadable
+record reads as not remote, as at the seam), `remote_connection_phase(error) -> str | None`, and
+`remote_remedy(error, *, remote=None) -> RemoteRemedy | None` (`reason`: a remote phase, or
+`vault_locked`; `summary`: fixed words; `directive`: the phase's `RecoveryDirective`, none for a
+locked server vault). The CLI's `control_failure` (stderr and JSON `phase` plus `recovery`), the
+menu, setup's next steps, the MCP bridge (`safe_details.reason_code` is the phase, so its
+continuation attaches), the hook contexts (`cli.hooks.unavailable_context`, `locked_context`,
+`StatusOutcome.remote_reason`) and the terminal interface use it; a local root's output is
+unchanged.
 
 ### Several-agent setup batches (issue #1119)
 

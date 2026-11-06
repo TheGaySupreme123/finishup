@@ -461,6 +461,18 @@ real-environment runs, and a cell is claimed only from that evidence.
   forwarding. The human-control and secret endpoints are never forwarded. An approach that tunnels
   to a loopback TCP port instead needs `AllowTcpForwarding`; its topology section says which
   applies.
+- **Network API (this tree, ADR-051 approach C).** The service serves the network API itself,
+  only when its `config.toml` has `[network]`. For SSH clients set `api_socket = true`: the API is
+  then served on the owner-only `<runtime>/api.sock`, which each client's OpenSSH master forwards
+  socket to socket (sshd must permit stream-local forwarding, as above; no TCP port is opened). For
+  HTTPS or port clients list `listen` addresses with `tls_cert` and `tls_key` (the key file the
+  service owner's and mode 0600; plain HTTP only on loopback with `allow_plain_loopback = true`
+  behind a same-host TLS proxy) and create a key per client with `finishup service api-key create
+  --label L --scope agent|operator`. Restart the service after editing `[network]`; a listener that
+  cannot be bound fails the start with `network_listener_unavailable` or `network_tls_unusable`.
+  `finishup service endpoint --json` shows the `network` block. On the client, the workspace agent
+  (`finishup agent run`) logs to `<target root>/log/agent.stderr.log`; the service and the agent
+  record closed tokens under the components `service.http_api` and `client.agent`.
 - **macOS as a server.** Remote Login must be on. A service started from an SSH login runs outside
   the desktop session: it cannot show the Touch ID dialog (`presence_unavailable`), so the owner
   receipt view over SSH uses `--use-passphrase`, and the login keychain may be unavailable to it, in

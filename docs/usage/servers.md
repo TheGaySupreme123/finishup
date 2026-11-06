@@ -168,10 +168,12 @@ the same safety checks FinishUP uses on one computer, and it never reads FinishU
 this computer — including the vault and settings of your everyday FinishUP — whichever server you
 use.
 
-It runs inside your FinishUP clients while they are connected to the server, and keeps running
-after a call returns, because some work — a longer review, an approved check — happens later. If
-nothing on your computer answers in time, the receipt names exactly what could not be read; a check
-never passes because a read was missing.
+It is its own small process on your computer, `finishup agent run` (see "How your computer reaches
+the server" below), which your FinishUP tools and hooks start when they first use the server from a
+project. It answers while a call is running and keeps answering after the call returns, because
+some work — a longer review, an approved check — happens later. If nothing on your computer
+answers in time, the receipt names exactly what could not be read; a check never passes because a
+read was missing.
 
 ## Preparing the server
 
@@ -240,8 +242,14 @@ server. That SSH connection starts when first needed and closes after 15 minutes
 The workspace agent is a small FinishUP process on your computer, `finishup agent run`, that
 starts when your sessions first use a server on another machine and stops 15 minutes after the
 last one ends. It asks the server for work rather than waiting for the server to call in, so it
-works through firewalls and proxies that allow ordinary HTTPS. `finishup server disconnect` stops
-it too.
+works through firewalls and proxies that allow ordinary HTTPS. It also delivers, in the
+background, the observations your hooks recorded but could not deliver themselves, each with this
+computer's observation settings. `finishup server disconnect` stops it too.
+
+When the server cannot be reached, FinishUP's tools, hooks, the `finishup` command and the
+terminal interface name what went wrong with one of the `remote_…` reasons below and its next
+step; they never tell you to start or unlock a FinishUP service on this computer, because none
+serves that server.
 
 On a web or port server, each FinishUP process on your computer reads your API key from your
 credential store when it connects. Software running as you can read that store too, as it can
@@ -288,7 +296,7 @@ repeated safely.
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. | Start it on the server instead. |
-| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
+| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Use FinishUP from that project again (any FinishUP tool or hook restarts the workspace agent) and check again; the receipt names what was not read. |
 | `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on your approved list. | Nothing to repair unless you meant to admit that folder or check. |
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it. |
 | `workspace_binding_conflict` | A client sent two different ways of naming the project. | Report it as a bug. |

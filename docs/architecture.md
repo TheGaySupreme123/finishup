@@ -169,11 +169,18 @@ SSH
 
 `connect_service` returns a `RestServiceClient` (`client/rest_client.py`) for a remote root: the
 same typed methods, each a stateless request whose body and answer are the control protocol's
-own bodies. Keys live hashed in the service's state and are managed with
-`finishup service api-key` on the server host. The workspace agent is a dedicated, pull-based
-client process (`client/agent.py`); SSH targets keep one OpenSSH master per target
-(`client/rest_runtime.py`). The Unix control, human-control and secret endpoints are never
-forwarded. ADR-051's topology section has the routes, scopes and the ADR-008 amendment.
+own bodies. The connect seam claims the caller's workspace (`binding_for_active_root`, claim only)
+and sends the claim header, never the path. Keys live hashed in the service's state and are
+managed with `finishup service api-key` on the server host; the daemon resolves a request's claim
+and registers REST workspace agents with its own claim resolver and `WorkspaceAgentHub`
+(`ServiceDaemon._network_api_bindings`). The workspace agent is a dedicated, pull-based client
+process (`client/agent.py`) that answers every workspace call, inline and background, with
+`WorkspaceAgentHandler`, and delivers the client's captured observation in the background
+(`client/remote_workspace.py`). Hook drains connect claim-bound on a remote root, and every
+surface names a remote failure through `client/remote_remedy.py`. SSH targets keep one OpenSSH
+master per target (`client/rest_runtime.py`). The Unix control, human-control and secret endpoints
+are never forwarded. ADR-051's topology section has the routes, scopes and the ADR-008
+amendment.
 
 ## The six operations
 

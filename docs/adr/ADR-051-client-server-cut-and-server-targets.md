@@ -558,11 +558,64 @@ consent, the owner receipt view, the human-control or secret endpoints, or `cont
 requests are bounded (frame sizes, 32 running operations and 16 agents per key, 256 concurrent
 connections, 25-second long-polls).
 
-**Integration points** (wired after the workspace-remoting tracks merge):
-`ServiceDaemon._network_api_bindings()` (claim resolver, workspace hub, live-call scope) on the
-server, and `finishup.client.remote_workspace.claim_for_workspace`, `handler_for_workspace` and
-`drain_captured_observations` (the agent's background outbox and spool drain) on the client. Until then a claim header binds no repository and agent
-registration answers `workspace_agent_unavailable`.
+**Workspace remoting over the API.**
+
+- *Server.* `ServiceDaemon._network_api_bindings()` gives the API the daemon's own claim resolver
+  (`_resolve_claim_context`: the installation MAC under `yoetz/repository-claim/v1`, exactly as a
+  claim-bound hello is keyed, after the principal keying above), the one `WorkspaceAgentHub` the
+  ready application's routing already calls, and a dispatch that runs inside `live_call_scope()`.
+  A REST call and a claim-bound socket connection therefore bind the same `client_claim` identity,
+  and a workspace call made while a client waits gets the 5-second agent bound, work that outlives
+  the call the 30-second one. A claim-bound `observation_ingest` reaches the claim's own store
+  (decision 12) because the dispatch carries the claim's context.
+- *Connect seam.* For a remote root, `connect_service` and `connect_service_on_demand` claim the
+  caller's workspace locator with `binding_for_active_root(locator, serve_workspace=False)`, note
+  the workspace for the agent (`note_workspace`) and start the agent when none runs
+  (`ensure_agent`). The claim is all the call connection carries: REST calls are stateless, so they
+  never serve workspace calls themselves; the agent answers inline and background calls alike,
+  which is what `serve_workspace=True` asks of the other approaches' connections. A caller's own
+  `workspace_binding` is used as given. A locator the shared root rule cannot resolve gives no
+  claim (never a path), and `RestServiceClient` refuses a `start` that still names a path
+  (`workspace_ref_not_portable`) before anything is sent. `RestServiceClient` reports
+  `service_instance_id` and the closed transport token `https` (also for `local_port`) or `ssh`,
+  so the client-side attribution of decision 6 names how the service was reached.
+- *Hooks.* A hook pass's drains, and `finishup observe drain`, connect claim-bound on a remote
+  root: they name the hook's workspace (`observe drain` the named or current workspace), the seam
+  claims it, and each row is attested (decision 12), so no row reaches the server unattested and
+  is quarantined. The SessionStart auto-attach, status reads and the admission notice already
+  name the workspace. Without a workspace a remote drain sends nothing and the rows wait for the
+  agent. Every other root connects exactly as before.
+- *Agent.* `WorkspaceAgentLoop` runs `WorkspaceAgentHandler` for each noted workspace
+  (`client.remote_workspace.handler_for_workspace`, with the target root added to its protected
+  directories) under the claim `claim_for_workspace` makes from the target's own salt — the same
+  claim a client process sends, so both bind one handle. For each served workspace it also runs
+  `CapturedObservationDelivery`: the shared `ClientObservationDrain` over one claim-bound
+  `RestServiceClient` kept between passes, reading the target root's own store
+  (`<troot>/state`) whichever root the agent process itself resolves. A pass that stops at a
+  control failure releases its client and the next pass connects again; rows stay pending.
+- *Remedies.* `client.remote_remedy` is the one place a surface asks what to say on a remote root:
+  a failed connection names its remote phase with that phase's directive from
+  `protocol/recovery.py`, a bare closed connection there is `remote_unreachable`, and a locked
+  server vault is its owner's to unlock on the server host. The CLI's control failures (text and
+  JSON), the menu, setup's next steps, the MCP bridge (the phase is the `reason_code`, so its
+  continuation attaches as for any reason), the hook SessionStart and attach contexts and the
+  terminal interface's connection failure and doctor remedies all use it; none prints a host,
+  user or target name, and a local root's output is unchanged.
+- *Proof.* `tests/integration/service/test_network_api_workspace.py` runs a real daemon, vault
+  and ready composition behind their own network API (loopback HTTP, and the owner-only API
+  socket for an SSH target) against the real connect seam, `RestServiceClient`, hook drain and
+  `WorkspaceAgentLoop` with the real handler on a temporary repository: the whole workflow with
+  the client-attested lines, the reviewer's `read_file`, the agent lost mid-review (typed
+  `workspace_agent_unavailable`), a hook row attested and verified through the agent, background
+  delivery, and the server lost (`remote_unreachable`, never a local service). Spies show the
+  server's own readers never see the workspace, and a recording transport shows no request
+  carried the repository's path.
+- *Limits.* The MCP bridge's availability latch has no service stamp to watch on a remote root; a
+  retryable remote phase clears through its quiet handshake as locally, and a non-retryable one
+  (`remote_auth_failed`, `remote_identity_changed`, `remote_incompatible`) stays latched for new
+  request ids until the original request replays. The agent's environment drops the isolation
+  variables (it is told its root by `--root`), so a client running under a runtime pin still
+  starts it, but the agent's own logs then go to the pinned root's log directory.
 
 | Way in | Way out | Way to see it |
 |---|---|---|

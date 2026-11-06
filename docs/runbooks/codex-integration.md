@@ -1505,6 +1505,18 @@ later process to the default service.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
   `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
   applies: put the intended launcher first on `PATH`.
+- **Network API (this tree, ADR-051 approach C).** The Codex hooks and the MCP bridge reach a
+  remote server through the server's own network API. A hook pass's drains and its SessionStart
+  status read name the project folder, which the client turns into the workspace claim (the path
+  is never sent), so every observation row it delivers is attested; a remote drain with no project
+  folder sends nothing and leaves the rows for the workspace agent. The workspace agent is a
+  separate `finishup agent run` process that the first connection from a project starts: it
+  answers the server's workspace calls while a call runs and afterwards, and delivers the rows a
+  hook could not. When the server cannot be reached the SessionStart context names it in fixed
+  words with the phase's continuation (for example `Continuation: remote_server_test.`), and a
+  locked server vault is named as the server owner's to unlock; neither names a host or tells the
+  agent to start or unlock a service on this machine. Host decision: supported, same code path as
+  the other hosts.
 - **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
   runs for each target kind are recorded with the pull request that lands the chosen approach. No
   Codex cell is claimed for a remote target until that evidence exists.

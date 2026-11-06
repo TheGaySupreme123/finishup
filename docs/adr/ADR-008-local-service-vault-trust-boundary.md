@@ -580,9 +580,12 @@ changes at its root.
 - **Trust table rows added.** *Network API listener* (inside the service): narrowly trusted to
   authenticate keys, apply their scope, key a client's workspace claim by the key's principal and
   never resolve a path, and dispatch exactly the allowed control methods; it adds no vault,
-  storage or policy authority beyond the methods it dispatches. *Workspace agent process*
-  (`finishup agent run`, client host, no vault): answers bounded workspace calls for the
-  workspaces its own client processes noted.
+  storage or policy authority beyond the methods it dispatches; it keys a claim with the
+  service's own installation MAC and hands calls to the same workspace hub a claim-bound socket
+  connection uses. *Workspace agent process* (`finishup agent run`, client host, no vault):
+  answers bounded workspace calls for the workspaces its own client processes noted, with the
+  same local adapters and fences a local service uses, and delivers the observation rows its
+  client captured, each attested from the client's own store (ADR-051 decision 12).
 - **Who reads the target credential:** every client process that dials an HTTPS or local-port
   target (hooks, the MCP bridge, the CLI, the terminal interface, the workspace agent) reads it
   from the target's credential store. This is weaker than a single holder; it matches today's
