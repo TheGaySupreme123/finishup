@@ -165,7 +165,9 @@ typed outcomes when the client side cannot be reached.
 | `https` | `https://host[:port][/base]` with `--ca-file` or `--tls-pin sha256:…` | No userinfo, query or fragment. Plain `http` is refused. |
 
 Every kind except `local` is a *remote kind* for consent, the zero-network refusal and the
-workspace agent, including `local_port`: a loopback port can forward anywhere.
+workspace agent, including `local_port`: a loopback port can forward anywhere. `server add NAME
+https://127.0.0.1:<port>` and `https://[::1]:<port>` record `local_port`, as does `--port <port>`
+(which records `127.0.0.1`); any other HTTPS address, `localhost` included, is `https`.
 
 `finishup server add|list|use|status [--json]|test|remove|login|logout|connect|disconnect` manages
 targets; each mutating command has its reverse (see *Reverse states*). `connect`, `disconnect` and
@@ -351,9 +353,19 @@ answers bounded `workspace_call`s on a connection that declared it.
   there.
 - Agents cannot select or add a remote target: there is no MCP tool for it, and the CLI refuses
   without a trusted console.
-- The hop is refused in the zero-network state: when the local service's effective policy is
-  zero-network, and, when no local service exists, while the configuration bootstrap leaves
-  `network_egress_permitted` false. The client re-checks before it opens the hop.
+- The hop is refused in the zero-network state, for every remote kind (`local_port` included).
+  This computer's own FinishUP decides: when its everyday installation was set up (its vault was
+  initialized), its running service's effective policy decides, and a policy that does not permit
+  network egress refuses the hop. When that policy cannot be read (the service is stopped, locked
+  or does not answer), the hop is refused with `network_policy_unreadable`, never allowed. A
+  computer whose everyday FinishUP was never set up has no policy of its own, so this check
+  does not refuse it: the selected server's own policy governs the work sent to it. (Amended
+  2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted
+  `local_port`, and said the client re-checks before each hop, which no code does.) The check
+  runs when the owner adds or selects a remote target. **Honest limit:** client processes do not
+  consult the local policy again before each connection, so tightening this computer's policy to
+  zero-network does not by itself stop an already selected remote target; `finishup server use
+  local` does.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -155,6 +155,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "server on another machine; change the privacy policy on this computer first",
         _USAGE,
     ),
+    "network_policy_unreadable": (
+        "this computer's FinishUP has its own privacy policy, which could not be read (its "
+        "service is stopped, locked, or did not answer), so a server on another machine is "
+        "refused; start it with 'finishup service start', unlock it if it is locked, and retry",
+        _UNAVAILABLE,
+    ),
     "credential_not_applicable": (
         "only HTTPS targets take an API key; SSH targets use your OpenSSH keys and agent",
         _USAGE,
@@ -215,6 +221,8 @@ class ServerCommandRefused(Exception):
 
 
 _DEFAULT_REMEDY: Final = "the server target did not respond as needed"
+# Written once, when the everyday installation's vault is initialized.
+_INSTALLATION_MARKER: Final = "installation-state.json"
 ROOT_UNUSABLE_MESSAGE: Final = (
     "this process's FinishUP root cannot be used; 'finishup service isolation' explains which "
     "source decided it"
@@ -333,20 +341,46 @@ def _kind_label(kind: str) -> str:
     }[kind]
 
 
-def _zero_network_in_force() -> bool:
-    """Whether this computer is in the zero-network state that refuses a remote hop.
+def _everyday_installation_exists() -> bool:
+    """Whether this computer's everyday FinishUP was set up (its vault initialized).
 
-    The everyday local server's effective policy decides when it answers; a policy that does not
-    permit network egress is the zero-network configuration. When it does not answer, an explicit
-    ``[privacy]`` declaration in the everyday configuration file decides (it can only declare
-    egress off). A configuration that cannot be read fails closed.
+    Read under ``selection_override(None)``. The installation marker is written once, when the
+    vault is initialized, so its presence means this computer has a privacy policy of its own.
+    Anything that keeps the answer from being known (a configuration or folder that cannot be
+    read) fails closed: it counts as set up.
     """
 
-    import tomllib
+    import os
+
+    from finishup.config.load import load_config
+    from finishup.config.models import ConfigError
+    from finishup.config.paths import bundle_root
+
+    try:
+        config = load_config({}, os.environ, None)
+        (bundle_root(_data_dir=config.storage.data_dir) / _INSTALLATION_MARKER).lstat()
+    except FileNotFoundError:
+        return False
+    except (ConfigError, OSError, PathSafetyError):
+        return True
+    return True
+
+
+def _zero_network_in_force() -> bool:
+    """Whether this computer is in the zero-network state that refuses a remote hop (ADR-051).
+
+    Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
+    This computer's own FinishUP decides. When its everyday installation was set up, its running
+    service's effective policy decides, and a policy that does not permit network egress is the
+    zero-network state; when that policy cannot be read (the service is stopped, locked, or does
+    not answer) the hop is refused with ``network_policy_unreadable``, never allowed. A computer
+    whose everyday FinishUP was never set up has no policy of its own, so nothing here refuses
+    it: it is a client of the server it names, and that server's own policy governs its data.
+    """
 
     import anyio
 
-    from finishup.config.paths import ambient_registry_dirs, selection_override
+    from finishup.config.paths import selection_override
     from finishup.domain.values import JsonObject
     from finishup.ports.control import ControlClientKind, ControlError
     from finishup.service.client import connect_service
@@ -363,24 +397,19 @@ def _zero_network_in_force() -> bool:
             return None
         finally:
             await client.close()
+        # The reply is a frozen ``JsonObject`` (a ``Mapping``, not a ``dict``) on the wire.
         policy = response.get("composed_policy")
-        if not isinstance(policy, dict):
+        if not isinstance(policy, Mapping):
             return None
-        return cast(dict[str, object], policy).get("network_egress_permitted") is not True
+        return cast(Mapping[str, object], policy).get("network_egress_permitted") is not True
 
     with selection_override(None):
-        answer = anyio.run(effective)
-    if answer is not None:
-        return answer
-    config_dir, _state = ambient_registry_dirs()
-    path = config_dir / "config.toml"
-    try:
-        if not path.exists():
+        if not _everyday_installation_exists():
             return False
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    return "privacy" in data
+        answer = anyio.run(effective)
+    if answer is None:
+        raise ServerCommandRefused("network_policy_unreadable")
+    return answer
 
 
 def _confirm_on_trusted_console(name: str, kind: str) -> None:
@@ -404,7 +433,8 @@ def _confirm_on_trusted_console(name: str, kind: str) -> None:
 
 
 def _authorize_remote(name: str, kind: str) -> None:
-    if kind != "local_port" and _zero_network_in_force():
+    # Every remote kind is a network hop, ``local_port`` included (ADR-051 section 3).
+    if _zero_network_in_force():
         raise ServerCommandRefused("zero_network_in_force")
     _confirm_on_trusted_console(name, kind)
 
@@ -476,8 +506,10 @@ def server_add(
             kind = "ssh"
             user, host, ssh_port = parse_ssh_url(cast(str, address))
         else:
-            kind = "https"
             base_url = normalize_https_url(cast(str, address))
+            # ``https://127.0.0.1:PORT`` and ``https://[::1]:PORT`` are this computer's loopback
+            # ports (ADR-051 section 3), exactly as ``--port PORT`` records 127.0.0.1.
+            kind = "local_port" if _loopback_origin(base_url) else "https"
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     if (remote_root is not None or remote_launcher is not None) and kind != "ssh":
@@ -536,6 +568,15 @@ def server_add(
         _emit((f"Store its API key with 'finishup server login {record.name}'.",))
     else:
         _emit((f"Check it with 'finishup server test {record.name}'.",))
+
+
+def _loopback_origin(base_url: str) -> bool:
+    """Whether a normalized HTTPS address is a loopback origin with an explicit port."""
+
+    try:
+        return normalize_https_url(base_url, loopback_only=True) == base_url
+    except TargetError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)

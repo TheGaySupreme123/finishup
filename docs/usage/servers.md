@@ -17,7 +17,7 @@ as it always has.
 | Kind | Add it with | What it is |
 |---|---|---|
 | Local | `finishup server add NAME --local` | A second FinishUP on this computer, with its own tasks, vault and settings. It starts when something first needs it, like the default one. |
-| Local port | `finishup server add NAME https://127.0.0.1:PORT` | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
+| Local port | `finishup server add NAME https://127.0.0.1:PORT` (or `https://[::1]:PORT`, or `--port PORT`) | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
 | SSH | `finishup server add NAME ssh://[user@]host[:port]` | A FinishUP on another machine that you log in to over SSH, as yourself. |
 | Web (HTTPS) | `finishup server add NAME https://host[:port][/path]` | A FinishUP hosted on the web. You sign in to it with an API key. |
 
@@ -51,7 +51,11 @@ a server: there is no agent tool for it, and the command refuses to run without 
 disclosure changes in a later release, FinishUP asks you to confirm again before using the server.
 
 If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
-or use a server on another machine, a port or the web.
+or use a server on another machine, a port or the web. It also refuses while the FinishUP set up
+on this computer cannot tell it its policy, because its service is stopped or locked: start it
+with `finishup service start`, unlock it if needed, and try again. A computer whose own FinishUP
+was never set up has no privacy policy of its own and can use a server; the server's policy then
+governs your work.
 
 ## Sign in to a web server
 
@@ -101,8 +105,9 @@ finishup server test devbox
 ```
 
 `list` shows every server and which one is in use. `status` shows which setting chose the server
-in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready, the
-key's scope and whether a key is stored (never the key). `test` connects, measures the round trip
+in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready, and
+whether a key is stored and where (never the key itself). The key's scope is set by the server's
+operator and is not shown here. `test` connects, measures the round trip
 and warns when it is slow enough that a startup check required by your agent setup would likely
 time out.
 

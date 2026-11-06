@@ -189,18 +189,140 @@ def test_remote_add_is_refused_in_the_zero_network_state(
     assert targets.list_targets() == ()
 
 
-def test_a_loopback_port_target_is_not_a_network_hop(
-    home: Path, monkeypatch: pytest.MonkeyPatch, authorized: list[tuple[str, str]]
+def test_a_loopback_port_target_is_a_network_hop_too(
+    home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def never() -> bool:
-        raise AssertionError("loopback never consults the zero-network state")
+    """ADR-051 section 3: every kind but ``local`` is refused in the zero-network state."""
 
-    monkeypatch.setattr(server_cli, "_zero_network_in_force", never)
-    result = _invoke("add", "gw", "--port", "9443")
+    monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: True)
+    for arguments in (
+        ("--port", "9443"),
+        ("https://127.0.0.1:9443",),
+        ("https://[::1]:9443",),
+    ):
+        result = _invoke("add", "gw", *arguments)
+        assert result.exit_code == 2, (arguments, result.output)
+        assert result.stderr.startswith("zero_network_in_force:")
+    assert targets.list_targets() == ()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "kind", "base_url"),
+    [
+        (("--port", "9443"), "local_port", "https://127.0.0.1:9443"),
+        (("https://127.0.0.1:9443",), "local_port", "https://127.0.0.1:9443"),
+        (("https://[0:0:0:0:0:0:0:1]:9443/fu/",), "local_port", "https://[::1]:9443/fu"),
+        # Only a literal loopback origin with an explicit port is this computer's port.
+        (("https://127.0.0.1",), "https", "https://127.0.0.1"),
+        (("https://localhost:9443",), "https", "https://localhost:9443"),
+    ],
+)
+def test_a_loopback_address_is_the_local_port_kind(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    arguments: tuple[str, ...],
+    kind: str,
+    base_url: str,
+) -> None:
+    result = _invoke("add", "gw", *arguments)
     assert result.exit_code == 0, result.output
     (record,) = targets.list_targets()
-    assert (record.kind, record.base_url) == ("local_port", "https://127.0.0.1:9443")
-    assert authorized == [("gw", "local_port")]
+    assert (record.kind, record.base_url) == (kind, base_url)
+    assert f"({record.target_id}, {kind})" in result.stdout
+    assert authorized == [("gw", kind)]
+
+
+class _PolicyClient:
+    """A control client whose ``privacy_get_setup`` answers like the wire: a ``JsonObject``."""
+
+    def __init__(self, reply: object) -> None:
+        self.reply = reply
+        self.closed = False
+
+    async def privacy_get_setup(self, _request: object) -> object:
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return self.reply
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _everyday_installation(home: Path) -> None:
+    """The marker the everyday vault's initialization writes, in the ambient data folder."""
+
+    bundle = home / "data" / "finishup"
+    bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (bundle / "installation-state.json").write_bytes(b"{}\n")
+
+
+def _serve_policy(monkeypatch: pytest.MonkeyPatch, reply: object) -> list[_PolicyClient]:
+    from finishup.ports.control import ControlError
+
+    clients: list[_PolicyClient] = []
+
+    async def connect(_kind: object, *, workspace_locator: object = None) -> _PolicyClient:
+        assert workspace_locator is None
+        if isinstance(reply, ControlError) and reply.reason == "service_unavailable":
+            raise reply
+        client = _PolicyClient(reply)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
+    return clients
+
+
+def _policy(egress: bool) -> object:
+    from finishup.domain.values import JsonObject
+
+    return JsonObject(
+        {"composed_policy": {"network_egress_permitted": egress, "schema_version": "1.0.0"}}
+    )
+
+
+@pytest.mark.parametrize(("egress", "refused"), [(False, True), (True, False)])
+def test_the_everyday_policy_decides_the_zero_network_state(
+    home: Path, monkeypatch: pytest.MonkeyPatch, egress: bool, refused: bool
+) -> None:
+    _everyday_installation(home)
+    clients = _serve_policy(monkeypatch, _policy(egress))
+    assert server_cli._zero_network_in_force() is refused  # pyright: ignore[reportPrivateUsage]
+    (client,) = clients
+    assert client.closed
+
+
+@pytest.mark.parametrize("failure", ["service_unavailable", "vault_locked"])
+def test_an_unreadable_everyday_policy_refuses_the_hop(
+    home: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from finishup.ports.control import ControlError
+
+    _everyday_installation(home)
+    _serve_policy(monkeypatch, ControlError(failure, retryable=True))
+    with pytest.raises(server_cli.ServerCommandRefused) as refused:
+        server_cli._zero_network_in_force()  # pyright: ignore[reportPrivateUsage]
+    assert refused.value.reason == "network_policy_unreadable"
+
+    def confirm(_name: str, _kind: str) -> None:
+        raise AssertionError("refused before the confirmation")
+
+    monkeypatch.setattr(server_cli, "_confirm_on_trusted_console", confirm)
+    result = _invoke("add", "lab", "ssh://owner@lab.example")
+    assert result.exit_code == 20
+    assert result.stderr.startswith("network_policy_unreadable:")
+    assert "lab.example" not in result.stderr
+    assert targets.list_targets() == ()
+
+
+def test_a_computer_never_set_up_has_no_policy_of_its_own(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(_kind: object, **_kwargs: object) -> object:
+        raise AssertionError("no everyday installation: nothing to ask")
+
+    monkeypatch.setattr("finishup.service.client.connect_service", never)
+    assert server_cli._zero_network_in_force() is False  # pyright: ignore[reportPrivateUsage]
 
 
 def test_remote_add_and_use_record_the_owner_authorization(
