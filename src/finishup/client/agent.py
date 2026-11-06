@@ -76,6 +76,11 @@ _SCAN_SECONDS: Final = 2.0
 _POLL_WAIT_MS: Final = 20_000
 _MAX_CONCURRENT_CALLS: Final = 4
 _RETRY_SECONDS: Final = (1.0, 2.0, 5.0, 10.0, 30.0)
+# A background delivery pass that could not reach the server, or attempted rows and settled none
+# (a row the server keeps answering ``mapping_missing``), doubles its wait up to the local
+# service's own idle sweep interval, so a stuck row or a revoked key is retried, not sent every
+# scan. A pass that settled a row, or found none due, keeps the scan interval.
+_DELIVERY_BACKOFF_MAX_SECONDS: Final = 60.0
 _MAX_RECORD_BYTES: Final = 16_384
 _MAX_WORK_BYTES: Final = 64 * 1024 * 1024
 _COMPONENT: Final = "client.agent"
@@ -339,6 +344,19 @@ class _AgentRetry(Exception):
         super().__init__(reason)
 
 
+def _delivery_settled_or_idle(summary: object) -> bool:
+    """Whether a delivery pass reached the server and settled a row, or found none due."""
+
+    from finishup.client.observation_outbox import ClientDrainSummary
+
+    if type(summary) is not ClientDrainSummary or summary.stopped is not None:
+        return False
+    delivery = summary.delivery
+    if delivery is None:
+        return False
+    return delivery.attempted == 0 or delivery.acknowledged + delivery.quarantined > 0
+
+
 class _Delivery(Protocol):
     """Background delivery of one workspace's captured observation (``remote_workspace``)."""
 
@@ -474,17 +492,27 @@ class WorkspaceAgentLoop:
                 await delivery.close()
 
     async def _deliver(self, delivery: _Delivery) -> None:
-        """Deliver this workspace's captured observation once per scan, until stopped."""
+        """Deliver this workspace's captured observation once per scan, until stopped.
 
+        A pass that made no progress waits longer each time (``_DELIVERY_BACKOFF_MAX_SECONDS``).
+        """
+
+        delay = self._scan_seconds
         while not self._stopping.is_set():
+            summary: object = None
             try:
-                await delivery.deliver()
+                summary = await delivery.deliver()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 _record("workspace_agent_drain", "drain_failed")
+            delay = (
+                self._scan_seconds
+                if _delivery_settled_or_idle(summary)
+                else min(delay * 2, max(self._scan_seconds, _DELIVERY_BACKOFF_MAX_SECONDS))
+            )
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(self._scan_seconds):
+                async with asyncio.timeout(delay):
                     await self._stopping.wait()
 
     async def _register_and_poll(

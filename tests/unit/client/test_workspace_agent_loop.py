@@ -182,6 +182,55 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
 
 
 @pytest.mark.anyio
+async def test_background_delivery_backs_off_while_it_makes_no_progress(
+    remote: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Found in the real-environment run: with the server down, a key revoked, or one row the
+    # server kept answering ``mapping_missing``, every agent sent a pass every 2 s, forever.
+    import types
+
+    from finishup.application.observation_drain import ObservationDrainSummary
+    from finishup.client.observation_outbox import ClientDrainSummary
+
+    record, root = remote
+    stuck = ClientDrainSummary(0, ObservationDrainSummary(1, 0, 1, 0, ()))
+    settled = ClientDrainSummary(0, ObservationDrainSummary(1, 1, 0, 0, ()))
+    nothing_due = ClientDrainSummary(0, ObservationDrainSummary(0, 0, 0, 0, ()))
+    stopped = ClientDrainSummary(0, None, "service_unavailable")
+    passes: list[object] = [None, stopped, stuck, stuck, stuck, stuck, stuck, settled]
+    passes += [nothing_due, stuck]
+    loop = WorkspaceAgentLoop(root, record, http=object(), headers={}, scan_seconds=2.0)
+    waits: list[float] = []
+
+    class _Timeout:
+        def __init__(self, delay: float) -> None:
+            waits.append(delay)
+
+        async def __aenter__(self) -> None:
+            raise TimeoutError
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    namespace = types.SimpleNamespace(**vars(asyncio))
+    namespace.timeout = _Timeout
+    monkeypatch.setattr(agent_module, "asyncio", namespace)
+
+    class _Delivery:
+        async def deliver(self) -> object:
+            value = passes.pop(0)
+            if not passes:
+                loop.stop()
+            return value
+
+        async def close(self) -> None:
+            return None
+
+    await loop._deliver(_Delivery())  # pyright: ignore[reportPrivateUsage]
+    assert waits == [4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 2.0, 2.0, 4.0]
+
+
+@pytest.mark.anyio
 async def test_without_a_claim_or_handler_nothing_registers(
     remote: tuple[ServerTarget, Path],
 ) -> None:
