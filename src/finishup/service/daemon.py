@@ -3019,8 +3019,14 @@ class ServiceDaemon:
         lifecycle UNLOCKING, where no later re-ready or unlock could start. The caller then
         re-raises the cancellation that ended the attempt. A lock that cancelled the attempt
         records its own reason afterwards, and so does ``stop``.
+
+        The soft reason is restored before the first suspension. A cancelled activation records
+        the terminal ``unlock_failed`` as it unwinds, and while that showed, status reported a
+        hard lock and a request arriving then was refused as not retryable instead of joining
+        the attempt still unwinding.
         """
 
+        self._state_reason = soft_lock_reason
         unwind = asyncio.ensure_future(self._unwind_soft_reready(soft_lock_reason))
         while not unwind.done():
             with contextlib.suppress(asyncio.CancelledError):
