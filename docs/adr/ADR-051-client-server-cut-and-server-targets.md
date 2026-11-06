@@ -578,8 +578,9 @@ HTTPS and LOCALHOST PORT
     verification waits the hub's 30 s and is recorded unavailable, never a pass.
 - **Credential.** Each client process that dials an HTTPS target reads the key from its
   `CredentialSource`: the ADR-008 amendment of this approach, disclosed in ADR-008. The read runs
-  in a worker thread bounded at 3 s, so a keyring waiting on an unlock or permission prompt never
-  blocks a hook's or the bridge's event loop; a key not read in time is `remote_auth_failed`. The HTTP
+  in a daemon thread bounded at 3 s, so a keyring waiting on an unlock or permission prompt never
+  blocks a hook's or the bridge's event loop, nor its exit; a key not read in time is
+  `remote_auth_failed`. The HTTP
   client and the credential store load only inside an HTTPS dial; a hook for a local or SSH target
   never imports them (`tests/packaging/test_hook_import_diet.py`).
 - **Evidence.** `tests/integration/service/test_direct_dial_end_to_end.py` runs a real daemon,

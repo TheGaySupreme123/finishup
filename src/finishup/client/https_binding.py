@@ -46,6 +46,7 @@ import hmac
 import re
 import ssl
 import struct
+import threading
 import time
 from collections.abc import Awaitable, Buffer, Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
@@ -645,20 +646,51 @@ class BindingControlStream:
             await self._client.aclose()
 
 
+async def _read_off_loop(credential: CredentialSource) -> str:
+    """``credential.read()`` in a daemon thread; its value or its exception, on this loop."""
+
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[str] = loop.create_future()
+
+    def settle(value: str | None, error: BaseException | None) -> None:
+        if answer.done():
+            # The caller stopped waiting (its bound passed): the key is dropped here.
+            return
+        if error is not None:
+            answer.set_exception(error)
+        else:
+            answer.set_result(cast(str, value))
+
+    def read() -> None:
+        value: str | None = None
+        error: BaseException | None = None
+        try:
+            value = credential.read()
+        except Exception as exc:
+            error = exc
+        with contextlib.suppress(RuntimeError):
+            # A loop that already closed has nobody left to hand the outcome to.
+            loop.call_soon_threadsafe(settle, value, error)
+
+    threading.Thread(target=read, name="finishup-credential-read", daemon=True).start()
+    return await answer
+
+
 async def open_binding_stream(
     target: ServerTarget, credential: CredentialSource, *, http_transport: object | None = None
 ) -> BindingControlStream:
     """A fresh binding stream for ``target``; the key is read here, in this process.
 
-    The read runs in a worker thread, bounded: a keyring that blocks on an unlock or permission
+    The read runs in a daemon thread, bounded: a keyring that blocks on an unlock or permission
     prompt (a locked Secret Service collection, a Keychain asking again) never blocks the event
     loop, and a key that cannot be read in time is ``remote_auth_failed`` like one that is absent.
-    The worker finishes on its own; its key, if any, is dropped.
+    The thread finishes on its own and its key, if any, is dropped; being a daemon thread outside
+    the loop's executor, it never holds the process at exit either.
     """
 
     try:
         async with asyncio.timeout(_CREDENTIAL_READ_SECONDS):
-            secret = await asyncio.to_thread(credential.read)
+            secret = await _read_off_loop(credential)
     except (CredentialError, TimeoutError):
         raise TransportError("remote_auth_failed") from None
     if http_transport is not None and not isinstance(http_transport, httpx.AsyncBaseTransport):

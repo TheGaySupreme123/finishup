@@ -197,16 +197,18 @@ class _PromptingCredential(StaticCredential):
         super().__init__()
         self.reading = threading.Event()
         self.answered = threading.Event()
-        self.blocked_the_loop = False
+        self.finished = threading.Event()
 
     def read(self) -> str:
         self.reading.set()
-        if not self.answered.wait(timeout=5.0):
-            self.blocked_the_loop = True
-        return super().read()
+        try:
+            self.answered.wait(timeout=10.0)
+            return super().read()
+        finally:
+            self.finished.set()
 
 
-def test_a_keyring_waiting_on_a_prompt_never_blocks_the_connect(
+def test_a_keyring_waiting_on_a_prompt_never_blocks_the_connect_or_the_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from finishup.client import https_binding
@@ -219,25 +221,27 @@ def test_a_keyring_waiting_on_a_prompt_never_blocks_the_connect(
         connecting = asyncio.create_task(
             _connect(_transport(httpx.ASGITransport(app=gateway), credential=credential))
         )
-        try:
-            # The event loop keeps running while the key is read: this coroutine sees the read
-            # begin, and the connect ends at the read's own bound.
-            while not credential.reading.is_set():
-                await asyncio.sleep(0.001)
-            with pytest.raises(ControlError) as raised:
-                await connecting
-            return raised.value
-        finally:
-            credential.answered.set()
+        # The event loop keeps running while the key is read: this coroutine sees the read
+        # begin, and the connect ends at the read's own bound.
+        while not credential.reading.is_set():
+            await asyncio.sleep(0.001)
+        with pytest.raises(ControlError) as raised:
+            await connecting
+        return raised.value
 
-    error = asyncio.run(exercise())
+    try:
+        error = asyncio.run(exercise())
+        # The loop closed while the prompt was still open: nothing waited for the read.
+        assert not credential.finished.is_set()
+    finally:
+        credential.answered.set()
     assert (error.reason, error.retryable, error.phase) == (
         "service_unavailable",
         True,
         "remote_auth_failed",
     )
-    assert not credential.blocked_the_loop
     assert gateway.requests == []
+    assert credential.finished.wait(timeout=10.0)
 
 
 def test_another_release_behind_the_gateway_is_remote_incompatible() -> None:
