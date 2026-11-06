@@ -296,6 +296,7 @@ class SshMaster:
             await self._stop_process()
             if not ssh_root_fits(self._root):
                 raise UpstreamUnavailable(_UNREACHABLE)
+            await self._clear_stale_endpoints()
             argv = master_argv(self._executable(), self._root, self._record)
             self._stderr.clear()
             process = await asyncio.create_subprocess_exec(
@@ -321,6 +322,37 @@ class SshMaster:
             reason = classify_ssh_failure(b"".join(self._stderr))
             self._process = None
             raise UpstreamUnavailable(reason)
+
+    async def _clear_stale_endpoints(self) -> None:
+        """Remove what a master that is gone left in ``run/``, so the next one binds afresh.
+
+        A master whose connection dropped (sshd stopped, the network went away) can leave its
+        forwarded ``upstream.sock`` behind. The start below waits for that path to appear, so a
+        stale one ended the wait at once, the connection to it was refused, and the new master was
+        stopped before it bound: the target stayed ``remote_unreachable`` after the server came
+        back. A control socket may still belong to a master that outlived an earlier connector;
+        it is asked to exit through that socket first (never by pattern).
+        """
+
+        control = self._root / "run" / MASTER_NAME
+        if control.is_socket():
+            exiting = await asyncio.create_subprocess_exec(
+                *control_argv(self._executable(), self._root, self._record, "exit"),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                async with asyncio.timeout(2.0):
+                    await exiting.wait()
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    exiting.kill()
+                await exiting.wait()
+        for path in (control, self.upstream_path):
+            with contextlib.suppress(FileNotFoundError):
+                if path.is_socket():
+                    path.unlink()
 
     async def run_remote(self, *arguments: str) -> int:
         """Run one fixed remote command over the master; its exit status (output discarded)."""

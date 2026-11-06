@@ -171,3 +171,93 @@ def test_a_master_forwards_the_upstream_socket_and_exits_through_its_control_soc
         assert not upstream.exists()
 
     asyncio.run(exercise())
+
+
+def _stale_socket(path: Path) -> None:
+    """A socket file nothing listens on: what a master whose connection dropped leaves behind."""
+
+    import socket
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stale = socket.socket(socket.AF_UNIX)
+    stale.bind(str(path))
+    stale.close()
+
+
+def _connectable(path: Path) -> bool:
+    import socket
+
+    probe = socket.socket(socket.AF_UNIX)
+    try:
+        probe.connect(str(path))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def test_a_new_master_binds_afresh_over_a_dropped_masters_stale_sockets(
+    target: tuple[targets.ServerTarget, Path, Path],
+) -> None:
+    """Found in the real-environment run: after sshd came back the target stayed unreachable.
+
+    The start used to stop waiting as soon as ``upstream.sock`` existed, so a stale one sent every
+    connection to a socket nothing listened on, and the new master was stopped before it bound.
+    """
+
+    record, root, home = target
+    ssh = write_fake_ssh(home / "bin")
+    upstream = root / "run" / "upstream.sock"
+    _stale_socket(upstream)
+    _stale_socket(root / "run" / "m")
+    assert not _connectable(upstream)
+
+    async def exercise() -> None:
+        master = SshMaster(
+            root, replace(record, remote_endpoint=str(home / "absent.sock")), ssh=str(ssh)
+        )
+        await master.ensure()
+        assert _connectable(upstream)
+        await master.close()
+        assert not upstream.exists()
+
+    asyncio.run(exercise())
+
+
+def test_a_master_that_outlived_its_connector_is_asked_to_exit_first(
+    target: tuple[targets.ServerTarget, Path, Path],
+) -> None:
+    import subprocess
+    import time
+
+    record, root, home = target
+    ssh = write_fake_ssh(home / "bin")
+    forwarded = replace(record, remote_endpoint=str(home / "absent.sock"))
+    upstream = root / "run" / "upstream.sock"
+    (root / "run").mkdir(mode=0o700, parents=True, exist_ok=True)
+    orphan = subprocess.Popen(  # noqa: S603 - the fixed argv of the stand-in
+        list(master_argv(str(ssh), root, forwarded)),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not _connectable(upstream):
+            assert time.monotonic() < deadline and orphan.poll() is None
+            time.sleep(0.02)
+
+        async def exercise() -> None:
+            master = SshMaster(root, forwarded, ssh=str(ssh))
+            await master.ensure()
+            assert orphan.wait(timeout=10) == 0  # it left through its own control socket
+            assert _connectable(upstream)
+            await master.close()
+
+        asyncio.run(exercise())
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+            orphan.wait()
