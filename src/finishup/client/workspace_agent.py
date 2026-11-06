@@ -15,7 +15,7 @@ These confinements hold on top of the adapters':
 * **Outside reads only where this client's owner admitted them.** A read root the server names
   must have the shape an owner may admit (``admitted_input_root_valid``), and what the read
   reaches must lie inside the claimed worktree or at or beneath a folder this computer's owner
-  admitted for the server target in use (``finishup server folders add``;
+  admitted for the server target the connection was made for (``finishup server folders add``;
   ``client.server_folders``). That record is this client's own, read on every call and never
   sent to the server; one that cannot be read admits nothing. Anything else is refused
   (``root_not_admitted``): a reviewer read or listing, a declared test, and a task-input read
@@ -75,7 +75,7 @@ from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
 )
-from finishup.client.server_folders import active_target_folders, folder_covers, folder_holds_home
+from finishup.client.server_folders import folder_covers, folder_holds_home, folders_reader
 from finishup.config import paths as config_paths
 from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
 from finishup.domain.repository_excerpt import credential_named_bytes
@@ -302,8 +302,10 @@ class WorkspaceAgentHandler:
         (``client.observation_outbox.check_policy_trusted``).
 
         ``outside_folders`` answers, on each call, the folders outside the workspace this
-        client's owner admitted for the server; by default the active server target's own record
-        (``client.server_folders.active_target_folders``). An answer that fails admits nothing.
+        client's owner admitted for the server. By default it reads the record of the server
+        target this process uses when the handler is built (``client.server_folders.
+        folders_reader``), so a later change of the process's selection never switches it to
+        another target's record. An answer that fails admits nothing.
         """
 
         if type(workspace) is not WorkspaceLocator:
@@ -340,8 +342,8 @@ class WorkspaceAgentHandler:
         # None reads this process's own observation store, where 'observe checks trust' records it.
         self._check_policy_trust = check_policy_trust
         # The folders outside the workspace the owner admitted for this server (ADR-051 decision
-        # 5); None reads the active target's record, where 'server folders add' writes it.
-        self._outside_folders = outside_folders
+        # 5), from the record 'server folders add' writes for the target bound here.
+        self._outside_folders = folders_reader() if outside_folders is None else outside_folders
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -458,11 +460,7 @@ class WorkspaceAgentHandler:
         """The folders this client's owner admitted for the server, read now; none on failure."""
 
         try:
-            found = (
-                active_target_folders()
-                if self._outside_folders is None
-                else tuple(self._outside_folders())
-            )
+            found = tuple(self._outside_folders())
         except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
             return ()
         return tuple(
