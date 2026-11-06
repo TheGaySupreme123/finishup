@@ -1204,7 +1204,9 @@ _FOLDER_NOTICE: Final = (
     "the text of files beneath this folder that a task names, that its reviewer asks to read, or",
     "that your agent declared as a test, within FinishUP's usual size limits. Hidden and",
     "credential-named files are never read and links are never followed. The server's own",
-    "privacy policy still decides whether a task's input files are read at all.",
+    "privacy policy decides whether a task's input files are read at all, but it does not bind a",
+    "server that breaks FinishUP's rules: such a server could read any other such file beneath",
+    "this folder and list the names in its folders. Allow only a folder you would let it see.",
     "Undo it with 'finishup server folders remove {name} FOLDER'.",
     "",
 )

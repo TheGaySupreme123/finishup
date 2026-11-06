@@ -144,6 +144,11 @@ def test_declining_on_the_console_changes_nothing(
     assert any(record.target_id in line and "lab" in line for line in shown)
     assert f"  {folder}\n" in shown
     assert folder not in result.output
+    # And, before consenting, what a server that breaks FinishUP's rules could still do there.
+    notice = " ".join(line.strip() for line in shown)
+    assert "does not bind a server that breaks FinishUP's rules" in notice
+    assert "could read any other such file beneath this folder" in notice
+    assert "list the names in its folders" in notice
 
 
 @pytest.mark.parametrize(
