@@ -509,9 +509,10 @@ process to the default service.
   before `start`. The client's workspace agent serves the server's change capture, reviewer reads,
   task inputs, declared tests, observation verification and approved checks for
   `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line. Outside that folder the agent
-  reads only beneath a folder the owner admitted for the target on this machine (`finishup server
-  folders add`, ADR-051 decision 5); the decision is the same for every host and changes no
-  registration. Inside it the agent returns a file only when Git answers that it is not ignored,
+  reads as the target's outside-read mode says: in `local` mode as a local service would, in
+  `listed` mode only beneath a folder the owner listed for the target on this machine (`finishup
+  server folders mode|add`, ADR-051 decision 5; SSH and port targets default to `local`, web
+  targets to `listed`); the decision is the same for every host and changes no registration. Inside it the agent returns a file only when Git answers that it is not ignored,
   so in a linked Git worktree or a submodule a declared test is not offered to the server's
   reviewer, though a local service offers it (ADR-051, a parity gap).
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check

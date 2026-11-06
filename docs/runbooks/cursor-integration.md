@@ -656,9 +656,11 @@ default service.
   itself remote stays refused. For a remote target the bridge sends a workspace claim derived from
   that local root instead of the path, rewrites an absolute `workspace_ref` to the connection's
   handle before `start`, and the client's workspace agent serves the server's workspace reads;
-  receipts carry the `client_attested` line. Outside the workspace root the agent reads only
-  beneath a folder the owner admitted for the target on this machine (`finishup server folders
-  add`, ADR-051 decision 5); the decision is the same for every host and changes no registration.
+  receipts carry the `client_attested` line. Outside the workspace root the agent reads as the
+  target's outside-read mode says: in `local` mode as a local service would, in `listed` mode only
+  beneath a folder the owner listed for the target on this machine (`finishup server folders
+  mode|add`, ADR-051 decision 5; SSH and port targets default to `local`, web targets to
+  `listed`); the decision is the same for every host and changes no registration.
   Inside it the agent returns a file only when Git answers that it is not ignored, so in a linked
   worktree or a submodule a declared test is not offered to the server's reviewer, though a local
   service offers it (ADR-051, a parity gap).

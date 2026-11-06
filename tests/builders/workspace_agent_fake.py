@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.client.server_folders import OutsideReads
 from finishup.client.workspace_agent import WorkspaceAgentHandler
 from finishup.ports.change_capture import ChangeCaptureUnavailable
 from finishup.ports.control import (
@@ -87,8 +88,9 @@ class _Refused(Exception):
 class FakeWorkspaceAgent:
     """Answers for one claimed ``root``; ``handle`` is set from the connection's hello-result.
 
-    ``admitted_folders`` stands for the folders this client's owner admitted for the server
-    (``finishup server folders add``); it is read on every call, as the record is.
+    ``admitted_folders`` stands for the folders this client's owner listed for the server
+    (``finishup server folders add``), in ``listed`` mode; it is read on every call, as the record
+    is.
     """
 
     root: Path
@@ -102,7 +104,7 @@ class FakeWorkspaceAgent:
         self._reads = WorkspaceAgentHandler(
             WorkspaceLocator(str(self.root)),
             protected=(),
-            outside_folders=lambda: tuple(self.admitted_folders),
+            outside_reads=lambda: OutsideReads("listed", tuple(self.admitted_folders)),
         )
 
     def _workspace(self, handle: str) -> str:

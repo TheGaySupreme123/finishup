@@ -3017,7 +3017,7 @@ class FinishUpTui(App[int]):
                 Option("add", "Add a server"),
                 Option("remove", "Remove a server"),
                 Option("login", "Store an HTTPS server's API key"),
-                Option("folders", "Let a server read a folder outside your projects"),
+                Option("folders", "Choose what a server may read outside your projects"),
             )
         )
         choice = await self.ask(
@@ -3296,11 +3296,15 @@ _SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
     "remove": ("    finishup server remove NAME",),
     "login": ("    finishup server login NAME",),
     "folders": (
-        "    finishup server folders add NAME /full/path/to/folder",
         "    finishup server folders list NAME",
+        "    finishup server folders mode NAME local",
+        "    finishup server folders mode NAME listed",
+        "    finishup server folders add NAME /full/path/to/folder",
         "    finishup server folders remove NAME /full/path/to/folder",
         "",
-        "Adding a folder asks you to confirm it in your terminal.",
+        "Mode local reads outside your projects as FinishUP on this computer would; mode",
+        "listed reads only the folders you list. Choosing local, and adding a folder, ask you to",
+        "confirm in your terminal.",
     ),
 }
 

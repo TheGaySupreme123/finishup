@@ -1515,9 +1515,11 @@ later process to the default service.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks and shell
   calls follow a new selection at once. Restart open Codex sessions after `finishup server use`.
 - **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and
-  the client's workspace agent serves the server's workspace reads, outside the project folder
-  only beneath a folder the owner admitted for the target on this machine (`finishup server
-  folders add`, ADR-051 decision 5; the same for every host, with no registration change).
+  the client's workspace agent serves the server's workspace reads. Outside the project folder it
+  reads as the target's outside-read mode says: in `local` mode as a local service would, in
+  `listed` mode only beneath a folder the owner listed for the target on this machine (`finishup
+  server folders mode|add`, ADR-051 decision 5; SSH and port targets default to `local`, web
+  targets to `listed`; the same for every host, with no registration change).
   Inside it the agent returns a file only when Git answers that it is not ignored, so in a linked
   Git worktree or a submodule a declared test is not offered to the server's reviewer, though a
   local service offers it (ADR-051, a parity gap). Receipts carry the
