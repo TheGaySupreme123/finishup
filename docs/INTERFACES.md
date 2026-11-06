@@ -4631,6 +4631,26 @@ resolves but whose `target.json` cannot be read fails closed with `ServerTargetU
 `ServerHostRequired` whose `reason` is the record's `target_root_unsafe` or
 `target_record_invalid`); `targets.active_target_record()` raises `TargetRecordUnreadable` for it.
 
+**Zero-network with a remote selection** (ADR-051 decision 8, maintainer decision 2026-11-06).
+`cli/zero_network_selection.py` owns it. `everyday_network_state()` answers
+`zero_network|network_permitted|no_policy|unreadable` from the everyday installation's effective
+machine-scope policy (`server add|use` refuse `zero_network_in_force` and
+`network_policy_unreadable` from it, as before). `find_zero_network_selection()` reads the
+selection file afresh (`read_selection_on_disk()`, never the memo) and returns a
+`ZeroNetworkSelection` only under `zero_network`, never under an isolation variable or pin, with
+the closed `reason` `zero_network_remote_selected` (`target_id`, `kind`) or
+`zero_network_selection_unreadable` (`detail`: `selection_invalid`, `target_root_unsafe`,
+`target_record_invalid`, or a path-safety reason). `surface_after_policy_change(interactive=)`
+runs after every committed policy change and returns `clear|switched|kept|warned`: on the trusted
+console `1` runs `use_target("local")` and anything else keeps the target; otherwise one stderr
+line `<reason>: <facts> … finishup server use local …`. Owner displays carry the same item:
+`server status` (stderr beside `--json`; `server-target-status-1.0.0` is unchanged), `server
+list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's
+`next_steps`, the menu home, the terminal interface's header indicator and `/server`, and
+`setup status --next`, whose `yoetz.setup-readiness/1` `facts` gain `server_selection`:
+`{reason, target_id, kind, detail, next_command}` (`next_command` is the pinned continuation of
+`server use local`). Every field is a generated id or a closed token; no owner-typed name.
+
 **Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
 target's credential, so a later OAuth source can replace the API key. `KeyringOrFileCredential`
 uses the OS credential store (service `yoetz.server-credential.v1`, account = `target_id`) and,
@@ -10538,7 +10558,11 @@ configuration root, bounded reason, read-only prerequisite facts and one quoted 
 (or null when no setup prerequisite is missing). `connection_observed` is always false. Local and
 review operations evaluate service/vault/repository prerequisites; review additionally requires a
 provider binding and review permission. Connection-only evaluates the common host plan without
-requiring service or provider login. No native session or provider dispatch is inferred.
+requiring service or provider login. No native session or provider dispatch is inferred. Every
+operation adds the `server_selection` fact while this computer's policy forbids network use and a
+remote server is still selected (ADR-051 decision 8; see the server-target section above), and
+its human text adds a `Server:` line with that fact's `next_command`; `reason` and
+`next_command` keep naming the setup prerequisite.
 
 Codex plugin/MCP/provider status gain the additive local inspection field `inspected_codex_home`.
 Their existing schema tokens remain unchanged; this field is not a service-wire or ledger field.

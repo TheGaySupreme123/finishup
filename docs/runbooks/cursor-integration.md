@@ -667,6 +667,16 @@ default service.
   `finishup observe ...` administers them here. Each row a remote target receives carries the
   client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
   receipts with hook-observed evidence carry one more fixed line.
+- **Zero-network with a remote target selected** (maintainer decision, 2026-11-06; ADR-051 decision
+  8). Setting this computer's privacy policy to zero-network does not stop Cursor's traffic to a
+  selected remote target. FinishUP surfaces it after the policy change (on the owner's terminal:
+  switch to this computer's everyday FinishUP or keep the target, Enter keeps it; otherwise the
+  facts and `finishup server use local` on stderr) and keeps showing it in `setup status --next`,
+  `server status` and the terminal interface; it never switches on its own. After switching, restart
+  open Cursor windows and Agent CLI sessions: the running MCP bridge keeps the remote target until
+  then, while hooks follow at once. Host decision: supported, same code path; no MCP tool, hook or
+  SessionStart context carries or answers the choice, because agents cannot change the policy or the
+  selection.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an
