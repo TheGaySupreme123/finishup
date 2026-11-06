@@ -150,7 +150,24 @@ REMOTE (local_port, ssh, https; the owner's own server)
   human-control and secret channels: never leave the server host
 ```
 
-<!-- APPROACH-TOPOLOGY -->
+**Route in this design: an edge relay.** A remote target's `control.sock` on the client is
+served by `finishup connector`, one vault-less process per target root, started on demand. For an
+SSH target it keeps one OpenSSH master that forwards `run/upstream.sock` to the server's own
+control endpoint and pumps each connection's bytes through its own channel. For an HTTPS or
+`local_port` target it maps each connection onto a session of the HTTPS binding v1 against
+`finishup service gateway`, a same-user process on the server that checks an API key and its
+scope and re-enters the service through the ordinary owner-only endpoint. Only the connector holds
+the target credential; hooks and the MCP bridge never load an HTTP client or SSH.
+
+```
+SSH:    client ─AF_UNIX─► connector ─► ssh master (-L upstream.sock) ══════► sshd ─AF_UNIX─► service
+HTTPS:  client ─AF_UNIX─► connector ═══ HTTPS binding v1 (key, scope) ═══► gateway ─AF_UNIX─► service
+```
+
+The connector writes a status file of closed tokens, so a client names a failed remote connection
+(`remote_unreachable`, `remote_auth_failed`, `remote_identity_changed`,
+`remote_service_not_running`, `remote_incompatible`) instead of reporting a local service problem.
+
 
 ## The six operations
 

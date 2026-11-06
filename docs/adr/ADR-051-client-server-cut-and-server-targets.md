@@ -336,7 +336,97 @@ an HTTPS target).
 
 ## Topology (approach-specific)
 
-<!-- APPROACH-TOPOLOGY -->
+### Approach A — edge relay: a connector per target, a gateway per HTTPS server
+
+Agent-facing processes do not change. Every hook, MCP bridge, CLI and terminal process keeps
+dialling `<root>/run/control.sock` with the same owner-only checks and peer-UID authentication. For
+a remote target root that endpoint is served by a vault-less **connector** on the client machine;
+the server's service still never opens a network socket.
+
+```
+SSH (owner-equivalent)
+  client host                                                    server host (same owner)
+  hook/MCP/CLI/TUI ─AF_UNIX─► <troot>/run/control.sock
+                              finishup connector (no vault) ─AF_UNIX─► <troot>/run/upstream.sock
+                                (ssh -M -S <troot>/run/m -L upstream.sock:<remote endpoint>)
+                              ════ one warm SSH connection, one channel per client connection ═══►
+                                                               sshd child (owner) ─AF_UNIX─► control.sock ─► service
+
+HTTPS and local_port
+  hook/MCP/CLI/TUI ─AF_UNIX─► <troot>/run/control.sock
+                              finishup connector (holds the API key)
+                              ════ HTTPS binding v1: sessions, calls, long-polls ════►
+                                                               finishup service gateway (same UID; key, scope)
+                                                                 └─AF_UNIX─► control.sock ─► service
+
+Both kinds: workspace_call frames flow server → client and workspace_reply frames client → server
+through the same relay; human-control and secret channels never leave the server host.
+```
+
+- **Connector** (`finishup.client.connector`; `finishup connector run --root <troot>`, hidden,
+  `client_only`). `service.client` starts it on demand for a remote root instead of
+  `service run`, and `finishup server connect` starts it explicitly; it never supersedes anything.
+  It takes the singleton flock `<troot>/state/connector.lock`, stamped with its pid, release and
+  schema-manifest digest; binds `run/control.sock` through the existing Unix-socket listener,
+  clearing a stale endpoint only while it holds that lock; runs with a scrubbed environment (no
+  FinishUP variable and nothing secret-shaped; `SSH_AUTH_SOCK` is kept so OpenSSH can use the
+  owner's agent); refuses any hello that names a `workspace_locator`; and exits after 15 idle
+  minutes. It writes `<troot>/state/connector-status.json` (`yoetz.connector-status/1`:
+  `generation`, `phase` of `starting|ready|unavailable|stopped`, a closed `reason`, a
+  `correlation_id`, `pid`, `started_at`). A client whose connection the connector accepted and
+  closed reads that status and raises `service_unavailable` with the remote phase as `phase`; the
+  MCP availability latch keys on the status generation, which moves on every change of phase or
+  reason, so a repaired connection clears it.
+- **SSH.** One OpenSSH master per target with the fixed, secret-free argv `-M -S <troot>/run/m -N
+  -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o
+  StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes -o ServerAliveInterval=15 -o
+  ServerAliveCountMax=3 -p <port> -L <troot>/run/upstream.sock:<remote endpoint> <[user@]host>`.
+  Each local connection gets its own channel and an unparsed byte pump; only the first frame (the
+  hello) is read, to refuse a locator and to note a claim. When sshd cannot reach the server's
+  endpoint (an idle-stopped service), the connector runs the server's own `<remote launcher>
+  service start` once over the master, pinned to the remote root, and retries. `server add
+  ssh://…` records the endpoint and an absolute launcher from one interactive `ssh … finishup
+  service endpoint --json`, in which OpenSSH itself asks the owner to confirm a new host key. The
+  socket-path bound counts OpenSSH's 17-byte temporary suffix on the master path.
+- **HTTPS and `local_port`.** Each local connection is one gateway session of the HTTPS binding
+  v1 (see `INTERFACES.md`). A call is never posted twice: after an ambiguous failure the connector
+  only polls its result. When the hello declared a workspace agent, server frames arrive through
+  the `GET …/frames` long-poll and replies go out with `POST …/frames`. TLS uses the target's CA
+  file, or its `sha256:` pin of the leaf certificate, checked right after the handshake and before
+  any request byte. Only the connector reads the API key, and it rereads it after a refusal so a
+  key rotated with `server login` takes effect without a restart.
+- **Gateway** (`finishup.gateway`; `finishup service gateway run --listen H:P (--tls-cert F
+  --tls-key F | --behind-proxy)` and `service gateway key create|list|revoke`, all `server_host`).
+  A same-user process with no vault, storage or policy authority: it may import SHARED modules and
+  `service.client` only, and `cli/gateway.py` is the one client module allowed to launch it. Keys
+  are `fuk_<12 hex id>_<43 base64url secret>`, shown once on the trusted console or written to a
+  new owner-only file, and kept only as a salted `sha256` in `<state>/gateway/keys.json`
+  (`yoetz.gateway-keys/1`), compared in constant time; expiry and rotation are supported, and a
+  revoked key fails its next request and its sessions close. Each session holds one control
+  connection to the daemon (started on demand through `service.client.ensure_service_running()`,
+  no handshake of its own) and forwards the client's hello byte for byte. It refuses `Origin`
+  headers and locator hellos, enforces the key's scope (decision 9) by answering an out-of-scope
+  call with a synthesized `method_forbidden` control-result that is never forwarded, keeps results
+  per `(sid, rpc_id)` until fetched and readable for 60 seconds after (8 MiB per session), expires
+  a session after 120 seconds idle, holds at most 64 per key, and stops with `gateway_stale` when
+  the daemon answers with another release's manifest. `--behind-proxy` serves plain HTTP on a
+  loopback address only. There is no access log; audit lines carry the key id, route, method,
+  status, closed reason and correlation id only. v1 has one principal (`owner`): claims pass
+  unchanged, so the owner's SSH and HTTPS clients reach the same tasks; per-principal claim
+  namespaces wait for multi-key hosting.
+- **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
+  through the relay. For work that outlives the call, the connector keeps one long-lived agent
+  connection per workspace whose claim it relayed, for 15 minutes after that workspace's last
+  hello (`open_background_agent(root, claim)`).
+- **Reverse states.** `server connect` / `server disconnect` (the stamped pid only, then `ssh -O
+  exit` for a master that outlived it; never by pattern) and the 15-minute idle exit;
+  `service gateway key create` / `key revoke`; `service gateway run` / Ctrl-C or the supervisor.
+  `server status` and `server test` show the connector's state; `key list` shows the keys.
+- **Why this shape.** The credential and the warm connection live in one process per target, so a
+  short-lived hook pays a local Unix connect plus the round trips, never a TLS or SSH handshake,
+  and `httpx` never enters the hook import path. The cost is one supervised client process per
+  target and, for HTTPS, one gateway process on the server.
+
 
 ## Reverse states
 

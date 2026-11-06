@@ -4545,8 +4545,9 @@ login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
 `server-target-status-1.0.0` and names the deciding root source, never a credential.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
-kind; the foundation registers `local` and each approach registers its remote kinds. The
-server-host commands `finishup service start` and `finishup service endpoint --json` are added.
+kind; the foundation registers `local` and each approach registers its remote kinds (the edge
+relay registers `ConnectorTargetRuntime` for `ssh`, `https` and `local_port`). The server-host
+commands `finishup service start` and `finishup service endpoint --json` are added.
 
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
@@ -4650,8 +4651,6 @@ unavailable reason `workspace_agent_unavailable`, so
 `check_time_change_unavailable_workspace_agent_unavailable` joins
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
 
-<!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with
-its resource-shaped API. -->
 **HTTPS binding v1** (`https` and `local_port` targets). Each body is the exact canonical JSON a
 socket frame carries after its length prefix. Every request carries `Authorization: Bearer
 fuk_<12 hex key id>_<43 base64url secret>` and `FinishUP-Binding: 1.0`; a request with an `Origin`
@@ -4666,13 +4665,17 @@ an HTTP body to its frame bytes; where this table and those artifacts differ, th
 | `POST /v1/sessions` | control-hello 2.10.0 | `201` control-hello-result and `Location: /v1/sessions/{sid}`; `409` with the daemon's hello-result on a manifest mismatch |
 | `POST /v1/sessions/{sid}/calls?wait_ms=` (≤ 25000) | control-request (`kind: call`) | `200` control-result, or `202` while pending |
 | `GET /v1/sessions/{sid}/results/{rpc_id}?wait_ms=` (≤ 25000) | none | long-poll for that call's control-result |
-| `GET /v1/sessions/{sid}/frames?wait_ms=` (≤ 25000) | none | long-poll for pending server frames, including `workspace_call` frames for a session whose hello declared `workspace_agent` |
+| `GET /v1/sessions/{sid}/frames?wait_ms=` (≤ 25000) | none | `200` with the next pending server frame (a `workspace_call` for a session whose hello declared `workspace_agent`), or `204` when none arrived within the wait |
 | `POST /v1/sessions/{sid}/frames` | control-request (`kind: workspace_reply`) | `202` |
 | `POST /v1/sessions/{sid}/cancel` | control-request (`kind: cancel`) | `202` |
 | `DELETE /v1/sessions/{sid}` | none | `204`; closes the session's one upstream control connection |
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
-expires after 120 seconds idle, and one key holds at most 64 sessions. Workflow outcomes —
+expires after 120 seconds idle, and one key holds at most 64 sessions. Delivery is at most once: a
+call is forwarded once per `(sid, rpc_id)`; a repeated post of a pending `rpc_id` waits on the same
+result, and a post of an `rpc_id` already delivered is `frame_invalid`. A result stays readable by
+`GET …/results/{rpc_id}` until it is fetched and for 60 seconds after (at most 8 MiB per session),
+so a client whose answer was lost in transit polls instead of posting again. Workflow outcomes —
 `vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
 a `200` control-result, byte-identical to the socket. Transport and authentication failures use
 `rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:
@@ -4693,6 +4696,56 @@ claim-bound `observation_ingest`; `operator` adds `project`, `review`, `import_c
 `backup_*`, `restore_*`, `migrate_*`, `integration_*`, `observation_pause|resume|revoke` and the
 human-control and secret channels are never reachable over HTTPS; an out-of-scope call returns the
 existing `method_forbidden`.
+
+`finishup.protocol.rest_binding` (SHARED) holds the binding's constants, `KEY_SCOPES` and
+`method_allowed(scope, method, *, claim_bound)`, `parse_api_key`, and the `RestErrorContract`
+(`service/rest-error-1.0.0`) and `ServerInfoContract` (`service/server-info-1.0.0`) models.
+`fixtures/service/rest-error.case.json`, `rest-server-info.case.json` and
+`rest-method-forbidden.case.json` lock a transport error body, a `server-info` document and the
+exact bytes of the gateway's synthesized `method_forbidden` control-result (built from the
+session's `service_instance_id` and `service_generation`, never forwarded).
+
+**Edge relay (approach A).** These names exist only in the edge-relay pull request.
+
+- `finishup connector run --root <troot>` (hidden, `client_only`; `finishup.client.connector`):
+  the vault-less relay that binds a remote target root's `run/control.sock`. Exit 0 when stopped
+  or when another connector already serves the root, 2 for a root that is not a remote target's
+  own (or that an isolation variable or pin names differently), 20 when the endpoint could not be
+  bound. It refuses a hello carrying `workspace_locator`. Its integration point for long-lived
+  agents is `open_background_agent(root: Path, claim: WorkspaceClaim) -> BackgroundAgent | None`
+  (a `BackgroundAgent` has `alive` and `aclose()`), kept for `AGENT_LEASE_SECONDS` (900) after
+  that workspace's last hello.
+- `<troot>/state/connector.lock`: the connector's singleton flock, stamped with `pid`, `version`
+  and `schema_manifest_digest`; `<troot>/state/connector-status.json`
+  (`yoetz.connector-status/1`): `schema`, `generation` (moves on every change of phase or reason
+  and across processes), `phase` (`starting|ready|unavailable|stopped`), `reason` (a remote
+  connection phase when `unavailable`; `idle_timeout|stop_requested|connector_failed` when
+  `stopped`), `correlation_id`, `pid`, `started_at`. Both are owner-only and hold no host, name or
+  path. `finishup.client.connector_status` reads and writes them and owns `spawn_connector(root)`
+  and `stop_connector(root)` (the stamped pid only).
+- `<troot>/run/m` and `<troot>/run/upstream.sock`: the OpenSSH master's control socket and its
+  stream-local forward (`finishup.client.ssh_upstream`; argv fixed by `master_argv`).
+- `finishup.client.connector_runtime.ConnectorTargetRuntime`: the `TargetRuntime` registered for
+  `ssh`, `https` and `local_port`.
+- `service.client`: for a remote root the hello carries no `workspace_locator` (the claim and the
+  agent offer come from `_remote_workspace_binding(workspace_locator)`), on-demand start spawns
+  the connector and never `service run` or a supersede, a connection the connector accepted and
+  closed raises `service_unavailable` with the connector status's remote phase and correlation id,
+  a release mismatch is `remote_incompatible`, and `service_holder_identity()` reports the live
+  connector with `instance_id` `connector-<generation>`. `ensure_service_running()` returns a raw
+  control stream to this root's service, starting it on demand, for the gateway.
+- `adapters.control.unix_socket.connect_owner_only_endpoint(path)`: the fixed endpoints' fences
+  (owner, mode 0700 directory, mode 0600 socket, one link, peer UID, unchanged inode) for an
+  explicit socket path.
+- `finishup service gateway run --listen HOST:PORT (--tls-cert F --tls-key F | --behind-proxy)`
+  and `finishup service gateway key create --label L --scope agent|operator [--expires-in-days N]
+  [--rotate KEY_ID] [--output-file F] | list [--json] | revoke KEY_ID` (`server_host`;
+  `finishup.gateway`). `run` exits 21 (`gateway_stale`) when the daemon answers with another
+  manifest. `<state>/gateway/keys.json` (`yoetz.gateway-keys/1`) holds `key_id`, `label`, `scope`,
+  `principal` (`owner`), `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `salt` and
+  `digest` (`sha256(salt ‖ secret)`); `gateway/keys.lock` serializes writers. Audit lines go to
+  `<log dir>/gateway-audit.jsonl` with `event`, `correlation_id`, `route`, `key_id`, `method`,
+  `status` and `reason` only; every response carries `FinishUP-Correlation-Id`.
 
 ### Several-agent setup batches (issue #1119)
 

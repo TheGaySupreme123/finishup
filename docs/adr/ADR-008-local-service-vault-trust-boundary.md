@@ -559,10 +559,8 @@ ceremonies are unchanged on whichever host runs the service.
   holds: owner-written target configuration alone selects the endpoint, and nothing an agent,
   request body, repository or environment variable supplies can switch it.
 
-<!-- APPROACH-TOPOLOGY: each approach's pull request replaces or adjusts the items below. -->
-The items below carry the edge-relay wording of the design (approach A). Approach B keeps the
-gateway row and moves the credential into client processes; approach C replaces invariant 6 at
-its root, because its service is itself network-reachable.
+With the edge relay (ADR-051, approach A), the route is a per-target connector on the client and,
+for HTTPS, a same-user gateway on the server:
 
 - **Invariant 6 becomes:** "The *service's* control transport is never TCP or network-reachable.
   Another machine reaches it only through sshd stream-local forwarding into the owner-only
@@ -575,3 +573,10 @@ its root, because its service is itself network-reachable.
   locators and `Origin` headers, and re-enter through the owner-only control endpoint as an
   ordinary client; no vault, storage or policy authority.
 - **Who reads the target credential:** only the connector, started with a scrubbed environment.
+  Hooks, the MCP bridge, the CLI and the terminal interface never read it, and never load an HTTP
+  client or SSH.
+- **The gateway's network surface.** It runs outside the vault process, requires TLS except on a
+  loopback address behind a TLS proxy, keeps no access log, stores keys only as salted hashes,
+  refuses `Origin` headers and hellos that name a path, bounds sessions per key, and answers an
+  out-of-scope method without forwarding it. Its keys and their scopes are the least-privilege
+  path; an SSH target is owner-equivalent.

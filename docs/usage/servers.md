@@ -182,7 +182,56 @@ never passes because a read was missing.
   unless lingering is on for your account (`loginctl enable-linger`), or FinishUP runs in its own
   folder on the server. `finishup service endpoint --json`, run on the server, reports both.
 
-<!-- APPROACH-TOPOLOGY -->
+## How your computer reaches the server
+
+For a server on another machine, FinishUP runs a small **connection helper** on your computer, one
+per server. Your agent's hooks, the FinishUP tools in your agent, the CLI and the terminal
+interface all talk to that helper exactly as they talk to FinishUP on your own computer. The
+helper starts by itself when it is first needed, keeps the connection to the server open so each
+call is quick, and stops after 15 minutes without use. `finishup server connect NAME` starts it
+now and `finishup server disconnect NAME` stops it; `finishup server status NAME` shows whether
+it is connected and, if not, why.
+
+**SSH servers.** The helper uses your own OpenSSH setup: your keys, your SSH agent, your
+`~/.ssh/config` and your `known_hosts`. FinishUP never stores an SSH key and never asks for a
+password. It keeps one SSH connection open and sends each request over it. When you add the
+server, FinishUP asks the server once, over SSH, where its FinishUP service listens and which
+`finishup` it runs; if your computer has not seen that server's host key before, SSH asks you to
+confirm it then. If the server's FinishUP service has stopped while idle, the helper starts it
+again for you.
+
+**Web (HTTPS) servers.** On the server, its operator runs FinishUP's web gateway and gives you an
+API key:
+
+```text
+finishup service gateway key create --label my-laptop --scope agent --output-file ~/my-laptop.key
+finishup service gateway run --listen 0.0.0.0:8443 --tls-cert server.pem --tls-key server-key.pem
+```
+
+The key is shown only once (or written only to that new file, readable by its owner). Copy it to
+your computer as a file only you can read, then:
+
+```text
+finishup server add work https://finishup.example.com:8443 --ca-file ~/work-ca.pem
+finishup server login work --key-file ~/work.key
+finishup server use work
+```
+
+`server login` checks the key with the server before it stores it. Only the connection helper
+reads the key afterwards; your agent and its tools never see it.
+
+- **Key scopes.** An `agent` key allows what your agent's tools and hooks need: the six FinishUP
+  operations and the service status. An `operator` key also allows project and review commands,
+  privacy reads and tightening, and locking the service. Stopping the service, backup, restore,
+  migration and integration changes are never possible over the web; run them on the server.
+- **Other key commands.** `finishup service gateway key list` shows each key's id, label, scope
+  and when it was last used, never the key itself. `finishup service gateway key revoke KEY_ID`
+  stops a key at once, including connections already open with it. To replace a key, create the
+  new one with `--rotate KEY_ID`, log your computers in with it, then revoke the old one.
+- **Without your own certificate.** Behind a web server or proxy that handles TLS, run the gateway
+  with `--behind-proxy --listen 127.0.0.1:PORT`; it then accepts plain connections from that
+  machine only.
+
 
 ## Things that run on the server
 
