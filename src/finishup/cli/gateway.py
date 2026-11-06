@@ -6,7 +6,8 @@ Server-host commands (scope ``server_host``):
   binding v1 in the foreground until interrupted (Ctrl-C or a supervisor is the reverse);
 * ``key create --label L --scope agent|operator [--expires-in-days N] [--rotate KEY_ID]
   [--output-file F]`` makes an API key and shows it exactly once: on this terminal, or written
-  owner-only (0600) to ``F``;
+  owner-only (0600) to ``F``. A new key whose secret could not be shown or written is revoked at
+  once, so no active key is left that nobody holds (a rotated key is left as it was);
 * ``key list`` shows every key's id, label, scope and times (never a secret);
 * ``key revoke KEY_ID`` is ``create``'s reverse: the key fails its next request and its sessions
   close.
@@ -16,6 +17,7 @@ Refusals are closed tokens with fixed remedy text; no label, key or path is echo
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -74,6 +76,16 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "a key is shown only on your own interactive terminal; run this there or pass "
         "--output-file to write it to a new owner-only file",
         _USAGE,
+    ),
+    "gateway_key_not_shown": (
+        "the key could not be shown on your own interactive terminal, so it was revoked; run this "
+        "there or pass --output-file to write it to a new owner-only file",
+        _USAGE,
+    ),
+    "gateway_key_output_failed": (
+        "the key could not be written to the output file, so it was revoked and nobody can use "
+        "it; give a new path with free space and run this again",
+        _UNSAFE,
     ),
 }
 
@@ -141,14 +153,46 @@ def _stdin_is_terminal() -> bool:
 
 
 def _show_on_console(text: str) -> None:
-    from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+    """Show ``text`` on the trusted console; ``TrustedConsoleError`` when it cannot."""
+
+    from finishup.cli.trusted_console import TrustedForegroundConsole
+
+    with TrustedForegroundConsole() as console:
+        console.write("API key (shown once; store it now):\n")
+        console.write(text + "\n")
+
+
+def _write_key_file(descriptor: int, text: str) -> None:
+    """Write ``text`` and a newline in full and flush them to disk; ``OSError`` otherwise."""
+
+    view = memoryview((text + "\n").encode("ascii"))
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short_write")
+        view = view[written:]
+    os.fsync(descriptor)
+
+
+def _revoke_undelivered(key_id: str, reason: str) -> typer.Exit:
+    """Revoke a new key whose secret never reached the operator; return the failure to raise.
+
+    Nobody holds that key, so it must not stay active. If the revoke fails too, the exact key id
+    and the command that revokes it are named instead of the reason's remedy.
+    """
+
+    from finishup.gateway.keys import GatewayKeyError, revoke_key
 
     try:
-        with TrustedForegroundConsole() as console:
-            console.write("API key (shown once; store it now):\n")
-            console.write(text + "\n")
-    except TrustedConsoleError:
-        raise _fail("trusted_console_required") from None
+        revoke_key(_keys_directory(), key_id)
+    except (GatewayKeyError, OSError):
+        typer.echo(
+            f"{reason}: key {key_id} could not be revoked; run "
+            f"'finishup service gateway key revoke {key_id}'",
+            err=True,
+        )
+        return typer.Exit(_UNSAFE)
+    return _fail(reason)
 
 
 @key_app.command("create")
@@ -174,6 +218,7 @@ def key_create(
 ) -> None:
     """Create an API key and show it once (or write it to a new owner-only file)."""
 
+    from finishup.cli.trusted_console import TrustedConsoleError
     from finishup.gateway.keys import GatewayKeyError, create_key
 
     if scope is not None and scope not in {"agent", "operator"}:
@@ -183,7 +228,8 @@ def key_create(
         raise typer.Exit(_USAGE)
     if output_file is None and not _stdin_is_terminal():
         raise _fail("trusted_console_required")
-    # The output file is made first, so a key is never created whose secret cannot be delivered.
+    # The output file is made first, so a key is created only when there is somewhere to put it;
+    # a new key whose secret then fails to reach the operator is revoked before this fails.
     descriptor = None if output_file is None else _open_new_owner_only(output_file)
     try:
         record, key = create_key(
@@ -200,12 +246,19 @@ def key_create(
         raise _fail(error.reason) from None
     if descriptor is not None:
         try:
-            os.write(descriptor, (key + "\n").encode("ascii"))
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            try:
+                _write_key_file(descriptor, key)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            with contextlib.suppress(OSError):
+                cast(Path, output_file).unlink(missing_ok=True)
+            raise _revoke_undelivered(record.key_id, "gateway_key_output_failed") from None
     else:
-        _show_on_console(key)
+        try:
+            _show_on_console(key)
+        except TrustedConsoleError:
+            raise _revoke_undelivered(record.key_id, "gateway_key_not_shown") from None
     typer.echo(f"Created key {record.key_id} (scope {record.scope}).")
     if rotate is not None:
         typer.echo(
