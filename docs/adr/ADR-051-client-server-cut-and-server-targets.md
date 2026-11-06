@@ -371,11 +371,12 @@ the rows were captured there. The server holds none of it and must not borrow it
   Verification opens the claimed workspace by its handle through the workspace agent (decision 5)
   and never through a stored locator.
 - **Refusals keep their closed reasons.** A claim-bound ingest without an attestation is refused
-  with `consent_missing`; an attestation without a route is `mapping_missing` (retryable, as
-  locally); paused is `paused`; revoked is `consent_revoked`. An attestation on a connection that
-  carries no claim is a malformed request. A locator-bound or unbound connection keeps today's
-  checks byte for byte: commitment against the server's key, consent and mapping from the
-  server's own store.
+  with `consent_missing`, before anything is read or written; an attestation without a route is
+  `mapping_missing` (retryable, as locally); a paused or revoked consent is refused exactly as a
+  local one is. When too many claims are busy at once the row is refused `service_unavailable`
+  (retryable). An attestation on a connection that carries no claim is a malformed request
+  (`frame_invalid`). A locator-bound or unbound connection keeps today's checks byte for byte:
+  commitment against the server's key, consent and mapping from the server's own store.
 - **Consent changes travel with the next row.** A pause, resume or revoke on the client is mirrored
   into the claim store when the next row arrives; a revoke runs the service's own revocation for
   that claim (task stores deactivate their locator and trust rows), and later rows are refused.
@@ -388,7 +389,8 @@ the rows were captured there. The server holds none of it and must not borrow it
 - **Limits.** Advice the service prepares for hooks to deliver stays in the claim store and does
   not yet reach a remote client's hooks. After a server restart a claim's pending verification
   resumes when that claim delivers its next row. The server's check barrier reconciles only its
-  own store's capture handoffs.
+  own store's capture handoffs, and a claim-bound `check` that asks to await observations reports
+  that wait `unavailable`: the rows wait in the client's outbox, which the server cannot read.
 
 ## Topology (approach-specific)
 

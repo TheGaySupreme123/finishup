@@ -657,6 +657,11 @@ default service.
   that local root instead of the path, rewrites an absolute `workspace_ref` to the connection's
   handle before `start`, and the client's workspace agent serves the server's workspace reads;
   receipts carry the `client_attested` line.
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an

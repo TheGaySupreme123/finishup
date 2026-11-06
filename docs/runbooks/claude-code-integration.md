@@ -484,6 +484,11 @@ process to the default service.
   before `start`. The client's workspace agent serves the server's change capture, reviewer reads,
   task inputs, declared tests, observation verification and approved checks for
   `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line.
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
 - **Routes.** A strict route (`--semantic off`) stays allowed on a remote target, and the server
   enforces it. On the policy route the initialize instructions say that AI-powered review is
   decided by the selected server, named by its target id, not by a local provider.
