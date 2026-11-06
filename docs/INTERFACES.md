@@ -5296,7 +5296,12 @@ user-controlled is ever rendered beside it.
   Every receipt and replay reads the opening record again, so once the read succeeds (a transient
   fault clears, or the task's ledger is opened afresh after the runtime evicts the idle entry or
   the service restarts, and the object reads) the same request renders the binding the record
-  holds.
+  holds. `session_opening_unreadable` covers passing and lasting causes alike, and the fixed
+  `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` helps only the passing ones: a `logically_redacted`
+  or `erased_claimed` opening never reads again, a `key_unavailable` one reads only once the key
+  is available again, and an `UnknownEvent` one only after an upgrade, so those tasks' receipts
+  keep the section through every retry and restart (`docs/usage/servers.md` says so). No token
+  tells them apart yet.
 - Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
   ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with

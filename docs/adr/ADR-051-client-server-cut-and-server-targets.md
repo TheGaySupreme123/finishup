@@ -583,7 +583,13 @@ answers bounded `workspace_call`s on a connection that declared it.
     opening event again, so once the
     read succeeds (a transient fault clears, or the service reopens the task after it drops an
     idle task or restarts, and the object reads) the same receipt renders the binding the event
-    records.
+    records. The what-to-do line, fixed by D4, helps only a passing cause. A redacted or erased
+    opening event never reads again, one whose key is gone reads only once the service has the
+    key again, and one of a version the service cannot decode reads only after an upgrade, so
+    such a task's receipts keep the section through every retry and restart. The one `reason`
+    token covers passing and lasting causes alike; the user documentation says which causes last.
+    Whether to split them into separate tokens, each with its own what-to-do line, is not decided
+    here.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
