@@ -146,9 +146,12 @@ These do not leave: your project folder's full path, your API key, your vault pa
 the secure unlock and consent prompts, which only ever run on the server's own machine.
 
 Whether anything is then sent for AI-powered review is decided by the server's own privacy policy
-and repository permissions, exactly as on one computer. Receipts from a server on another machine
-carry one extra line saying that workspace evidence was read on your computer by the FinishUP
-workspace agent and attested over the connection.
+and repository permissions, exactly as on one computer. Receipts and task status from a server on
+another machine end with a line saying that workspace evidence was read on your computer by the
+FinishUP workspace agent and attested over the connection, and a line naming the FinishUP service
+that answered by its id (such as `svc_…`) and how this computer reached it (for example `ssh` or
+`https`). This holds in the `finishup` command, in what your agent reads, and in the terminal
+interface; JSON output does not carry these lines.
 
 ## The workspace agent
 
@@ -161,7 +164,9 @@ server's questions about them.
 The workspace agent answers only a fixed list of questions, only about the project folder your
 session is working in, only within the folders you admitted, and only within the usual size
 limits. It runs only check commands from your project's approved check list. It reads files with
-the same safety checks FinishUP uses on one computer.
+the same safety checks FinishUP uses on one computer, and it never reads FinishUP's own folders on
+this computer — including the vault and settings of your everyday FinishUP — whichever server you
+use.
 
 It runs inside your FinishUP clients while they are connected to the server, and keeps running
 after a call returns, because some work — a longer review, an approved check — happens later. If
@@ -225,8 +230,15 @@ It answers for the folder you run it in until you press Ctrl-C.
 ## Things that run on the server
 
 Vault setup and unlock, passphrase changes, privacy choices, AI-powered review providers,
-observation settings, backup, restore and migration belong to the server. On this computer those
-commands stop with `requires_server_host`.
+backup, restore and migration belong to the server. On this computer those commands stop with
+`requires_server_host`.
+
+Observation settings stay on this computer. Your hooks run here, so the observation consent you
+give, the content you allow, the checks you approve and the observations waiting to be delivered
+all live here, and `finishup observe …` changes them here whichever server you use. Each
+observation this computer delivers carries those settings with it; the server accepts them as
+your computer's own statement and does not check them itself. Receipts of such a task say so in
+one more line.
 
 For an SSH server you can run the service commands through SSH, from a terminal:
 

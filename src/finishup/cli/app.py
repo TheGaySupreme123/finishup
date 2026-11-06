@@ -57,6 +57,8 @@ from finishup.cli.render import (
     render_local_recovery_lines,
 )
 from finishup.cli.server import server_app
+from finishup.client.attribution import connection_attribution
+from finishup.client.workspace_ref import WorkspaceRefNotPortable, start_request_for_connection
 from finishup.domain.values import JsonObject
 from finishup.legacy_names import RENAME_NOTE
 from finishup.ports.control import (
@@ -904,8 +906,14 @@ async def _call_workflow(
                 )
                 if refused is not None:
                     return refused
+            if type(request) is StartRequest:
+                # ADR-051: a server on another machine is sent the connection's handle, never a
+                # path; with none to send, nothing is sent (``WorkspaceRefNotPortable``).
+                request = start_request_for_connection(request, client)
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
+            # ADR-051: a claim-bound connection's human status and receipt name their producer.
+            attribution = connection_attribution(client)
         finally:
             await client.close()
         if method in {"start", "publish_work", "check", "respond", "receipt"}:
@@ -929,9 +937,9 @@ async def _call_workflow(
         elif isinstance(branch, CheckInspectionModel):
             typer.echo(render_human_inspection(branch))
         elif isinstance(branch, StatusSuccessModel):
-            typer.echo(render_human_status(branch))
+            typer.echo(render_human_status(branch, attribution=attribution))
         elif isinstance(branch, ReceiptSuccessModel):
-            typer.echo(render_human_receipt(branch))
+            typer.echo(render_human_receipt(branch, attribution=attribution))
         else:
             typer.echo(canonical_encode(wire).decode("utf-8"))
         if isinstance(branch, OperationFailureModel):
@@ -952,6 +960,13 @@ async def _call_workflow(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
+    except WorkspaceRefNotPortable as refusal:
+        # Refused before anything was sent; the fixed message and directive name no path.
+        _stderr(refusal.message)
+        recovery = render_error_recovery_lines(refusal.safe_details)
+        if recovery:
+            _stderr("\n".join(recovery))
+        return exit_code_for(refusal.code)
 
 
 def _finish(code: int) -> None:

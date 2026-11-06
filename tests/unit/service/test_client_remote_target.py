@@ -9,6 +9,7 @@ through its recorded launcher. A damaged target record refuses before any dial.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
@@ -115,7 +116,7 @@ async def _serve(stream: ControlStream) -> None:
 
 
 def test_a_remote_root_never_spawns_or_supersedes(
-    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def unreachable() -> ControlStream:
         raise TransportError("remote_unreachable")
@@ -127,7 +128,7 @@ def test_a_remote_root_never_spawns_or_supersedes(
         with pytest.raises(ControlError) as raised:
             await client_module.connect_service_on_demand(
                 ControlClientKind.MCP_BRIDGE,
-                workspace_locator=WorkspaceLocator("/home/owner/repository"),
+                workspace_locator=WorkspaceLocator(str(tmp_path)),
                 timeout_seconds=2.0,
             )
         return raised.value
@@ -141,9 +142,11 @@ def test_a_remote_root_never_spawns_or_supersedes(
     assert transport.dials == 1
 
 
-def test_the_hello_to_a_remote_server_carries_no_path(
-    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+def test_the_hello_to_a_remote_server_carries_a_claim_and_no_path(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    workspace = tmp_path / "secret-repository"
+    workspace.mkdir()
     taps: list[TapStream] = []
 
     async def dial() -> ControlStream:
@@ -155,23 +158,54 @@ def test_the_hello_to_a_remote_server_carries_no_path(
 
     _use(monkeypatch, _FakeTransport(remote, dial))
 
-    async def exercise() -> str:
+    async def exercise() -> tuple[str, str, str]:
         client = await client_module.connect_service(
-            ControlClientKind.CLI,
-            workspace_locator=WorkspaceLocator("/home/owner/secret-repository"),
+            ControlClientKind.CLI, workspace_locator=WorkspaceLocator(str(workspace))
         )
         try:
             status = await client.service_status()
         finally:
             await client.close()
-        return status.service_instance_id
+        return status.service_instance_id, client.workspace_binding, client.transport
 
-    assert asyncio.run(exercise()) == service_status().service_instance_id
+    assert asyncio.run(exercise()) == (
+        service_status().service_instance_id,
+        "client_claim",
+        "ssh",
+    )
     (tap,) = taps
     assert b"secret-repository" not in tap.received
+    assert os.fsencode(tmp_path) not in tap.received
     assert b"workspace_locator" not in tap.received
-    # Until the client workspace track wires the claim, a remote connection is bound to nothing.
-    assert b'"workspace_binding":"none"' in tap.sent
+    assert b'"workspace_claim"' in tap.received
+    # A connection that names a workspace but no binding claims it and offers no agent.
+    assert b'"workspace_agent"' not in tap.received
+    assert b'"workspace_binding":"client_claim"' in tap.sent
+
+
+def test_a_workspace_the_root_rule_cannot_resolve_is_never_dialled(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def dial() -> ControlStream:
+        raise AssertionError("an unclaimable workspace is refused before any dial")
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await client_module.connect_service(
+                ControlClientKind.CLI,
+                workspace_locator=WorkspaceLocator(str(tmp_path / "missing")),
+            )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == (
+        "service_unavailable",
+        False,
+        "handshake",
+    )
+    assert "missing" not in str(error)
 
 
 @pytest.mark.parametrize("started", [True, False])

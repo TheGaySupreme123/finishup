@@ -136,7 +136,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # (CAN-025, CAN-026); the released 1.4.0 vectors (CAN-011, CAN-012) stay append-only.
 # ADR-051: +10 for the control 2.10.0 envelopes and workspace-binding vectors, +2 schemas
 # (isolation-report 1.1.0 with the ``selection`` binding, server-target-status 1.0.0).
-REVIEWED_RESOURCE_COUNT: Final = 354
+# ADR-051 decision 12: +1 canonical vector (CTL-2106, a claim-bound observation ingest carrying
+# the client's attestation).
+REVIEWED_RESOURCE_COUNT: Final = 355
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

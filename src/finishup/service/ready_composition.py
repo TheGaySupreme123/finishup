@@ -80,6 +80,7 @@ from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJo
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
 from finishup.adapters.task_input_read import (
+    ReadDeadline,
     read_declared_test,
     read_outside_inputs,
     snapshot_outside_inputs,
@@ -154,6 +155,7 @@ from finishup.application.observation_advice_semantic import (
     observation_advice_to_candidate_context,
     reconcile_cancelled_advice_request,
 )
+from finishup.application.observation_claims import ClaimObservationRouter
 from finishup.application.observation_control import build_observation_support_handlers
 from finishup.application.observation_coordinator import ObservationCoordinator
 from finishup.application.observation_drain import (
@@ -417,6 +419,10 @@ from finishup.ports.start_catalog import (
     TaskRoute,
     TaskRouteState,
 )
+from finishup.ports.workspace_agent import (
+    WorkspaceAgentUnavailable,
+    workspace_handle_for_commitment,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
@@ -463,6 +469,13 @@ from finishup.service.semantic_ceiling import (
     with_ceiling_planning_gap,
 )
 from finishup.service.vault import ProviderCredentialBinding, provider_credential_profile_binding
+from finishup.service.workspace_hub import WorkspaceAgentHub
+from finishup.service.workspace_routing import (
+    ClientWorkspaceReads,
+    RoutedObservationWorkspace,
+    WorkspaceRouting,
+    client_bound,
+)
 from finishup.version import build_version_manifest, version_manifest_json
 
 __all__ = [
@@ -2694,19 +2707,24 @@ def _bootstrap_seed_digest(installation_id: str, *, revision: str | None) -> str
 
 
 def _outside_input_reader(
-    roots: tuple[str, ...], protected: tuple[str, ...] = ()
+    roots: tuple[str, ...],
+    protected: tuple[str, ...] = (),
+    routing: WorkspaceRouting | None = None,
 ) -> OutsideInputReader:
     """The check-time reader of task inputs beneath the admitted outside roots (issue #1082).
 
     It never reads from the check's workspace or from ``protected`` (this service's own bundle
     and state directories), by path or by device and inode, even when an admitted root contains
-    them (PR #1086 review R1-02).
+    them (PR #1086 review R1-02). A claim-bound task's inputs are read on the client's machine by
+    its workspace agent, under the same roots and exclusions (ADR-051).
     """
 
     def read(
         values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
     ) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs(
+        client = None if routing is None else routing.reads_for(workspace)
+        reader = read_outside_inputs if client is None else client.read_outside_inputs
+        return reader(
             roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
         )
 
@@ -2719,6 +2737,7 @@ async def _outside_inputs(
     selection: ReviewSelectionPolicy,
     excluded: tuple[str, ...],
     request_id: str,
+    routing: WorkspaceRouting | None = None,
 ) -> tuple[OutsideInputReader | None, tuple[TaskInputSnapshotSet, ...], CurrentInputReader | None]:
     """The check-time outside reader (#1082), the task's kept copies and the current-bytes reader
     (#1118 unit 1); none unless the owner admitted a root and the recipe carries task inputs.
@@ -2731,9 +2750,9 @@ async def _outside_inputs(
     if not roots:
         return None, (), None
     return (
-        _outside_input_reader(roots, excluded[1:]),
+        _outside_input_reader(roots, excluded[1:], routing),
         await load_input_snapshots(runtime, request_id),
-        _current_input_reader(roots, excluded),
+        _current_input_reader(roots, excluded, routing),
     )
 
 
@@ -2768,13 +2787,23 @@ def _with_oracle_directory_gap(
     return tuple(sorted({*gaps, VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP}, key=str.encode))
 
 
-def _current_input_reader(roots: tuple[str, ...], excluded: tuple[str, ...]) -> CurrentInputReader:
-    """Whole current bytes of snapshot paths, to say whether each still matches (#1118 unit 1)."""
+def _current_input_reader(
+    roots: tuple[str, ...],
+    excluded: tuple[str, ...],
+    routing: WorkspaceRouting | None = None,
+) -> CurrentInputReader:
+    """Whole current bytes of snapshot paths, to say whether each still matches (#1118 unit 1).
+
+    ``excluded`` names the check's workspace first; a claim-bound one is read by its agent.
+    """
+
+    client = None if routing is None else routing.reads_excluding(excluded)
+    snapshot = snapshot_outside_inputs if client is None else client.snapshot_outside_inputs
 
     def read(paths: tuple[str, ...]) -> dict[str, bytes | None]:
         return {
             row.path: row.text
-            for row in snapshot_outside_inputs(
+            for row in snapshot(
                 roots,
                 paths,
                 limit=len(paths),
@@ -4712,10 +4741,12 @@ def _outside_candidate_count(
 
 
 async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None:
-    """The absolute workspace path the task's session opened with, or ``None``.
+    """The absolute workspace path the task's session opened with, its handle, or ``None``.
 
     Issue #907: a repeated missing-item request anchors absolute paths the agent names to this
-    root. It is compared in process only, never recorded, logged or sent.
+    root. It is compared in process only, never recorded, logged or sent. A claim-bound task's
+    root is its ``client:`` handle (ADR-051): reads beneath it go to its workspace agent, and
+    nothing lexical treats it as a path (``_case_workspace_root``).
     """
 
     if runtime is None:
@@ -4724,10 +4755,24 @@ async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None
         async for record in runtime.ledger.load_events(runtime.session_id):
             if isinstance(record.payload, SessionOpenedPayload):
                 root = record.payload.workspace_ref
-                return root if root is not None and os.path.isabs(root) else None
+                return (
+                    root
+                    if root is not None and (os.path.isabs(root) or client_bound(root))
+                    else None
+                )
     except Exception:
         return None
     return None
+
+
+def _case_workspace_root(root: str | None) -> str | None:
+    """The root the case builder may compare paths against: never a claim-bound handle.
+
+    The service does not know where a client's workspace lies, so no path in a claim-bound
+    task's content is placed inside or outside it lexically here.
+    """
+
+    return None if root is None or client_bound(root) else root
 
 
 def _observation_workspace_for_runtime(runtime: TaskRuntime) -> str | None:
@@ -5101,6 +5146,7 @@ async def _reviewer_read_roots(
     withheld: tuple[str, ...],
     change_capture: ChangeCapturePort | None,
     admitted_home_project: bool = False,
+    routing: WorkspaceRouting | None = None,
 ) -> tuple[ReadRoot, ...]:
     """The ``read_file`` roots a review may name (#1118): none where repository excerpts are
     withheld; else the workspace (Git-ignored paths refused) and, per owner-admitted outside root,
@@ -5112,6 +5158,8 @@ async def _reviewer_read_roots(
     ):
         return ()
     probe = getattr(change_capture, "probe_requested_paths", None)
+    # A claim-bound task's every root is read on the client's machine by its agent (ADR-051).
+    reads = None if routing is None else routing.reads_for(workspace_root)
 
     def ignored(path: str) -> bool:
         if not path:
@@ -5120,6 +5168,12 @@ async def _reviewer_read_roots(
             (found,) = cast(Callable[..., Sequence[RequestedPathProbe]], probe)(
                 workspace_root, (path,)
             )
+        except WorkspaceAgentUnavailable as exc:
+            if exc.reason in {"agent_refused", "agent_unavailable"}:
+                return True  # the agent answered that it cannot say: refused, as locally
+            # A claim-bound task's agent is gone: the review ends under that reason instead of
+            # judging around every read it could no longer make (ADR-051).
+            raise
         except Exception:  # noqa: BLE001 - an unanswerable ignore state refuses the read
             return True
         return found.ignored is not False
@@ -5143,6 +5197,7 @@ async def _reviewer_read_roots(
             excluded=protected,
             subject_refs=evidence,
             refuse=ignored if callable(probe) else (lambda _path: True),
+            reads=reads,
         )
     ]
     # Issue #1220: the declared tests the packet lists, by ref, wherever they were declared;
@@ -5153,7 +5208,9 @@ async def _reviewer_read_roots(
         if (location := declared_test_location(test.path, workspace_root)) is not None
     )
     if pinned:
-        roots.append(ReadRoot(DECLARED_TEST_ROOT, "/", excluded=protected, pinned=pinned))
+        roots.append(
+            ReadRoot(DECLARED_TEST_ROOT, "/", excluded=protected, pinned=pinned, reads=reads)
+        )
     snapshots = await load_input_snapshots(runtime, request_id) if outside else ()
     for index, root in enumerate(outside, start=1):
         prefix = root.rstrip("/") + "/"
@@ -5169,6 +5226,7 @@ async def _reviewer_read_roots(
                 declared=declared,
                 excluded=excluded,
                 subject_refs=statement,
+                reads=reads,
             )
         )
         kept = next((s for s in snapshots if any(f.path.startswith(prefix) for f in s.files)), None)
@@ -5198,6 +5256,10 @@ def _file_reads_offered(
     # A public start's workspace_ref is a task selector, not read authority. HOME reads
     # require the current connection's selected locator and task repository binding below;
     # a claimed HOME in session history must never acquire the service adapter's exception.
+    # A claim-bound handle is never this service's HOME: the client's agent applies its own
+    # home-directory fences to every read it answers (ADR-051).
+    if client_bound(workspace_root):
+        return True
     return Path(workspace_root) != Path.home() or admitted_home_project
 
 
@@ -5225,13 +5287,18 @@ def _small_review_channel(
 
 
 def _pin_declared_tests(
-    case: DeterministicCase, workspace_root: str | None, excluded: tuple[str, ...]
+    case: DeterministicCase,
+    workspace_root: str | None,
+    excluded: tuple[str, ...],
+    reads: ClientWorkspaceReads | None = None,
 ) -> tuple[DeclaredTest, ...]:
     """The declared test files that are readable now, each with the digest of its bytes (#1220).
 
     The candidates are the frozen case's own (``declared_test_candidates``); a file refused by
     shape, missing, unreadable, binary or over 1 MiB is not listed. Nothing read here enters the
-    case but the digest.
+    case but the digest. ``reads`` is a claim-bound task's agent (ADR-051); a test it could not
+    reach is not listed, as for a local file that could not be read. Blocking: run it in a
+    worker thread.
     """
 
     statement = None if case.task_statement is None else case.task_statement.text
@@ -5242,7 +5309,13 @@ def _pin_declared_tests(
             # The path travels in the envelope: one that looks like a secret is not listed, so it
             # can never block the whole review at the egress scan.
             continue
-        data = read_declared_test(location, excluded=excluded)
+        if reads is None:
+            data = read_declared_test(location, excluded=excluded)
+        else:
+            try:
+                data = reads.read_declared_test(location, excluded=excluded)
+            except (WorkspaceAgentUnavailable, ReadDeadline):
+                data = None
         if data is None:
             continue
         tests.append(
@@ -5317,6 +5390,7 @@ def _privacy_gated_semantic_evaluator(
     attention: SemanticAttentionTracker | None = None,
     change_capture: ChangeCapturePort | None = None,
     protected_directories: tuple[str, ...] = (),
+    workspace_routing: WorkspaceRouting | None = None,
 ):
     total_timeout = float(max(1, min(int(timeout_seconds), 3600)))
     # The fallback endpoint owns its own deadline share (#582): a primary that spends its whole
@@ -5693,7 +5767,9 @@ def _privacy_gated_semantic_evaluator(
                                 max(16, review_selection.max_excerpts * 16),
                             ),
                             max_total_bytes=MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
-                            workspace_root=await _workspace_root_for_runtime(runtime),
+                            workspace_root=_case_workspace_root(
+                                await _workspace_root_for_runtime(runtime)
+                            ),
                         )
                         captured_content = captured_resolution.content
                         captured_content_scope = captured_resolution.scope
@@ -5736,6 +5812,7 @@ def _privacy_gated_semantic_evaluator(
                             review_selection,
                             (workspace_source.workspace, *protected_directories),
                             frozen.lease.operation_id,
+                            workspace_routing,
                         )
                         check_change = await capture_check_time_change(
                             runtime=runtime,
@@ -5837,8 +5914,16 @@ def _privacy_gated_semantic_evaluator(
                     if binding is not None
                 )
             ):
-                declared_tests = _pin_declared_tests(
-                    frozen.case, workspace_root, protected_directories
+                # Off the event loop: each test is read whole, and a claim-bound task's tests are
+                # read by its workspace agent, whose reply this loop delivers (ADR-051).
+                declared_tests = await asyncio.to_thread(
+                    _pin_declared_tests,
+                    frozen.case,
+                    workspace_root,
+                    protected_directories,
+                    None
+                    if workspace_routing is None
+                    else workspace_routing.reads_for(workspace_root),
                 )
 
             def build_case(
@@ -5860,7 +5945,7 @@ def _privacy_gated_semantic_evaluator(
                     captured_content_scope=captured_content_scope,
                     captured_content_gaps=gaps,
                     prepared_byte_ceiling=_semantic_prepared_byte_ceiling(policy),
-                    workspace_root=workspace_root,
+                    workspace_root=_case_workspace_root(workspace_root),
                     check_time_change=check_change.change,
                     check_time_change_unavailable=check_change.unavailable,
                     check_time_change_unavailable_reason=check_change.reason,
@@ -5884,6 +5969,7 @@ def _privacy_gated_semantic_evaluator(
                     withheld=withheld,
                     change_capture=change_capture,
                     admitted_home_project=_admitted_home_project(workspace_root, repository),
+                    routing=workspace_routing,
                 )
 
             try:
@@ -6172,7 +6258,7 @@ def _privacy_gated_semantic_evaluator(
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
-                    case_workspace_root=workspace_root,
+                    case_workspace_root=_case_workspace_root(workspace_root),
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
                     case_excerpt_refs=sent_excerpt_content_refs(
@@ -6616,7 +6702,7 @@ def _privacy_gated_semantic_evaluator(
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
-                    case_workspace_root=workspace_root,
+                    case_workspace_root=_case_workspace_root(workspace_root),
                     check_change_files=check_change_files,
                     continuation=continuation,
                     reviewer=reviewer,
@@ -6908,8 +6994,13 @@ async def provide_service_ready_context(
     diagnostics: DiagnosticsPort | None = None,
     observation_gate: asyncio.Lock | None = None,
     startup_bundle_upgrade: _StartupBundleUpgrade | None = None,
+    workspace_hub: WorkspaceAgentHub | None = None,
 ) -> ServiceReadyContext:
-    """Compose one generation-bound ready application context."""
+    """Compose one generation-bound ready application context.
+
+    ``workspace_hub`` reaches the workspace agents of claim-bound connections (ADR-051); every
+    workspace read of a claim-bound task goes there, never to this machine's disk.
+    """
 
     if not vault.ready or vault.generation != vault_generation:
         raise ControlError("vault_locked", retryable=True)
@@ -7456,8 +7547,12 @@ async def provide_service_ready_context(
             ),
         )
 
-    # One read-only Git adapter serves both the task-start base and the check-time change.
-    change_capture = GitChangeCaptureAdapter(admitted_home_project=True)
+    # One read-only Git adapter serves both the task-start base and the check-time change; a
+    # claim-bound task's workspace is read by its client's agent instead (ADR-051).
+    workspace_routing = WorkspaceRouting.compose(
+        workspace_hub, GitChangeCaptureAdapter(admitted_home_project=True)
+    )
+    change_capture = workspace_routing.change_capture
     if not semantic_configured:
         semantic_evaluator = _semantic_not_configured
     elif not provider_endpoint_bound:
@@ -7486,6 +7581,7 @@ async def provide_service_ready_context(
             change_capture=change_capture,
             # The service's own data is never an outside-workspace task input (#1086 R1-02).
             protected_directories=(str(paths.bundle), str(paths.state)),
+            workspace_routing=workspace_routing,
         )
 
     # attempt_id -> (physical request identity, provider identity) of the single in-flight
@@ -8302,11 +8398,34 @@ async def provide_service_ready_context(
         observed_quiet_hook=observed_quiet_period(catalog, lineage),
         capture_budget_bootstrap=bootstrap_capture_reservations,
         capture_handoff_reconcile=reconcile_capture_handoffs,
+        # A claim-bound workspace's verification reads go to its client's agent (ADR-051).
+        workspace_access=RoutedObservationWorkspace(workspace_hub),
     )
     if advice_semantic_enabled:
         advice_semantic_supervisor.set_revisit_handler(
             observation_coordinator.revisit_advice_semantic
         )
+
+    def claim_observation_coordinator(
+        handle: str, claim_store: LocalObservationStore, claim_state: Path
+    ) -> ObservationCoordinator:
+        # A claim-bound connection's rows run the same coordinator over that claim's own
+        # client-attested store (ADR-051 decision 12). The capture-budget bootstrap reads this
+        # machine's own store, so a claim composes none: its store never requires one.
+        return replace(
+            observation_coordinator,
+            local=claim_store,
+            state_root=claim_state,
+            capture_budget_bootstrap=None,
+            client_workspace_handle=handle,
+        )
+
+    claim_observation = ClaimObservationRouter(
+        state_root=paths.state,
+        coordinator_for=claim_observation_coordinator,
+        resolve_route=catalog.resolve_route,
+        observation_enabled=config.observation.enabled,
+    )
     observation_sweeper = ObservationOutboxSweeper(
         local_observation,
         observation_coordinator,
@@ -8372,6 +8491,7 @@ async def provide_service_ready_context(
     def close_observation_maintenance() -> None:
         legacy_spool_forwarder.close()
         observation_sweeper.close()
+        claim_observation.close()
         observation_coordinator.close()
 
     async def refresh_ready_recommendations() -> object:
@@ -8387,7 +8507,9 @@ async def provide_service_ready_context(
         )
         return await refresh_pending(context=context, root=paths.state)
 
-    observation_handlers = build_observation_support_handlers(observation_coordinator)
+    observation_handlers = build_observation_support_handlers(
+        observation_coordinator, claims=claim_observation
+    )
     support_handlers: dict[ControlMethod, Callable[..., Awaitable[JsonObject]]] = dict(
         cast(Mapping[ControlMethod, Callable[..., Awaitable[JsonObject]]], observation_handlers)
     )
@@ -8492,7 +8614,14 @@ async def provide_service_ready_context(
         """
 
         locator = context.workspace_locator
-        if privacy_application is None or locator is None:
+        # A claim-bound task's inputs are read by its client's agent beneath the same roots,
+        # excluding the claimed workspace by its handle (ADR-051).
+        handle = (
+            workspace_handle_for_commitment(context.commitment)
+            if context.identity_kind == "client_claim"
+            else None
+        )
+        if privacy_application is None or (locator is None and handle is None):
             return None
         scope = AuthorizationScope(
             AuthorizationScopeKind.TASK, installation_id, context.commitment, task_id
@@ -8501,6 +8630,13 @@ async def provide_service_ready_context(
         roots = snapshot_roots(policy, carries_task_inputs(review_selection_for_delivery(policy)))
         if not roots:
             return None
+        if handle is not None:
+            client = workspace_routing.reads_for(handle)
+            assert client is not None  # a handle always routes to its agent
+            return InputSnapshotScope(
+                roots, (handle, str(paths.bundle), str(paths.state)), client.snapshot_outside_inputs
+            )
+        assert locator is not None
         return InputSnapshotScope(
             roots, (locator.path, str(paths.bundle), str(paths.state)), snapshot_outside_inputs
         )
@@ -8574,6 +8710,7 @@ def build_ready_application_factory(
     diagnostics: DiagnosticsPort | None = None,
     observation_gate: asyncio.Lock | None = None,
     startup_bundle_upgrade: _StartupBundleUpgrade | None = None,
+    workspace_hub: WorkspaceAgentHub | None = None,
 ) -> ReadyApplicationFactory:
     upgrade = startup_bundle_upgrade
     if upgrade is None:
@@ -8601,5 +8738,6 @@ def build_ready_application_factory(
             diagnostics=diagnostics,
             observation_gate=observation_gate,
             startup_bundle_upgrade=upgrade,
+            workspace_hub=workspace_hub,
         )
     )

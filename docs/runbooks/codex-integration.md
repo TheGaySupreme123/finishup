@@ -1499,6 +1499,11 @@ later process to the default service.
   or one HTTPS binding session. For an HTTPS target each of them reads the stored key in its own
   process; for a local or SSH target none loads the HTTP client or the credential store. The
   bridge's long-lived connection is the workspace agent for work that outlives a call.
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.

@@ -8,7 +8,9 @@ import json
 import os
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -1971,3 +1973,50 @@ def test_checks_operations_do_not_call_a_missing_workspace_a_policy_fault(
     assert code == 20
     assert "invalid_policy" not in err
     assert "policy_not_configured" not in err
+
+
+@pytest.mark.anyio
+async def test_manual_drain_attests_rows_for_a_claim_bound_connection(tmp_path: Path) -> None:
+    """ADR-051 decision 12: ``observe drain`` to a remote target sends each row attested."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    handle_observe(
+        event_name="PostToolUse",
+        stdin_bytes=json.dumps(
+            {"session_id": "remote-session", "tool_name": "shell", "event_ordinal": 1}
+        ).encode(),
+        stdout=io.BytesIO(),
+        workspace=str(tmp_path),
+        _state=tmp_path,
+        skip_service=True,
+    )
+    bodies: list[Mapping[str, object]] = []
+
+    class Client:
+        workspace_handle = "client:0a1b2c3d4e5f6071"
+
+        async def observation_ingest(self, body: object, *, deadline_ms: int):
+            del deadline_ms
+            bodies.append(cast(Mapping[str, object], body))
+            return observation_ingest_result_to_json(
+                ObservationIngestResult(ObservationIngestDisposition.DUPLICATE, None, None)
+            )
+
+        async def close(self) -> None:
+            return None
+
+    async def connect(_kind: object):
+        return Client()
+
+    code, summary = await observe_cli._drain_observation_async(  # pyright: ignore[reportPrivateUsage]
+        workspace=str(tmp_path),
+        _state=tmp_path,
+        connect=connect,  # type: ignore[arg-type]
+    )
+    assert code == 0 and summary["acknowledged"] == 1, summary
+    (body,) = bodies
+    attestation = cast(Mapping[str, object], body["client_attestation"])
+    assert attestation["consent"] == "active"
+    assert str(tmp_path) not in json.dumps(dict(attestation))

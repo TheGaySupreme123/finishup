@@ -32,6 +32,7 @@ from finishup.domain.verification_coverage import criterion_quote_pattern
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.task_facts import effective_obligations
 from finishup.kernel.verification_coverage import criterion_obligations
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -248,7 +249,9 @@ def declared_test_location(path: str, workspace_root: str | None) -> str | None:
 
     A relative path is beneath the workspace. Refused by shape alone, before any filesystem
     probe: a path too long to list, an empty, ``.``, ``..`` or hidden component, a backslash,
-    a NUL or control character, a credential-named component, or a system directory.
+    a NUL or control character, a credential-named component, or a system directory. Beneath a
+    claim-bound task's ``client:`` handle (ADR-051) a relative path stays beneath the handle
+    (``client:<hex>/tests/test_x.py``), for its workspace agent to resolve; never a local path.
     """
 
     if (
@@ -264,6 +267,9 @@ def declared_test_location(path: str, workspace_root: str | None) -> str | None:
         return None
     if any(credential_named_path(part) for part in parts):
         return None
+    if relative and workspace_handle_valid(workspace_root):
+        # Already normalized by shape: no empty, ``.`` or ``..`` component reaches here.
+        return f"{workspace_root}/{path}"
     if relative:
         if workspace_root is None or not workspace_root.startswith("/"):
             return None
