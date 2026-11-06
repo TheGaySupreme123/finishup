@@ -468,7 +468,7 @@ def control_failure(
         )
     error = _bind_handshake_correlation(error)
     code = public_error_code_for_control_reason(error.reason)
-    if error.reason in {"service_unavailable", "vault_locked"}:
+    if error.reason in {"service_draining", "service_unavailable", "vault_locked"}:
         from finishup.client.remote_remedy import remote_remedy
 
         remedy = remote_remedy(error)

@@ -11,7 +11,9 @@ and the terminal interface) asks this module instead, so they all say the same t
   phase's ADR-030 directive from ``protocol.recovery`` (the text lives there, once);
 * a workspace this computer's Git cannot resolve was never sent (the client claims the workspace
   itself before it dials, ``handshake`` / ``handshake_git_version``);
-* a locked vault on the server is the server owner's to unlock, on the server host.
+* a locked vault on the server is the server owner's to unlock, on the server host;
+* a server that answered it is shutting down or restarting (``service_draining``) is waited
+  for, never restarted from here.
 
 Nothing here names a host, a user, a target name or a path: closed tokens and fixed words only.
 Local roots get ``None`` everywhere, so their output is unchanged byte for byte. Hook-safe: it
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from finishup.protocol.recovery import RecoveryDirective
 
 __all__ = [
+    "REMOTE_DRAINING_SUMMARY",
     "REMOTE_LOCKED_SUMMARY",
     "REMOTE_UNAVAILABLE_SUMMARY",
     "REMOTE_UNCLAIMABLE_SUMMARY",
@@ -43,6 +46,11 @@ REMOTE_UNAVAILABLE_SUMMARY: Final = (
     "the selected FinishUP server on another machine could not be reached, or the connection to "
     "it ended before it answered; a request it already received may be recorded, and repeating "
     "that request under the same request id returns that record instead of a second one"
+)
+REMOTE_DRAINING_SUMMARY: Final = (
+    "the selected FinishUP server on another machine answered that it is shutting down or "
+    "restarting, so it did not serve this request; wait a few seconds, then repeat the request "
+    "under the same request id"
 )
 REMOTE_LOCKED_SUMMARY: Final = (
     "the selected FinishUP server's vault is locked, so nothing was recorded; its owner unlocks "
@@ -61,9 +69,10 @@ _CLAIM_PHASES: Final = frozenset({"handshake", "handshake_git_version"})
 class RemoteRemedy:
     """What a surface says for one failure on a remote root.
 
-    ``reason`` is the closed token to report (a remote phase, a claim phase, or
-    ``vault_locked``); ``summary`` fixed words; ``directive`` the ADR-030 directive, or None where
-    the remedy is the server owner's (a locked vault) or this folder's.
+    ``reason`` is the closed token to report (a remote phase, a claim phase, ``vault_locked`` or
+    ``service_draining``); ``summary`` fixed words; ``directive`` the ADR-030 directive, or None
+    where the remedy is the server owner's (a locked vault), the server's own (it is draining) or
+    this folder's.
     """
 
     reason: str
@@ -114,8 +123,9 @@ def remote_remedy(error: object, *, remote: bool | None = None) -> RemoteRemedy 
     A failure carrying a remote phase is remote by construction. Any other ``service_unavailable``
     or ``vault_locked`` is checked against the selected root (``remote`` when the caller already
     knows): on a remote root a claim failure is this folder's, any other ``service_unavailable``
-    (a connection that closed) is ``remote_unreachable``, and a locked vault is the server
-    owner's to unlock.
+    (a connection that closed: a service never answers one) is ``remote_unreachable``, a locked
+    vault is the server owner's to unlock, and a server that answered ``service_draining`` is
+    waited for.
     """
 
     from finishup.ports.control import ControlError
@@ -124,6 +134,7 @@ def remote_remedy(error: object, *, remote: bool | None = None) -> RemoteRemedy 
     phase = remote_connection_phase(error)
     if phase is None:
         if not isinstance(error, ControlError) or error.reason not in {
+            "service_draining",
             "service_unavailable",
             "vault_locked",
         }:
@@ -132,6 +143,8 @@ def remote_remedy(error: object, *, remote: bool | None = None) -> RemoteRemedy 
             return None
         if error.reason == "vault_locked":
             return RemoteRemedy("vault_locked", REMOTE_LOCKED_SUMMARY, None)
+        if error.reason == "service_draining":
+            return RemoteRemedy("service_draining", REMOTE_DRAINING_SUMMARY, None)
         if error.phase in _CLAIM_PHASES:
             directive = (
                 directive_for("system_git_upgrade_required")

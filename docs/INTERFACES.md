@@ -4608,7 +4608,8 @@ dials its own stream.
 - `finishup.client.remote_remedy.remote_remedy(error, *, remote=None) -> RemoteRemedy | None`
   (`reason`, `summary`, `directive`; `line()`), `remote_root_selected()`,
   `remote_connection_phase(error)`, and the fixed `REMOTE_UNAVAILABLE_SUMMARY`,
-  `REMOTE_LOCKED_SUMMARY`, `REMOTE_UNCLAIMABLE_SUMMARY`: the remedy every surface names on a remote
+  `REMOTE_LOCKED_SUMMARY`, `REMOTE_UNCLAIMABLE_SUMMARY`, `REMOTE_DRAINING_SUMMARY` (the server
+  answered `service_draining`): the remedy every surface names on a remote
   root (CLI `control_failure`, menu, setup next steps, the MCP bridge's
   `_remote_control_error_result`, the hooks' `unavailable_context`/`locked_context` and
   `StatusOutcome.remote_reason`, the terminal interface's `_connect_failure` and doctor remedies).

@@ -18,6 +18,7 @@ from builders.server_targets import ambient_home
 from finishup.cli import bootstrap, hooks, menu, setup
 from finishup.client import targets
 from finishup.client.remote_remedy import (
+    REMOTE_DRAINING_SUMMARY,
     REMOTE_LOCKED_SUMMARY,
     REMOTE_UNAVAILABLE_SUMMARY,
     REMOTE_UNCLAIMABLE_SUMMARY,
@@ -25,7 +26,7 @@ from finishup.client.remote_remedy import (
 )
 from finishup.config.paths import reset_selection_memo
 from finishup.mcp import server as bridge
-from finishup.ports.control import ControlError
+from finishup.ports.control import ControlError, ControlMethod, ControlResult
 from finishup.protocol.recovery import directive_for
 from finishup.tui import runtime as tui_runtime
 
@@ -65,6 +66,8 @@ _BARE = ControlError("service_unavailable", retryable=True)
 _LOCKED = ControlError("vault_locked", retryable=False)
 _UNCLAIMABLE = ControlError("service_unavailable", retryable=False, phase="handshake")
 _OLD_GIT = ControlError("service_unavailable", retryable=False, phase="handshake_git_version")
+# The server answered that it is shutting down or restarting.
+_DRAINING = ControlError("service_draining", retryable=True)
 
 
 def test_the_remedy_names_the_phase_its_directive_and_the_owner(remote: None) -> None:
@@ -85,6 +88,13 @@ def test_the_remedy_names_the_phase_its_directive_and_the_owner(remote: None) ->
     assert unclaimable is not None and unclaimable.summary == REMOTE_UNCLAIMABLE_SUMMARY
     old_git = remote_remedy(_OLD_GIT)
     assert old_git is not None and old_git.directive == directive_for("system_git_upgrade_required")
+    draining = remote_remedy(_DRAINING)
+    assert draining is not None
+    assert (draining.reason, draining.summary, draining.directive) == (
+        "service_draining",
+        REMOTE_DRAINING_SUMMARY,
+        None,
+    )
     assert remote_remedy(ControlError("frame_invalid")) is None
 
 
@@ -93,11 +103,12 @@ def test_a_local_root_has_no_remote_remedy(local: None) -> None:
     assert remote_remedy(_BARE) is None
     assert remote_remedy(_LOCKED) is None
     assert remote_remedy(_UNCLAIMABLE) is None
+    assert remote_remedy(_DRAINING) is None
     # A phase that only a remote connection carries is remote by construction.
     assert remote_remedy(_PHASED) is not None
 
 
-@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _UNCLAIMABLE])
+@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _UNCLAIMABLE, _DRAINING])
 def test_the_cli_names_the_remote_remedy(remote: None, error: ControlError) -> None:
     del remote
     lines: list[str] = []
@@ -121,7 +132,7 @@ def test_the_cli_keeps_its_local_remedy_on_a_local_root(local: None) -> None:
     assert lines[0].startswith("vault_locked: run `finishup service unlock` on a local terminal")
 
 
-@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED])
+@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _DRAINING])
 def test_the_menu_and_setup_name_the_remote_remedy(remote: None, error: ControlError) -> None:
     del remote
     _clean(menu._control_guidance(error))  # pyright: ignore[reportPrivateUsage]
@@ -144,7 +155,7 @@ def test_setup_keeps_its_local_next_steps_on_a_local_root(local: None) -> None:
     )
 
 
-@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _UNCLAIMABLE])
+@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _UNCLAIMABLE, _DRAINING])
 def test_the_bridge_names_the_remote_remedy(remote: None, error: ControlError) -> None:
     del remote
     result = bridge._control_error_result(error, None, "start")  # pyright: ignore[reportPrivateUsage]
@@ -179,6 +190,42 @@ def test_a_lost_connection_never_claims_that_nothing_was_recorded(remote: None, 
     assert "same request_id" in structured
 
 
+def test_a_draining_server_is_waited_for_never_restarted_or_called_unreachable(
+    remote: None,
+) -> None:
+    del remote
+    lines: list[str] = []
+    bootstrap.control_failure(_DRAINING, stderr_writer=lines.append)
+    result = bridge._control_error_result(_DRAINING, None, "check")  # pyright: ignore[reportPrivateUsage]
+    structured = json.dumps(result.structuredContent)
+    for text in ("\n".join(lines), structured):
+        # Never the local wording ("the local service is draining ... start it again").
+        assert "the local service is" not in text.lower(), text
+        assert "remote_unreachable" not in text and "start it again" not in text, text
+    assert "same request_id" in structured and "service_draining" in structured
+
+
+@pytest.mark.parametrize("method", list(ControlMethod))
+def test_no_service_can_answer_service_unavailable(method: ControlMethod) -> None:
+    # Every ``service_unavailable`` a remote client sees is its own connection's: a service
+    # cannot answer one (the control-result error codes exclude it), which is why a remote root
+    # reads a phase-less one as ``remote_unreachable`` and never as the server's own answer.
+    from finishup.protocol.ids import IdKind, new_id
+    from finishup.service.control_protocol import ControlProtocolError, validate_result
+
+    answer = ControlResult(
+        protocol_version="1.0",
+        rpc_id=new_id(IdKind.CONTROL_RPC),
+        service_instance_id=new_id(IdKind.SERVICE_INSTANCE),
+        service_generation="1",
+        method=method,
+        outcome="error",
+        body=ControlError("service_unavailable", retryable=True),
+    )
+    with pytest.raises(ControlProtocolError):
+        validate_result(answer)
+
+
 def test_the_hooks_name_the_remote_remedy(remote: None) -> None:
     del remote
     unavailable = hooks.unavailable_context(
@@ -197,7 +244,7 @@ def test_the_hooks_name_the_remote_remedy(remote: None) -> None:
     )
 
 
-@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED])
+@pytest.mark.parametrize("error", [_PHASED, _BARE, _LOCKED, _DRAINING])
 def test_the_terminal_interface_names_the_remote_remedy(remote: None, error: ControlError) -> None:
     del remote
     failure = tui_runtime._connect_failure(error)  # pyright: ignore[reportPrivateUsage]

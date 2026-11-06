@@ -1914,6 +1914,12 @@ _REMOTE_UNAVAILABLE_MESSAGE: Final = (
     "Never fall back to another server or a local service, and never run local service "
     "lifecycle commands for this."
 )
+_REMOTE_DRAINING_MESSAGE: Final = (
+    "The selected FinishUP server on another machine answered that it is shutting down or "
+    "restarting, so it did not serve this request. Wait a few seconds, then retry this operation "
+    "with the same request_id. Never fall back to another server or a local service, and never "
+    "run local service lifecycle commands for this."
+)
 _REMOTE_UNCLAIMABLE_MESSAGE: Final = (
     "This folder could not be named to the selected FinishUP server as a workspace, because this "
     "computer's Git could not resolve it, so nothing was sent or recorded. Work from the folder "
@@ -1953,6 +1959,17 @@ def _remote_control_error_result(
             message=_REMOTE_LOCKED_MESSAGE,
             retryable=error.retryable,
             host_profile=host_profile,
+        )
+    if remedy.reason == "service_draining":
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.SERVICE_UNAVAILABLE,
+            message=_REMOTE_DRAINING_MESSAGE,
+            retryable=True,
+            host_profile=host_profile,
+            safe_details={"reason_code": "service_draining"},
         )
     if remedy.reason in SERVICE_HANDSHAKE_PHASES:
         return _control_public_error_result(
@@ -1994,7 +2011,7 @@ def _control_error_result(
     # Prefer the service-minted diagnostic id when present so the agent-facing public error
     # resolves the same durable sink record the daemon already wrote. Never mint a second id for
     # a failure the service already correlated.
-    if error.reason in {"service_unavailable", "vault_locked"}:
+    if error.reason in {"service_draining", "service_unavailable", "vault_locked"}:
         remote = _remote_control_error_result(
             error, request_id, operation, host_profile=host_profile
         )

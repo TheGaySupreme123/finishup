@@ -545,8 +545,10 @@ HTTPS and LOCALHOST PORT
   `handshake_git_version`).
 - **Remedies.** Every surface asks `finishup.client.remote_remedy` on a remote root: a failed
   connection names its remote phase with that phase's ADR-030 directive; any other
-  `service_unavailable` there is `remote_unreachable`; a workspace that could not be claimed is
-  this folder's; a locked server vault is its owner's to unlock on the server host. The CLI
+  `service_unavailable` there is `remote_unreachable` (a service never answers one: the
+  control-result error codes exclude it, so it is always the connection's own); a workspace that
+  could not be claimed is this folder's; a locked server vault is its owner's to unlock on the
+  server host; a server that answered `service_draining` is waited for, never restarted. The CLI
   (errors, the menu, setup's next steps), the MCP bridge, the SessionStart hook contexts and
   auto-attach, and the terminal interface use it; none of them names a local `service run` or
   `service unlock`, a host or a target name, and a local root's output is unchanged.
