@@ -1985,9 +1985,16 @@ class ServiceDaemon:
         The commitment is the installation MAC over the claim (``yoetz/repository-claim/v1``), so
         the session's repository identity is ``client_claim`` and its handle is the
         commitment's ``client:`` prefix. Nothing on this machine's disk is consulted.
+
+        A soft lock (idle, session lock, suspend) re-opens here exactly as it would on the
+        connection's first request: a claim-bound connection's handle is fixed by this answer, so
+        a handle withheld for a lock that the next request lifts would leave the connection unable
+        to name its workspace for its whole life. A hard lock stays locked and keys nothing.
         """
 
         vault = self._composition.vault
+        if not vault.ready:
+            await self._try_soft_lock_auto_ready()
         if not vault.ready:
             return None
         key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)

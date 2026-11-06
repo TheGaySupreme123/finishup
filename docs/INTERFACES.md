@@ -4778,7 +4778,11 @@ synchronous `answer(call, *, workspace_handle) -> WorkspaceReply`), is declared 
 the connection's `workspace_call` frames. `connect_service`, `connect_service_on_demand` and
 `_connect_service_attempt` take `workspace_binding=`; passing it with a locator raises
 `workspace_binding_conflict`. `ServiceClient.workspace_binding` and `ServiceClient.workspace_handle`
-expose the hello-result's answer. A client with an agent runs at most four workspace calls at once
+expose the hello-result's answer. A remote connect whose claim the server answered without a
+handle is closed and raised as the server's state: `vault_locked` (retryable for the service's
+own retryable lock reasons), or `service_unavailable` with phase `remote_service_not_running`
+(starting or stopping) or `remote_incompatible` (ready but unkeyed); the daemon's claim resolver
+re-opens a soft lock before keying. A client with an agent runs at most four workspace calls at once
 in worker threads and writes each reply under its write lock, answering busy, deadline,
 reply-too-large and internal-error cases with closed reasons; a client without one still treats a
 `workspace_call` as `frame_invalid`.

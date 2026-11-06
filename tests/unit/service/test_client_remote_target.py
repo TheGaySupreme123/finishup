@@ -9,8 +9,10 @@ through its recorded launcher. A damaged target record refuses before any dial.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,10 @@ from finishup.ports.control import (
     ControlError,
     ControlMethod,
     ControlResult,
+    RepositoryPrivacyContext,
+    ServiceState,
+    ServiceStatus,
+    WorkspaceClaim,
     WorkspaceLocator,
 )
 from finishup.service import client as client_module
@@ -93,8 +99,25 @@ def _use(monkeypatch: pytest.MonkeyPatch, transport: _FakeTransport) -> None:
     monkeypatch.setattr(transports, "transport_for_target", chosen)
 
 
-async def _serve(stream: ControlStream) -> None:
-    session = await server_handshake(stream, stream.peer_identity, service_status())
+async def _key_claim(claim: WorkspaceClaim) -> RepositoryPrivacyContext:
+    """The daemon's answer to a claim while its vault is ready: a keyed ``client_claim``."""
+
+    mac = hmac.new(b"installation", claim.digest.encode("ascii"), "sha256").hexdigest()
+    return RepositoryPrivacyContext(commitment="hmac-sha256:" + mac, identity_kind="client_claim")
+
+
+async def _serve(
+    stream: ControlStream,
+    *,
+    status: ServiceStatus | None = None,
+    keyed: bool = True,
+) -> None:
+    session = await server_handshake(
+        stream,
+        stream.peer_identity,
+        status or service_status(),
+        claim_context_resolver=_key_claim if keyed else None,
+    )
     while True:
         try:
             frame = await read_control_frame(stream, eof_reason="session_closed")
@@ -380,3 +403,87 @@ def test_a_local_root_has_no_serving_binding(
         )
     assert binding is None
     assert asyncio.run(client_module.serving_workspace_binding(None)) is None
+
+
+@pytest.mark.parametrize(
+    ("state", "reason", "expected"),
+    [
+        # A hard lock needs the owner on the server: not retryable, as the service would say.
+        (ServiceState.LOCKED, "passphrase_required", ("vault_locked", False, None)),
+        # A soft lock re-opens on the next request: retryable, as the service would say.
+        (ServiceState.LOCKED, "idle_relock", ("vault_locked", True, None)),
+        # A service still starting or already stopping is retried as not running.
+        (
+            ServiceState.DRAINING,
+            "none",
+            ("service_unavailable", True, "remote_service_not_running"),
+        ),
+        # A ready service that keyed nothing does not speak this protocol.
+        (ServiceState.READY, "none", ("service_unavailable", False, "remote_incompatible")),
+    ],
+)
+def test_a_claim_the_server_did_not_key_is_refused_at_connect(
+    remote: ServerTarget,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    state: ServiceState,
+    reason: str,
+    expected: tuple[str, bool, str | None],
+) -> None:
+    # ADR-051: a claim-bound connection with no handle could not name its workspace, serve as
+    # an agent or route a hook row, so it is never handed out; the caller gets the server's own
+    # reason (a locked vault, most often) instead of a misleading workspace_ref refusal later.
+    status = replace(service_status(), state=state, state_reason=reason, vault_mode="passphrase")
+    taps: list[TapStream] = []
+
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        tap = TapStream(server_end)
+        taps.append(tap)
+        asyncio.get_running_loop().create_task(_serve(tap, status=status, keyed=False))
+        return client_end
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await client_module.connect_service(
+                ControlClientKind.MCP_BRIDGE, workspace_locator=WorkspaceLocator(str(tmp_path))
+            )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == expected
+    (tap,) = taps
+    assert b'"workspace_claim"' in tap.received
+    assert os.fsencode(tmp_path) not in tap.received
+
+
+def test_a_connection_without_a_workspace_needs_no_handle(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A locked server still answers what needs no workspace (service status, say).
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        asyncio.get_running_loop().create_task(_serve(server_end, keyed=False))
+        return client_end
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> str:
+        client = await client_module.connect_service(ControlClientKind.CLI)
+        try:
+            await client.service_status()
+        finally:
+            await client.close()
+        return client.workspace_binding
+
+    assert asyncio.run(exercise()) == "none"
+
+
+def test_the_retryable_lock_reasons_are_the_services_own() -> None:
+    from finishup.service import daemon
+
+    assert client_module._RETRYABLE_LOCK_REASONS == (  # pyright: ignore[reportPrivateUsage]
+        daemon._SOFT_LOCK_AUTO_READY_REASONS | {"none"}  # pyright: ignore[reportPrivateUsage]
+    )

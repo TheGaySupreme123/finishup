@@ -194,7 +194,13 @@ resource ripple.
   fence works on that commitment unchanged. The server never resolves a filesystem path for a
   claim-bound connection. The composition flag `ServiceComposition.refuse_workspace_locators`
   (off by default) lets a network edge close any hello that names a locator. A claim on a locked
-  service binds no handle and no agent.
+  service binds no handle and no agent. Because a claim-bound connection's handle is fixed by its
+  hello, the claim hello re-opens a soft lock (idle, session lock, suspend) exactly as the
+  connection's first request would; a hard lock stays locked. A direct-dial client never keeps a
+  claim-bound connection the server answered without a handle: it closes it and reports the
+  server's own state, `vault_locked` (retryable exactly when the service would call it so) for a
+  locked vault, `remote_service_not_running` while it starts or stops, and `remote_incompatible`
+  for a ready service that keyed nothing (amended 2026-11-06 after the real-environment run).
 - **Agent declaration.** The hello gains an optional `workspace_agent` `{schema_version: "1.0.0",
   operations: [...], max_reply_bytes: <int>}`: this connection answers workspace calls for its
   claimed workspace.

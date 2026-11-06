@@ -72,6 +72,7 @@ from finishup.ports.control import (
     McpHostProfile,
     McpRouteProfile,
     ProjectionRenderMode,
+    ServiceState,
     ServiceStatus,
     ServiceStopResult,
     WorkspaceAgentDeclaration,
@@ -187,6 +188,11 @@ _SUPERSEDE_REASONS: Final = frozenset({"service_incompatible", "protocol_mismatc
 # A remote server answered or refused this client's hello as another release would (ADR-051).
 _REMOTE_INCOMPATIBLE_REASONS: Final = frozenset(
     {"handshake_rejected", "manifest_mismatch", "method_forbidden", "protocol_mismatch"}
+)
+# The lock reasons the service's own ``vault_locked`` answer calls retryable: its soft locks,
+# which re-open on the next request, and the transient ``none`` (``ServiceDaemon._dispatch``).
+_RETRYABLE_LOCK_REASONS: Final = frozenset(
+    {"idle_relock", "user_session_locked", "system_suspend", "none"}
 )
 _SECRET_ENV_MARKERS: Final = (
     "API_KEY",
@@ -1993,6 +1999,10 @@ async def _connect_remote_attempt(
                 projection_render_mode=projection_render_mode,
                 output_is_controlling_tty=output_is_controlling_tty,
             )
+            if binding is not None and session.workspace_handle is None:
+                # A claim the server could not key names no workspace: a start could not name
+                # it, an agent could not register for it and a hook row could not route to it.
+                raise _unkeyed_claim(session)
         return _connected_client(stream, session, client_kind, agent, transport=transport.kind)
     except TransportError as exc:
         phase = exc.phase
@@ -2013,6 +2023,26 @@ async def _connect_remote_attempt(
     if stream is not None:
         await _best_effort_close_stream(stream)
     raise ControlError("service_unavailable", retryable=True, phase=phase)
+
+
+def _unkeyed_claim(session: ControlSession) -> ControlError:
+    """Why a remote service answered this connection's workspace claim with no handle (ADR-051).
+
+    A service keys a claim only while its vault is ready, so a hello that found it locked gets
+    the service's own ``vault_locked`` answer, retryable exactly when the service itself would
+    call it so (a soft lock that heals, or a transient reason). A service starting or stopping is
+    retried as not running; a ready service that keyed nothing does not speak this protocol.
+    """
+
+    status = session.service_status
+    state = None if status is None else status.state
+    if status is not None and state in {ServiceState.LOCKED, ServiceState.UNLOCKING}:
+        return ControlError(
+            "vault_locked", retryable=status.state_reason in _RETRYABLE_LOCK_REASONS
+        )
+    if state is ServiceState.READY:
+        return ControlError("service_unavailable", retryable=False, phase="remote_incompatible")
+    return ControlError("service_unavailable", retryable=True, phase="remote_service_not_running")
 
 
 async def _target_binding(
