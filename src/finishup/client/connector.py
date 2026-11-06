@@ -499,8 +499,9 @@ class Connector:
                     await self._drain()
             with contextlib.suppress(Exception):
                 await listener.aclose()
-            # Background agents first, so none dials again while the relays are torn down.
-            for lease in self._claims.values():
+            # Background agents first, so none dials again while the relays are torn down. A snapshot:
+            # a relay still running may note a new claim while an agent closes.
+            for lease in tuple(self._claims.values()):
                 if lease.agent is not None:
                     with contextlib.suppress(Exception):
                         await lease.agent.aclose()
