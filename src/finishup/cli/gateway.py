@@ -63,6 +63,7 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "a label is 1 to 64 letters, digits, spaces, dots, hyphens or underscores",
         _USAGE,
     ),
+    "gateway_key_scope_invalid": ("--scope is agent or operator", _USAGE),
     "gateway_key_expiry_invalid": ("--expires-in-days takes 1 to 3650", _USAGE),
     "gateway_key_limit": ("the gateway holds its maximum of 256 keys; revoke unused ones", _USAGE),
     "gateway_key_output_exists": (
@@ -176,7 +177,7 @@ def key_create(
     from finishup.gateway.keys import GatewayKeyError, create_key
 
     if scope is not None and scope not in {"agent", "operator"}:
-        raise _fail("gateway_keys_invalid")
+        raise _fail("gateway_key_scope_invalid")
     if (label is None or scope is None) and rotate is None:
         typer.echo("usage: give --label and --scope, or --rotate KEY_ID", err=True)
         raise typer.Exit(_USAGE)

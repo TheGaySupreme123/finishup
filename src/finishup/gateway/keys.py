@@ -78,6 +78,7 @@ _REASONS: Final = frozenset(
         "gateway_keys_unsafe",
         "gateway_key_unknown",
         "gateway_key_label_invalid",
+        "gateway_key_scope_invalid",
         "gateway_key_expiry_invalid",
         "gateway_key_limit",
     }
@@ -336,7 +337,7 @@ def create_key(
         if label is None or not _LABEL.match(label):
             raise GatewayKeyError("gateway_key_label_invalid")
         if scope not in {"agent", "operator"}:
-            raise GatewayKeyError("gateway_keys_invalid")
+            raise GatewayKeyError("gateway_key_scope_invalid")
         if len(keys) >= _MAX_KEYS:
             raise GatewayKeyError("gateway_key_limit")
         taken = {key.key_id for key in keys}
