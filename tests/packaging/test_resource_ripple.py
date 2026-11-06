@@ -558,6 +558,9 @@ def test_reviewed_count_mismatch_fails_before_any_generator_runs(tmp_path: Path)
 
 
 @pytest.mark.slow
+# The same real checkout copy and every generator pass as the converge test above: past the job's
+# 180 s default on a shared 4-CPU runner once the inventory grew (ADR-051), while still bounded.
+@pytest.mark.timeout(600)
 def test_write_bootstraps_new_version_manifest_without_rewriting_released_schema(
     tmp_path: Path,
 ) -> None:
