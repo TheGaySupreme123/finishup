@@ -150,6 +150,9 @@ class _ClaimClient:
     )
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     reader: asyncio.Task[None] | None = None
+    # The loop keeps only weak references to tasks: each answer in flight is held here until it
+    # finishes, and ``close`` cancels and awaits any left.
+    answering: set[asyncio.Task[None]] = field(default_factory=set["asyncio.Task[None]"])
 
     def start(self) -> None:
         self.reader = asyncio.create_task(self._read())
@@ -160,7 +163,9 @@ class _ClaimClient:
                 frame = await read_control_frame(self.stream)  # pyright: ignore[reportArgumentType]
                 if is_workspace_call_frame(frame):
                     assert self.agent is not None
-                    asyncio.create_task(self._answer(parse_workspace_call(frame)))
+                    task = asyncio.create_task(self._answer(parse_workspace_call(frame)))
+                    self.answering.add(task)
+                    task.add_done_callback(self.answering.discard)
                     continue
                 result = parse_control_result(frame)
                 self.session.correlate(result)
@@ -196,9 +201,10 @@ class _ClaimClient:
 
     async def close(self) -> None:
         await self.stream.aclose()
-        if self.reader is not None:
-            self.reader.cancel()
-            await asyncio.gather(self.reader, return_exceptions=True)
+        tasks = [*self.answering, *(() if self.reader is None else (self.reader,))]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # --- repositories, spies and the service ---------------------------------------------------------

@@ -88,6 +88,19 @@ def _hub(wait: float = 0.2) -> WorkspaceAgentHub:
     return WorkspaceAgentHub(inline_wait_seconds=wait, background_wait_seconds=wait)
 
 
+_DEADLINE_SECONDS = 10.0
+
+
+async def _until(condition: Callable[[], bool], *, interval: float = 0.0) -> None:
+    """Yield to the loop until ``condition`` holds; fail once the deadline passes without it."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _DEADLINE_SECONDS
+    while not condition():
+        assert loop.time() < deadline, "deadline passed before the state was observed"
+        await asyncio.sleep(interval)
+
+
 async def test_a_call_is_framed_for_the_agents_connection_and_decodes_its_answer() -> None:
     hub = _hub()
     sent: list[WorkspaceCall] = []
@@ -133,7 +146,14 @@ async def test_live_calls_wait_less_than_background_work() -> None:
     background = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0)
     )
-    await asyncio.sleep(0.05)
+    with live_call_scope():
+        live = asyncio.create_task(
+            hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0)
+        )
+    # Started just after the background call, the live call has already given up waiting.
+    with pytest.raises(WorkspaceAgentUnavailable) as caught:
+        await asyncio.wait_for(live, 1.0)
+    assert caught.value.reason == "no_agent"
     assert not background.done()  # still inside the longer background wait
     await _register(hub, lambda call: _ok(call, _BASE))
     assert await background == _BASE
@@ -188,8 +208,7 @@ async def test_a_dropped_connection_fails_its_pending_calls_at_once() -> None:
     pending = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=30.0)
     )
-    while channel.pending_count == 0:
-        await asyncio.sleep(0)
+    await _until(lambda: channel.pending_count > 0)
     await hub.unregister(channel)
     with pytest.raises(WorkspaceAgentUnavailable) as caught:
         await asyncio.wait_for(pending, 1.0)
@@ -233,18 +252,19 @@ async def test_one_connection_serves_a_bounded_number_of_calls_at_once() -> None
     channel = await _register(hub, lambda _call: None, sent=held)
     calls = [
         asyncio.create_task(
-            hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=0.3)
+            hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=5.0)
         )
-        for _ in range(MAX_CALLS_PER_CHANNEL + 1)
+        for _ in range(MAX_CALLS_PER_CHANNEL)
     ]
-    while len(held) < MAX_CALLS_PER_CHANNEL:
-        await asyncio.sleep(0)
-    await asyncio.sleep(0.05)
-    assert len(held) == MAX_CALLS_PER_CHANNEL  # the extra call waits for a slot, unsent
+    await _until(lambda: len(held) == MAX_CALLS_PER_CHANNEL)
+    # One call more waits for a slot within its own bound, is never sent, and says so.
+    with pytest.raises(WorkspaceAgentUnavailable) as caught:
+        await hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=0.1)
+    assert caught.value.reason == "agent_busy"
+    assert len(held) == MAX_CALLS_PER_CHANNEL
     for call in held:
         hub.deliver(channel, _ok(call, _BASE))
-    results = await asyncio.gather(*calls, return_exceptions=True)
-    assert results.count(_BASE) >= MAX_CALLS_PER_CHANNEL
+    assert await asyncio.gather(*calls) == [_BASE] * MAX_CALLS_PER_CHANNEL
 
 
 _COMMITMENT = "hmac-sha256:" + "0a" * 32
@@ -337,8 +357,7 @@ async def test_a_read_whose_connection_dropped_is_asked_once_of_another_live_one
     pending = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=5.0)
     )
-    while newest.pending_count == 0:
-        await asyncio.sleep(0)
+    await _until(lambda: newest.pending_count > 0)
     await hub.unregister(newest)
     assert await asyncio.wait_for(pending, 1.0) == _BASE
     assert [call.operation for call in older] == ["read_task_base"]
@@ -366,8 +385,7 @@ async def test_an_approved_check_whose_connection_dropped_is_never_run_twice() -
     pending = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.RUN_APPROVED_CHECK, arguments, timeout_seconds=5.0)
     )
-    while newest.pending_count == 0:
-        await asyncio.sleep(0)
+    await _until(lambda: newest.pending_count > 0)
     await hub.unregister(newest)
     with pytest.raises(WorkspaceAgentUnavailable) as caught:
         await asyncio.wait_for(pending, 1.0)
@@ -450,19 +468,14 @@ async def test_a_cancelled_handler_cancels_its_blocking_workspace_call_at_once()
             return await asyncio.to_thread(blocking)
 
     task = asyncio.create_task(handler())
-    while channel.pending_count == 0:
-        await asyncio.sleep(0.005)
+    await _until(lambda: channel.pending_count > 0, interval=0.005)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     # The worker thread and the agent slot are free at once, not after the call's 60 s.
     assert await asyncio.to_thread(returned.wait, 2.0)
     assert reasons == ["call_cancelled"]
-    for _ in range(200):
-        if channel.pending_count == 0:
-            break
-        await asyncio.sleep(0.005)
-    assert channel.pending_count == 0
+    await _until(lambda: channel.pending_count == 0, interval=0.005)
 
 
 async def test_a_workspace_call_never_waits_past_its_handlers_deadline() -> None:
@@ -514,9 +527,11 @@ async def test_work_a_handler_started_is_not_bounded_by_it_once_it_returned() ->
             timeout_seconds=30.0,
         )
 
-    with workspace_call_deadline(loop.time() + 0.05):
+    handler_deadline = loop.time() + 0.05
+    with workspace_call_deadline(handler_deadline):
         spawned = asyncio.create_task(later())
-    await asyncio.sleep(0.1)  # the handler's deadline has passed; its scope ended normally
+    # The handler's deadline has passed; its scope ended normally.
+    await _until(lambda: loop.time() > handler_deadline, interval=0.01)
     release.set()
     assert await spawned == _BASE
     (call,) = sent
@@ -533,19 +548,22 @@ async def test_a_queued_call_is_told_only_the_time_it_has_left() -> None:
         )
         for _ in range(MAX_CALLS_PER_CHANNEL)
     ]
-    while len(held) < MAX_CALLS_PER_CHANNEL:
-        await asyncio.sleep(0)
+    await _until(lambda: len(held) == MAX_CALLS_PER_CHANNEL)
+    loop = asyncio.get_running_loop()
     queued = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=2.0)
     )
-    await asyncio.sleep(0.5)
-    hub.deliver(channel, _ok(held[0], _BASE))  # one slot frees after half a second
-    while len(held) < MAX_CALLS_PER_CHANNEL + 1:
-        await asyncio.sleep(0)
+    await asyncio.sleep(0)  # one step: the queued call fixed its 2 s budget and waits for a slot
+    budget_fixed_by = loop.time()
+    # Let the slot wait cost a measurable part of that budget before one slot frees.
+    await _until(lambda: loop.time() >= budget_fixed_by + 0.5, interval=0.01)
+    freed_at = loop.time()
+    hub.deliver(channel, _ok(held[0], _BASE))
+    await _until(lambda: len(held) == MAX_CALLS_PER_CHANNEL + 1)
     late = held[-1]
-    assert late.deadline_ms <= 1_600  # not the full 2 s: the slot wait came off its budget
-    # The agent answers within the deadline it was told: the hub still waits for it.
-    await asyncio.sleep(late.deadline_ms / 1000 * 0.8)
+    # Not the full 2 s: told at most what was left once the slot freed.
+    assert 1 <= late.deadline_ms <= int((budget_fixed_by + 2.0 - freed_at) * 1000) + 1
+    # The agent answers as soon as it is asked, within the deadline it was told.
     hub.deliver(channel, _ok(late, _BASE))
     assert await queued == _BASE
     for blocker in blockers:
@@ -558,7 +576,10 @@ async def test_a_frame_is_written_whole_when_its_caller_stops_waiting() -> None:
     release = asyncio.Event()
     finished: list[str] = []
 
+    entered: list[str] = []
+
     async def slow_writer(_call: WorkspaceCall) -> None:
+        entered.append("writing")
         try:
             await release.wait()  # a peer that drains slowly, or a long result ahead on the line
             finished.append("written")
@@ -581,13 +602,10 @@ async def test_a_frame_is_written_whole_when_its_caller_stops_waiting() -> None:
     pending = asyncio.create_task(
         hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=5.0)
     )
-    await asyncio.sleep(0.05)
+    await _until(lambda: len(entered) == 2)  # its frame is being written
     pending.cancel()
     await asyncio.gather(pending, return_exceptions=True)
     assert finished == []
     release.set()
-    for _ in range(100):
-        if len(finished) == 2:
-            break
-        await asyncio.sleep(0.01)
+    await _until(lambda: len(finished) == 2)
     assert finished == ["written", "written"]

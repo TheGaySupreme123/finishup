@@ -363,8 +363,10 @@ async def test_capacity_closes_an_idle_claim_and_refuses_when_all_are_busy(
     busy = harness.coordinators[other_handle]
     busy.gate = asyncio.Event()
     pending = asyncio.create_task(router.ingest(_context(_OTHER_CLAIM), _request(_attestation())))
-    while not busy.seen[1:]:
-        await asyncio.sleep(0)
+    # The second ingest reaches the busy claim's coordinator; fail on a deadline, never hang.
+    async with asyncio.timeout(10.0):
+        while not busy.seen[1:]:
+            await asyncio.sleep(0)
     harness.routes = {_SESSION: _route()}
     refused = await router.ingest(_context(), _request(_attestation()))
     assert refused.reason == "service_unavailable"
