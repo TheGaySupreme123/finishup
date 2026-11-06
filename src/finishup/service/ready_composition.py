@@ -451,6 +451,7 @@ from finishup.service.bundle_upgrade import (
 )
 from finishup.service.bundle_upgrade_effects import BundleUpgradeFencedLedger
 from finishup.service.import_publication_authority import ImportPublicationAuthority
+from finishup.service.lifecycle import LOCK_DRAIN_SECONDS
 from finishup.service.project_coordination_authority import ProjectCoordinationGrantAuthority
 from finishup.service.semantic_attention import SemanticAttentionTracker
 from finishup.service.semantic_ceiling import (
@@ -481,6 +482,11 @@ _CATALOG_NAME = "catalog.sqlite3"
 _LEDGER_NAME = "ledger.sqlite3"
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _LEGACY_HOOK_SPOOL_BATCH_LIMIT: Final = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT
+# How long generation close waits for a spool pass it asked to stop: the drain a soft lock gives
+# in-flight work before it closes the generation. A pass parked on a hook's spool flock past it must
+# not hang a stop, restart or idle relock; close records that and goes on, and the pass ends at its
+# next stop check.
+_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS: Final = float(LOCK_DRAIN_SECONDS)
 # The egress purpose every background advice dispatch carries; admission judges the same one.
 _ADVICE_SEMANTIC_PURPOSE: Final = "semantic-review"
 # Privacy refusals that mean the owner's authority or policy no longer admits this unattended
@@ -782,6 +788,10 @@ def _replay_legacy_hook_spool(state: Path, *, stop: threading.Event | None = Non
     from finishup.cli.observe_hooks import handle_observe
 
     remaining = _LEGACY_HOOK_SPOOL_BATCH_LIMIT
+    # A pass that generation close asked to stop before it began leaves the spool untouched:
+    # listing it creates the spool directory.
+    if stop is not None and stop.is_set():
+        return
     for workspace_commitment in spool.pending_workspaces():
         if remaining <= 0 or (stop is not None and stop.is_set()):
             return
@@ -811,7 +821,9 @@ class _LegacyHookSpoolForwarder:
     handles. One replay pass claims at most one bounded batch. A cancelled await therefore cannot
     safely start a second claim until the first worker has finished; retaining the future also lets
     the next maintenance pass join that worker. ``close`` asks the worker to stop between claims
-    during generation teardown but lets its active batch finish its owned local writes.
+    during generation teardown but lets its active batch finish its owned local writes;
+    ``wait_closed`` then waits a bounded time for that batch, so normally no spool write outlives
+    the generation's close.
     """
 
     def __init__(self, state: Path) -> None:
@@ -880,6 +892,30 @@ class _LegacyHookSpoolForwarder:
 
             future.add_done_callback(observe_closed_worker)
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    async def wait_closed(self) -> None:
+        """Ask the worker to stop, then wait a bounded time for the pass it was running.
+
+        A cancelled maintenance pass leaves its worker running. Without this wait the worker
+        could still create or claim spool files after the generation and its owner had closed.
+        A pass still running at ``_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS`` is recorded and left to
+        end at its next stop check. A failure is already recorded by ``close``; waiting never
+        raises it again.
+        """
+
+        self.close()
+        future = self._future
+        if future is None:
+            return
+        _done, outstanding = await asyncio.wait(
+            (future,), timeout=_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS
+        )
+        if outstanding:
+            record_bounded_event_without_raising(
+                component="service.ready_composition",
+                operation="legacy_hook_spool_close",
+                reason="legacy_spool_pass_outstanding_at_close",
+            )
 
 
 async def _run_blocking_joined[ResultT](
@@ -8550,6 +8586,7 @@ async def provide_service_ready_context(
         ),
         coordination_sweep=sweep_coordination,
         observation_sweep_close=close_observation_maintenance,
+        observation_sweep_wait_closed=legacy_spool_forwarder.wait_closed,
         ready_recommendation_refresh=refresh_ready_recommendations,
         reconcile_observation_capture=reconcile_observation_capture,
         lineage=lineage,

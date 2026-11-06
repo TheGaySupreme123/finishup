@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import json
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -17,7 +18,9 @@ import pytest
 
 import finishup.adapters.sqlite.connection as connection_module
 import finishup.adapters.sqlite.recovery as recovery_module
+import finishup.observability.diagnostics as diagnostics_module
 import finishup.service.ready_composition as ready_composition_module
+from builders.multi_agent import multi_agent_service
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
 from finishup.adapters.integrations.observation_local import LocalObservationStore
@@ -700,6 +703,176 @@ async def test_legacy_spool_close_requests_stop_after_the_active_batch(
     finally:
         release.set()
         forwarder.close()
+
+
+@pytest.mark.anyio
+async def test_legacy_spool_wait_closed_waits_for_the_pass_close_asked_to_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled sweep's spool pass keeps running; waiting for close outlasts its writes."""
+
+    started = threading.Event()
+    release = threading.Event()
+    stop_seen = threading.Event()
+    written = tmp_path / "written-by-the-pass"
+
+    def replay(_state: Path, *, stop: threading.Event) -> None:
+        started.set()
+        assert release.wait(5.0)
+        if stop.is_set():
+            stop_seen.set()
+        written.touch()
+
+    monkeypatch.setattr(ready_composition_module, "_replay_legacy_hook_spool", replay)
+    forwarder = ready_composition_module._LegacyHookSpoolForwarder(  # pyright: ignore[reportPrivateUsage]
+        tmp_path
+    )
+    sweep = asyncio.create_task(forwarder.replay())
+    try:
+        await _wait_thread_event(started)
+        # The daemon cancels its maintenance loop before it closes the generation.
+        sweep.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sweep
+        closing = asyncio.create_task(forwarder.wait_closed())
+        heartbeat = asyncio.Event()
+        asyncio.get_running_loop().call_soon(heartbeat.set)
+        await asyncio.wait_for(heartbeat.wait(), timeout=1.0)
+        assert not closing.done()
+        assert not written.exists()
+        release.set()
+        await closing
+        assert stop_seen.is_set()
+        assert written.exists()
+    finally:
+        release.set()
+        forwarder.close()
+
+
+def test_legacy_spool_pass_stopped_before_it_began_touches_nothing(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    stop = threading.Event()
+    stop.set()
+
+    ready_composition_module._replay_legacy_hook_spool(tmp_path, stop=stop)  # pyright: ignore[reportPrivateUsage]
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.anyio
+async def test_ready_close_returns_only_after_a_cancelled_sweeps_spool_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing a READY generation started writes to its state once its close has returned.
+
+    The daemon cancels its maintenance loop and then closes the application, so a spool pass
+    the cancelled sweep started is still running. The pass is held until close begins waiting
+    for it, the worst case for a close that does not wait, and then makes its real first write.
+    """
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    replay_pass = ready_composition_module._replay_legacy_hook_spool  # pyright: ignore[reportPrivateUsage]
+
+    def held_replay(state: Path, *, stop: threading.Event) -> None:
+        del stop  # this pass had begun listing the spool before close asked it to stop
+        started.set()
+        try:
+            assert release.wait(5.0)
+            replay_pass(state)
+        finally:
+            finished.set()
+
+    forwarder_type = ready_composition_module._LegacyHookSpoolForwarder  # pyright: ignore[reportPrivateUsage]
+    wait_closed = forwarder_type.wait_closed
+
+    async def release_then_wait_closed(forwarder: Any) -> None:
+        release.set()
+        await wait_closed(forwarder)
+
+    monkeypatch.setattr(ready_composition_module, "_replay_legacy_hook_spool", held_replay)
+    monkeypatch.setattr(forwarder_type, "wait_closed", release_then_wait_closed)
+    async with multi_agent_service(tmp_path) as service:
+        spool = service.root / "state" / "hook-spool"
+        try:
+            sweep_observation = service.app.observation_sweep
+            assert sweep_observation is not None
+            sweep = asyncio.ensure_future(sweep_observation())
+            await _wait_thread_event(started)
+            sweep.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sweep
+
+            await service.app.close()
+
+            assert finished.is_set()
+            assert spool.is_dir()
+        finally:
+            release.set()
+            await _wait_thread_event(finished)
+
+
+@pytest.mark.anyio
+async def test_ready_close_records_and_leaves_a_spool_pass_held_past_its_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass parked past close's bound cannot hold a stop, restart or idle relock open.
+
+    Close returns at the bound and records a fixed token; the parked pass keeps its stop flag,
+    so once it moves again it ends at its next stop check without touching the spool.
+    """
+
+    log_root = tmp_path / "logs"
+    log_root.mkdir(mode=0o700)
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: log_root)
+    monkeypatch.setattr(ready_composition_module, "_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS", 0.05)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    replay_pass = ready_composition_module._replay_legacy_hook_spool  # pyright: ignore[reportPrivateUsage]
+
+    def parked_replay(state: Path, *, stop: threading.Event) -> None:
+        started.set()
+        try:
+            # Parked, as on a hook's spool lock, until after close has returned.
+            assert release.wait(5.0)
+            replay_pass(state, stop=stop)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(ready_composition_module, "_replay_legacy_hook_spool", parked_replay)
+    async with multi_agent_service(tmp_path) as service:
+        spool = service.root / "state" / "hook-spool"
+        try:
+            sweep_observation = service.app.observation_sweep
+            assert sweep_observation is not None
+            sweep = asyncio.ensure_future(sweep_observation())
+            await _wait_thread_event(started)
+            sweep.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sweep
+
+            await service.app.close()
+
+            assert not finished.is_set()
+            records = [
+                json.loads(line)
+                for line in diagnostics_module.diagnostic_log_path(root=log_root)
+                .read_text(encoding="ascii")
+                .splitlines()
+                if line
+            ]
+            outstanding = [
+                record for record in records if record.get("operation") == "legacy_hook_spool_close"
+            ]
+            assert len(outstanding) == 1
+            assert outstanding[0]["component"] == "service.ready_composition"
+            assert outstanding[0]["reason"] == "legacy_spool_pass_outstanding_at_close"
+        finally:
+            release.set()
+            await _wait_thread_event(finished)
+        assert not spool.exists()
 
 
 def test_legacy_spool_replay_stops_at_one_bounded_batch(

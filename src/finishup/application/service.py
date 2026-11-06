@@ -1019,6 +1019,11 @@ class Application:
     observation_sweep_close: Callable[[], None] | None = field(
         default=None, repr=False, compare=False
     )
+    # Awaited last in close: waits, within its own bound, for the sweep workers
+    # ``observation_sweep_close`` asked to stop, so their writes finish before close returns.
+    observation_sweep_wait_closed: Callable[[], Awaitable[None]] | None = field(
+        default=None, repr=False, compare=False
+    )
     # One task-local admission hook runs after a new CHECK hits a retryable capture barrier and
     # before its single freeze retry. It may retire unfinished native-content handoffs whose local
     # authority has changed; it never touches captured history or the ledger projection.
@@ -1095,6 +1100,10 @@ class Application:
             raise TypeError("ready_recommendation_refresh_invalid")
         if self.observation_sweep_close is not None and not callable(self.observation_sweep_close):
             raise TypeError("observation_sweep_close_invalid")
+        if self.observation_sweep_wait_closed is not None and not callable(
+            self.observation_sweep_wait_closed
+        ):
+            raise TypeError("observation_sweep_wait_closed_invalid")
         if self.reconcile_observation_losses is not None and not callable(
             self.reconcile_observation_losses
         ):
@@ -3885,7 +3894,7 @@ class Application:
         failure: BaseException | None = None
         try:
             # First: the sweep loop is already cancelled by this point, and a worker still parked
-            # on a cross-process flock must not hold this teardown open.
+            # on a cross-process flock must not hold the closers below open. It is waited for last.
             if self.observation_sweep_close is not None:
                 self.observation_sweep_close()
         except BaseException as exc:
@@ -3909,6 +3918,13 @@ class Application:
                 failure = exc
         try:
             await self.runtime.close()
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+        try:
+            # Last: wait, within its own bound, for a worker the first step asked to stop.
+            if self.observation_sweep_wait_closed is not None:
+                await self.observation_sweep_wait_closed()
         except BaseException as exc:
             if failure is None:
                 failure = exc
@@ -3970,6 +3986,9 @@ class ServiceReadyContext:
     observation_sweep_close: Callable[[], None] | None = field(
         default=None, repr=False, compare=False
     )
+    observation_sweep_wait_closed: Callable[[], Awaitable[None]] | None = field(
+        default=None, repr=False, compare=False
+    )
     lineage: LineageCoordinator | None = field(default=None, repr=False, compare=False)
     project_application: ProjectApplication | None = field(default=None, repr=False, compare=False)
     host_lineage_registry: HostLineageRegistryPort | None = field(
@@ -4019,6 +4038,10 @@ class ServiceReadyContext:
             raise TypeError("ready_recommendation_refresh_invalid")
         if self.observation_sweep_close is not None and not callable(self.observation_sweep_close):
             raise TypeError("observation_sweep_close_invalid")
+        if self.observation_sweep_wait_closed is not None and not callable(
+            self.observation_sweep_wait_closed
+        ):
+            raise TypeError("observation_sweep_wait_closed_invalid")
         if self.reconcile_observation_losses is not None and not callable(
             self.reconcile_observation_losses
         ):
@@ -4089,6 +4112,7 @@ class ReadyApplicationFactory:
                 coordination_sweep=context.coordination_sweep,
                 ready_recommendation_refresh=context.ready_recommendation_refresh,
                 observation_sweep_close=context.observation_sweep_close,
+                observation_sweep_wait_closed=context.observation_sweep_wait_closed,
                 reconcile_observation_capture=context.reconcile_observation_capture,
                 reconcile_observation_losses=context.reconcile_observation_losses,
                 enforce_repository_identity=True,
@@ -4147,6 +4171,12 @@ async def _close_ready_context(context: object) -> None:
             failure = exc
     try:
         await context.runtime.close()
+    except BaseException as exc:
+        if failure is None:
+            failure = exc
+    try:
+        if context.observation_sweep_wait_closed is not None:
+            await context.observation_sweep_wait_closed()
     except BaseException as exc:
         if failure is None:
             failure = exc
