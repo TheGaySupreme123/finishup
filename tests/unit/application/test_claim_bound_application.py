@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -146,3 +147,44 @@ def test_an_unanswered_agent_is_a_closed_check_time_change_gap() -> None:
         "check_time_change_unavailable_workspace_agent_unavailable"
         in CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS
     )
+
+
+@pytest.mark.parametrize(
+    ("hub_reason", "agent_reason", "gap_reason"),
+    [
+        ("agent_refused", "workspace_not_claimed", "workspace_agent_refused"),
+        ("operation_not_declared", None, "workspace_agent_refused"),
+        ("agent_failed", "internal_error", "workspace_agent_unavailable"),
+        ("agent_unavailable", "workspace_unavailable", "workspace_agent_unavailable"),
+        ("no_agent", None, "workspace_agent_unavailable"),
+        ("agent_disconnected", None, "workspace_agent_unavailable"),
+        ("deadline_exceeded", None, "workspace_agent_unavailable"),
+        ("reply_invalid", None, "workspace_agent_unavailable"),
+    ],
+)
+def test_an_agent_refusal_and_an_agent_loss_are_named_apart(
+    hub_reason: str, agent_reason: str | None, gap_reason: str
+) -> None:
+    """A receipt never says the agent was silent when it refused, nor refused when it failed."""
+
+    from finishup.application import check_change
+    from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
+
+    loss = WorkspaceAgentUnavailable(hub_reason, agent_reason)
+    reason = check_change._agent_loss_reason(loss)  # pyright: ignore[reportPrivateUsage]
+    assert reason == gap_reason
+    sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS[reason]
+    assert "/" not in sentence
+    assert ("refused" in sentence) is (gap_reason == "workspace_agent_refused")
+    assert "check_time_change_unavailable_" + reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS
+
+
+def test_both_agent_gaps_are_classified_beside_their_siblings() -> None:
+    from finishup.kernel.gap_effect import GAP_EFFECT_TABLE, PROOF_TOLERATED_GAPS
+
+    for reason in ("workspace_agent_unavailable", "workspace_agent_refused"):
+        code = "check_time_change_unavailable_" + reason
+        assert code in GAP_EFFECT_TABLE
+        assert code in PROOF_TOLERATED_GAPS
+        sibling = GAP_EFFECT_TABLE["check_time_change_unavailable_capture_failed"]
+        assert replace(GAP_EFFECT_TABLE[code], code=sibling.code) == sibling

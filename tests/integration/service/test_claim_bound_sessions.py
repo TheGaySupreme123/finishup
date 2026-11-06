@@ -1069,3 +1069,87 @@ async def test_a_claim_on_a_locked_service_binds_no_handle_and_registers_no_agen
         served.cancel()
         await asyncio.gather(served, return_exceptions=True)
         await daemon.close()
+
+
+async def test_a_child_attached_by_its_handle_keeps_the_client_attested_receipt(
+    tmp_path: Path, service: _Service
+) -> None:
+    """ADR-051: a delegated child attached by handle, with no workspace_ref, is still claim-bound.
+
+    The child's only opening event comes from the attach. Its evidence is read by the client's
+    agent, so its receipt keeps the fixed workspace-evidence block naming the serving service.
+    """
+
+    client_repo = tmp_path / "client" / "repo"
+    _repository(client_repo, "app.py", "print('client')\n")
+    agent = FakeWorkspaceAgent(client_repo)
+    client = await service.connect(claim=_claim_for(client_repo), agent=agent)
+    try:
+        handle = client.session.workspace_handle
+        assert handle is not None
+        parent = (await _start(client, handle)).root
+        assert parent.ok is True, parent
+        delegated = (
+            await client.call(
+                ControlMethod.START,
+                StartRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "mode": "delegate",
+                        "session_id": parent.session_id,
+                        "task_title": "The client's child task",
+                        "requested_view": "compact",
+                        "workspace_ref": handle,
+                        "external_ref": "claim-bound-child",
+                    }
+                ),
+            )
+        ).root
+        assert delegated.ok is True, delegated
+        capability = delegated.attach_handle
+        assert capability is not None
+        attached = (
+            await client.call(
+                ControlMethod.START,
+                StartRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "mode": "attach",
+                        "task_title": "The client's child task",
+                        "requested_view": "compact",
+                        "attach_handle": capability.model_dump(mode="json"),
+                    }
+                ),
+            )
+        ).root
+        assert attached.ok is True, attached
+        assert attached.task_id == delegated.task_id
+        receipt = (
+            await client.call(
+                ControlMethod.RECEIPT,
+                ReceiptRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "session_id": attached.session_id,
+                        "writer_id": attached.writer_id,
+                        "task_id": attached.task_id,
+                        "expected_frontier": _frontier(attached.frontier),
+                        "format": "text",
+                        "include": "standard",
+                        "redaction_profile": "full_local",
+                    }
+                ),
+            )
+        ).root
+        assert receipt.ok is True, receipt
+        assert receipt.human_text is not None
+        assert CLIENT_ATTESTED_WORKSPACE_LINE in receipt.human_text
+        assert f"Served by FinishUP service {client.session.service_instance_id}" in (
+            receipt.human_text
+        )
+        assert str(client_repo) not in receipt.human_text
+    finally:
+        await client.close()

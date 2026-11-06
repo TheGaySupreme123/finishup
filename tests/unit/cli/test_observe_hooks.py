@@ -7682,3 +7682,22 @@ async def test_service_ingest_attests_only_over_a_claim_bound_connection(tmp_pat
     assert attestation["consent"] == "active"
     assert attestation["route"] is None
     assert {key: value for key, value in remote.items() if key != "client_attestation"} == local
+
+    # A claim the server could not key (its vault was locked) sends nothing: the row stays
+    # pending behind a retryable vault_locked, and never carries this workspace's path.
+    locked = Client(None)
+    locked.workspace_binding = "client_claim"  # type: ignore[attr-defined]
+    held = await observe_hooks_module._try_service_ingest(  # pyright: ignore[reportPrivateUsage]
+        locked,  # type: ignore[arg-type]
+        "remote-session",
+        envelope,
+        deadline_ms=100,
+        store=store,
+        workspace_commitment=workspace,
+        _state=tmp_path,
+    )
+    from finishup.application.observation_drain import ObservationControlFailure
+
+    assert len(bodies) == 2
+    assert isinstance(held, ObservationControlFailure)
+    assert (held.control_reason, held.control_retryable) == ("vault_locked", True)

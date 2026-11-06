@@ -127,3 +127,65 @@ def test_cli_calls_follow_the_selection_between_two_named_local_servers(
     listed = _finishup(env, "server", "list")
     assert listed.returncode == 0
     assert "work" not in listed.stdout and "lab" not in listed.stdout
+
+
+@pytest.fixture
+def hermetic_everyday_environment() -> Iterator[dict[str, str]]:
+    """Every everyday folder (data, state, config, cache, runtime) in one short private tree.
+
+    The everyday service is started here, so none of its folders may resolve to this account's
+    real installation.
+    """
+
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    base = Path(tempfile.mkdtemp(prefix=".yz-amb-", dir=real_home))
+    base.chmod(0o700)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("FINISHUP_", "YOETZ_"))
+    }
+    for variable, leaf in (
+        ("XDG_STATE_HOME", "s"),
+        ("XDG_CONFIG_HOME", "c"),
+        ("XDG_DATA_HOME", "d"),
+        ("XDG_CACHE_HOME", "k"),
+        ("XDG_RUNTIME_DIR", "r"),
+    ):
+        (base / leaf).mkdir(mode=0o700)
+        environment[variable] = str(base / leaf)
+    try:
+        yield environment
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_the_everyday_server_starts_in_its_own_root_while_another_is_selected(
+    hermetic_everyday_environment: dict[str, str],
+) -> None:
+    """ADR-051: a spawned service serves its spawner's root, never the selection it did not use.
+
+    With ``work`` selected, ``server connect local`` starts the everyday service; its spawn is
+    told the everyday installation (``service run --ambient-root``), so the service binds the
+    everyday endpoint and nothing starts in ``work``'s root.
+    """
+
+    env = hermetic_everyday_environment
+    try:
+        assert _finishup(env, "server", "add", "work", "--local").returncode == 0
+        assert _finishup(env, "server", "use", "work").returncode == 0
+
+        connected = _finishup(env, "server", "connect", "local")
+        assert connected.returncode == 0, connected.stderr
+        assert "this computer's everyday server" in connected.stdout
+
+        everyday = _json(_finishup(env, "server", "status", "local", "--json"))
+        everyday_probe = cast(dict[str, object], everyday["probe"])
+        assert everyday_probe["outcome"] in {"ready", "reachable"}, everyday_probe
+        assert everyday["source"] == "selection"  # the selection is untouched
+        work = _json(_finishup(env, "server", "status", "work", "--json"))
+        assert cast(dict[str, object], work["probe"])["outcome"] == "not_running"
+    finally:
+        # Stopped through its own control channel, never by pattern.
+        _finishup(env, "server", "disconnect", "local")
+        _finishup(env, "server", "remove", "work", "--select-local")

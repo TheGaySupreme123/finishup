@@ -406,3 +406,34 @@ def test_the_process_umask_does_not_widen_target_files(home: Path) -> None:
     finally:
         os.umask(previous)
     assert (root / "target.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_the_service_reads_only_a_safe_target_kind(tmp_path: Path) -> None:
+    """``server_target_kind`` is the service's minimal, fail-closed read of ``target.json``."""
+
+    from finishup.config.paths import PathSafetyError, server_target_kind
+
+    root = tmp_path / "root"
+    root.mkdir(mode=0o700)
+    assert server_target_kind(root) is None
+    record = root / "target.json"
+    for kind in ("local", "local_port", "ssh", "https"):
+        record.write_bytes(f'{{"kind":"{kind}"}}\n'.encode())
+        record.chmod(0o600)
+        assert server_target_kind(root) == kind
+    for body, mode in (
+        (b'{"kind":"sshx"}\n', 0o600),
+        (b'["ssh"]\n', 0o600),
+        (b"{not json", 0o600),
+        (b'{"kind":"ssh"}\n', 0o640),
+        (b'{"kind":"ssh"' + b" " * 9_000 + b"}", 0o600),
+    ):
+        record.write_bytes(body)
+        record.chmod(mode)
+        with pytest.raises(PathSafetyError) as refused:
+            server_target_kind(root)
+        assert refused.value.reason_code == "isolation_root_invalid"
+    record.unlink()
+    record.symlink_to(tmp_path / "elsewhere.json")
+    with pytest.raises(PathSafetyError):
+        server_target_kind(root)

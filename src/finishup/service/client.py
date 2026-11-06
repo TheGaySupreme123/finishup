@@ -8,9 +8,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -150,6 +150,9 @@ __all__ = [
 ]
 
 _MAX_IN_FLIGHT: Final = 32
+# The hidden ``service run`` option a spawner whose root is the everyday installation passes, so the
+# service never reads a server selection its spawner did not use (``config.paths``).
+_AMBIENT_ROOT_OPTION: Final = "--ambient-root"
 # At most this many workspace calls run at once on one connection (ADR-051). A call beyond them is
 # answered ``agent_busy`` at once, so a slow read never holds the connection's other calls back,
 # and a slot stays taken until its worker thread has actually finished.
@@ -273,11 +276,39 @@ class _SpawnedService:
     startup_correlation_id: str
 
 
-def _spawn_service_process() -> _SpawnedService:
-    """Start one detached service that records any startup failure under a fresh id (#1040)."""
+def _refuse_remote_target_root() -> None:
+    """A remote server target's root never starts a local service (ADR-051).
 
+    Its record names a remote kind, or cannot be read and may: the spawn is refused at once with
+    the closed phase ``target_root_is_remote``, instead of starting a child that refuses unseen
+    while the caller waits out its whole start budget. A root that cannot be resolved at all is
+    left to the spawn's own path-safety refusal.
+    """
+
+    from finishup.client.targets import TargetError, TargetRecordUnreadable, active_target_record
+
+    try:
+        record = active_target_record()
+    except TargetRecordUnreadable:
+        remote = True
+    except TargetError:
+        return
+    else:
+        remote = record is not None and record.is_remote
+    if remote:
+        raise ControlError("service_unavailable", retryable=True, phase="target_root_is_remote")
+
+
+def _spawn_service_process() -> _SpawnedService:
+    """Start one detached service that records any startup failure under a fresh id (#1040).
+
+    A remote server target's root raises ``service_unavailable`` with the phase
+    ``target_root_is_remote`` and starts nothing.
+    """
+
+    _refuse_remote_target_root()
     startup_correlation_id = new_id(IdKind.CORRELATION)
-    command = (
+    command: tuple[str, ...] = (
         sys.executable,
         "-m",
         "finishup",
@@ -287,6 +318,12 @@ def _spawn_service_process() -> _SpawnedService:
         startup_correlation_id,
     )
     with _open_service_stderr_log() as stderr_log:
+        environment = _service_environment()
+        if not any(name in environment for name in ISOLATED_ROOT_ENV_NAMES):
+            # No variable, pin or selection decided this process's root, so it uses the everyday
+            # installation; the service it starts must too, whatever the selection file says by
+            # the time that service reads it (ADR-051). A resolved root rides in the variable.
+            command = (*command, _AMBIENT_ROOT_OPTION)
         if os.name == "nt":
             creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
                 getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -295,7 +332,7 @@ def _spawn_service_process() -> _SpawnedService:
                 command,
                 close_fds=True,
                 creationflags=creationflags,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,
@@ -304,7 +341,7 @@ def _spawn_service_process() -> _SpawnedService:
             process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,
@@ -1042,7 +1079,6 @@ class ServiceClient(ControlClientPort):
         "_agent",
         "_agent_busy",
         "_agent_calls",
-        "_agent_executor",
         "_client_kind",
         "_closed",
         "_last_project_request",
@@ -1081,7 +1117,6 @@ class ServiceClient(ControlClientPort):
         self._agent = workspace_agent
         self._agent_busy = 0
         self._agent_calls: dict[str, asyncio.Task[None]] = {}
-        self._agent_executor: ThreadPoolExecutor | None = None
         self._stream = stream
         self._session = session
         self._transport: ConnectionTransport = transport
@@ -1255,28 +1290,48 @@ class ServiceClient(ControlClientPort):
     async def _run_workspace_call(self, agent: WorkspaceCallHandler, call: WorkspaceCall) -> bytes:
         """The encoded reply: the agent's, or ``deadline_exceeded`` once the call's deadline passes.
 
-        The agent runs in this connection's own bounded worker pool. A call past its deadline is
-        answered without waiting; its worker keeps its slot until the adapter's own bound ends it.
+        The agent runs in a daemon worker thread of its own, at most ``_MAX_WORKSPACE_CALLS`` at a
+        time per connection. A call past its deadline is answered without waiting; its worker
+        keeps its slot until the adapter's own bound ends it. Being daemon threads, workers never
+        hold a finished process open (a short-lived CLI exits after its command, not after a
+        background check its connection happened to be serving); work still running at exit
+        ends with the process, and an approved check it started stays in its own process group.
         """
 
-        executor = self._agent_executor
-        if executor is None:
-            executor = ThreadPoolExecutor(
-                max_workers=_MAX_WORKSPACE_CALLS, thread_name_prefix="finishup-workspace-agent"
-            )
-            self._agent_executor = executor
-        work = asyncio.get_running_loop().run_in_executor(
-            executor,
-            partial(
-                _answer_in_worker,
-                agent,
-                call,
-                self._session.workspace_handle,
-                agent.declaration.max_reply_bytes,
-            ),
+        loop = asyncio.get_running_loop()
+        work: asyncio.Future[bytes] = loop.create_future()
+        answer = partial(
+            _answer_in_worker,
+            agent,
+            call,
+            self._session.workspace_handle,
+            agent.declaration.max_reply_bytes,
         )
+
+        def deliver(encoded: bytes) -> None:
+            if not work.done():
+                work.set_result(encoded)
+
+        def run() -> None:
+            # ``_answer_in_worker`` answers every exception itself; anything that escapes it still
+            # frees the slot with a closed failure.
+            encoded = _encoded_workspace_reply(call.call_id, "internal_error")
+            try:
+                encoded = answer()
+            finally:
+                try:
+                    loop.call_soon_threadsafe(deliver, encoded)
+                except RuntimeError:
+                    # The loop already closed: the connection, and its answer, are gone.
+                    pass
+
         self._agent_busy += 1
         work.add_done_callback(self._release_workspace_slot)
+        try:
+            threading.Thread(target=run, name="finishup-workspace-agent", daemon=True).start()
+        except RuntimeError:
+            # No thread could be started (a process thread limit): nothing runs, the slot frees.
+            work.set_result(_encoded_workspace_reply(call.call_id, "agent_busy"))
         try:
             async with asyncio.timeout(call.deadline_ms / 1_000):
                 return await asyncio.shield(work)
@@ -1299,11 +1354,9 @@ class ServiceClient(ControlClientPort):
             current = asyncio.current_task()
             for task in tuple(self._agent_calls.values()):
                 # Unanswered workspace calls are the server's to fail when the connection drops.
+                # Their daemon workers finish (or end with the process) without being waited for.
                 if task is not current:
                     task.cancel()
-            executor, self._agent_executor = self._agent_executor, None
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
             await _best_effort_close_stream(self._stream)
         if not from_receiver and self._receiver is not asyncio.current_task():
             self._receiver.cancel()

@@ -2730,10 +2730,12 @@ async def _try_service_ingest(
             capture_only=capture_only,
         )
         if (
-            getattr(client, "workspace_handle", None) is not None
-            and store is not None
-            and workspace_commitment is not None
+            getattr(client, "workspace_binding", None) == "client_claim"
+            or getattr(client, "workspace_handle", None) is not None
         ):
+            # A remote server target: the row goes out attested, without the path, or not at all.
+            if store is None or workspace_commitment is None:
+                raise ValueError("observation_attestation_unavailable")
             from finishup.client.observation_attestation import attest_for_connection
 
             request = attest_for_connection(

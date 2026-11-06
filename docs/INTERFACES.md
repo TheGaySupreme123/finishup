@@ -4538,7 +4538,14 @@ upgrade guard stay on `isolated_root()`, and an AST test locks that classificati
 site. `isolation_binding()` is the closed set
 `ambient|environment|runtime_pin|environment_and_pin|selection`; isolation report schema
 `service/isolation-report-1.1.0` adds `selection` to `binding`. A selection naming a missing or
-unsafe root fails with `isolation_root_invalid` and never resolves to ambient.
+unsafe root fails with `isolation_root_invalid` and never resolves to ambient; `finishup server`
+commands name that state `selection_invalid`, and `server use local` and `server remove
+--select-local` clear it without resolving it (they check only the variable and the pin).
+`config.paths.server_target_kind(root)` is the service's own minimal, fail-closed read of a root's
+`target.json` kind. A service started on demand serves its spawner's root: a resolved root rides in
+the isolation variable, and the everyday installation in the hidden `service run --ambient-root`
+flag, whose parameter callback calls `config.paths.ignore_server_selection()` before the
+server-host guard runs, so the service never reads a selection its spawner did not use.
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
@@ -4550,7 +4557,10 @@ server-host commands `finishup service start` and `finishup service endpoint --j
 
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
-active root is a remote target, with `requires_server_host`.
+active root is a remote target, with `requires_server_host` (`ServerHostRequired`). A root that
+resolves but whose `target.json` cannot be read fails closed with `ServerTargetUnreadable` (a
+`ServerHostRequired` whose `reason` is the record's `target_root_unsafe` or
+`target_record_invalid`); `targets.active_target_record()` raises `TargetRecordUnreadable` for it.
 
 **Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
 target's credential, so a later OAuth source can replace the API key. `KeyringOrFileCredential`
@@ -4658,7 +4668,10 @@ worker thread. Its confinement rules:
   the `finishup` and the legacy `yoetz` name — so a selected or isolated root never makes those
   readable.
 - `run_approved_check` runs only when the repository's own `.finishup/checks.toml` approves
-  exactly the requested argv (`check_not_approved` otherwise). HOME decisions use this machine's
+  exactly the requested argv and this client's owner trusted that policy's exact raw digest in the
+  client's observation store (`finishup observe checks trust`; checked on every call through
+  `client.observation_outbox.check_policy_trusted`, so a revoke takes effect at once);
+  `check_not_approved` otherwise, whatever the server asked. HOME decisions use this machine's
   home directory, never the server's. The run ends within the call's deadline less a 15 s reserve
   for reaping, redaction and the reply (`ApprovedCheckRunner(..., run_seconds_cap=)`), so its
   result, a `timeout` included, reaches the server in time: the transport caps a call at 300 s,
@@ -4757,10 +4770,16 @@ admits only claims (a network gateway or listener) sets it; the daemon then clos
 names a `workspace_locator`. Local clients keep naming their path.
 
 **Agent loss in results.** A read that ends `WorkspaceAgentUnavailable` fires the gap of what it
-would have read. The check-time change records
-`check_time_change_unavailable_workspace_agent_unavailable`, whose fixed sentence is "the FinishUP
-workspace agent on the client machine did not answer the server's read of the workspace, so the
-server could not see the change."; it is registered in the gap-effect tables. A reviewer whose file
+would have read. The check-time change records one of two reasons, each with its own fixed sentence
+and registered in the gap-effect tables: `check_time_change_unavailable_workspace_agent_refused`
+when the agent refused the read or never offered the operation (hub reasons `agent_refused`,
+`operation_not_declared`): "the FinishUP workspace agent on the client machine refused the
+server's read of the workspace, so the server could not see the change."; and
+`check_time_change_unavailable_workspace_agent_unavailable` for every other loss (no agent, a
+dropped connection, a deadline, a busy agent, an undecodable reply, an agent that failed): "the
+FinishUP workspace agent on the client machine gave no usable answer to the server's read of the
+workspace (it was not connected, did not answer in time, or failed), so the server could not see
+the change." A reviewer read the agent refused reads as nothing. A reviewer whose file
 read finds the agent gone ends `workspace_agent_unavailable`
 (`application.reviewer_loop.WORKSPACE_AGENT_UNAVAILABLE_ENDING`), which becomes an unavailable
 semantic result with failure class `transport`, never a judgment.
@@ -4773,9 +4792,11 @@ the connection's `workspace_call` frames. `connect_service`, `connect_service_on
 `_connect_service_attempt` take `workspace_binding=`; passing it with a locator raises
 `workspace_binding_conflict`. `ServiceClient.workspace_binding` and `ServiceClient.workspace_handle`
 expose the hello-result's answer. A client with an agent runs at most four workspace calls at once
-in worker threads and writes each reply under its write lock, answering busy, deadline,
+in daemon worker threads and writes each reply under its write lock, answering busy, deadline,
 reply-too-large and internal-error cases with closed reasons; a client without one still treats a
-`workspace_call` as `frame_invalid`.
+`workspace_call` as `frame_invalid`. Closing the connection never waits for a running call: its
+daemon worker finishes or ends with the process, so a short-lived CLI exits after its command (an
+approved check such a worker started stays in its own process group).
 
 - `finishup.client.workspace_claim`: `workspace_claim(locator, salt)` (awaitable) and
   `workspace_claim_for_root(root, salt, worktree)` compute the claim with its worktree digest
@@ -4791,9 +4812,12 @@ reply-too-large and internal-error cases with closed reasons; a client without o
   or `https` target. Both fail closed with the root's `TargetError`, never reading as local.
 - `finishup.client.workspace_ref`: `start_request_for_connection(request, connection)` rewrites
   an absolute `workspace_ref` to the connection's handle (the MCP start path, the CLI start path and
-  the SessionStart auto-attach use it); a claim-bound connection without a handle raises
-  `WorkspaceRefNotPortable` (`INVALID_REQUEST`, reason `workspace_ref_not_portable`) and nothing is
-  sent. `portable_start_request` and `portable_workspace_ref` are its parts.
+  the SessionStart auto-attach use it); a claim-bound connection without a handle (the server's
+  vault was not ready at hello, so it could not key the claim) raises the retryable `ControlError`
+  `vault_locked` and nothing is sent, so the MCP bridge discards that connection and its next call
+  reconnects with a fresh hello. `WorkspaceRefNotPortable` (`INVALID_REQUEST`, reason
+  `workspace_ref_not_portable`) stays for a caller that must refuse a path for another reason.
+  `portable_start_request` and `portable_workspace_ref` are its parts.
 - `finishup.client.observation_outbox.ClientObservationDrain(workspace, *, state=None,
   budget_seconds=20.0, ingest_deadline_ms=3000, spool_batch_limit=64)`: `drain(client) ->
   ClientDrainSummary(spool_replayed, delivery, stopped)` replays the claimed workspace's spooled
@@ -4811,7 +4835,9 @@ attested over the connection; the server did not read the repository itself." No
 user-controlled is ever rendered beside it.
 
 - Service side: the text and markdown receipt of a claim-bound task (its `SessionOpened`
-  `workspace_ref` is a `client:` handle) ends with `client_attested_receipt_block(
+  `workspace_ref` is a `client:` handle; a child attached by its attach handle on a claim-bound
+  connection records that connection's handle there through `execute_start(...,
+  session_workspace_ref=)`, outside the request identity) ends with `client_attested_receipt_block(
   service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
   FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
   unchanged.
@@ -4837,7 +4863,11 @@ target root is the authority: consent, content profiles, the content-capture fen
 trust, the observation key, the lifecycle mappings and the outbox and spool stay on the client,
 and the `observe` commands and `/observe` (scope `any`) administer it there. Over a claim-bound
 connection every `observation_ingest` body carries `client_attestation` (control-request 2.10.0,
-golden vector CTL-2106), built by `finishup.client.observation_attestation` when the row is sent:
+golden vector CTL-2106), built by `finishup.client.observation_attestation` when the row is sent.
+Claim binding is decided by the connection's `workspace_binding` (`connection_claim_bound`), not
+by the handle alone: a claim-bound connection the server gave no handle sends no row at all
+(`attest_for_connection` raises the retryable `vault_locked` before encoding, so the row stays
+pending and never carries the workspace path):
 
 | Member | Value |
 |---|---|
@@ -4868,20 +4898,24 @@ wait `unavailable`.
 
 | Token | Raised when | Recovery |
 |---|---|---|
-| `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator` | client defect; reconnect with one binding |
-| `workspace_ref_not_portable` | a claim-bound `start` names an absolute `workspace_ref` | send the connection's `workspace_handle` |
+| `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
+| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, a handle other than the connection's, or none where it opens a session | send the connection's `workspace_handle` (the bridge and CLI rewrite the absolute root to it) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
-| `target_root_is_remote` | `service run` or `service start` is asked to serve a remote target's root | the service runs on the server; use `finishup server test` here |
+| `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
+| `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root` and `server connect`) | the owner runs `finishup server use NAME` on the trusted console |
 
-The five remote connection phases ride as `phase` on a retryable `service_unavailable`
+The remote connection phases ride as `phase` on a retryable `service_unavailable`
 (`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,
-`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running` and
-`remote_incompatible` (whose text names both releases). The check-time change gains the
-unavailable reason `workspace_agent_unavailable`, so
-`check_time_change_unavailable_workspace_agent_unavailable` joins
+`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running`,
+`remote_incompatible` (whose text names both releases), and the client's own refusals
+`target_reauthorization_required` and `target_root_is_remote`. A client that catches that `TargetError` from the binding
+helpers raises it as this phase, so every surface renders its directive. The check-time change gains the
+unavailable reasons `workspace_agent_unavailable` and `workspace_agent_refused`, so
+`check_time_change_unavailable_workspace_agent_unavailable` and
+`check_time_change_unavailable_workspace_agent_refused` join
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
 
 <!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with

@@ -108,8 +108,11 @@ typed outcomes when the client side cannot be reached.
   when the outbox moves out of that module.
 - A command-scope registry labels every CLI and terminal-interface command `any`, `server_host`
   or `client_only`. One guard, `require_server_host()`, refuses a `server_host` command while a
-  remote target is active, with `requires_server_host`. A test walks the command tree and the
-  interface's command registry and fails on an unlabelled command.
+  remote target is active, with `requires_server_host`. It fails closed when the active root
+  resolves but its `target.json` cannot be read (unsafe mode, or a record it cannot parse): the
+  command is refused with the record's own reason (`target_root_unsafe`,
+  `target_record_invalid`), because such a root may be a remote target's. A test walks the command
+  tree and the interface's command registry and fails on an unlabelled command.
 - New client-side code lives in `finishup.client`. Hooks may load target selection, but never
   `httpx` or a client transport module, at import time; the hook import-diet packaging test locks
   that.
@@ -147,6 +150,13 @@ typed outcomes when the client side cannot be reached.
 - **No new variable or argv token.** The entry fast paths, the Claude Code, Cursor and Codex
   registration classifiers, the Cursor live-process classifier and the configuration variable
   allowlist are untouched.
+- **A spawned service serves its spawner's root.** A client that starts its service on demand
+  forwards the root it resolved: a resolved root in the isolation variable, as before, and the
+  everyday installation as one hidden internal `service run --ambient-root` flag, which makes the
+  service read no selection (`config.paths.ignore_server_selection`, applied while options are
+  parsed, before the server-host guard). A bridge that resolved the everyday installation and
+  later restarts its service therefore never starts a target that a newer selection names. The
+  flag names no target and appears in no registration, launch line or classifier.
 - **Propagation.** Claude Code hooks and MCP (no environment in the registration) learn the target
   from the selection file. Cursor hooks and MCP, and Codex external and cache MCP, use their
   stamped root when they were connected under explicit isolation, and the selection file
@@ -165,7 +175,9 @@ typed outcomes when the client side cannot be reached.
 | `https` | `https://host[:port][/base]` with `--ca-file` or `--tls-pin sha256:…` | No userinfo, query or fragment. Plain `http` is refused. |
 
 Every kind except `local` is a *remote kind* for consent, the zero-network refusal and the
-workspace agent, including `local_port`: a loopback port can forward anywhere.
+workspace agent, including `local_port`: a loopback port can forward anywhere. `server add NAME
+https://127.0.0.1:<port>` and `https://[::1]:<port>` record `local_port`, as does `--port <port>`
+(which records `127.0.0.1`); any other HTTPS address, `localhost` included, is `https`.
 
 `finishup server add|list|use|status [--json]|test|remove|login|logout|connect|disconnect` manages
 targets; each mutating command has its reverse (see *Reverse states*). `connect`, `disconnect` and
@@ -223,8 +235,10 @@ resource ripple.
   on a connection without a claim is `workspace_binding_conflict`. Without this rule the reviewer's
   workspace root would be a server directory that happens to share the path. The MCP bridge, the
   CLI and the SessionStart auto-attach rewrite an absolute `workspace_ref` to the handle before
-  sending; a claim-bound connection with no handle sends nothing and answers
-  `workspace_ref_not_portable` without naming a path.
+  sending. A claim-bound connection with no handle exists only because the server's vault was not
+  ready at hello: it sends no start and no observation row (never a path) and answers the
+  retryable `vault_locked`, so the client replaces the connection and the first call after the
+  unlock gets a handle.
 - **What stays identical.** Framing (6 MiB frames, 1 MiB ordinary), all 32 methods and their
   bodies, `rpc_id` multiplexing and cancel, the client-kind gate and the client's exact-set check,
   and idempotency by `(installation_id, request_id)`. The YZH1 human-control and YZS1 secret
@@ -261,7 +275,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   answers only for a candidate the local outside-input rule would look at (no hidden,
   credential-named or system path, and beneath a path an owner may admit). The agent refuses unknown operations and
   never runs a command that did not come from the repository's owner-approved
-  `.finishup/checks.toml` (`check_not_approved`). HOME decisions are made by the agent on the
+  `.finishup/checks.toml` (`check_not_approved`): the policy must approve the exact argv, and the
+  owner must have trusted that policy's raw digest in this client's own observation store, checked
+  on every call, so a misbehaving server cannot run an untrusted or edited policy. HOME decisions are made by the agent on the
   client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,
   and change capture's own reasons keep their exact `ChangeCaptureUnavailable` tokens.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a
@@ -301,7 +317,8 @@ answers bounded `workspace_call`s on a connection that declared it.
   and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
   root, so every approach decides the same way. A client that serves an agent answers at most four
-  workspace calls at once in worker threads; a client without one still rejects a `workspace_call`
+  workspace calls at once in daemon worker threads, which never keep a finished process open; a
+  client without one still rejects a `workspace_call`
   as a malformed frame, so a local connection is unchanged.
 - **Observation over claims.** Observation verification and approved checks for a `client:`
   locator route through the hub, and the client drains the outbox and spool it captured for a
@@ -318,7 +335,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   FinishUP workspace agent and attested over the connection; the server did not read the
   repository itself." Two renderers carry it, and neither puts anything user-controlled beside it:
   - The service ends the text and markdown receipt of a claim-bound task (its session opened with
-    a `client:` handle, a durable fact a replay reads alike) with a "Workspace evidence" section:
+    a `client:` handle, a durable fact a replay reads alike; a delegated child attached by its
+    attach handle on a claim-bound connection opens with that connection's handle too, recorded
+    in the opening event only, never in the request's identity) with a "Workspace evidence" section:
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
     client_claim).` The stored receipt document and JSON receipts are unchanged.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
@@ -336,11 +355,17 @@ answers bounded `workspace_call`s on a connection that declared it.
   (`check_time_change_unavailable_workspace_agent_unavailable`, with its own fixed sentence). A
   review whose file read finds the agent gone ends `workspace_agent_unavailable` and records an
   unavailable result of failure class `transport`, never a judgment. A missing reply is never a
-  pass, and an unknown change state fails closed for no-material-work. A refused operation is
-  `workspace_agent_refused`.
+  pass, and an unknown change state fails closed for no-material-work. A read the agent refused
+  (or an operation it never offered) is named apart: the check-time change records
+  `workspace_agent_refused` (`check_time_change_unavailable_workspace_agent_refused`, its own
+  fixed sentence), while `workspace_agent_unavailable`'s sentence covers an agent that was not
+  connected, too slow or failed; a refused reviewer read reads as nothing.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never
   falls back to the ambient one; a service refuses to run in a root whose target is remote
-  (`target_root_is_remote`). Writes fail closed and stay retryable through the existing
+  (`target_root_is_remote`). The daemon refuses at composition, before anything is created, when
+  the root's `target.json` names a remote kind or cannot be read (it reads only the kind, through
+  the shared `config.paths.server_target_kind`), and an on-demand start refuses to spawn a local
+  service for such a root at once instead of waiting out its start budget. Writes fail closed and stay retryable through the existing
   reconnect, operation-status probe and `request_id` replay. There is no local write queue: a
   queued write would let a receipt describe work the server never recorded.
 - **No replay across targets.** Idempotency is scoped by installation (ADR-002 decision 4). A
@@ -370,6 +395,10 @@ answers bounded `workspace_call`s on a connection that declared it.
 - `server add` and `server use` for a remote kind need the trusted foreground console, a versioned
   disclosure and the owner typing the target name. `target.json` records `authorized_at` and
   `disclosure_version`; a new disclosure version requires a fresh confirmation before use.
+  `targets.require_current_authorization` enforces it at every hop decision
+  (`is_remote_active_root`, `binding_for_active_root`, `server connect`), with or without a
+  workspace, and refuses with `target_reauthorization_required`; `server status`, `list`, `test`,
+  `remove` and `logout` stay usable so the owner can see and remove a stale target.
 - The disclosure says what leaves the machine: task statements, published work, evidence, check,
   respond and receipt traffic, the workspace claim (a keyed digest, not a path), observation rows,
   and the workspace evidence the server asks the workspace agent for — the task base and
@@ -380,9 +409,19 @@ answers bounded `workspace_call`s on a connection that declared it.
   there.
 - Agents cannot select or add a remote target: there is no MCP tool for it, and the CLI refuses
   without a trusted console.
-- The hop is refused in the zero-network state: when the local service's effective policy is
-  zero-network, and, when no local service exists, while the configuration bootstrap leaves
-  `network_egress_permitted` false. The client re-checks before it opens the hop.
+- The hop is refused in the zero-network state, for every remote kind (`local_port` included).
+  This computer's own FinishUP decides: when its everyday installation was set up (its vault was
+  initialized), its running service's effective policy decides, and a policy that does not permit
+  network egress refuses the hop. When that policy cannot be read (the service is stopped, locked
+  or does not answer), the hop is refused with `network_policy_unreadable`, never allowed. A
+  computer whose everyday FinishUP was never set up has no policy of its own, so this check
+  does not refuse it: the selected server's own policy governs the work sent to it. (Amended
+  2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted
+  `local_port`, and said the client re-checks before each hop, which no code does.) The check
+  runs when the owner adds or selects a remote target. **Honest limit:** client processes do not
+  consult the local policy again before each connection, so tightening this computer's policy to
+  zero-network does not by itself stop an already selected remote target; `finishup server use
+  local` does.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 

@@ -493,7 +493,8 @@ class TestLocalReasonRatchet:
 
         Its disposition was recorded on the protocol side as owned by a later sub-issue of #739,
         so it must resolve there and stay out of the local map, which the disjointness gate
-        enforces.
+        enforces. ADR-051's ``target_root_is_remote`` is the same shape: ``service run`` raises it
+        locally, and its directive is the protocol one every surface resolves.
         """
 
         from finishup.cli.exits import LOCAL_REASONS
@@ -504,7 +505,7 @@ class TestLocalReasonRatchet:
             if continuation_for_local_reason(reason) is None
             and local_reason_has_disposition(reason)
         }
-        assert through_protocol == {"service_draining"}
+        assert through_protocol == {"service_draining", "target_root_is_remote"}
 
     def test_a_new_local_reason_without_a_directive_fails_at_import(self) -> None:
         import finishup.cli.exits as exits
@@ -563,6 +564,7 @@ class TestWorkspaceBindingAndServerTargetReasons:
         "workspace_agent_refused": "workspace_agent_refusal_review",
         "requires_server_host": "server_host_command_required",
         "target_root_is_remote": "remote_target_no_local_service",
+        "target_reauthorization_required": "server_reauthorization_required",
         "selection_overridden": "server_selection_overridden",
         "remote_unreachable": "remote_server_test",
         "remote_auth_failed": "remote_credential_repair",
@@ -601,7 +603,7 @@ class TestWorkspaceBindingAndServerTargetReasons:
 
         assert REMOTE_CONNECTION_PHASES == frozenset(
             reason for reason in self._EXPECTED if reason.startswith("remote_")
-        )
+        ) | {"target_reauthorization_required", "target_root_is_remote"}
         assert REMOTE_CONNECTION_PHASES <= PROTOCOL_REASON_CODES
         for phase in REMOTE_CONNECTION_PHASES:
             assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase)

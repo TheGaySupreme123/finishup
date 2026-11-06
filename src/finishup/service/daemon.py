@@ -91,6 +91,7 @@ from finishup.config.paths import (
     bundle_root,
     ensure_owner_only_dir,
     read_runtime_pin,
+    server_target_kind,
     service_generation_path,
     state_dir,
     unlock_throttle_path,
@@ -4943,6 +4944,26 @@ class _HumanConnectionServer:
         raise HumanControlError("kind_forbidden")
 
 
+def _refuse_remote_target_root(root: Path | None) -> None:
+    """Refuse to serve a remote server target's root (ADR-051, ``target_root_is_remote``).
+
+    A remote target's root holds only client state. A root whose ``target.json`` names a remote
+    kind, or holds one that cannot be read (it may be remote), is refused before anything is
+    created, so a local vault, ledger or endpoint never appears in it and a hook dialing that
+    root never reaches a stray local service. The everyday root, an isolated root that is not a
+    target, and a named ``local`` server are served as before.
+    """
+
+    if root is None:
+        return
+    try:
+        kind = server_target_kind(root)
+    except PathSafetyError:
+        raise LifecycleError("target_root_is_remote") from None
+    if kind is not None and kind != "local":
+        raise LifecycleError("target_root_is_remote")
+
+
 async def _production_composition(
     *,
     _config: FinishUpConfig | None = None,
@@ -4954,6 +4975,9 @@ async def _production_composition(
     """Build the real locked-first service graph without opening ready-only state."""
 
     config = _config or load_config({}, os.environ, None)
+    root = active_root()
+    # Before any bundle, state or singleton is made: no service runs in a remote target's root.
+    _refuse_remote_target_root(root)
     paths = _paths or _ProductionPaths.canonical(config)
     clock = _SystemClock()
     # Instance identity gate (issue #604): an expired disposable instance, a re-pointed runtime
@@ -4963,7 +4987,7 @@ async def _production_composition(
     verify_instance_binding(
         instance_identity,
         # A selected named local server is an isolated root too (ADR-051).
-        isolated=active_root() is not None,
+        isolated=root is not None,
         pin=read_runtime_pin(),
         now=clock.now_utc(),
     )

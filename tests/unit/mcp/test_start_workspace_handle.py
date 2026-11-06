@@ -101,19 +101,50 @@ async def test_a_local_start_is_sent_as_written(
 
 
 @pytest.mark.anyio
-async def test_without_a_handle_nothing_is_sent_and_the_agent_gets_the_typed_refusal(
+async def test_without_a_handle_nothing_is_sent_and_the_locked_server_is_named(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    client = _Client("client_claim", None)
-    _wire(monkeypatch, tmp_path, client)
-    result = await bridge.dispatch_start(_start_body(), bridge.build_bridge_runtime())
-    assert client.sent == []
+    """A claim the server could not key at hello (its vault was locked) is ``vault_locked``.
+
+    Nothing is sent, the stale connection is discarded so a fresh hello binds the claim once the
+    vault is unlocked, and the agent is never told to set a handle it cannot see.
+    """
+
+    import finishup.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    clients: list[_Client] = []
+
+    async def on_demand(_kind: object, **_kwargs: object) -> object:
+        clients.append(_Client("client_claim", None))
+        return clients[-1]
+
+    monkeypatch.setattr(
+        bridge,
+        "connect_service_on_demand",
+        cast(Callable[[object], Awaitable[object]], on_demand),
+    )
+    runtime = bridge.build_bridge_runtime()
+    result = await bridge.dispatch_start(_start_body(), runtime)
+    assert clients and all(client.sent == [] for client in clients)
     assert getattr(result, "isError") is True
     structured = cast(dict[str, object], getattr(result, "structuredContent"))
     error = cast(dict[str, object], structured["error"])
-    assert error["code"] == "INVALID_REQUEST"
-    assert error["retryable"] is False
-    details = cast(dict[str, object], error["safe_details"])
-    assert details["reason_code"] == "workspace_ref_not_portable"
-    assert details["continuation"] == "workspace_handle_required"
+    assert error["code"] == "VAULT_LOCKED"
+    assert "workspace_ref_not_portable" not in repr(result)
+    assert "workspace_handle_required" not in repr(result)
     assert "private-project" not in repr(result)
+
+    # Once the server is unlocked, the next start reconnects and its hello binds the claim.
+    async def unlocked(_kind: object, **_kwargs: object) -> object:
+        clients.append(_Client("client_claim", _HANDLE))
+        return clients[-1]
+
+    monkeypatch.setattr(
+        bridge,
+        "connect_service_on_demand",
+        cast(Callable[[object], Awaitable[object]], unlocked),
+    )
+    await bridge.dispatch_start(_start_body(), runtime)
+    (sent,) = clients[-1].sent
+    assert sent.workspace_ref == _HANDLE
