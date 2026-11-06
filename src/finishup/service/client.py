@@ -90,7 +90,11 @@ from finishup.ports.privacy import (
 )
 from finishup.ports.workspace_agent import outcome_for_reason
 from finishup.protocol.canonical import parse_canonical_integer_string
-from finishup.protocol.errors import SERVICE_HANDSHAKE_PHASES, SERVICE_START_TIMEOUT_PHASE
+from finishup.protocol.errors import (
+    REMOTE_CONNECTION_PHASES,
+    SERVICE_HANDSHAKE_PHASES,
+    SERVICE_START_TIMEOUT_PHASE,
+)
 from finishup.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -2045,6 +2049,35 @@ def _remote_phase_failure(error: ControlError) -> ControlError:
     )
 
 
+def _remote_target_refusal(error: Exception) -> ControlError:
+    """A remote root's own ``TargetError`` as the retryable phase every surface renders.
+
+    ``target_reauthorization_required`` keeps its name; a record that can no longer be read is
+    ``target_root_is_remote`` (the root may name a server on another machine, so nothing is sent
+    to it and no local service starts in it). The reason is a closed token and names no path.
+    """
+
+    reason = getattr(error, "reason", None)
+    phase = reason if reason in REMOTE_CONNECTION_PHASES else "target_root_is_remote"
+    return ControlError("service_unavailable", retryable=True, phase=phase)
+
+
+def _require_remote_authorization(root: Path) -> None:
+    """Refuse, before any dial, a remote target confirmed under an older disclosure (ADR-051).
+
+    Nothing is sent to such a target, with or without a workspace to claim, and no connector is
+    started for it, until the owner confirms the current disclosure (``finishup server use
+    NAME``). A record that can no longer be read refuses the same way.
+    """
+
+    from finishup.client.targets import TargetError, read_target, require_current_authorization
+
+    try:
+        require_current_authorization(read_target(root))
+    except TargetError as error:
+        raise _remote_target_refusal(error) from None
+
+
 async def _remote_binding(
     root: Path,
     workspace_locator: WorkspaceLocator | None,
@@ -2059,7 +2092,9 @@ async def _remote_binding(
     ``serve_workspace`` the connection also offers the workspace agent. Each claim is recorded in
     the root's owner-only index, so the connector can keep a background agent for that
     workspace. A workspace the shared root rule cannot resolve is not claimed; the connection
-    then names no workspace, as a refused locator leaves a local one unbound.
+    then names no workspace, as a refused locator leaves a local one unbound. A target record
+    that refuses (an older disclosure, a record that can no longer be read) refuses the
+    connection with its phase; it never connects unbound instead.
     """
 
     if workspace_binding is not None or workspace_locator is None:
@@ -2071,8 +2106,10 @@ async def _remote_binding(
 
     try:
         binding = await binding_for_active_root(workspace_locator, serve_workspace=serve_workspace)
-    except (RepositoryIdentityError, TargetError):
+    except RepositoryIdentityError:
         return None
+    except TargetError as error:
+        raise _remote_target_refusal(error) from None
     if binding is not None:
         await asyncio.to_thread(record_claimed_workspace, root, binding.claim, workspace_locator)
     return binding
@@ -2222,6 +2259,7 @@ async def connect_service(
         raise TypeError("serve_workspace_invalid")
     remote_root = _remote_target_root()
     if remote_root is not None:
+        _require_remote_authorization(remote_root)
         return await _connect_remote_on_demand(
             remote_root,
             client_kind,
@@ -2656,6 +2694,7 @@ async def connect_service_on_demand(
     deadline = time.monotonic() + timeout_seconds
     remote_root = _remote_target_root()
     if remote_root is not None:
+        _require_remote_authorization(remote_root)
         return await _connect_remote_on_demand(
             remote_root,
             client_kind,

@@ -5039,7 +5039,10 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   `workspace_locator`, set the connection's `transport` to `connector`, and start the connector
   (never `service run` or a supersede) when none answers; with `serve_workspace` the connection
   also offers the workspace agent (the CLI's `build_service_client` and the MCP bridge pass it,
-  hooks do not). A local root ignores `serve_workspace`. Every `service_unavailable` raised for a
+  hooks do not). A local root ignores `serve_workspace`. A target confirmed under an older
+  disclosure is refused before any dial, with or without a locator (`service_unavailable`, phase
+  `target_reauthorization_required`; an unreadable record: `target_root_is_remote`), and no
+  connector is started. Every `service_unavailable` raised for a
   remote root, including on a connection lost mid-session, names a remote phase: the connector
   status's, or `remote_unreachable` when it recorded none. A release mismatch is
   `remote_incompatible`, and `service_holder_identity()` reports the live connector with

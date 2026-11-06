@@ -587,3 +587,33 @@ def test_a_relay_lost_mid_session_names_the_remote_phase(
 
     error = asyncio.run(exercise())
     assert (error.reason, error.phase) == ("service_unavailable", "remote_unreachable")
+
+
+@pytest.mark.parametrize("with_workspace", [True, False])
+def test_a_target_confirmed_under_an_older_disclosure_is_never_dialled(
+    remote: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_local_service: None,
+    with_workspace: bool,
+) -> None:
+    """Nothing is sent to it, with or without a workspace to claim, until ``server use`` renews."""
+
+    spawned: list[Path] = []
+    _fake_connector(monkeypatch, ScriptedDaemon().serve, spawned)
+    monkeypatch.setattr(targets, "DISCLOSURE_VERSION", targets.DISCLOSURE_VERSION + 1)
+    locator = WorkspaceLocator(path=str(remote.parent / "repo")) if with_workspace else None
+
+    async def exercise() -> None:
+        for connect in (service_client.connect_service, service_client.connect_service_on_demand):
+            with pytest.raises(ControlError) as refused:
+                await connect(ControlClientKind.CLI, workspace_locator=locator)
+            error = refused.value
+            assert (error.reason, error.phase) == (
+                "service_unavailable",
+                "target_reauthorization_required",
+            )
+            assert error.retryable is True
+
+    asyncio.run(exercise())
+    assert spawned == []
+    assert not (remote / "state" / "claimed-workspaces").exists()
