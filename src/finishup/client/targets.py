@@ -816,7 +816,12 @@ def write_selection(record: ServerTarget) -> None:
 
 
 def clear_selection() -> bool:
-    """Return to the everyday server; returns whether a selection was removed."""
+    """Return to the everyday server; returns whether a selection was removed.
+
+    A selection that cannot be read (damaged, foreign-mode, or a symlink, which the root
+    resolution refuses) is removed too: this is the documented way back from it. Unlinking a
+    symlink removes the link, never what it points to. Anything but a file or a link is refused.
+    """
 
     path = selection_path()
     try:
@@ -824,7 +829,7 @@ def clear_selection() -> bool:
     except FileNotFoundError:
         reset_selection_memo()
         return False
-    if not stat.S_ISREG(facts.st_mode):
+    if not (stat.S_ISREG(facts.st_mode) or stat.S_ISLNK(facts.st_mode)):
         raise TargetError("selection_invalid")
     path.unlink()
     reset_selection_memo()

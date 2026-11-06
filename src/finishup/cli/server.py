@@ -141,7 +141,8 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         _UNSAFE,
     ),
     "selection_invalid": (
-        "the server selection file is damaged; 'finishup server use local' replaces it",
+        "the server selection is damaged or names a server folder that is missing or unsafe; "
+        "'finishup server use local' clears it",
         _UNSAFE,
     ),
     "trusted_console_required": (
@@ -264,10 +265,30 @@ def _runtime_failure(error: TargetRuntimeError) -> NoReturn:
     )
 
 
+def _explicit_source_present() -> bool:
+    """Whether the isolation variable or a runtime pin decides this process's root.
+
+    Read without resolving the selection, so the ways back from a damaged or dangling selection
+    (``use local``, ``remove --select-local``) still work. A variable or pin that cannot be used is
+    still an explicit source: it fails closed with its own path-safety reason.
+    """
+
+    from finishup.config.paths import isolated_root_variable, read_runtime_pin
+
+    try:
+        return isolated_root_variable() is not None or read_runtime_pin() is not None
+    except PathSafetyError as error:
+        raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
+
+
 def _source() -> str:
     try:
         return selection_source()
     except PathSafetyError as error:
+        if not _explicit_source_present():
+            # Neither the variable nor a pin is set, so the selection is what cannot be used: a
+            # damaged file, or a missing or unsafe target folder. Its remedy works from here.
+            raise ServerCommandRefused("selection_invalid") from None
         raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
 
 
@@ -275,6 +296,13 @@ def _require_selection_in_force() -> None:
     """Refuse while the isolation variable or a runtime pin outranks the selection."""
 
     if _source() in _EXPLICIT_SOURCES:
+        raise ServerCommandRefused("selection_overridden")
+
+
+def _require_no_explicit_source() -> None:
+    """``_require_selection_in_force`` without resolving the selection (the ways back)."""
+
+    if _explicit_source_present():
         raise ServerCommandRefused("selection_overridden")
 
 
@@ -585,14 +613,17 @@ def use_target(
     (``authorize`` defaults to it), which also refreshes its recorded authorization.
     """
 
-    _require_selection_in_force()
     if name == "local":
+        # The way back never resolves the selection it removes: a damaged selection, or one that
+        # names a missing or unsafe target folder, is exactly what it must clear.
+        _require_no_explicit_source()
         try:
             with registry_lock():
                 clear_selection()
         except TargetError as error:
             raise ServerCommandRefused(error.reason) from None
         return None
+    _require_selection_in_force()
     record = _target_or_fail(name)
     if record.is_remote:
         (authorize or _authorize_remote)(record.name, record.kind)
@@ -813,12 +844,18 @@ def server_remove(
 ) -> None:
     """Remove a target: stop what this client runs for it, delete its key and its folder."""
 
-    _require_selection_in_force()
+    _require_no_explicit_source()
     record = _target_or_fail(name)
+    unreadable_selection = False
     try:
         selected = read_selected_target_id()
     except TargetError as error:
-        raise ServerCommandRefused(error.reason)
+        if not select_local:
+            raise ServerCommandRefused(
+                "selection_invalid" if error.reason == "target_root_unsafe" else error.reason
+            ) from None
+        # A selection that cannot be read may name this target; --select-local clears it first.
+        selected, unreadable_selection = None, True
     if selected == record.target_id and not select_local:
         raise ServerCommandRefused("target_selected")
     root = target_root(record.target_id)
@@ -835,7 +872,7 @@ def server_remove(
             raise ServerCommandRefused(error.reason)
     try:
         with registry_lock():
-            if selected == record.target_id:
+            if selected == record.target_id or unreadable_selection:
                 clear_selection()
             if record.kind == "local":
                 from finishup.cli.instance import dispose_instance
@@ -859,7 +896,7 @@ def server_remove(
         typer.echo(f"{error.reason_code}: the target folder is unsafe to remove", err=True)
         raise typer.Exit(_UNSAFE) from None
     typer.echo(f"Removed server target {record.name} ({record.target_id}).")
-    if selected == record.target_id:
+    if selected == record.target_id or unreadable_selection:
         typer.echo("Using this computer's everyday FinishUP server.")
         _warn_open_sessions()
 

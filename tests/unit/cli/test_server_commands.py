@@ -11,7 +11,8 @@ host registration, and ``upgrade`` still runs with one.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import shutil
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -407,6 +408,94 @@ def test_the_everyday_server_is_not_started_while_another_is_selected(home: Path
     result = _invoke("connect", "local")
     assert result.exit_code == 2
     assert result.stderr.startswith("selection_active:")
+
+
+def _dangling_selection(home: Path) -> None:
+    """Select a named local server, then delete its folder behind the selection's back."""
+
+    assert _invoke("add", "work", "--local").exit_code == 0
+    assert _invoke("use", "work").exit_code == 0
+    shutil.rmtree(targets.target_root(targets.find_target("work").target_id))
+
+
+def _malformed_selection(home: Path) -> None:
+    path = targets.selection_path()
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.write_bytes(b"{not json")
+    path.chmod(0o600)
+
+
+def _symlinked_selection(home: Path) -> None:
+    elsewhere = home / "elsewhere.json"
+    elsewhere.write_bytes(b'{"schema":"yoetz.server-selection/1","target_id":"t_0a1b2c3d"}\n')
+    elsewhere.chmod(0o600)
+    targets.selection_path().parent.mkdir(mode=0o700, exist_ok=True)
+    targets.selection_path().symlink_to(elsewhere)
+
+
+@pytest.mark.parametrize(
+    "break_selection", [_dangling_selection, _malformed_selection, _symlinked_selection]
+)
+def test_use_local_is_the_way_back_from_a_broken_selection(
+    home: Path, quiet_probe: None, break_selection: Callable[[Path], None]
+) -> None:
+    """A damaged or dangling selection fails closed, and the remedy it names actually works."""
+
+    break_selection(home)
+    for arguments in (("list",), ("status", "--json"), ("use", "work")):
+        refused = _invoke(*arguments)
+        assert refused.exit_code == 20, (arguments, refused.output)
+        assert refused.stderr.startswith("selection_invalid:")
+        assert "'finishup server use local' clears it" in refused.stderr
+
+    back = _invoke("use", "local")
+    assert back.exit_code == 0, back.output
+    assert not targets.selection_path().is_symlink()
+    assert not targets.selection_path().exists()
+    if break_selection is _symlinked_selection:
+        assert (home / "elsewhere.json").is_file()  # the link is removed, never what it names
+    reset_selection_memo()
+    assert active_root() is None
+    listed = _invoke("list")
+    assert listed.exit_code == 0, listed.output
+    assert listed.stdout.splitlines()[0].startswith("* local")
+
+
+def test_remove_select_local_clears_a_selection_that_cannot_be_read(home: Path) -> None:
+    assert _invoke("add", "work", "--local").exit_code == 0
+    _malformed_selection(home)
+    refused = _invoke("remove", "work")
+    assert refused.exit_code == 20
+    assert refused.stderr.startswith("selection_invalid:")
+    assert targets.list_targets() != ()
+
+    removed = _invoke("remove", "work", "--select-local")
+    assert removed.exit_code == 0, removed.output
+    assert not targets.selection_path().exists()
+    assert targets.list_targets() == ()
+    reset_selection_memo()
+    assert active_root() is None
+
+
+def test_another_target_can_be_removed_while_the_selection_dangles(home: Path) -> None:
+    assert _invoke("add", "spare", "--local").exit_code == 0
+    _dangling_selection(home)
+    removed = _invoke("remove", "spare")
+    assert removed.exit_code == 0, removed.output
+    assert targets.selection_path().exists()  # not this target's; 'use local' clears it
+
+
+def test_an_isolation_root_still_refuses_the_way_back(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _malformed_selection(home)
+    explicit = home / "explicit"
+    explicit.mkdir(mode=0o700)
+    monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(explicit))
+    result = _invoke("use", "local")
+    assert result.exit_code == 2
+    assert result.stderr.startswith("selection_overridden:")
+    assert targets.selection_path().exists()
 
 
 def test_an_isolation_root_overrides_the_selection(
