@@ -788,6 +788,9 @@ def _replay_legacy_hook_spool(state: Path, *, stop: threading.Event | None = Non
     from finishup.cli.observe_hooks import handle_observe
 
     remaining = _LEGACY_HOOK_SPOOL_BATCH_LIMIT
+    # The claim asks again once it holds the workspace lock, so a pass that waited on a hook's
+    # spool lock past generation close claims nothing when that lock is released.
+    should_stop = None if stop is None else stop.is_set
     # A pass that generation close asked to stop before it began leaves the spool untouched:
     # listing it creates the spool directory.
     if stop is not None and stop.is_set():
@@ -795,7 +798,7 @@ def _replay_legacy_hook_spool(state: Path, *, stop: threading.Event | None = Non
     for workspace_commitment in spool.pending_workspaces():
         if remaining <= 0 or (stop is not None and stop.is_set()):
             return
-        with spool.claim(workspace_commitment, limit=remaining) as records:
+        with spool.claim(workspace_commitment, limit=remaining, should_stop=should_stop) as records:
             for record in records:
                 handle_observe(
                     event_name=record.event_name,

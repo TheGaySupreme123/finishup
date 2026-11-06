@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final, cast
@@ -164,6 +164,7 @@ class HookSpool:
         workspace_commitment: str,
         *,
         limit: int = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Generator[tuple[SpooledHookObservation, ...]]:
         """Fence one bounded batch; failure leaves the durable cursor unchanged.
 
@@ -171,6 +172,10 @@ class HookSpool:
         advanced only after the caller's processing succeeds, so a crash or rejected record
         replays the batch at least once while a file larger than ``limit`` advances in FIFO
         batches instead of being loaded into memory or deleted as one giant pass.
+
+        ``should_stop`` is asked again once the workspace lock is held. A caller told to stop
+        while it waited for that lock, which a hook may hold, claims nothing: the spool is left
+        as it was.
         """
 
         if type(limit) is not int or isinstance(limit, bool) or limit < 1:
@@ -188,6 +193,7 @@ class HookSpool:
                 pending,
                 draining,
                 limit,
+                should_stop,
             )
         except (OSError, PathSafetyError):
             yield ()
@@ -212,6 +218,7 @@ class HookSpool:
         pending: Path,
         draining: Path,
         limit: int,
+        should_stop: Callable[[], bool] | None = None,
     ) -> tuple[
         tuple[SpooledHookObservation, ...],
         int,
@@ -220,6 +227,8 @@ class HookSpool:
     ]:
         ensure_owner_only_dir(self._root)
         with self._workspace_lock(workspace_commitment):
+            if should_stop is not None and should_stop():
+                return (), 0, None, None
             if pending.is_symlink() or draining.is_symlink():
                 raise PathSafetyError("hook_spool_symlink")
             if pending.exists() and not draining.exists():

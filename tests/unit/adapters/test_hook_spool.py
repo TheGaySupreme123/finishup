@@ -43,6 +43,22 @@ def test_claim_advances_a_durable_cursor_across_large_file_batches(tmp_path: Pat
     assert spool.pending_workspaces() == ()
 
 
+def test_claim_told_to_stop_once_it_holds_the_lock_leaves_the_spool_as_it_was(
+    tmp_path: Path,
+) -> None:
+    spool, workspace, commitment = _spool(tmp_path)
+    _append(spool, workspace, "Event0")
+    spooled = sorted(path.name for path in (tmp_path / "hook-spool").iterdir())
+
+    with spool.claim(commitment, should_stop=lambda: True) as records:
+        assert records == ()
+
+    assert sorted(path.name for path in (tmp_path / "hook-spool").iterdir()) == spooled
+    with spool.claim(commitment) as records:
+        assert tuple(record.event_name for record in records) == ("Event0",)
+    assert spool.pending_workspaces() == ()
+
+
 def test_append_during_claim_is_ordered_after_the_claimed_batch(tmp_path: Path) -> None:
     spool, workspace, commitment = _spool(tmp_path)
     _append(spool, workspace, "Event0")

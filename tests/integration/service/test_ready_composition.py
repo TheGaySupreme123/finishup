@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import hmac
 import json
+import os
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -16,6 +18,7 @@ from typing import Any, Protocol, cast
 import apsw
 import pytest
 
+import finishup.adapters.integrations.hook_spool as hook_spool_module
 import finishup.adapters.sqlite.connection as connection_module
 import finishup.adapters.sqlite.recovery as recovery_module
 import finishup.observability.diagnostics as diagnostics_module
@@ -23,6 +26,7 @@ import finishup.service.ready_composition as ready_composition_module
 from builders.multi_agent import multi_agent_service
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.hook_spool import HookSpool
 from finishup.adapters.integrations.observation_local import LocalObservationStore
 from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
@@ -813,42 +817,77 @@ async def test_ready_close_returns_only_after_a_cancelled_sweeps_spool_pass(
             await _wait_thread_event(finished)
 
 
+def _tree_state(root: Path) -> dict[str, tuple[int, int] | None]:
+    """Every path below ``root`` with each file's size and modification time."""
+
+    state: dict[str, tuple[int, int] | None] = {}
+    for directory, directories, files in os.walk(root):
+        for name in directories:
+            state[str((Path(directory) / name).relative_to(root))] = None
+        for name in files:
+            path = Path(directory) / name
+            stat = path.stat()
+            state[str(path.relative_to(root))] = (stat.st_size, stat.st_mtime_ns)
+    return state
+
+
 @pytest.mark.anyio
 async def test_ready_close_records_and_leaves_a_spool_pass_held_past_its_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pass parked past close's bound cannot hold a stop, restart or idle relock open.
+    """A pass parked on a hook's spool lock cannot hold a stop, restart or idle relock open.
 
-    Close returns at the bound and records a fixed token; the parked pass keeps its stop flag,
-    so once it moves again it ends at its next stop check without touching the spool.
+    Close returns at its bound and records a fixed token. The parked pass keeps its stop flag,
+    so once the hook releases its lock the pass claims nothing and writes nothing.
     """
 
     log_root = tmp_path / "logs"
     log_root.mkdir(mode=0o700)
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: log_root)
     monkeypatch.setattr(ready_composition_module, "_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS", 0.05)
-    started = threading.Event()
-    release = threading.Event()
+    waiting_for_lock = threading.Event()
     finished = threading.Event()
     replay_pass = ready_composition_module._replay_legacy_hook_spool  # pyright: ignore[reportPrivateUsage]
 
-    def parked_replay(state: Path, *, stop: threading.Event) -> None:
-        started.set()
+    def flock(descriptor: int, operation: int) -> None:
+        if operation == fcntl.LOCK_EX and threading.current_thread().name.startswith(
+            "finishup-hook-spool"
+        ):
+            waiting_for_lock.set()
+        fcntl.flock(descriptor, operation)
+
+    def tracked_replay(state: Path, *, stop: threading.Event) -> None:
         try:
-            # Parked, as on a hook's spool lock, until after close has returned.
-            assert release.wait(5.0)
             replay_pass(state, stop=stop)
         finally:
             finished.set()
 
-    monkeypatch.setattr(ready_composition_module, "_replay_legacy_hook_spool", parked_replay)
+    monkeypatch.setattr(
+        hook_spool_module,
+        "fcntl",
+        SimpleNamespace(flock=flock, LOCK_EX=fcntl.LOCK_EX, LOCK_UN=fcntl.LOCK_UN),
+    )
+    monkeypatch.setattr(ready_composition_module, "_replay_legacy_hook_spool", tracked_replay)
     async with multi_agent_service(tmp_path) as service:
-        spool = service.root / "state" / "hook-spool"
+        state = service.root / "state"
+        workspace = service.root / "workspace"
+        workspace.mkdir(mode=0o700)
+        spool = HookSpool(_state=state)
+        assert spool.append(
+            workspace=str(workspace),
+            event_name="PostToolUse",
+            payload={"session_id": "session-1", "tool_name": "Bash", "tool_use_id": "tool-1"},
+        )
+        digest = spool.workspace_commitment(str(workspace)).removeprefix("hmac-sha256:")
+        # A legacy hook holds its workspace's spool lock through its own open file description;
+        # closing that descriptor releases the lock.
+        hook_lock = os.open(state / "hook-spool" / f"{digest}.lock", os.O_RDWR)
         try:
+            fcntl.flock(hook_lock, fcntl.LOCK_EX)
             sweep_observation = service.app.observation_sweep
             assert sweep_observation is not None
             sweep = asyncio.ensure_future(sweep_observation())
-            await _wait_thread_event(started)
+            await _wait_thread_event(waiting_for_lock)
             sweep.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await sweep
@@ -869,10 +908,13 @@ async def test_ready_close_records_and_leaves_a_spool_pass_held_past_its_bound(
             assert len(outstanding) == 1
             assert outstanding[0]["component"] == "service.ready_composition"
             assert outstanding[0]["reason"] == "legacy_spool_pass_outstanding_at_close"
+            closed_state = _tree_state(state)
         finally:
-            release.set()
-            await _wait_thread_event(finished)
-        assert not spool.exists()
+            os.close(hook_lock)
+        await _wait_thread_event(finished)
+        assert _tree_state(state) == closed_state
+        assert (state / "hook-spool" / f"{digest}.jsonl").is_file()
+        assert not (state / "hook-spool" / f"{digest}.draining").exists()
 
 
 def test_legacy_spool_replay_stops_at_one_bounded_batch(
@@ -889,7 +931,8 @@ def test_legacy_spool_replay_stops_at_one_bounded_batch(
             return tuple(f"hmac-sha256:{index:064x}" for index in range(100))
 
         @contextmanager
-        def claim(self, workspace: str, *, limit: int):
+        def claim(self, workspace: str, *, limit: int, should_stop: object = None):
+            del should_stop
             nonlocal handled
             claimed.append((workspace, limit))
             handled += 1

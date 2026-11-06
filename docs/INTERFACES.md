@@ -6591,11 +6591,12 @@ ordinary workflow control behind local outbox bookkeeping; the workspace lease a
 fence still serialize each row against recovery and bundle rotation. Legacy hook-spool normalization
 uses one generation-owned worker, advances a durable byte cursor in bounded batches, and retains its
 claim future across cancellation, so a later pass cannot overlap the same rename-and-replay
-operation; generation close stops between batches (a pass stopped before it began touches nothing)
-and waits for the active batch for up to the soft-lock drain budget (`LOCK_DRAIN_SECONDS`, 5 s). A
-batch still running then, such as one parked on a hook's spool lock, does not hold the close: it is
-recorded as `legacy_spool_pass_outstanding_at_close` and ends at its next stop check. The
-route inspection and fence verification
+operation; generation close stops between batches and waits for the active pass for up to the
+soft-lock drain budget (`LOCK_DRAIN_SECONDS`, 5 s). A pass told to stop before it lists the spool,
+or while it waits for a hook's spool lock, claims nothing. A pass still running at that bound does
+not hold the close: the diagnostics ring records it (component `service.ready_composition`,
+operation `legacy_hook_spool_close`, reason `legacy_spool_pass_outstanding_at_close`), and a batch
+it had already claimed finishes and commits its cursor. The route inspection and fence verification
 callbacks keep their synchronous SQLite snapshots off the control event loop. The manual `finishup
 observe drain` repeats full FIFO passes while the previous pass resolved at least one row, bounded
 by the backlog size at entry, and reports `passes`, `pending_after`, and a closed `terminal`:
