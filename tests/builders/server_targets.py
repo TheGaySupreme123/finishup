@@ -23,7 +23,7 @@ import pytest
 from finishup.config.installation import instance_root_fits
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, reset_selection_memo
 
-__all__ = ["ambient_home"]
+__all__ = ["ambient_home", "short_home_base"]
 
 _PREFIX = ".yz-target-test-"
 # The deepest root a test makes, ``<home>/<prefix><8 random>/state/finishup/servers/t_<8 hex>``:
@@ -35,8 +35,11 @@ def _fits(base: Path) -> bool:
     return instance_root_fits(base / f"{_PREFIX}00000000" / _DEEPEST_ROOT)
 
 
-def _test_home_base() -> Path:
-    """``$HOME``, or the account's passwd home when an isolated ``$HOME`` is too long."""
+def short_home_base() -> Path:
+    """``$HOME``, or the account's passwd home when an isolated ``$HOME`` is too long.
+
+    Whichever is chosen holds a test's deepest target root within the runtime's socket bound.
+    """
 
     candidates = [Path.home()]
     try:
@@ -53,7 +56,7 @@ def _test_home_base() -> Path:
 
 @contextmanager
 def ambient_home(monkeypatch: pytest.MonkeyPatch) -> Generator[Path]:
-    root = Path(tempfile.mkdtemp(prefix=_PREFIX, dir=_test_home_base()))
+    root = Path(tempfile.mkdtemp(prefix=_PREFIX, dir=short_home_base()))
     root.chmod(0o700)
     for name in ISOLATED_ROOT_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
