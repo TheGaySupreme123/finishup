@@ -7,6 +7,7 @@ import hmac
 import json
 import threading
 from collections.abc import Buffer, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,7 +49,7 @@ from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATIO
 from finishup.domain.privacy import LocalDisclosureSink
 from finishup.domain.values import Frontier, JsonObject, Timestamp
 from finishup.observability.diagnostics import lookup_diagnostic_records
-from finishup.observability.logging import LogMode
+from finishup.observability.logging import LogMode, StructuredLogger
 from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
@@ -2785,6 +2786,117 @@ async def test_a_cancelled_keyring_read_overwrites_the_passphrase_it_returns_lat
     assert daemon.status().state is ServiceState.LOCKED
     assert daemon.status().state_reason == "explicit_lock"
     await daemon.close()
+
+
+class _NeverAnsweringAutoUnlockStore:
+    """A scoped auto-unlock entry whose reads wait in their worker thread until released."""
+
+    def __init__(self, secret: bytes) -> None:
+        self.secret = secret
+        self.reads = 0
+        self.returned: list[bytearray] = []
+        self.reading = threading.Event()
+        self.release = threading.Event()
+        self._guard = threading.Lock()
+
+    def load_candidates_with_reason(self) -> tuple[tuple[tuple[bytearray, str], ...], str]:
+        with self._guard:
+            self.reads += 1
+        self.reading.set()
+        self.release.wait(_WAIT_SECONDS)
+        candidate = bytearray(self.secret)
+        with self._guard:
+            self.returned.append(candidate)
+        return ((candidate, "active"),), "none"
+
+
+def test_a_keyring_read_that_never_answers_pins_one_worker_thread_however_often_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each expired attempt left its read blocked in a worker thread, and every later request
+    # started another, until the shared pool that activation and the unlock ceremony also need
+    # was full. A two-worker pool shows it: a second stalled read leaves no worker for anything.
+    secret = b"correct horse battery staple!!"
+    store = _NeverAnsweringAutoUnlockStore(secret)
+
+    def store_factory(bundle: Path) -> _NeverAnsweringAutoUnlockStore:
+        del bundle
+        return store
+
+    monkeypatch.setattr(daemon_module, "AutoUnlockPassphraseStore", store_factory)
+    deadlines = _soft_reready_deadlines(monkeypatch)
+    logged: list[tuple[object, object]] = []
+
+    class _RecordingLogger(StructuredLogger):
+        def warning(self, operation: str, **fields: object) -> None:
+            if operation == "auto_unlock":
+                logged.append((fields.get("outcome"), fields.get("reason")))
+            super().warning(operation, **fields)
+
+    monkeypatch.setattr(daemon_module, "get_logger", _RecordingLogger)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        vault = _KeyedPassphraseVault()
+        vault.expect_secret(secret)
+
+        async def factory(service_generation: int, vault_generation: int) -> _Application:
+            del service_generation, vault_generation
+            return _Application()
+
+        daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+        await daemon.start()
+        daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+        waiting = asyncio.ensure_future(
+            daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        )
+        assert await asyncio.to_thread(store.reading.wait, _WAIT_SECONDS)
+        deadlines[0].reschedule(loop.time())
+        async with asyncio.timeout(_WAIT_SECONDS):
+            assert await waiting is None
+
+        # Later requests start no second read while the first still waits: they are answered
+        # at once, the service stays LOCKED and keeps the soft-lock reason.
+        for _ in range(3):
+            async with asyncio.timeout(_WAIT_SECONDS):
+                assert (
+                    await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+                    is None
+                )
+            assert daemon.status().state is ServiceState.LOCKED
+            assert daemon.status().state_reason == "idle_relock"
+        assert store.reads == 1
+        assert len(deadlines) == 1
+        assert (
+            logged
+            == [("failed", "reready_deadline_exceeded")]
+            + [("failed", "auto_unlock_read_outstanding")] * 3
+        )
+        async with asyncio.timeout(_WAIT_SECONDS):
+            assert await loop.run_in_executor(None, str, "other work") == "other work"
+
+        # Once the store answers, what the stalled read returned is overwritten, and the next
+        # request reads afresh and re-opens the service.
+        store.release.set()
+        async with asyncio.timeout(_WAIT_SECONDS):
+            while daemon._outstanding_auto_unlock_read is not None:  # pyright: ignore[reportPrivateUsage]
+                await asyncio.sleep(0)
+        assert len(store.returned) == 1
+        assert not any(store.returned[0])
+        async with asyncio.timeout(_WAIT_SECONDS):
+            context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        assert context is not None
+        assert store.reads == 2
+        assert vault.unlock_count == 1
+        assert daemon.status().state is ServiceState.READY
+        await daemon.close()
+
+    with asyncio.Runner() as runner:
+        runner.get_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        try:
+            runner.run(scenario())
+        finally:
+            store.release.set()
 
 
 @pytest.mark.anyio

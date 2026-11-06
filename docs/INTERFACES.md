@@ -4076,14 +4076,24 @@ records its own reason. A lock whose own caller stops waiting (a `SERVICE_LOCK` 
 closed) leaves the unwind to finish without it and does not apply. Shutdown cancels the attempt
 too, and its `shutdown_requested` stands over any lock racing it. The attempt also has its own
 30-second deadline, the budget an on-demand client gives a cold start for the same unlock and
-activation, so a stalled keyring read or activation never holds the lifecycle `unlocking` or a
-lock waiting. A cancelled or expired attempt always finishes its unwind, even when cancelled again
+activation. A cancelled or expired attempt always finishes its unwind, even when cancelled again
 meanwhile: it locks the vault and returns to `locked`, and an expired one keeps its soft-lock
-reason, so a later request tries again. The attempt is background work: it starts in an empty
-context, so neither it nor the READY maintenance it starts carries the triggering call's live-call
-scope or agent channel. Scoped-entry candidates that a cancelled read returns afterwards from its
-worker thread are overwritten as they arrive. An unexpected failure of the attempt is recorded as
-`service.daemon` operation `soft_lock_reready`, whether or not a caller still waits on it.
+reason, so a later request tries again. A lock and the deadline reach the attempt only where it
+yields. In a `passphrase` vault the scoped-entry read runs in a worker thread: a lock or the
+deadline ends the wait for it, not the thread. Until that read returns no attempt starts another;
+requests meanwhile are answered as locked at once, keeping the soft-lock reason, so a credential
+store that never answers holds one worker thread however often requests retry, and the candidates
+the read returns afterwards are overwritten as they arrive. Status keeps the soft-lock reason
+throughout; the service log records each expiry as `auto_unlock` reason `reready_deadline_exceeded`
+and each attempt that a pending read turned away as `auto_unlock_read_outstanding`. An
+`os_keyring` vault reads its root key on the service's own event loop, so a credential store that
+never answers there stalls the whole service, locks and the deadline included. An activation step
+that runs in a worker thread and joins it before it honours a cancel (for example reading the
+catalog's recovery routes or provisioning a ledger) finishes that step first; the lock or the
+deadline then takes effect. The attempt is background work: it starts in an empty context, so
+neither it nor the READY maintenance it starts carries the triggering call's live-call scope or
+agent channel. An unexpected failure of the attempt is recorded as `service.daemon` operation
+`soft_lock_reready`, whether or not a caller still waits on it.
 The resulting `VAULT_LOCKED` error is retryable only while this automatic recovery path remains
 eligible. `explicit_lock`, `monitor_lost`, and hard `auto_unlock_*` /
 `passphrase_required` reasons do not take that path. The trusted unlock helper may submit the scoped entry through the
