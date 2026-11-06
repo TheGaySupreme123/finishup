@@ -4641,10 +4641,20 @@ selection file afresh (`read_selection_on_disk()`, never the memo) and returns a
 `ZeroNetworkSelection` only under `zero_network`, never under an isolation variable or pin, with
 the closed `reason` `zero_network_remote_selected` (`target_id`, `kind`) or
 `zero_network_selection_unreadable` (`detail`: `selection_invalid`, `target_root_unsafe`,
-`target_record_invalid`, or a path-safety reason). `surface_after_policy_change(interactive=)`
-runs after every committed policy change and returns `clear|switched|kept|warned`: on the trusted
-console `1` runs `use_target("local")` and anything else keeps the target; otherwise one stderr
-line `<reason>: <facts> … finishup server use local …`. Owner displays carry the same item:
+`target_record_invalid`, or a path-safety reason). `everyday_network_state()` runs its own event
+loop in a fresh `contextvars.Context`, because `asyncio.to_thread` copies a context that names the
+running async library under `anyio.run`. `surface_after_policy_change_async(interactive=)` runs
+after every committed policy change and returns `clear|switched|kept|warned`: only the read above
+runs in a worker thread; on the trusted console, read on the loop's thread with
+`signal.default_int_handler` installed for the read, `1` runs `use_target("local")` and anything
+else (Enter, end of input, Ctrl-C) keeps the target; otherwise one stderr line `<reason>: <facts>
+… finishup server use local …`. `machine_readable_answer(enabled)` (a context variable;
+`machine_readable_requested()` reads it) suppresses the choice for a `--json` command whose
+policy change happens further down (`privacy credential-heuristic|conversations|input-roots`).
+While a remote target is selected only a process that resolved the everyday root before the
+selection changed can commit such a change, since `server_host` privacy commands are refused with
+`requires_server_host` and `privacy tighten|propose` reach the target. Owner displays carry the
+same item while the everyday service answers its policy (running and unlocked):
 `server status` (stderr beside `--json`; `server-target-status-1.0.0` is unchanged), `server
 list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's
 `next_steps`, the menu home, the terminal interface's header indicator and `/server`, and
