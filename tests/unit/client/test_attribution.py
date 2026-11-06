@@ -22,7 +22,11 @@ from finishup.client.attribution import (
     attribution_lines,
     connection_attribution,
 )
-from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE, client_attested_receipt_block
+from finishup.domain.receipts import (
+    CLIENT_ATTESTED_WORKSPACE_LINE,
+    client_attested_receipt_block,
+    workspace_provenance_unknown_block,
+)
 from finishup.ports.control import ControlClientKind, ControlMethod
 from finishup.service import client as client_module
 from finishup.service.control_protocol import ControlSession
@@ -105,6 +109,20 @@ def test_a_line_the_text_already_carries_is_not_repeated() -> None:
     )
     assert attribution_lines(attribution) == attribution.lines()
     assert attribution_lines(None, shown=shown) == ()
+
+
+@pytest.mark.parametrize("markdown", [False, True])
+def test_a_receipt_whose_provenance_is_unknown_names_only_the_producing_service(
+    markdown: bool,
+) -> None:
+    """The service could not say where the task's evidence was read; the client never overrules
+    that with the connection's line saying it was read on this machine (ADR-051)."""
+
+    attribution = ServiceAttribution(_SERVICE_ID, "ssh")
+    shown = "Conclusion: clean\n\n" + workspace_provenance_unknown_block(markdown=markdown)
+    assert attribution_lines(attribution, shown=shown) == (
+        f"This client reached FinishUP service {_SERVICE_ID} (transport: ssh).",
+    )
 
 
 # --- the connection carries its facts -----------------------------------------------------------
