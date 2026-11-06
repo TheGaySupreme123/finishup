@@ -35,6 +35,7 @@ from typing import Final
 
 from finishup.adapters.workspace_root import (
     CanonicalWorkspaceRoot,
+    RepositoryIdentityError,
     canonical_workspace_root,
     workspace_identity_preimage,
 )
@@ -77,6 +78,7 @@ def worktree_digest(worktree: str, salt: bytes) -> str:
         type(worktree) is not str
         or not worktree.startswith("/")
         or posixpath.normpath(worktree) != worktree
+        or worktree == "/"
     ):
         raise ValueError("workspace_worktree_invalid")
     digest = hmac.new(key, WORKSPACE_WORKTREE_DOMAIN + os.fsencode(worktree), hashlib.sha256)
@@ -111,11 +113,15 @@ async def workspace_claim(locator: WorkspaceLocator, salt: bytes) -> WorkspaceCl
     connection's workspace agent (``WorkspaceAgentHandler``) serves. The salt is checked before
     anything on disk is read. A locator the rule cannot resolve raises its closed
     ``RepositoryIdentityError`` (``repository_locator_unavailable``, say); the caller then has no
-    claim and must not fall back to sending the path.
+    claim and must not fall back to sending the path. The filesystem root is never claimed
+    (``repository_locator_invalid``), as a hook or an MCP root never binds it
+    (``adapters.workspace_binding``): a CLI or bridge started at ``/`` names no workspace.
     """
 
     _checked_salt(salt)
     if type(locator) is not WorkspaceLocator:
         raise TypeError("workspace_locator_invalid")
     worktree = posixpath.normpath(locator.path)
+    if worktree == "/":
+        raise RepositoryIdentityError("repository_locator_invalid")
     return workspace_claim_for_root(await canonical_workspace_root(locator), salt, worktree)

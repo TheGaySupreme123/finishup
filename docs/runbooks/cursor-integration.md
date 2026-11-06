@@ -656,7 +656,9 @@ default service.
   itself remote stays refused. For a remote target the bridge sends a workspace claim derived from
   that local root instead of the path, rewrites an absolute `workspace_ref` to the connection's
   handle before `start`, and the client's workspace agent serves the server's workspace reads;
-  receipts carry the `client_attested` line.
+  receipts carry the `client_attested` line. Outside the workspace root the agent reads only
+  beneath a folder the owner admitted for the target on this machine (`finishup server folders
+  add`, ADR-051 decision 5); the decision is the same for every host and changes no registration.
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the

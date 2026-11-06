@@ -159,13 +159,21 @@ def protected(tmp_path: Path) -> Path:
 
 
 def _handler(
-    repository: Path, protected: Path, *, operations: Sequence[str] | None = None
+    repository: Path,
+    protected: Path,
+    *,
+    operations: Sequence[str] | None = None,
+    folders: Sequence[Path | str] = (),
 ) -> WorkspaceAgentHandler:
+    """A handler for ``repository``; ``folders`` stand for the client's admitted-folder record."""
+
+    admitted = tuple(os.fspath(folder) for folder in folders)
     return WorkspaceAgentHandler(
         WorkspaceLocator(os.fspath(repository)),
         protected=(os.fspath(protected),),
         operations=operations,
         check_sandbox=_ReadySandbox(),
+        outside_folders=lambda: admitted,
     )
 
 
@@ -429,7 +437,7 @@ def test_only_the_claimed_workspace_is_answered(
 def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
     repository: Path, protected: Path, shared: Path
 ) -> None:
-    handler = _handler(repository, protected)
+    handler = _handler(repository, protected, folders=(shared,))
     roots = (os.fspath(shared),)
     values = (f"{shared}/spec.md", f"{shared}/data/", f"{shared}/missing.md")
     excluded = (os.fspath(repository), os.fspath(protected))
@@ -456,12 +464,18 @@ def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
 
 
 def test_outside_reads_never_enter_the_workspace_or_finishup_directories(
-    repository: Path, protected: Path, tmp_path: Path
+    repository: Path,
+    protected: Path,
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The owner admitted a root that holds the workspace and FinishUP's own state; the server
-    # names no exclusion at all. The agent still reads neither.
-    handler = _handler(repository, protected)
+    # names no exclusion at all. The agent still reads neither. (HOME lives elsewhere here: a
+    # folder that holds the home directory is never admitted.)
+    monkeypatch.setenv("HOME", os.fspath(tmp_path_factory.mktemp("elsewhere-home")))
     root = os.fspath(tmp_path.resolve())
+    handler = _handler(repository, protected, folders=(root,))
     values = (f"{repository}/tracked.txt", f"{protected}/vault.txt")
     assert read_outside_inputs((root,), values, limit=4) != ()  # the bare reader would read them
     assert (
@@ -524,7 +538,8 @@ def test_a_root_the_owner_could_never_admit_is_refused(
 
 
 def test_finishup_directories_are_never_a_read_root(repository: Path, protected: Path) -> None:
-    handler = _handler(repository, protected)
+    # Even admitted on this client, FinishUP's own directories are never a read root.
+    handler = _handler(repository, protected, folders=(protected,))
     assert _refused(
         handler,
         WorkspaceOperation.LIST_BENEATH,
@@ -608,6 +623,229 @@ def test_a_declared_test_outside_the_claimed_workspace_is_refused(
             WorkspaceOperation.READ_DECLARED_TEST,
             ReadDeclaredTestArguments(location),
         ) == ("refused", "root_not_admitted"), location
+
+
+def test_an_outside_root_is_read_only_beneath_a_folder_admitted_on_this_client(
+    repository: Path,
+    protected: Path,
+    shared: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server's word that a root is admitted is not enough (ADR-051 decision 5)."""
+
+    # HOME lives elsewhere, so the folder above ``shared`` may be admitted.
+    monkeypatch.setenv("HOME", os.fspath(tmp_path_factory.mktemp("elsewhere-home")))
+
+    root = os.fspath(shared)
+    values = (f"{shared}/spec.md", f"{shared}/data/rows.csv")
+    reads = (
+        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(root, "spec.md")),
+        (WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, "")),
+    )
+    # A valid shape the local reader would read beneath, but nothing admitted here.
+    assert read_text_beneath(root, "spec.md", excluded=(), expired=_never) is not None
+    for folders in ((), (f"{shared}-other",), (f"{shared}/data",), (f"{shared.parent}/SHARED",)):
+        handler = _handler(repository, protected, folders=folders)
+        for operation, arguments in reads:
+            assert _refused(handler, operation, arguments) == ("refused", "root_not_admitted")
+        # A task-input read reads beneath the admitted roots only: here, none.
+        assert (
+            _ok(
+                handler,
+                WorkspaceOperation.READ_OUTSIDE_INPUTS,
+                ReadOutsideInputsArguments((root,), values, limit=4),
+            )
+            == ()
+        )
+        assert (
+            _ok(
+                handler,
+                WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+                SnapshotOutsideInputsArguments(
+                    (root,), values, limit=4, max_bytes=65_536, budget_ms=5_000
+                ),
+            )
+            == ()
+        )
+    # Admitted at the root itself, or above it: read as the local reader reads.
+    for folders in ((shared,), (shared.parent,)):
+        handler = _handler(repository, protected, folders=folders)
+        assert _ok(handler, *reads[0]) == (b"SPEC_MARKER\n", 12)
+        assert ("spec.md", False) in _ok(handler, *reads[1])[0]
+    # A narrower folder admits the roots beneath it alone.
+    narrow = _handler(repository, protected, folders=(f"{shared}/data",))
+    assert _ok(
+        narrow,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(f"{shared}/data", "rows.csv"),
+    ) == (b"a,b\n1,2\n", 8)
+
+
+def test_a_task_input_read_skips_the_roots_not_admitted_here(
+    repository: Path, protected: Path, shared: Path, tmp_path: Path
+) -> None:
+    other = (tmp_path / "other").resolve()
+    other.mkdir()
+    (other / "notes.md").write_text("OTHER_MARKER\n", encoding="utf-8")
+    roots = (os.fspath(other), os.fspath(shared))
+    values = (f"{other}/notes.md", f"{shared}/spec.md")
+    handler = _handler(repository, protected, folders=(shared,))
+    inputs = _ok(
+        handler,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments(roots, values, limit=4),
+    )
+    assert [item.path for item in inputs] == [f"{shared}/spec.md"]
+    snapshot = _ok(
+        handler,
+        WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+        SnapshotOutsideInputsArguments(roots, values, limit=4, max_bytes=65_536, budget_ms=5_000),
+    )
+    assert [(row.path, row.text) for row in snapshot] == [(f"{shared}/spec.md", b"SPEC_MARKER\n")]
+    # A root of a shape no owner could admit still refuses the whole call.
+    assert _refused(
+        handler,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments(("/etc", os.fspath(shared)), values, limit=4),
+    ) == ("refused", "root_not_admitted")
+
+
+def test_the_admitted_folders_are_read_on_every_call_and_fail_closed(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    admitted: list[str] = [os.fspath(shared)]
+    failing = False
+
+    def folders() -> tuple[str, ...]:
+        if failing:
+            raise OSError("record_unreadable")
+        return tuple(admitted)
+
+    handler = WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        outside_folders=folders,
+    )
+    read = (
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+    )
+    assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+    admitted.clear()  # 'server folders remove' takes effect at the next call
+    assert _refused(handler, *read) == ("refused", "root_not_admitted")
+    admitted.append(os.fspath(shared))
+    failing = True  # a record that cannot be read admits nothing
+    assert _refused(handler, *read) == ("refused", "root_not_admitted")
+    failing = False
+    # A recorded folder that holds the home directory, or of a shape no owner may admit, is
+    # never used.
+    admitted[:] = [os.path.expanduser("~"), "/etc", "relative"]
+    assert _refused(
+        handler,
+        WorkspaceOperation.LIST_BENEATH,
+        ListBeneathArguments(os.path.expanduser("~"), ""),
+    ) == ("refused", "root_not_admitted")
+
+
+def test_by_default_the_active_targets_own_record_admits(
+    repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[bool] = []
+
+    def active() -> tuple[str, ...]:
+        asked.append(True)
+        return (os.fspath(shared),)
+
+    monkeypatch.setattr(agent_module, "active_target_folders", active)
+    handler = WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
+    )
+    assert _ok(
+        handler,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+    ) == (b"SPEC_MARKER\n", 12)
+    assert asked == [True]
+
+
+def test_a_declared_test_beneath_an_admitted_folder_is_read_as_locally(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    """The local parity #1220 keeps, within what this client's owner admitted (ADR-051)."""
+
+    (shared / ".hidden").mkdir()
+    (shared / ".hidden" / "test_h.py").write_text("def test_h():\n    pass\n", encoding="utf-8")
+    handler = _handler(repository, protected, folders=(shared,))
+    assert _ok(
+        handler,
+        WorkspaceOperation.READ_DECLARED_TEST,
+        ReadDeclaredTestArguments(f"{shared}/spec.md"),
+    ) == read_declared_test(f"{shared}/spec.md", excluded=(os.fspath(protected),))
+    # The adapter's own fences still hold beneath the folder: a hidden component reads nothing.
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(f"{shared}/.hidden/test_h.py"),
+        )
+        is None
+    )
+    sibling = shared.parent / (shared.name + "-other")
+    sibling.mkdir()
+    (sibling / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    assert _refused(
+        handler,
+        WorkspaceOperation.READ_DECLARED_TEST,
+        ReadDeclaredTestArguments(f"{sibling}/test_x.py"),
+    ) == ("refused", "root_not_admitted")
+
+
+def test_a_declared_test_spelled_through_a_root_owned_top_link_is_the_same_place(
+    repository: Path, protected: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS ``/tmp`` leads to ``/private/tmp``: the comparison walks the spelling the local read
+    walks (``declared_test_top``), so it never falsely refuses an in-workspace test."""
+
+    from finishup.adapters import task_input_read
+
+    real_top = "/" + os.fspath(repository).split("/")[1]
+    original = task_input_read.declared_test_top
+
+    def walked(location: str) -> tuple[str, str] | None:
+        # ``/alias`` stands for a root-owned link to the first component of the real path.
+        first, _, rest = location[1:].partition("/")
+        return (real_top, rest) if first == "alias" and rest else original(location)
+
+    monkeypatch.setattr(task_input_read, "declared_test_top", walked)
+    monkeypatch.setattr(agent_module, "declared_test_top", walked)
+    aliased = "/alias" + os.fspath(repository)[len(real_top) :]
+    expected = b"def test_app():\n    pass\n"
+    # The location through the link, the claimed root resolved, as every client surface sends it.
+    handler = _handler(repository, protected)
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(f"{aliased}/tests/test_app.py"),
+        )
+        == expected
+    )
+    # Beneath an admitted folder too: the folder is recorded resolved, the location is not.
+    outside = _handler(repository.parent / "elsewhere", protected, folders=(repository,))
+    assert (
+        _ok(
+            outside,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(f"{aliased}/tests/test_app.py"),
+        )
+        == expected
+    )
+
+
+def test_no_agent_is_built_for_the_filesystem_root(protected: Path) -> None:
+    with pytest.raises(ValueError, match="workspace_locator_path_invalid"):
+        WorkspaceAgentHandler(WorkspaceLocator("/"), protected=(os.fspath(protected),))
 
 
 def test_lstat_reports_only_outside_candidates(

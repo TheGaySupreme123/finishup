@@ -4522,6 +4522,7 @@ never inside a repository, with exact field sets.
 |---|---|---|
 | `yoetz.server-target/1` | `<ambient state dir>/servers/t_<8 hex>/target.json` | `schema`, `target_id` (`t_` + 8 lowercase hex), `name`, `kind`, `created_at`. `ssh` adds `user`, `host`, `port`, `remote_root`, `remote_launcher`. `https` and `local_port` add `base_url`, one of `ca_file` or `tls_pin` (`sha256:<64 hex>`), and `credential` (`keyring\|file`). Every remote kind adds `claim_salt` (32 random bytes), `authorized_at` and `disclosure_version`. |
 | `yoetz.server-selection/1` | `<ambient config dir>/server-selection.json` | `schema`, `target_id`. Absent means the ambient service. |
+| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory). Absent means none. Written only by `server folders add`/`remove`, never sent to a server. |
 
 A target name matches `[a-z0-9][a-z0-9-]{0,15}` and `local` is reserved. The name appears only in
 `target.json` and in owner displays (`server list`, `server status`, `server test`); errors, logs,
@@ -4553,8 +4554,10 @@ flag, whose parameter callback calls `config.paths.ignore_server_selection()` be
 server-host guard runs, so the service never reads a selection its spawner did not use.
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
-login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
-`server-target-status-1.0.0` and names the deciding root source, never a credential.
+login|logout|connect|disconnect` and `finishup server folders add NAME FOLDER|list NAME|remove
+NAME FOLDER|--all` (`cli/server.py`). `server status --json` emits
+`server-target-status-1.0.0` and names the deciding root source, never a credential; the text
+form also lists the remote target's admitted folders, which the JSON contract does not carry.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds (the edge
@@ -4651,24 +4654,40 @@ Outside-input roots and `lstat` candidates stay absolute.
 
 **Workspace agent (client side).** `finishup.client.workspace_agent.WorkspaceAgentHandler(workspace,
 *, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None,
-opened_handle_key=None)` answers the
-catalog against the real local adapters with their existing fences: Git hardening and ownership
-checks, ignore rules, credential-named and hidden-path refusals, byte and time bounds, and the
-network-denying check sandbox. `answer(call, *, workspace_handle)` is synchronous and runs in a
-worker thread. Its confinement rules:
+opened_handle_key=None, check_policy_trust=None, outside_folders=None)` answers the
+catalog against the real local adapters with their existing fences: Git hardening, ownership
+checks and the change capture's ignore rules, credential-named and hidden-path refusals, byte and
+time bounds, and the network-denying check sandbox. `answer(call, *, workspace_handle)` is synchronous and runs in a worker thread. Its
+confinement rules:
 
 - It answers for the one workspace its connection claimed (`workspace` is the same locator the
-  claim and the hooks use); any other handle is refused `workspace_not_claimed`.
-- Outside reads go only beneath admitted roots that pass `admitted_input_root_valid`
-  (`root_not_admitted` otherwise). They never enter the claimed workspace through an outside root
-  and never enter a protected directory, whatever the server lists as excluded; an `lstat`
-  candidate inside either is reported as not found. An exclusion naming a directory this user
-  cannot examine does not empty the read.
-- `read_declared_test` reads only strictly beneath the claimed root: a handle-relative location,
-  or an absolute one under the root's exact spelling; any other location is `root_not_admitted`.
-  The call names no admitted root, and the agent cannot tell whether its agent declared the path,
-  so a declared test outside the workspace, which a local service reads (#1220), is not read on
-  the server's word; on a remote target it is not listed.
+  claim and the hooks use); any other handle is refused `workspace_not_claimed`. The filesystem
+  root is never a workspace (`ValueError("workspace_locator_path_invalid")`), and
+  `client.workspace_claim.workspace_claim` refuses it with `repository_locator_invalid`, so a
+  connection started at `/` names no workspace.
+- Outside admission is this client's own record (`client.server_folders`, ADR-051 decision 5).
+  `outside_folders` answers the admitted folders on each call; by default
+  `active_target_folders()` reads the active remote target's `yoetz.server-folders/1` record and
+  answers `()` for a local root or a record that cannot be read. A read root must pass
+  `admitted_input_root_valid` (the shape an owner may admit) and lie inside the claimed worktree
+  or at or beneath an admitted folder (`folder_covers`, exact spelling). Beyond that,
+  `read_text_beneath` and `list_beneath` are `root_not_admitted`, and `read_outside_inputs` and
+  `snapshot_outside_inputs` read beneath their admitted roots only (a root of an inadmissible
+  shape still refuses the call). Outside reads never enter the claimed workspace through an
+  outside root and never enter a protected directory, whatever the server lists as excluded; an
+  `lstat` candidate inside either is reported as not found. An exclusion naming a directory this
+  user cannot examine does not empty the read.
+- `read_declared_test` reads a location strictly beneath the claimed root (handle-relative, or
+  absolute under the root's spelling) or at or beneath an admitted folder; anything else is
+  `root_not_admitted`. Both comparisons are made on the location as written and as the local read
+  walks it (`task_input_read.declared_test_top`: a first component that is a root-owned link to a
+  directory at most two levels deep, macOS `/tmp` or `/var`, is replaced by its target). The read
+  is the local `read_declared_test`, with its own fences.
+- Honest limit: the agent cannot tell an honest server's question from any other, so a server
+  that breaks the protocol can obtain any file in the claimed worktree that the fences pass, any
+  eligible file beneath an admitted folder (not hidden, not credential-named, in no system or
+  protected directory) and its directories' names, and the `lstat` metadata of any path the
+  outside-input candidate rule would look at.
 - `lstat_candidates` answers only for a candidate the local outside-input rule
   (`outside_input_candidates`) would look at: no hidden component, not credential-named, in no
   system directory, at or beneath a path an owner may admit. Any other candidate is reported as

@@ -1,51 +1,57 @@
 """A test-only workspace agent: answers ``workspace_call`` frames from a real local repository.
 
-It is not the product's client-side agent (``finishup.client.workspace_agent``). It decodes each
-call with the catalog codecs, runs the real local adapters against its own root (the repository
-the "client machine" holds), and encodes the answer, so a test can prove what the server learned
-came from this root and nothing else. Observation operations are not declared.
+Its Git operations are not the product's client-side agent (``finishup.client.workspace_agent``):
+it decodes each call with the catalog codecs, runs the real local adapters against its own root
+(the repository the "client machine" holds), and encodes the answer, so a test can prove what the
+server learned came from this root and nothing else. Its reads go through the product's own
+``WorkspaceAgentHandler`` for that root, so they keep the agent's confinement: outside the
+claimed workspace only beneath the folders the test admits (``admitted_folders``, the client's
+``finishup server folders`` record), declared tests included. Observation operations are not
+declared.
 """
 
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
-from finishup.adapters.task_input_read import (
-    list_beneath,
-    read_declared_test,
-    read_outside_inputs,
-    read_text_beneath,
-    snapshot_outside_inputs,
-)
+from finishup.client.workspace_agent import WorkspaceAgentHandler
 from finishup.ports.change_capture import ChangeCaptureUnavailable
-from finishup.ports.control import WorkspaceAgentDeclaration, WorkspaceCall, WorkspaceReply
+from finishup.ports.control import (
+    WorkspaceAgentDeclaration,
+    WorkspaceCall,
+    WorkspaceLocator,
+    WorkspaceReply,
+)
 from finishup.ports.workspace_agent import (
     CaptureArguments,
     CaptureMetadataArguments,
     ClassifyUndeclaredReferencesArguments,
     CountChangeLinesArguments,
-    ListBeneathArguments,
-    LstatCandidatesArguments,
-    LstatFacts,
     ProbeRequestedPathsArguments,
-    ReadDeclaredTestArguments,
-    ReadOutsideInputsArguments,
-    ReadTextBeneathArguments,
-    SnapshotOutsideInputsArguments,
     WorkspaceCodecError,
     WorkspaceOnlyArguments,
     WorkspaceOperation,
     operation_spec,
     outcome_for_reason,
-    resolve_client_location,
 )
 
 __all__ = ["FakeWorkspaceAgent", "GIT_AND_READ_OPERATIONS", "fake_declaration"]
+
+# Answered by the product's own handler, with the agent's confinement.
+_READS: frozenset[WorkspaceOperation] = frozenset(
+    {
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+        WorkspaceOperation.READ_DECLARED_TEST,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        WorkspaceOperation.LIST_BENEATH,
+        WorkspaceOperation.LSTAT_CANDIDATES,
+    }
+)
 
 GIT_AND_READ_OPERATIONS: tuple[str, ...] = tuple(
     sorted(
@@ -79,36 +85,38 @@ class _Refused(Exception):
 
 @dataclass
 class FakeWorkspaceAgent:
-    """Answers for one claimed ``root``; ``handle`` is set from the connection's hello-result."""
+    """Answers for one claimed ``root``; ``handle`` is set from the connection's hello-result.
+
+    ``admitted_folders`` stands for the folders this client's owner admitted for the server
+    (``finishup server folders add``); it is read on every call, as the record is.
+    """
 
     root: Path
     handle: str | None = None
     operations: list[str] = field(default_factory=list[str])
+    admitted_folders: list[str] = field(default_factory=list[str])
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         self._capture = GitChangeCaptureAdapter()
+        self._reads = WorkspaceAgentHandler(
+            WorkspaceLocator(str(self.root)),
+            protected=(),
+            outside_folders=lambda: tuple(self.admitted_folders),
+        )
 
     def _workspace(self, handle: str) -> str:
         if handle != self.handle:
             raise _Refused("workspace_not_claimed")
         return str(self.root)
 
-    def _location(self, value: str) -> str:
-        assert self.handle is not None
-        resolved = resolve_client_location(value, self.handle, str(self.root))
-        if resolved is None:
-            raise _Refused("workspace_not_claimed")
-        return resolved
-
-    def _locations(self, values: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(self._location(value) for value in values)
-
     def answer(self, call: WorkspaceCall) -> WorkspaceReply:
         with self._lock:
             self.operations.append(call.operation)
         spec = operation_spec(call.operation)
         assert spec is not None
+        if spec.operation in _READS:
+            return self._reads.answer(call, workspace_handle=self.handle)
         try:
             arguments = spec.decode_arguments(call.arguments)
             result = spec.encode_result(self._run(spec.operation, arguments))
@@ -165,54 +173,4 @@ class FakeWorkspaceAgent:
                 arguments.candidates,
                 arguments.declared,
             )
-        if operation is WorkspaceOperation.READ_OUTSIDE_INPUTS:
-            assert type(arguments) is ReadOutsideInputsArguments
-            return read_outside_inputs(
-                arguments.roots,
-                arguments.values,
-                limit=arguments.limit,
-                excluded=self._locations(arguments.excluded),
-                space_cut=arguments.space_cut,
-            )
-        if operation is WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS:
-            assert type(arguments) is SnapshotOutsideInputsArguments
-            return snapshot_outside_inputs(
-                arguments.roots,
-                arguments.values,
-                limit=arguments.limit,
-                max_bytes=arguments.max_bytes,
-                seconds=arguments.budget_ms / 1000,
-                excluded=self._locations(arguments.excluded),
-            )
-        if operation is WorkspaceOperation.READ_DECLARED_TEST:
-            assert type(arguments) is ReadDeclaredTestArguments
-            return read_declared_test(
-                self._location(arguments.location), excluded=self._locations(arguments.excluded)
-            )
-        if operation is WorkspaceOperation.READ_TEXT_BENEATH:
-            assert type(arguments) is ReadTextBeneathArguments
-            return read_text_beneath(
-                self._location(arguments.root),
-                arguments.relative,
-                excluded=self._locations(arguments.excluded),
-                expired=lambda: False,
-            )
-        if operation is WorkspaceOperation.LIST_BENEATH:
-            assert type(arguments) is ListBeneathArguments
-            return list_beneath(
-                self._location(arguments.root),
-                arguments.relative,
-                excluded=self._locations(arguments.excluded),
-                expired=lambda: False,
-                inspect=arguments.inspect,
-            )
-        if operation is WorkspaceOperation.LSTAT_CANDIDATES:
-            assert type(arguments) is LstatCandidatesArguments
-            found: list[LstatFacts | None] = []
-            for path in arguments.paths:
-                try:
-                    found.append(LstatFacts.from_stat_result(os.lstat(path)))
-                except OSError:
-                    found.append(None)
-            return tuple(found)
         raise _Refused("operation_not_declared")

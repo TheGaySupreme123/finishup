@@ -83,6 +83,8 @@ _CLIENT_TARGETS: Final = {
     ("client/targets.py", "active_target_record", "active_root"): 1,
     # ``finishup server status``/``connect`` with no name act on this process's own root.
     ("cli/server.py", "_resolve", "active_root"): 1,
+    # The workspace agent reads the folders the owner admitted for the target this process uses.
+    ("client/server_folders.py", "active_target_folders", "active_root"): 1,
 }
 
 
