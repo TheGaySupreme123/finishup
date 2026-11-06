@@ -171,7 +171,9 @@ say.
 A fresh installation's unconfigured seed is **zero-egress and local-only**: no work is sent anywhere
 until first-run setup commits a policy, and FinishUP is fully useful in that state. Using a FinishUP
 server on another machine is a separate choice you confirm yourself, server by server; it sends
-your work to that server and is refused while your policy forbids all network use. Setup's
+your work to that server and is refused while your policy forbids all network use. That check runs
+when you add or choose the server, so forbidding network use later does not stop a server you
+already chose: run `finishup server use local`, then restart open agent sessions. Setup's
 proposed privacy policy states whether FinishUP may check PyPI for package updates (default yes, with an
 opt-out). That bounded check carries only the installation's package identity (`finishup`, or
 `yoetz` for an installation still updated under its former name) and version, never task or

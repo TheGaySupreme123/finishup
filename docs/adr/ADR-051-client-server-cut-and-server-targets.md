@@ -442,7 +442,8 @@ answers bounded `workspace_call`s on a connection that declared it.
   runs when the owner adds or selects a remote target. **Honest limit:** client processes do not
   consult the local policy again before each connection, so tightening this computer's policy to
   zero-network does not by itself stop an already selected remote target; `finishup server use
-  local` does.
+  local`, then a restart of open agent sessions (a running MCP bridge keeps the target it started
+  with), does.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -715,6 +716,12 @@ installation is never touched by a target operation.
 - Remote round trips cost hook budget. No budget is relaxed; `server test` measures the round trip
   against the hook budgets and warns when a required startup gate would likely deny.
 - Upgrades are lockstep: every refusal names both releases.
+- The zero-network refusal (decision 8) is checked when the owner adds or selects a remote
+  target, not before each connection. Tightening this computer's policy to zero-network later
+  does not stop an already selected target; the way out is `finishup server use local`, then
+  restarting open agent sessions. The maintainer chose to disclose this limit in `PRIVACY.md`, the
+  servers guide and the ADR-009 amendment rather than add a per-connection policy check
+  (2026-11-06).
 - A Linux server whose runtime directory belongs to the login session loses its sockets at the
   last logout; `service endpoint --json` reports this, and the server needs linger or its own
   isolated root.
