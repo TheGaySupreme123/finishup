@@ -17,7 +17,7 @@ as it always has.
 | Kind | Add it with | What it is |
 |---|---|---|
 | Local | `finishup server add NAME --local` | A second FinishUP on this computer, with its own tasks, vault and settings. It starts when something first needs it, like the default one. |
-| Local port | `finishup server add NAME https://127.0.0.1:PORT` (or `https://[::1]:PORT`, or `--port PORT`) | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
+| Local port | `finishup server add NAME https://127.0.0.1:PORT` (or `https://[::1]:PORT`, or `--port PORT`) | A FinishUP served over HTTPS on a port of this computer. You confirm it and sign in to it like a web server, because a port can forward anywhere. |
 | SSH | `finishup server add NAME ssh://[user@]host[:port]` | A FinishUP on another machine that you log in to over SSH, as yourself. |
 | Web (HTTPS) | `finishup server add NAME https://host[:port][/path]` | A FinishUP hosted on the web. You sign in to it with an API key. |
 
@@ -49,6 +49,9 @@ For every other kind, FinishUP first shows what will leave this computer (see
 confirm. You do this yourself, in a terminal you are typing in. An agent cannot add or choose such
 a server: there is no agent tool for it, and the command refuses to run without a terminal. If the
 disclosure changes in a later release, FinishUP asks you to confirm again before using the server.
+Once the server is added, FinishUP tells you what it may read outside your projects, its *mode*
+(see [below](#choose-what-a-server-may-read-outside-your-project)), and the one command that
+changes it.
 
 If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
 or choose a server on another machine, a port or the web. It also refuses while the FinishUP set up
@@ -147,9 +150,10 @@ finishup server test devbox
 
 `list` shows every server and which one is in use. `status` shows which setting chose the server
 in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready,
-whether a key is stored and where (never the key itself), and the folders outside your projects
-it may read on this computer (see below; `status --json` does not list them). The key's scope is set by the server's
-operator and is not shown here. `test` connects, measures the round trip
+whether a key is stored and where (never the key itself), and what it may read outside your
+projects on this computer: its mode, why it has that mode, and the folders you listed for it
+(see below; `status --json` includes them too). The key's scope is set by the server's operator
+and is not shown here. `test` connects, measures the round trip
 and warns when it is slow enough that a startup check required by your agent setup would likely
 time out.
 
@@ -176,11 +180,47 @@ for that server. It refuses the server you are using unless you add `--select-lo
 switches back to the default first. Removing a local server deletes its tasks and vault; removing
 a server on another machine leaves that server untouched.
 
-## Let a server read a folder outside your project
+## Choose what a server may read outside your project
 
 A server on another machine, a port or the web reads your project folder through the workspace
-agent (below). Outside your project folder it reads nothing on this computer unless you let it,
-one folder at a time:
+agent (below). What it may read outside your project folder on this computer is up to you. Each
+such server has one of two modes:
+
+- **local**: it reads outside your project exactly as FinishUP on this computer would. The
+  server's own privacy settings decide which folders it reads task inputs from, and FinishUP's
+  usual safety checks still apply.
+- **listed**: it reads outside your project only beneath folders you list for it, one at a time.
+
+Until you choose, a server has the mode of its kind:
+
+| Kind | Mode until you choose | Why |
+|---|---|---|
+| SSH | local | You log in to it as yourself: it is your own account on another machine. |
+| Local port | local | It is a FinishUP on this same computer. If the port leads to a server you do not control, choose listed. |
+| Web (HTTPS) | listed | It is a server on the web. |
+| Official FinishUP service | local | The official FinishUP service gets the same access as FinishUP on this computer. No official service exists yet, so today every web server starts in listed mode. |
+
+`server add` tells you which mode the new server has and how to change it. To choose:
+
+```text
+finishup server folders mode team local
+finishup server folders mode devbox listed
+finishup server folders list devbox
+```
+
+Choosing local shows you what that lets the server read, including what a server that does not
+follow FinishUP's rules could read and list, and asks you to type the server's name, in a terminal
+you are typing in; an agent cannot do this. Choose it only for a server you trust as you trust
+FinishUP on this computer. For a server already in local mode by default, choosing local only
+records your choice. Choosing listed needs no confirmation and is always the way back. Either
+choice applies from the server's next read. `list`, `server status` and `/server` show the mode and
+why the server has it: set by you, the default for its kind, or the default for an official
+FinishUP service. FinishUP keeps your choice when a later release changes a default.
+
+### List the folders a server may read
+
+In listed mode, a server reads nothing outside your project folder unless you let it, one folder at
+a time:
 
 ```text
 finishup server folders add devbox /srv/team-specs
@@ -204,20 +244,25 @@ server's own privacy policy lets it read task inputs from. Adding a folder insid
 policy names lets it read that folder alone.
 
 `remove` stops it at once; `remove NAME --all` removes every folder for that server, and also
-clears a list FinishUP can no longer read (FinishUP then lets the server read no folder at all).
-`list` and `server status` show the folders. The list stays on this computer and is never sent to
-the server, and it belongs to that server alone: switching to another server does not change what
-a connection already open to this one may read. Removing the server removes its list too. A server
-on this computer does not use this list: there, the privacy settings decide which folders a review
-may read (`finishup privacy input-roots`).
+clears a list FinishUP can no longer read: FinishUP then lets the server read no folder at all,
+in listed mode, until you choose local again. `list` and `server status` show the folders. You can
+list folders while a server is in local mode too: they are kept for listed mode, and FinishUP says
+so. The list and the mode stay on this computer and are never sent to the server, and they belong
+to that server alone: switching to another server does not change what a connection already open
+to this one may read. If FinishUP cannot read them (the file is damaged or not private to you),
+the server reads no folder outside your projects, whatever its kind. Removing the server removes
+them too. A server on this computer does not use them: there, the privacy settings decide which
+folders a review may read (`finishup privacy input-roots`).
 
-When a task names a file in a folder that the server's privacy policy covers but you have not
-added for that server here, the workspace agent refuses to read it, and the check reports
-`workspace_agent_refused`: the server then checks without seeing your change, rather than without
-the file and without saying so. Add the folder with `server folders add` if you mean that server
-to read it. A file the reviewer asks for, or a test your agent declared, in a folder you have not
-added is skipped without a message; if a review seems to miss one, run `finishup server folders
-list NAME` to see what that server may read.
+In listed mode, when a task names a file in a folder that the server's privacy policy covers but
+you have not listed for that server here, the workspace agent refuses to read it, and the check
+reports `workspace_agent_refused`: the server then checks without seeing your change, rather than
+without the file and without saying so. If you mean that server to read it, list the folder with
+`server folders add`, or, if you trust that server as you trust FinishUP on this computer, switch
+it to local mode with `server folders mode NAME local`. A file the reviewer asks for, or a test
+your agent declared, in a folder you have not listed is skipped without a message; if a review
+seems to miss one, run `finishup server folders list NAME` to see what that server may read. In
+local mode none of this is refused: the agent reads as FinishUP on this computer would.
 
 ## What leaves this computer
 
@@ -230,8 +275,8 @@ When you use a server on another machine, a port or the web, these travel to it:
 - what the server asks your workspace agent for (below): the change since the task started,
   facts about files the task names, files the reviewer asks to read, task input files, declared
   test files, observation checks and the results of checks you approved — from your project
-  folder and from the folders outside it that you let that server read, each within the same size
-  limits FinishUP uses on one computer.
+  folder and from outside it as you chose for that server (its mode, above), each within the same
+  size limits FinishUP uses on one computer.
 
 These do not leave: your project folder's full path, your API key, your vault passphrase, and
 the secure unlock and consent prompts, which only ever run on the server's own machine.
@@ -267,8 +312,8 @@ files, so a small part of FinishUP on your computer — the **workspace agent** 
 server's questions about them.
 
 The workspace agent answers only a fixed list of questions, only about the project folder your
-session is working in and the folders outside it that you let that server read (`finishup server
-folders`), and only within the usual size limits. It runs only check commands from your project's
+session is working in and, outside it, what you chose for that server (`finishup server folders`),
+and only within the usual size limits. It runs only check commands from your project's
 approved check list. It reads files with the same safety checks FinishUP uses on one computer,
 returns a file of your project only when Git confirms that the file is not ignored, and never
 reads FinishUP's own folders on this computer — including the vault and settings of your everyday
@@ -282,10 +327,12 @@ FinishUP on one computer offers it.
 
 The workspace agent cannot tell an honest question from any other. A server that does not follow
 FinishUP's own rules could ask it for any file in your project folder, or in a folder you let that
-server read, that passes these safety checks, not only the files a task names. It could also see
+server read, that passes these safety checks, not only the files a task names. In local mode that
+means any such file on this computer, as FinishUP on this computer could read. It could also see
 the names of the files in those folders, ignored ones included, and learn whether a file exists
 elsewhere on this computer, and its size and dates, but never its contents.
-Use a server you trust with your project, and let it read only folders you would let it see.
+Use a server you trust with your project, choose local mode only for a server you trust as you
+trust FinishUP on this computer, and otherwise list only folders you would let it see.
 
 It runs inside your FinishUP clients while they are connected to the server, and keeps running
 after a call returns, because some work — a longer review, an approved check — happens later. If
@@ -493,9 +540,10 @@ repeated safely.
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
 | `folder_invalid` | `server folders add` was given a folder it cannot admit: not a full path, missing, reached through a link, hidden, a system folder, or your home folder, a folder that holds it or one of its private folders. | Give the full path of the existing folder you mean, inside your home folder if it is there. |
-| `folders_record_invalid`, `folders_record_unsafe` | The list of folders a server may read on this computer is damaged or not private to you, so that server reads no folder outside your projects. | Run `finishup server folders remove NAME --all`, then add the folders again. |
+| `folders_record_invalid`, `folders_record_unsafe` | The record of what a server may read outside your projects on this computer is damaged or not private to you, so that server reads no folder outside them, in listed mode, whatever its kind. | Run `finishup server folders remove NAME --all`, then add the folders again, or choose local mode again. |
+| `outside_read_mode_invalid` | `server folders mode` was given something other than `local` or `listed`. | Give `local` or `listed`. |
 
 In the terminal interface, the header shows which server is in use, and `/server` lists your
-servers and can switch between them with the same confirmation. Its status view lists the folders
-the server may read, and it prints the `finishup server folders` commands for you to run in your
-shell.
+servers and can switch between them with the same confirmation. Its status view shows the
+server's mode and the folders listed for it, and it prints the `finishup server folders` commands
+for you to run in your shell.

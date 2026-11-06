@@ -166,7 +166,7 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
     (``selection_override``) may change while the agent runs."""
 
     from finishup.client.remote_binding import remote_workspace_binding
-    from finishup.client.server_folders import add_folder
+    from finishup.client.server_folders import OutsideReads, add_folder
 
     del home
     first, second = _remote("ssh"), _remote("https")
@@ -179,21 +179,26 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
     assert binding is not None and type(binding.agent) is WorkspaceAgentHandler
     agent = binding.agent
 
-    def admitted() -> tuple[str, ...]:
-        return agent._folders()  # pyright: ignore[reportPrivateUsage]
+    def admitted() -> OutsideReads:
+        return agent._outside()  # pyright: ignore[reportPrivateUsage]
 
-    assert admitted() == (os.fspath(mine),)
+    # The SSH target's own record: its kind's default mode, 'local', and its own folder.
+    own = OutsideReads("local", (os.fspath(mine),), "kind_default")
+    assert admitted() == own
     _select(second)
-    assert admitted() == (os.fspath(mine),)
+    assert admitted() == own
     with paths.selection_override(targets.target_root(second.target_id)):
-        assert admitted() == (os.fspath(mine),)
+        assert admitted() == own
     _select(first)
-    # A claim made under another target's salt than the target in use admits nothing.
+    # A claim made under another target's salt than the target in use reads no folder outside,
+    # and never takes the 'local' default of the target in use.
     other = await remote_workspace_binding(
         workspace, base64.b64decode(second.claim_salt or "", validate=True)
     )
     assert type(other.agent) is WorkspaceAgentHandler
-    assert other.agent._folders() == ()  # pyright: ignore[reportPrivateUsage]
+    assert other.agent._outside() == OutsideReads(  # pyright: ignore[reportPrivateUsage]
+        "listed", (), "unreadable"
+    )
 
 
 @pytest.mark.anyio
