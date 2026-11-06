@@ -467,6 +467,37 @@ async def test_idle_sessions_expire_and_close_their_upstream(home: Path) -> None
 
 
 @pytest.mark.anyio
+async def test_an_agent_session_whose_client_stopped_polling_is_closed(gateway: _Gateway) -> None:
+    from finishup.gateway.sessions import AGENT_POLL_GRACE_SECONDS
+
+    key_id = gateway.agent_key.split("_")[1]
+    dead = await _open(gateway, agent=True)
+    alive = await _open(gateway, agent=True)
+    plain = await _open(gateway)
+    sessions = gateway.state.sessions
+    for sid in (dead, alive, plain):
+        held = sessions.get(sid, key_id)
+        assert held is not None
+        # Quiet for longer than the grace, as a client that died without DELETE leaves it.
+        held.poll_started -= AGENT_POLL_GRACE_SECONDS + 1.0
+    # A live agent client keeps its frames long-poll going; a poll that began restarts the grace.
+    polled = await gateway.client.get(
+        f"/v1/sessions/{alive}/frames?wait_ms=0", headers=gateway.headers()
+    )
+    assert polled.status_code == 204
+    await gateway.state.sweep()
+    # The dead agent session is closed (its upstream too, so the daemon unregisters the agent);
+    # the polling one and the session without an agent are untouched.
+    assert sessions.get(dead, key_id) is None
+    assert sessions.get(alive, key_id) is not None
+    assert sessions.get(plain, key_id) is not None
+    response = await gateway.client.post(
+        f"/v1/sessions/{dead}/calls?wait_ms=0", content=_call(9), headers=gateway.headers()
+    )
+    assert response.status_code == 404 and _reason(response) == "session_unknown"
+
+
+@pytest.mark.anyio
 async def test_revoking_a_key_fails_its_next_request_and_closes_its_sessions(
     gateway: _Gateway,
 ) -> None:

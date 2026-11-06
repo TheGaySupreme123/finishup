@@ -113,6 +113,10 @@ def test_the_client_and_the_gateway_share_the_binding_names_and_bounds() -> None
     assert https_binding.SESSION_ID_PATTERN.pattern == rest_binding.SESSION_ID_PATTERN.pattern
     # A session idle this long is checked before a call, well inside the gateway's expiry.
     assert https_binding.SESSION_IDLE_CHECK_SECONDS < rest_binding.SESSION_IDLE_SECONDS
+    # A live agent session begins its next frames long-poll well inside the gateway's grace.
+    from finishup.gateway.sessions import AGENT_POLL_GRACE_SECONDS
+
+    assert https_binding.LONG_POLL_WAIT_MS / 1_000 + 10.0 <= AGENT_POLL_GRACE_SECONDS
 
 
 def test_server_info_from_the_real_gateway_is_this_release(keys: Path) -> None:

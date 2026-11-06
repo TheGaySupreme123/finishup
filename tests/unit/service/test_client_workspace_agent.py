@@ -501,3 +501,27 @@ async def test_on_demand_connections_carry_the_binding_on_every_attempt(
     )
     assert connected is expected
     assert attempts == [binding]
+
+
+class _SlowCloseStream(_FakeStream):
+    """A remote stream whose close takes one slow round trip (an HTTPS ``DELETE`` over a WAN)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_finished = False
+
+    async def aclose(self) -> None:
+        await asyncio.sleep(0.2)  # the round trip's latency, not a wait for an outcome
+        await super().aclose()
+        self.close_finished = True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("serves", [True, False])
+async def test_an_agent_connection_waits_for_its_stream_to_say_goodbye(serves: bool) -> None:
+    # The connection that serves the workspace tells the server it is going away, so the server
+    # stops routing workspace calls to it at once; any other connection keeps the 50 ms bound.
+    stream = _SlowCloseStream()
+    client = _client(stream, _Agent() if serves else None)
+    await client.close()
+    assert stream.close_finished is serves

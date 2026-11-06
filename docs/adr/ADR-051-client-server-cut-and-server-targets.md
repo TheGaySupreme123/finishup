@@ -517,8 +517,12 @@ HTTPS and LOCALHOST PORT
   names a call it already finished; the gateway likewise forwards no such cancel); a
   `workspace_reply` `POST …/frames`; `workspace_call`s arrive through the `GET …/frames`
   long-poll, run only for a session whose hello declared the agent, which also keeps that session
-  out of the gateway's 120 s idle expiry. A session idle past 90 s is checked before a call, so an
-  expired session fails the write and the caller's reconnect-once replays the same `request_id`.
+  out of the gateway's 120 s idle expiry; the gateway closes an agent session in which no such
+  long-poll began for 40 s, so a client process that died without its `DELETE` stops being the
+  agent the daemon routes workspace calls to, and a closing agent connection sends its `DELETE`
+  before it stops polling and waits up to 1.5 s for it. A session idle past 90 s is checked
+  before a call, so an expired session fails the write and the caller's reconnect-once replays
+  the same `request_id`.
   TLS trusts the recorded CA file or the `sha256:` pin of the leaf certificate, checked inside the
   handshake before any request (and so the key) is sent; environment proxies and `.netrc` are
   ignored. `server login` checks the key against `GET /v1/server`, which must list binding `1.0`

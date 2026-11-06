@@ -167,6 +167,10 @@ _MAX_WORKSPACE_CALLS: Final = 4
 _FRAME_PREFIX_BYTES: Final = 4
 _CANCEL_SEND_TIMEOUT_SECONDS: Final = 0.05
 _STREAM_CLOSE_TIMEOUT_SECONDS: Final = 0.05
+# A remote connection that serves its workspace tells the server it is going away (the HTTPS
+# binding's ``DELETE``, bounded at 1 s; an ``ssh`` child's exit), so the server stops routing
+# workspace calls to it at once. Such a close gets room for that one round trip.
+_AGENT_STREAM_CLOSE_TIMEOUT_SECONDS: Final = 1.5
 _WORKFLOW_METHODS: Final = frozenset(
     {
         ControlMethod.START,
@@ -1383,7 +1387,13 @@ class ServiceClient(ControlClientPort):
             executor, self._agent_executor = self._agent_executor, None
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
-            await _best_effort_close_stream(self._stream)
+            await _best_effort_close_stream(
+                self._stream,
+                # Only a remote claim-bound connection carries an agent; local closes keep 50 ms.
+                _AGENT_STREAM_CLOSE_TIMEOUT_SECONDS
+                if self._agent is not None
+                else _STREAM_CLOSE_TIMEOUT_SECONDS,
+            )
         if not from_receiver and self._receiver is not asyncio.current_task():
             self._receiver.cancel()
             await asyncio.gather(self._receiver, return_exceptions=True)
@@ -1953,12 +1963,14 @@ def _consume_background_task[ResultT](task: asyncio.Task[ResultT]) -> None:
         pass
 
 
-async def _best_effort_close_stream(stream: ControlStream) -> None:
+async def _best_effort_close_stream(
+    stream: ControlStream, seconds: float = _STREAM_CLOSE_TIMEOUT_SECONDS
+) -> None:
     """Bound cleanup even when a faulty peer stream never completes ``aclose``."""
 
     task = asyncio.create_task(stream.aclose())
     try:
-        done, _pending = await asyncio.wait((task,), timeout=_STREAM_CLOSE_TIMEOUT_SECONDS)
+        done, _pending = await asyncio.wait((task,), timeout=seconds)
     except BaseException:
         task.cancel()
         task.add_done_callback(_consume_background_task)

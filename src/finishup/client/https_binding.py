@@ -17,7 +17,8 @@ the binding the server's gateway speaks (``docs/INTERFACES.md``, *HTTPS binding 
   ``POST …/frames``;
 * server frames (``workspace_call``) → a long-poll on ``GET …/frames?wait_ms=`` (``200`` one frame,
   ``204`` none yet), run only for a session whose hello declared a workspace agent;
-* close → ``DELETE /v1/sessions/{sid}`` (best effort; the gateway also expires idle sessions).
+* close → ``DELETE /v1/sessions/{sid}``, sent before the long-polls are cancelled (best effort;
+  the gateway also expires idle sessions, and an agent session whose frames long-poll stopped).
 
 The gateway expires a session after 120 idle seconds. Before a call on a session idle for longer
 than ``SESSION_IDLE_CHECK_SECONDS``, the stream asks whether it still exists (``GET …/frames`` with
@@ -588,15 +589,17 @@ class BindingControlStream:
             return
         self._closed = True
         self._end(None)
-        tasks = tuple(self._tasks)
-        for task in tasks:
-            task.cancel()
         try:
-            await asyncio.gather(*tasks, return_exceptions=True)
             if self._session is not None:
+                # First, while the long-polls still run: the gateway ends the session, and with it
+                # the daemon's agent registration for it, before this process goes away.
                 with contextlib.suppress(Exception):
                     async with asyncio.timeout(_DELETE_SECONDS):
                         await self._client.delete(self._session)
+            tasks = tuple(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             await self._client.aclose()
 
