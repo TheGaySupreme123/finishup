@@ -4078,19 +4078,22 @@ too, and its `shutdown_requested` stands over any lock racing it. The attempt al
 30-second deadline, the budget an on-demand client gives a cold start for the same unlock and
 activation. A cancelled or expired attempt always finishes its unwind, even when cancelled again
 meanwhile: it locks the vault and returns to `locked`, and an expired one keeps its soft-lock
-reason, so a later request tries again. A lock and the deadline reach the attempt only where it
-yields. In a `passphrase` vault the attempt calls the credential store in a worker thread twice:
-the scoped-entry read, and, once a candidate opened the vault, the staged-slot reconcile that
-promotes or discards staged entries. The reconcile is hygiene: the attempt goes on to activation
-without waiting for it, so neither its failure (logged as `auto_unlock` outcome `degraded`, reason
-`staged_reconcile_failed`) nor a store that never answers it delays `ready` or relocks the vault.
-The next attempt waits for a reconcile still running before it reads, so a read never overlaps
-one. A lock or the deadline ends an attempt's wait for either call, not the thread. Until a call
-an attempt stopped waiting for returns, no attempt starts another store call; requests meanwhile
-are answered as locked at once, keeping the soft-lock reason, so a credential store that never
-answers holds one worker thread however often requests retry, and the candidates a read returns
-afterwards are overwritten as they arrive. Status keeps the soft-lock reason throughout; the
-service log records each expiry as `auto_unlock` reason `reready_deadline_exceeded` and each
+reason, so a later request tries again. Status shows that soft-lock reason from the moment the
+unwind begins, never the `unlock_failed` a cancelled activation records on its way out, so a
+request arriving during the unwind joins the attempt (or, while a lock applies, is refused at
+once) and is answered with a retryable `vault_locked`. A lock and the deadline reach the attempt
+only where it yields. In a `passphrase` vault the attempt calls the credential store in a worker
+thread twice: the scoped-entry read, and, once a candidate opened the vault, the staged-slot
+reconcile that promotes or discards staged entries. The reconcile is hygiene: the attempt goes on
+to activation without waiting for it, so neither its failure (logged as `auto_unlock` outcome
+`degraded`, reason `staged_reconcile_failed`) nor a store that never answers it delays `ready` or
+relocks the vault. The next attempt waits for a reconcile still running before it reads, so a read
+never overlaps one. A lock or the deadline ends an attempt's wait for either call, not the thread.
+Until a call an attempt stopped waiting for returns, no attempt starts another store call; requests
+meanwhile are answered as locked at once, keeping the soft-lock reason, so a credential store that
+never answers holds one worker thread however often requests retry, and the candidates a read
+returns afterwards are overwritten as they arrive. Status keeps the soft-lock reason throughout;
+the service log records each expiry as `auto_unlock` reason `reready_deadline_exceeded` and each
 attempt that a pending store call turned away as `auto_unlock_store_call_outstanding`. An
 `os_keyring` vault reads its root key on the service's own event loop, so a credential store that
 never answers there stalls the whole service, locks and the deadline included. An activation step
