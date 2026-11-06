@@ -1920,7 +1920,7 @@ def _remote_control_error_result(
             message=_REMOTE_LOCKED_MESSAGE,
             retryable=error.retryable,
             host_profile=host_profile,
-            safe_details={"reason_code": "vault_locked"},
+            safe_details={"reason_code": error.reason},
         )
     return _control_public_error_result(
         error,
