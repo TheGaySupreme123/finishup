@@ -1156,7 +1156,10 @@ def test_the_client_refuses_an_answer_that_names_another_binding() -> None:
                 workspace_binding=cast(Any, binding),
                 workspace_handle=handle,
             )
-            await write_control_frame(server, result)
+            # Written raw, as a peer that ignores the contract would: this service's own encoder
+            # refuses a handle outside ``client_claim``.
+            payload = canonical_encode(result)
+            await server.send_all(struct.pack(">I", len(payload)) + payload)
 
         task = asyncio.create_task(answer())
         with pytest.raises(ControlProtocolError) as refused:
@@ -1171,8 +1174,20 @@ def test_the_client_refuses_an_answer_that_names_another_binding() -> None:
 
     assert asyncio.run(exercise(None, None, False)) == "protocol_mismatch"
     assert asyncio.run(exercise("local_path", None, False)) == "protocol_mismatch"
-    assert asyncio.run(exercise("none", _CLAIM_HANDLE, False)) == "protocol_mismatch"
     assert asyncio.run(exercise("none", None, True)) == "protocol_mismatch"
+    # A handle outside a claim breaks the 2.10.0 contract itself: neither side can frame it.
+    for binding in ("none", "local_path"):
+        assert asyncio.run(exercise(binding, _CLAIM_HANDLE, False)) == "frame_invalid"
+        with pytest.raises(ControlProtocolError) as unframed:
+            encode_control_frame(
+                proto._hello_result_wire(  # pyright: ignore[reportPrivateUsage]
+                    _status(),
+                    proto._allowed_for(ControlClientKind.CLI),  # pyright: ignore[reportPrivateUsage]
+                    workspace_binding=cast(Any, binding),
+                    workspace_handle=_CLAIM_HANDLE,
+                )
+            )
+        assert unframed.value.reason == "frame_invalid"
 
 
 def test_the_manifest_mismatch_answer_keeps_the_frozen_hello_result_shape() -> None:
