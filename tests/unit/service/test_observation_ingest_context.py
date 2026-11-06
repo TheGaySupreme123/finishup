@@ -48,7 +48,9 @@ async def test_only_a_claim_bound_ingest_receives_its_connection_identity() -> N
         return None
 
     invoke = ServiceDaemon._invoke_ready_handler  # pyright: ignore[reportPrivateUsage]
-    claim = RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+    claim = RepositoryPrivacyContext(
+        _COMMITMENT, "client_claim", workspace_handle="client:0123456789abcdef"
+    )
     local = RepositoryPrivacyContext(
         _COMMITMENT, "git_common_root", WorkspaceLocator("/home/dev/project")
     )

@@ -31,6 +31,7 @@ from finishup.ports.workspace_agent import (
     WorkspaceOnlyArguments,
     WorkspaceOperation,
     operation_spec,
+    workspace_handle_for_claim,
 )
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import StartRequest
@@ -155,7 +156,11 @@ async def test_a_claim_bound_connection_sends_no_path_and_answers_workspace_call
 
     async def resolve(seen: WorkspaceClaim) -> RepositoryPrivacyContext:
         resolved.append(seen)
-        return RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+        return RepositoryPrivacyContext(
+            _COMMITMENT,
+            "client_claim",
+            workspace_handle=workspace_handle_for_claim(_COMMITMENT, seen.worktree),
+        )
 
     async def connect() -> AuthenticatedUnixStream:
         return cast(AuthenticatedUnixStream, client_stream)
@@ -173,7 +178,7 @@ async def test_a_claim_bound_connection_sends_no_path_and_answers_workspace_call
         assert server.workspace_agent == handler.declaration
         handle = server.workspace_handle
         assert handle is not None
-        assert handle == "client:" + _COMMITMENT.removeprefix("hmac-sha256:")[:16]
+        assert handle == workspace_handle_for_claim(_COMMITMENT, claim.worktree)
         assert client.workspace_handle == handle
 
         spec = operation_spec(WorkspaceOperation.READ_TASK_BASE)

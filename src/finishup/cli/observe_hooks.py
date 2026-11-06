@@ -462,44 +462,6 @@ def _connect_service() -> object:
     return connect_service
 
 
-def _claim_bound_drain_connector(workspace_locator: str | None) -> HookDrainConnector:
-    """The drains' connector: claim-bound to this hook's workspace on a remote root (ADR-051).
-
-    A server on another machine accepts a row only when it is attested over a connection that
-    claims the row's workspace (decision 12); an unattested row would be refused and quarantined.
-    On such a root every drain connection names the hook's workspace, which the connect seam turns
-    into its claim (the path is never sent), so each row is attested. Without a workspace nothing
-    is sent there: the rows stay pending for the target's workspace agent, which delivers them
-    claim-bound. Every other root connects exactly as before, naming no workspace.
-    """
-
-    async def connect(kind: ControlClientKind) -> _HookDrainClient:
-        from finishup.client.remote_remedy import remote_root_selected
-
-        real = cast(Callable[..., Awaitable[object]], _connect_service())
-        if not remote_root_selected():
-            return cast(_HookDrainClient, await real(kind))
-        if workspace_locator is None:
-            from finishup.ports.control import ControlError
-
-            raise ControlError("service_unavailable", retryable=True)
-        from finishup.cli.hooks import bound_connector
-
-        return cast(_HookDrainClient, await bound_connector(real, workspace_locator)(kind))
-
-    return connect
-
-
-def _drain_connector(
-    connect: object, workspace_locator: str | None, *, skip_service: bool
-) -> HookDrainConnector | None:
-    """The connector a hook pass's drains use: the caller's, or the claim-bound one (ADR-051)."""
-
-    if connect is not None or skip_service:
-        return cast(HookDrainConnector | None, connect)
-    return _claim_bound_drain_connector(workspace_locator)
-
-
 async def _connect_attachment_service(
     kind: ControlClientKind,
     *,
@@ -538,6 +500,39 @@ class _HookDrainClient(Protocol):
 
 
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
+
+
+def _drain_connector(connect: object, workspace_locator: str | None) -> HookDrainConnector:
+    """The connector a hook pass's own outbox drains use (ADR-051).
+
+    An injected ``connect`` is used as given. Otherwise the root decides when the drain connects:
+    a local root (the everyday server, an isolated root, a named local server) connects exactly
+    as before, naming no workspace. A server on another machine accepts a row only when it is
+    attested over a connection that claims the row's workspace (decision 12); an unbound drain
+    there is refused, or its rows are quarantined. So on a remote root the drain names the hook's
+    canonical workspace and the connect seam claims it: the hello carries the claim, never the
+    path. A pass that knows no workspace sends nothing there: its connect fails, the rows stay
+    pending, and the background drain delivers them claim-bound.
+    """
+
+    if connect is not None:
+        return cast(HookDrainConnector, connect)
+
+    async def drain_connect(kind: ControlClientKind) -> _HookDrainClient:
+        from finishup.client.targets import active_root_may_be_remote
+
+        real = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
+        if not active_root_may_be_remote():
+            return await real(kind)
+        if workspace_locator is None:
+            from finishup.ports.control import ControlError
+
+            raise ControlError("service_unavailable", retryable=True)
+        from finishup.ports.control import WorkspaceLocator
+
+        return await real(kind, workspace_locator=WorkspaceLocator(workspace_locator))
+
+    return drain_connect
 
 
 class _StartClient(Protocol):
@@ -2786,10 +2781,12 @@ async def _try_service_ingest(
             capture_only=capture_only,
         )
         if (
-            getattr(client, "workspace_handle", None) is not None
-            and store is not None
-            and workspace_commitment is not None
+            getattr(client, "workspace_binding", None) == "client_claim"
+            or getattr(client, "workspace_handle", None) is not None
         ):
+            # A remote server target: the row goes out attested, without the path, or not at all.
+            if store is None or workspace_commitment is None:
+                raise ValueError("observation_attestation_unavailable")
             from finishup.client.observation_attestation import attest_for_connection
 
             request = attest_for_connection(
@@ -6467,8 +6464,6 @@ def handle_observe(
                 )
             mapping = load_mapping(codex_session_id, _state=_state)
         drain_started = _monotonic()
-        # The drains connect claim-bound on a server on another machine; elsewhere as before.
-        drain_connect = _drain_connector(connect, workspace_locator, skip_service=skip_service)
         # The Stop pass may spend more of its host window on delivery, up to the point that
         # still leaves the closure gate its status-read reserve.
         stop_drain_deadline: float | None = (
@@ -6549,7 +6544,7 @@ def handle_observe(
                         codex_session_id=codex_session_id,
                         content_by_source_identity=content_map,
                         content_capture_profile=service_content_profile,
-                        connect=drain_connect,
+                        connect=_drain_connector(connect, workspace_locator),
                         event_name=resolved_event,
                         _state=_state,
                         budget_seconds=native_content_drain_budget,
@@ -6620,7 +6615,7 @@ def handle_observe(
                     codex_session_id=codex_session_id,
                     content_by_source_identity=content_map,
                     content_capture_profile=service_content_profile,
-                    connect=drain_connect,
+                    connect=_drain_connector(connect, workspace_locator),
                     event_name=resolved_event,
                     _state=_state,
                     budget_seconds=(
@@ -6655,7 +6650,7 @@ def handle_observe(
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
                         finishup_session_id=stop_mapping.finishup_session_id,
-                        connect=drain_connect,
+                        connect=_drain_connector(connect, workspace_locator),
                         _state=_state,
                         deadline=stop_drain_deadline,
                         monotonic=_monotonic,

@@ -32,6 +32,7 @@ from finishup.service import client as service_client
 from finishup.service.client import ClientWorkspaceBinding
 
 _SALT = b"\x07" * 32
+_WORKTREE = "sha256:" + "e" * 64
 _RECORD = ServerTarget(
     "t_0a1b2c3d",
     "lab",
@@ -62,10 +63,13 @@ async def test_the_agent_claims_a_workspace_exactly_as_a_client_process_does(
     locator = _repository(tmp_path / "repo")
     claim = await claim_for_workspace(_RECORD, locator)
     assert claim == await workspace_claim(locator, _SALT)
-    # A nested directory of the same repository claims the same workspace.
+    # A nested directory of the same repository claims the same repository; its worktree digest
+    # is over the directory it names, which is why every caller notes the worktree's top level.
     (tmp_path / "repo" / "src").mkdir()
     nested = await claim_for_workspace(_RECORD, WorkspaceLocator(str(tmp_path / "repo" / "src")))
-    assert nested == claim
+    assert nested is not None and claim is not None
+    assert (nested.identity_kind, nested.digest) == (claim.identity_kind, claim.digest)
+    assert nested.worktree != claim.worktree
 
 
 @pytest.mark.anyio
@@ -122,7 +126,7 @@ class _Drain:
 async def test_the_delivery_keeps_one_client_and_reconnects_after_a_control_failure(
     tmp_path: Path,
 ) -> None:
-    claim = WorkspaceClaim("git_common_root", "sha256:" + "a" * 64)
+    claim = WorkspaceClaim("git_common_root", "sha256:" + "a" * 64, _WORKTREE)
     connected: list[_Client] = []
 
     async def connect(value: WorkspaceClaim) -> _Client:
@@ -152,7 +156,7 @@ async def test_the_delivery_keeps_one_client_and_reconnects_after_a_control_fail
 
 @pytest.mark.anyio
 async def test_a_delivery_that_cannot_reach_the_server_leaves_the_rows(tmp_path: Path) -> None:
-    claim = WorkspaceClaim("git_common_root", "sha256:" + "b" * 64)
+    claim = WorkspaceClaim("git_common_root", "sha256:" + "b" * 64, _WORKTREE)
 
     async def connect(_value: WorkspaceClaim) -> _Client:
         raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
@@ -171,7 +175,7 @@ async def test_a_delivery_that_cannot_reach_the_server_leaves_the_rows(tmp_path:
 async def test_the_seam_claims_a_locator_and_never_serves_on_the_call_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claim = WorkspaceClaim("git_common_root", "sha256:" + "c" * 64)
+    claim = WorkspaceClaim("git_common_root", "sha256:" + "c" * 64, _WORKTREE)
     seen: list[bool] = []
 
     async def binding_for(
@@ -186,7 +190,7 @@ async def test_the_seam_claims_a_locator_and_never_serves_on_the_call_connection
     assert await remote_claim(WorkspaceLocator("/home/me/repo"), None) is claim
     assert seen == [False]
     # A caller's own binding is used as given; no locator means no claim.
-    other = WorkspaceClaim("directory", "sha256:" + "d" * 64)
+    other = WorkspaceClaim("directory", "sha256:" + "d" * 64, _WORKTREE)
     assert await remote_claim(None, ClientWorkspaceBinding(other)) is other
     assert await remote_claim(None, None) is None
 
@@ -323,13 +327,13 @@ async def test_a_delivery_pass_brings_an_ssh_targets_master_back(
 
     steps = _SshSteps(monkeypatch, "remote_unreachable")
     client = await remote_workspace._rest_delivery_client(  # pyright: ignore[reportPrivateUsage]
-        _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64)
+        _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64, _WORKTREE)
     )
     assert client is steps.connected
     assert steps.steps == ["connect", "master", "connect"]
     steps = _SshSteps(monkeypatch, "remote_auth_failed")
     with pytest.raises(ControlError):
         await remote_workspace._rest_delivery_client(  # pyright: ignore[reportPrivateUsage]
-            _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64)
+            _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64, _WORKTREE)
         )
     assert steps.steps == ["connect"]

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,6 +24,7 @@ from finishup.cli.command_scope import (
     COMMAND_SCOPES,
     TUI_COMMAND_SCOPES,
     ServerHostRequired,
+    ServerTargetUnreadable,
     iter_command_paths,
     require_server_host,
 )
@@ -148,16 +149,14 @@ def test_guarded_callbacks_keep_their_signature() -> None:
 
 
 def test_require_server_host_passes_on_a_local_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("finishup.client.targets.active_root_record", lambda: None)
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: None)
     require_server_host("service run")
     require_server_host("/observe")
 
 
 def test_require_server_host_refuses_a_remote_target(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _remote_record()
-    monkeypatch.setattr(
-        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
-    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
     with pytest.raises(ServerHostRequired) as raised:
         require_server_host("service run")
     assert raised.value.target_id == "t_0a1b2c3d"
@@ -176,9 +175,7 @@ def test_observe_commands_run_on_the_client_of_a_remote_target(
     """The client's observation store is the remote target's authority (ADR-051 decision 12)."""
 
     record = _remote_record()
-    monkeypatch.setattr(
-        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
-    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
     observe = [path for path in _paths() if path.split()[0] == "observe"]
     assert observe
     for path in observe:
@@ -196,9 +193,7 @@ def test_a_guarded_command_refuses_before_running_with_no_owner_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record = _remote_record()
-    monkeypatch.setattr(
-        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
-    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
     result = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
     assert result.exit_code == 2
     assert "requires_server_host" in result.stderr
@@ -210,9 +205,7 @@ def test_a_guarded_command_refuses_before_running_with_no_owner_text(
 
 def test_root_wizard_flags_refuse_a_remote_target(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _remote_record()
-    monkeypatch.setattr(
-        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
-    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
     for flag in ("--privacy", "--set"):
         result = CliRunner().invoke(cli.app, [flag])
         assert result.exit_code == 2, flag
@@ -222,7 +215,7 @@ def test_root_wizard_flags_refuse_a_remote_target(monkeypatch: pytest.MonkeyPatc
 def test_a_guarded_command_runs_unchanged_on_a_local_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("finishup.client.targets.active_root_record", lambda: None)
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: None)
     result = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
     assert result.exit_code == 0, result.output
     report = cast(dict[str, object], json.loads(result.stdout))
@@ -231,26 +224,64 @@ def test_a_guarded_command_runs_unchanged_on_a_local_root(
 
 
 def test_an_unresolvable_root_is_left_to_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    from finishup.config.paths import PathSafetyError
-
-    def broken() -> None:
-        raise PathSafetyError("isolation_root_invalid")
-
-    monkeypatch.setattr("finishup.client.targets.active_root_record", broken)
-    require_server_host("service run")
-
-
-def test_a_root_whose_record_cannot_be_read_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    # It may be a remote target's root: a server-host command there would make a local vault or
-    # service in it.
     from finishup.client.targets import TargetError
 
-    def unreadable() -> None:
+    def broken() -> None:
         raise TargetError("target_root_unsafe")
 
-    monkeypatch.setattr("finishup.client.targets.active_root_record", unreadable)
-    with pytest.raises(ServerHostRequired) as raised:
-        require_server_host("service run")
-    assert (raised.value.target_id, raised.value.kind) == (None, "unreadable")
-    require_server_host("server use")
+    monkeypatch.setattr("finishup.client.targets.active_target_record", broken)
+    require_server_host("service run")
     assert command_scope.REQUIRES_SERVER_HOST == "requires_server_host"
+
+
+@pytest.fixture
+def selected_ssh_target(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """A real selected ``ssh`` target in an owner-only ambient home; yields its ``target.json``."""
+
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            record, root = targets.new_remote_target(
+                "lab", "ssh", user="owner", host="lab.example", port=22
+            )
+        targets.write_selection(record)
+        yield root / "target.json"
+
+
+def _shared_mode(record: Path) -> None:
+    record.chmod(0o644)
+
+
+def _newer_release_field(record: Path) -> None:
+    record.write_bytes(record.read_bytes().replace(b'{"', b'{"added_later":1,"', 1))
+
+
+@pytest.mark.parametrize(
+    ("damage", "reason"),
+    [(_shared_mode, "target_root_unsafe"), (_newer_release_field, "target_record_invalid")],
+)
+def test_an_unreadable_target_record_fails_closed(
+    selected_ssh_target: Path, damage: Callable[[Path], None], reason: str
+) -> None:
+    """ADR-051: a root whose record cannot be read may be remote, so server-host commands refuse."""
+
+    from finishup.config.paths import active_root, reset_selection_memo
+
+    damage(selected_ssh_target)
+    reset_selection_memo()
+    assert active_root() == selected_ssh_target.parent  # the root itself still resolves
+    for command in ("service run", "service start", "setup vault", "/privacy"):
+        with pytest.raises(ServerTargetUnreadable) as refused:
+            require_server_host(command)
+        assert refused.value.reason == reason
+        assert refused.value.target_id == selected_ssh_target.parent.name
+    require_server_host("status")  # commands that are not server-host still run
+
+    result = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
+    assert result.exit_code == 2
+    assert result.stderr.startswith(f"{reason}: this command runs only on the FinishUP server host")
+    assert "'finishup server use local'" in result.stderr
+    assert "lab.example" not in result.stderr and "owner" not in result.stderr
+    assert result.stdout == ""

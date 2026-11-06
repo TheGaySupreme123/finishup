@@ -912,7 +912,7 @@ async def _call_workflow(
                     return refused
             if type(request) is StartRequest:
                 # ADR-051: a server on another machine is sent the connection's handle, never a
-                # path; with none to send, nothing is sent (``WorkspaceRefNotPortable``).
+                # path; a claim the server could not key (a locked vault) sends nothing.
                 request = start_request_for_connection(request, client)
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
@@ -1218,7 +1218,10 @@ def observe_drain_cmd(
         str | None,
         typer.Option(
             "--workspace",
-            help="Restrict delivery to one workspace; default drains all pending commitments.",
+            help=(
+                "Restrict delivery to one workspace; default drains all pending commitments "
+                "(with a server elsewhere, the current folder's)."
+            ),
         ),
     ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -2844,6 +2847,20 @@ def service_restart(json_output: _JSON = False) -> None:
     _finish(run_async(lambda: _service_restart(json_output)))
 
 
+def _serve_ambient_root(value: bool) -> bool:
+    """``--ambient-root``: never read the server selection in this process (ADR-051).
+
+    A parameter callback, so it takes effect while the options are parsed: before the server-host
+    guard and the command resolve any path.
+    """
+
+    if value:
+        from finishup.config.paths import ignore_server_selection
+
+        ignore_server_selection()
+    return value
+
+
 @service_app.command("run")
 def service_run(
     startup_correlation_id: Annotated[
@@ -2854,9 +2871,19 @@ def service_run(
             help="Internal: the err_… id the spawning process looks a startup failure up under.",
         ),
     ] = None,
+    ambient_root: Annotated[
+        bool,
+        typer.Option(
+            "--ambient-root",
+            hidden=True,
+            callback=_serve_ambient_root,
+            help="Internal: serve the everyday installation its spawner uses; read no selection.",
+        ),
+    ] = False,
 ) -> None:
     """Run the persistent service in the foreground."""
 
+    del ambient_root  # applied by its parameter callback, before the server-host guard runs
     if startup_correlation_id is not None:
         from finishup.protocol.ids import IdKind, validate_id
 

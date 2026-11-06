@@ -92,6 +92,7 @@ from finishup.config.paths import (
     ensure_owner_only_dir,
     read_runtime_pin,
     runtime_dir,
+    server_target_kind,
     service_generation_path,
     state_dir,
     unlock_throttle_path,
@@ -267,12 +268,55 @@ from finishup.service.workspace_hub import (
     WorkspaceAgentChannel,
     WorkspaceAgentHub,
     live_call_scope,
+    workspace_call_deadline,
 )
 
 if TYPE_CHECKING:
     from finishup.service.http_api import NetworkApiBindings
 
 __all__ = ["ServiceComposition", "ServiceDaemon", "main", "run_service"]
+
+
+class _FrameWrites:
+    """One control connection's frame writes: one at a time, and none after one was cut off.
+
+    A write that a timeout, a cancellation or a transport failure interrupts may have left part
+    of a frame on the stream, and any frame written after it would be read as the rest of that
+    one: control results and workspace calls (ADR-051) share the connection. Such a connection is
+    out of step. Its write side is shut, so the peer reads the end of the stream rather than a
+    spliced frame, and every later write on it fails as a transport failure; the read side then
+    ends the connection as for any peer that went away.
+    """
+
+    __slots__ = ("lock", "out_of_step")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.out_of_step = False
+
+    async def write(self, stream: ControlStream, frame: Callable[[], Awaitable[None]]) -> None:
+        async with self.lock:
+            if self.out_of_step:
+                raise LocalControlTransportError("connection_failed")
+            try:
+                async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
+                    await frame()
+            except (TimeoutError, asyncio.CancelledError, LocalControlTransportError):
+                await self._end(stream)
+                raise
+            except ControlProtocolError as exc:
+                # An encoding refusal writes nothing; only a failed send leaves the stream torn.
+                if exc.reason == "transport_failed":
+                    await self._end(stream)
+                raise
+
+    async def _end(self, stream: ControlStream) -> None:
+        self.out_of_step = True
+        shutdown = getattr(stream, "shutdown_write", None)
+        if callable(shutdown):
+            with contextlib.suppress(Exception):
+                await cast(Callable[[], Awaitable[None]], shutdown)()
+
 
 _INSTALLATION_MARKER_NAME = "installation-state.json"
 _INSTALLATION_MARKER_DOMAIN = b"yoetz/installation-state/v1\x00"
@@ -1696,12 +1740,14 @@ class ServiceDaemon:
             routed = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
-                    internal = await self._invoke_ready_handler(
-                        handler,
-                        routed,
-                        repository_privacy_context,
-                        observations_awaited=observations_awaited,
-                    )
+                    # Workspace calls the handler makes are cancelled with it (ADR-051).
+                    with workspace_call_deadline():
+                        internal = await self._invoke_ready_handler(
+                            handler,
+                            routed,
+                            repository_privacy_context,
+                            observations_awaited=observations_awaited,
+                        )
                 else:
                     # A read keeps only what is left of its one budget (#1231); a write keeps
                     # its full handler deadline after the gate waits, as before.
@@ -1710,14 +1756,16 @@ class ServiceDaemon:
                         if deadline_at is None
                         else deadline_at
                     )
-                    async with asyncio.timeout_at(handler_deadline):
-                        with read_stage("handler"):
-                            internal = await self._invoke_ready_handler(
-                                handler,
-                                routed,
-                                repository_privacy_context,
-                                observations_awaited=observations_awaited,
-                            )
+                    # Workspace calls the handler makes never outlast its deadline (ADR-051).
+                    with workspace_call_deadline(handler_deadline):
+                        async with asyncio.timeout_at(handler_deadline):
+                            with read_stage("handler"):
+                                internal = await self._invoke_ready_handler(
+                                    handler,
+                                    routed,
+                                    repository_privacy_context,
+                                    observations_awaited=observations_awaited,
+                                )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
                 # vocabulary is closed, so it stays the retryable ``request_timeout`` while
@@ -2058,9 +2106,17 @@ class ServiceDaemon:
         The commitment is the installation MAC over the claim (``yoetz/repository-claim/v1``), so
         the session's repository identity is ``client_claim`` and its handle is the
         commitment's ``client:`` prefix. Nothing on this machine's disk is consulted.
+
+        A soft lock (idle, session lock, suspend) re-opens here exactly as it would on the
+        connection's first request: a claim-bound connection's handle is fixed by this answer, so
+        a handle withheld for a lock the next request lifts would leave the connection unable to
+        name its workspace, register its agent or route a hook row for its whole life. A hard
+        lock stays locked and keys nothing. Locator connections are unchanged.
         """
 
         vault = self._composition.vault
+        if not vault.ready:
+            await self._try_soft_lock_auto_ready()
         if not vault.ready:
             return None
         key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
@@ -2070,7 +2126,7 @@ class ServiceDaemon:
         session: ControlSession | None = None
         admission: str | None = None
         calls: dict[str, asyncio.Task[None]] = {}
-        write_lock = asyncio.Lock()
+        writes = _FrameWrites()
         hub = self._composition.workspace_hub
         channel: WorkspaceAgentChannel | None = None
         try:
@@ -2119,17 +2175,25 @@ class ServiceDaemon:
                 # A claim-bound connection that offered a workspace agent answers this service's
                 # workspace calls for its claim (ADR-051), written under this connection's lock.
                 async def write_call(call: WorkspaceCall) -> None:
-                    async with write_lock:
-                        async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
-                            await write_workspace_call(stream, call)
+                    await writes.write(stream, lambda: write_workspace_call(stream, call))
 
-                channel = await hub.register(
-                    handle=session.workspace_handle,
-                    declaration=session.workspace_agent,
-                    service_instance_id=session.service_instance_id,
-                    service_generation=session.service_generation,
-                    writer=write_call,
-                )
+                try:
+                    channel = await hub.register(
+                        handle=session.workspace_handle,
+                        declaration=session.workspace_agent,
+                        service_instance_id=session.service_instance_id,
+                        service_generation=session.service_generation,
+                        writer=write_call,
+                        worktree=session.workspace_worktree,
+                    )
+                except ValueError:
+                    # A handle names one worktree; an agent for another under it is never admitted.
+                    record_public_error_without_raising(
+                        component="service.daemon",
+                        operation="control_handshake",
+                        reason="workspace_agent_worktree_conflict",
+                    )
+                    return
             agent = channel
             while not self._stop_event.is_set():
                 try:
@@ -2164,7 +2228,9 @@ class ServiceDaemon:
                         target.cancel(EXPLICIT_CONTROL_CANCEL)
                     continue
                 task = asyncio.create_task(
-                    self._serve_call(stream, session, request, write_lock, admission)
+                    self._serve_call(
+                        stream, session, request, writes, admission, agent_channel=channel
+                    )
                 )
                 calls[request.rpc_id] = task
                 task.add_done_callback(lambda _task, rpc_id=request.rpc_id: calls.pop(rpc_id, None))
@@ -2271,8 +2337,10 @@ class ServiceDaemon:
         stream: ControlStream,
         session: ControlSession,
         request: ControlCallRequest,
-        write_lock: asyncio.Lock,
+        writes: _FrameWrites,
         admission: str | None = None,
+        *,
+        agent_channel: WorkspaceAgentChannel | None = None,
     ) -> None:
         call_started = time.monotonic()
         # Presentation facts from the hello describe rendering only. The owner view is the one
@@ -2284,8 +2352,9 @@ class ServiceDaemon:
             session.output_is_controlling_tty,
             owner_view=self._consume_owner_view(session, request, admission),
         )
-        # Workspace calls this dispatch makes wait the shorter bound for an agent (ADR-051).
-        with live_call_scope():
+        # Workspace calls this dispatch makes wait the shorter bound for an agent, and go to this
+        # connection's own agent first when it offered one (ADR-051).
+        with live_call_scope(agent_channel):
             if session.repository_privacy_context is None:
                 result = await self.dispatch(
                     session.client_kind,
@@ -2303,9 +2372,7 @@ class ServiceDaemon:
                 )
         session.correlate(result)
         try:
-            async with write_lock:
-                async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
-                    await write_control_frame(stream, result)
+            await writes.write(stream, lambda: write_control_frame(stream, result))
         except (LocalControlTransportError, ControlProtocolError) as exc:
             if isinstance(exc, ControlProtocolError) and exc.reason != "transport_failed":
                 # A response this service could not encode is its own defect; keep it loud.
@@ -4957,6 +5024,26 @@ class _HumanConnectionServer:
         raise HumanControlError("kind_forbidden")
 
 
+def _refuse_remote_target_root(root: Path | None) -> None:
+    """Refuse to serve a remote server target's root (ADR-051, ``target_root_is_remote``).
+
+    A remote target's root holds only client state. A root whose ``target.json`` names a remote
+    kind, or holds one that cannot be read (it may be remote), is refused before anything is
+    created, so a local vault, ledger or endpoint never appears in it and a hook dialing that
+    root never reaches a stray local service. The everyday root, an isolated root that is not a
+    target, and a named ``local`` server are served as before.
+    """
+
+    if root is None:
+        return
+    try:
+        kind = server_target_kind(root)
+    except PathSafetyError:
+        raise LifecycleError("target_root_is_remote") from None
+    if kind is not None and kind != "local":
+        raise LifecycleError("target_root_is_remote")
+
+
 async def _production_composition(
     *,
     _config: FinishUpConfig | None = None,
@@ -4968,6 +5055,9 @@ async def _production_composition(
     """Build the real locked-first service graph without opening ready-only state."""
 
     config = _config or load_config({}, os.environ, None)
+    root = active_root()
+    # Before any bundle, state or singleton is made: no service runs in a remote target's root.
+    _refuse_remote_target_root(root)
     paths = _paths or _ProductionPaths.canonical(config)
     clock = _SystemClock()
     # Instance identity gate (issue #604): an expired disposable instance, a re-pointed runtime
@@ -4977,7 +5067,7 @@ async def _production_composition(
     verify_instance_binding(
         instance_identity,
         # A selected named local server is an isolated root too (ADR-051).
-        isolated=active_root() is not None,
+        isolated=root is not None,
         pin=read_runtime_pin(),
         now=clock.now_utc(),
     )

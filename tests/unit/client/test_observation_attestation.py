@@ -40,8 +40,10 @@ _DIGEST = "sha256:" + "c4" * 32
 
 
 class _Connection:
-    def __init__(self, handle: object) -> None:
+    def __init__(self, handle: object, binding: str | None = None) -> None:
         self.workspace_handle = handle
+        if binding is not None:
+            self.workspace_binding = binding
 
 
 def _store(tmp_path: Path) -> tuple[LocalObservationStore, str, Path, str]:
@@ -162,6 +164,37 @@ def test_only_a_claim_bound_connection_attests(tmp_path: Path) -> None:
         request, _Connection(_HANDLE), store=store, workspace_commitment=workspace, state=state
     )
     assert bound.client_attestation is not None
+
+
+def test_a_claim_bound_connection_without_a_handle_sends_nothing(tmp_path: Path) -> None:
+    """ADR-051: the binding decides; a claim the server could not key never carries the path."""
+
+    from finishup.client.observation_attestation import connection_claim_bound
+    from finishup.ports.control import ControlError
+
+    store, workspace, state, path = _store(tmp_path)
+    request = _request(store, workspace, path)
+    assert request.content_chunks[0].content == path.encode()  # the row holds the path
+    locked = _Connection(None, "client_claim")
+    assert connection_claim_bound(locked)
+    assert not connection_claim_bound(_Connection(None, "local_path"))
+    assert not connection_claim_bound(_Connection(None, "none"))
+    with pytest.raises(ControlError) as raised:
+        attest_for_connection(
+            request, locked, store=store, workspace_commitment=workspace, state=state
+        )
+    assert (raised.value.reason, raised.value.retryable) == ("vault_locked", True)
+    # A local binding still sends the row exactly as written.
+    assert (
+        attest_for_connection(
+            request,
+            _Connection(None, "local_path"),
+            store=store,
+            workspace_commitment=workspace,
+            state=state,
+        )
+        is request
+    )
 
 
 def test_an_invalid_handle_is_refused(tmp_path: Path) -> None:

@@ -1340,6 +1340,8 @@ async def _execute_handle_attach(
     request: StartRequest,
     repository_privacy_commitment: str | None,
     input_capture: StartInputCapture | None = None,
+    *,
+    session_workspace_ref: str | None = None,
 ) -> StartInternalResult:
     lineage = _lineage_for(app)
     attach_model = request.attach_handle
@@ -1456,6 +1458,8 @@ async def _execute_handle_attach(
             # coordinator lock and would also create a split window between route and handle.
             sync_lineage=False,
             input_capture=input_capture,
+            # Only the opening event records it; the request identity above is unchanged.
+            session_workspace_ref=session_workspace_ref,
         )
 
     result, snapshot = await lineage.attach_with_operation(
@@ -1474,6 +1478,8 @@ async def _execute_self_registration(
     request: StartRequest,
     repository_privacy_commitment: str | None,
     input_capture: StartInputCapture | None = None,
+    *,
+    session_workspace_ref: str | None = None,
 ) -> StartInternalResult:
     lineage = _lineage_for(app)
     parent_session_id = request.parent_session_id
@@ -1526,6 +1532,7 @@ async def _execute_self_registration(
         lineage_snapshot=child,
         provision_mode=BundleProvisionMode.CREATED,
         input_capture=input_capture,
+        session_workspace_ref=session_workspace_ref,
     )
     await _merge_host_annotation(
         app,
@@ -2068,20 +2075,30 @@ async def execute_start(
 ) -> StartInternalResult:
     """Route ordinary starts and the lineage admission paths through one facade.
 
-    ``session_workspace_ref`` is the workspace an ordinary start that names none opens its
-    session on: a claim-bound connection's ``client:`` handle (ADR-051). ``None`` everywhere
-    else, so the opening event records the request's own ``workspace_ref`` exactly as before.
+    ``session_workspace_ref`` is the workspace a session opened by a start that names none
+    records: on a claim-bound connection, the connection's ``client:`` handle (ADR-051), so a
+    create, a parent-registered child and a child attached by its attach handle are durably
+    claim-bound. It goes into the opening event only, never into the request's identity; a
+    delegation opens no session and ignores it; ``None`` everywhere else.
     """
 
     if request.mode == "delegate":
         return await _execute_delegation(app, request, repository_privacy_commitment)
     if request.attach_handle is not None:
         return await _execute_handle_attach(
-            app, request, repository_privacy_commitment, input_capture
+            app,
+            request,
+            repository_privacy_commitment,
+            input_capture,
+            session_workspace_ref=session_workspace_ref,
         )
     if request.parent_session_id is not None:
         return await _execute_self_registration(
-            app, request, repository_privacy_commitment, input_capture
+            app,
+            request,
+            repository_privacy_commitment,
+            input_capture,
+            session_workspace_ref=session_workspace_ref,
         )
     return await _execute_standard_start(
         app,

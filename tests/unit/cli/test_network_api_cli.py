@@ -183,9 +183,7 @@ def test_key_commands_belong_to_the_server_host(
         authorized_at="2026-11-05T00:00:00.000Z",
         disclosure_version=1,
     )
-    monkeypatch.setattr(
-        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
-    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
     result = _RUNNER.invoke(cli.app, ["service", "api-key", "list"])
     assert result.exit_code == 2
     assert "requires_server_host" in result.stderr

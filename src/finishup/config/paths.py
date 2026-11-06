@@ -99,6 +99,9 @@ SERVER_SELECTION_SCHEMA: Final = "yoetz.server-selection/1"
 SERVERS_DIR_NAME: Final = "servers"
 SERVER_TARGET_FILE_NAME: Final = "target.json"
 _MAX_SELECTION_BYTES: Final = 1_024
+# ``finishup.client.targets`` owns the record; these bound the service's own minimal read of it.
+_MAX_TARGET_RECORD_BYTES: Final = 8_192
+_SERVER_TARGET_KINDS: Final = frozenset({"local", "local_port", "ssh", "https"})
 _TARGET_ID: Final = re.compile(r"^t_[0-9a-f]{8}$", re.ASCII)
 type IsolationBinding = Literal[
     "ambient", "environment", "runtime_pin", "environment_and_pin", "selection"
@@ -452,6 +455,25 @@ def reset_selection_memo() -> None:
     _SELECTION_MEMO.clear()
 
 
+# Set once by ``finishup service run --ambient-root``: this process never reads the selection.
+_selection_ignored: bool = False
+
+
+def ignore_server_selection() -> None:
+    """Resolve the server selection as absent for the rest of this process (ADR-051).
+
+    A client whose own root is the everyday installation starts its service with
+    ``finishup service run --ambient-root``, which calls this before anything resolves a path. The
+    service then serves the everyday installation its spawner uses, never a target that a
+    selection written after the spawner resolved its root names. The isolation variable and the
+    runtime pin still outrank this, exactly as they outrank the selection; nothing undoes it
+    within the process, and ``reset_selection_memo`` leaves it in force.
+    """
+
+    global _selection_ignored
+    _selection_ignored = True
+
+
 def ambient_registry_dirs(*, _probe: _PathProbe | None = None) -> tuple[Path, Path]:
     """Return ``(ambient config dir, ambient state dir)``, where the server registry lives.
 
@@ -535,7 +557,7 @@ def _selected_root(probe: _PathProbe) -> Path | None:
     already fails closed with ``installation_root_ambiguous`` there.
     """
 
-    if probe.installation_naming == "ambiguous":
+    if probe.installation_naming == "ambiguous" or _selection_ignored:
         return None
     dirs = probe.platform_dirs
     path = Path(dirs.user_config_dir) / SERVER_SELECTION_NAME
@@ -556,6 +578,41 @@ def _selected_root(probe: _PathProbe) -> Path | None:
             raise PathSafetyError("isolation_root_invalid")
     _SELECTION_MEMO[key] = root
     return root
+
+
+def server_target_kind(root: Path, *, _probe: _PathProbe | None = None) -> str | None:
+    """The kind the server target record in ``root`` names; ``None`` when ``root`` holds none.
+
+    The service's own minimal check (ADR-051): it may not import the client's target registry
+    (``finishup.client.targets`` validates the whole record), yet must never run in a remote
+    target's root. Only an owner-only regular file holding a JSON object whose ``kind`` is one of
+    the closed target kinds is answered; anything else fails closed with
+    ``isolation_root_invalid``, and the caller treats that as possibly remote.
+    """
+
+    probe = _probe_or_default(_probe)
+    path = root / SERVER_TARGET_FILE_NAME
+    try:
+        facts = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise PathSafetyError("isolation_root_invalid") from exc
+    if (
+        not stat.S_ISREG(facts.st_mode)
+        or (hasattr(facts, "st_uid") and facts.st_uid != probe.effective_uid)
+        or stat.S_IMODE(facts.st_mode) & 0o077
+        or facts.st_size > _MAX_TARGET_RECORD_BYTES
+    ):
+        raise PathSafetyError("isolation_root_invalid")
+    try:
+        parsed: object = json.loads(path.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise PathSafetyError("isolation_root_invalid") from exc
+    kind = cast(dict[object, object], parsed).get("kind") if isinstance(parsed, dict) else None
+    if type(kind) is not str or kind not in _SERVER_TARGET_KINDS:
+        raise PathSafetyError("isolation_root_invalid")
+    return kind
 
 
 @contextmanager

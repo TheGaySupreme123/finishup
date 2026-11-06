@@ -973,8 +973,9 @@ and a server directory at the same path is a different tree. Once ADR-051 is acc
   read.
 - **No agent, no silent pass.** When no workspace agent is reachable the capture is unavailable
   with the new reason `workspace_agent_unavailable`
-  (`check_time_change_unavailable_workspace_agent_unavailable`); the existing gap rules and
-  fail-closed defaults apply unchanged.
+  (`check_time_change_unavailable_workspace_agent_unavailable`), and when the agent refuses the
+  read with `workspace_agent_refused` (`check_time_change_unavailable_workspace_agent_refused`);
+  the existing gap rules and fail-closed defaults apply unchanged.
 - **HOME projects.** The HOME admission of the 2026-10-21 decision is made by the agent on the
   client, never from the server's own home directory.
 - A connection that carries a locator (every local target) keeps this record's behaviour byte

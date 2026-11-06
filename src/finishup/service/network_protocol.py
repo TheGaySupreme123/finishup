@@ -190,7 +190,9 @@ REST_ERROR_STATUS: Final[Mapping[str, int]] = {
 API_KEY_PREFIX: Final = "fuk_"
 _API_KEY: Final = re.compile(r"^fuk_([0-9a-f]{12})_([A-Za-z0-9_-]{43})$", re.ASCII)
 _API_KEY_SECRET_BYTES: Final = 32
-_CLAIM_HEADER: Final = re.compile(r"^(git_common_root|directory):(sha256:[0-9a-f]{64})$", re.ASCII)
+_CLAIM_HEADER: Final = re.compile(
+    r"^(git_common_root|directory):(sha256:[0-9a-f]{64}):(sha256:[0-9a-f]{64})$", re.ASCII
+)
 _AGENT_ID: Final = re.compile(r"^agt_[0-9a-f]{32}$", re.ASCII)
 _KEY_ID: Final = re.compile(r"^[0-9a-f]{12}$", re.ASCII)
 _SHA256: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
@@ -288,11 +290,16 @@ def mint_api_key() -> tuple[ApiKeyToken, str]:
 
 
 def encode_claim_header(claim: WorkspaceClaim) -> str:
-    """``<identity_kind>:sha256:<64 hex>``: the claim a request names its workspace by."""
+    """``<identity_kind>:sha256:<64 hex>:sha256:<64 hex>``: a request's workspace claim.
+
+    The first digest is the repository claim, the second the worktree digest (ADR-051): linked
+    worktrees of one repository share the first and differ in the second, so each gets its own
+    workspace handle. Neither names a path.
+    """
 
     if type(claim) is not WorkspaceClaim:
         raise TypeError("workspace_claim_invalid")
-    return f"{claim.identity_kind}:{claim.digest}"
+    return f"{claim.identity_kind}:{claim.digest}:{claim.worktree}"
 
 
 def parse_claim_header(raw: str) -> WorkspaceClaim:
@@ -300,7 +307,7 @@ def parse_claim_header(raw: str) -> WorkspaceClaim:
     if match is None:
         raise ValueError("workspace_claim_invalid")
     kind = cast(Literal["git_common_root", "directory"], match.group(1))
-    return WorkspaceClaim(identity_kind=kind, digest=match.group(2))
+    return WorkspaceClaim(identity_kind=kind, digest=match.group(2), worktree=match.group(3))
 
 
 def _encode(document: Mapping[str, JsonValue]) -> bytes:
@@ -564,7 +571,9 @@ def claim_principal_digest(claim: WorkspaceClaim, principal: str) -> WorkspaceCl
     """The claim as the service keys it for one principal (keys of one owner share a principal).
 
     Two principals presenting the same digest reach different repositories; a rotated key keeps
-    its predecessor's principal, so rotation never strands a task.
+    its predecessor's principal, so rotation never strands a task. Only the repository digest is
+    namespaced: the worktree digest is kept, and the handle the service derives from the keyed
+    commitment and it is already the principal's own.
     """
 
     if type(claim) is not WorkspaceClaim or type(principal) is not str or not principal:
@@ -575,4 +584,6 @@ def claim_principal_digest(claim: WorkspaceClaim, principal: str) -> WorkspaceCl
         + b"\x00"
         + claim.digest.encode("ascii")
     ).hexdigest()
-    return WorkspaceClaim(identity_kind=claim.identity_kind, digest="sha256:" + digest)
+    return WorkspaceClaim(
+        identity_kind=claim.identity_kind, digest="sha256:" + digest, worktree=claim.worktree
+    )

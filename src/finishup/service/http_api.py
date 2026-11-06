@@ -82,10 +82,7 @@ from finishup.ports.control import (
     WorkspaceClaim,
     WorkspaceReply,
 )
-from finishup.ports.workspace_agent import (
-    MAX_WORKSPACE_FRAME_BYTES,
-    workspace_handle_for_commitment,
-)
+from finishup.ports.workspace_agent import MAX_WORKSPACE_FRAME_BYTES
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, new_id, validate_id
 from finishup.protocol.schemas import schema_manifest_digest
@@ -203,7 +200,9 @@ class WorkspaceAgentRegistry(Protocol):
     """The service's registry of workspace agents (``service.workspace_hub.WorkspaceAgentHub``).
 
     A REST agent registers one in-process channel whose ``writer`` queues each ``workspace_call``
-    for the agent's next long-poll; its replies come back through ``deliver``.
+    for the agent's next long-poll; its replies come back through ``deliver``. ``worktree`` is the
+    claim's worktree digest: the hub never admits an agent for another worktree under a live
+    handle.
     """
 
     async def register(
@@ -214,6 +213,7 @@ class WorkspaceAgentRegistry(Protocol):
         service_instance_id: str,
         service_generation: str,
         writer: Callable[[WorkspaceCall], Awaitable[None]],
+        worktree: str | None = None,
     ) -> Any: ...
 
     def deliver(self, channel: Any, reply: WorkspaceReply) -> None: ...
@@ -551,9 +551,7 @@ class NetworkApi:
             scope=caller.scope,
             transport=caller.transport,
             workspace_binding=binding,
-            workspace_handle=None
-            if context is None
-            else workspace_handle_for_commitment(context.commitment),
+            workspace_handle=None if context is None else context.workspace_handle,
         )
         return Response(
             server_info_document(info),
@@ -704,7 +702,7 @@ class NetworkApi:
         """Check, read and dispatch one call; a refusal before dispatch is answered at once."""
 
         binding, context = await self._claim(request, caller)
-        handle = None if context is None else workspace_handle_for_commitment(context.commitment)
+        handle = None if context is None else context.workspace_handle
         addressed = self._generation(request)
         rpc_id = operation_id or new_id(IdKind.CONTROL_RPC)
         if not method_allowed(caller.scope, method, claim_bound=context is not None):
@@ -983,7 +981,8 @@ class NetworkApi:
 
     async def _register_agent(self, request: Request) -> Response:
         caller = self._caller(request)
-        if _single_header(request, HEADER_CLAIM) is None:
+        raw_claim = _single_header(request, HEADER_CLAIM)
+        if raw_claim is None:
             raise _Refusal("workspace_claim_required")
         _binding, context = await self._claim(request, caller)
         hub = self._bindings.agent_hub
@@ -999,7 +998,12 @@ class NetworkApi:
             >= MAX_AGENTS_PER_KEY
         ):
             raise _Refusal("agent_limit")
-        handle = workspace_handle_for_commitment(context.commitment)
+        handle = context.workspace_handle
+        # ``_claim`` parsed it already. Its worktree digest is what tells linked worktrees of one
+        # repository apart; the hub refuses an agent for another worktree under a live handle.
+        worktree = parse_claim_header(raw_claim).worktree
+        if handle is None:
+            raise _Refusal("internal_failure")
         calls: asyncio.Queue[WorkspaceCall] = asyncio.Queue(maxsize=_AGENT_QUEUE_CAPACITY)
 
         async def writer(call: WorkspaceCall) -> None:
@@ -1026,6 +1030,7 @@ class NetworkApi:
                 service_instance_id=status.service_instance_id,
                 service_generation=status.service_generation,
                 writer=writer,
+                worktree=worktree,
             )
         except Exception:
             await agent.exit_stack.aclose()

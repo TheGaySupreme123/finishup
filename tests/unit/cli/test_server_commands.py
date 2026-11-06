@@ -11,7 +11,8 @@ host registration, and ``upgrade`` still runs with one.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import shutil
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -108,33 +109,24 @@ def quiet_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "command",
-    [
-        "add",
-        "list",
-        "use",
-        "status",
-        "test",
-        "remove",
-        "login",
-        "logout",
-        "connect",
-        "disconnect",
-    ],
+    "arguments",
+    [(), *(((command.name or ""),) for command in server_cli.server_app.registered_commands)],
+    ids=lambda arguments: "-".join(arguments) or "server",
 )
-def test_every_server_command_renders_its_help(home: Path, command: str) -> None:
-    # Help text is Rich markup: a bracketed address part such as ``[/base]`` once parsed as a
-    # closing tag and turned ``server add --help`` into an internal error.
-    result = _invoke(command, "--help")
+def test_every_server_command_renders_its_help(home: Path, arguments: tuple[str, ...]) -> None:
+    # Help renders as Rich markup: a bracketed address part such as ``[/base]`` once parsed as a
+    # closing tag and turned ``server add --help`` into internal_error.
+    result = _invoke(*arguments, "--help")
     assert result.exit_code == 0, result.output
     assert result.exception is None
+    assert "internal_error" not in result.output
 
 
 def test_add_help_names_both_remote_address_forms(home: Path) -> None:
     result = _invoke("add", "--help")
     assert result.exit_code == 0, result.output
-    assert "ssh://user@host:port" in result.output
-    assert "https://host:port/base" in result.output
+    assert "ssh://user@host:port" in result.stdout
+    assert "https://host:port/base" in result.stdout
 
 
 def test_add_use_and_their_reverses_for_a_named_local_server(home: Path, quiet_probe: None) -> None:
@@ -226,18 +218,140 @@ def test_remote_add_is_refused_in_the_zero_network_state(
     assert targets.list_targets() == ()
 
 
-def test_a_loopback_port_target_is_not_a_network_hop(
-    home: Path, monkeypatch: pytest.MonkeyPatch, authorized: list[tuple[str, str]]
+def test_a_loopback_port_target_is_a_network_hop_too(
+    home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def never() -> bool:
-        raise AssertionError("loopback never consults the zero-network state")
+    """ADR-051 section 3: every kind but ``local`` is refused in the zero-network state."""
 
-    monkeypatch.setattr(server_cli, "_zero_network_in_force", never)
-    result = _invoke("add", "gw", "--port", "9443")
+    monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: True)
+    for arguments in (
+        ("--port", "9443"),
+        ("https://127.0.0.1:9443",),
+        ("https://[::1]:9443",),
+    ):
+        result = _invoke("add", "gw", *arguments)
+        assert result.exit_code == 2, (arguments, result.output)
+        assert result.stderr.startswith("zero_network_in_force:")
+    assert targets.list_targets() == ()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "kind", "base_url"),
+    [
+        (("--port", "9443"), "local_port", "https://127.0.0.1:9443"),
+        (("https://127.0.0.1:9443",), "local_port", "https://127.0.0.1:9443"),
+        (("https://[0:0:0:0:0:0:0:1]:9443/fu/",), "local_port", "https://[::1]:9443/fu"),
+        # Only a literal loopback origin with an explicit port is this computer's port.
+        (("https://127.0.0.1",), "https", "https://127.0.0.1"),
+        (("https://localhost:9443",), "https", "https://localhost:9443"),
+    ],
+)
+def test_a_loopback_address_is_the_local_port_kind(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    arguments: tuple[str, ...],
+    kind: str,
+    base_url: str,
+) -> None:
+    result = _invoke("add", "gw", *arguments)
     assert result.exit_code == 0, result.output
     (record,) = targets.list_targets()
-    assert (record.kind, record.base_url) == ("local_port", "https://127.0.0.1:9443")
-    assert authorized == [("gw", "local_port")]
+    assert (record.kind, record.base_url) == (kind, base_url)
+    assert f"({record.target_id}, {kind})" in result.stdout
+    assert authorized == [("gw", kind)]
+
+
+class _PolicyClient:
+    """A control client whose ``privacy_get_setup`` answers like the wire: a ``JsonObject``."""
+
+    def __init__(self, reply: object) -> None:
+        self.reply = reply
+        self.closed = False
+
+    async def privacy_get_setup(self, _request: object) -> object:
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return self.reply
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _everyday_installation(home: Path) -> None:
+    """The marker the everyday vault's initialization writes, in the ambient data folder."""
+
+    bundle = home / "data" / "finishup"
+    bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (bundle / "installation-state.json").write_bytes(b"{}\n")
+
+
+def _serve_policy(monkeypatch: pytest.MonkeyPatch, reply: object) -> list[_PolicyClient]:
+    from finishup.ports.control import ControlError
+
+    clients: list[_PolicyClient] = []
+
+    async def connect(_kind: object, *, workspace_locator: object = None) -> _PolicyClient:
+        assert workspace_locator is None
+        if isinstance(reply, ControlError) and reply.reason == "service_unavailable":
+            raise reply
+        client = _PolicyClient(reply)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
+    return clients
+
+
+def _policy(egress: bool) -> object:
+    from finishup.domain.values import JsonObject
+
+    return JsonObject(
+        {"composed_policy": {"network_egress_permitted": egress, "schema_version": "1.0.0"}}
+    )
+
+
+@pytest.mark.parametrize(("egress", "refused"), [(False, True), (True, False)])
+def test_the_everyday_policy_decides_the_zero_network_state(
+    home: Path, monkeypatch: pytest.MonkeyPatch, egress: bool, refused: bool
+) -> None:
+    _everyday_installation(home)
+    clients = _serve_policy(monkeypatch, _policy(egress))
+    assert server_cli._zero_network_in_force() is refused  # pyright: ignore[reportPrivateUsage]
+    (client,) = clients
+    assert client.closed
+
+
+@pytest.mark.parametrize("failure", ["service_unavailable", "vault_locked"])
+def test_an_unreadable_everyday_policy_refuses_the_hop(
+    home: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from finishup.ports.control import ControlError
+
+    _everyday_installation(home)
+    _serve_policy(monkeypatch, ControlError(failure, retryable=True))
+    with pytest.raises(server_cli.ServerCommandRefused) as refused:
+        server_cli._zero_network_in_force()  # pyright: ignore[reportPrivateUsage]
+    assert refused.value.reason == "network_policy_unreadable"
+
+    def confirm(_name: str, _kind: str) -> None:
+        raise AssertionError("refused before the confirmation")
+
+    monkeypatch.setattr(server_cli, "_confirm_on_trusted_console", confirm)
+    result = _invoke("add", "lab", "ssh://owner@lab.example")
+    assert result.exit_code == 20
+    assert result.stderr.startswith("network_policy_unreadable:")
+    assert "lab.example" not in result.stderr
+    assert targets.list_targets() == ()
+
+
+def test_a_computer_never_set_up_has_no_policy_of_its_own(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def never(_kind: object, **_kwargs: object) -> object:
+        raise AssertionError("no everyday installation: nothing to ask")
+
+    monkeypatch.setattr("finishup.service.client.connect_service", never)
+    assert server_cli._zero_network_in_force() is False  # pyright: ignore[reportPrivateUsage]
 
 
 def test_remote_add_and_use_record_the_owner_authorization(
@@ -457,12 +571,113 @@ def test_connect_and_disconnect_dispatch_to_the_local_runtime(
     assert calls == [("ensure_ready", root), ("stop", root), ("ensure_ready", None)]
 
 
-def test_the_everyday_server_is_not_started_while_another_is_selected(home: Path) -> None:
+def test_the_everyday_server_starts_while_another_is_selected(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``connect local`` starts the everyday server: its spawn reads no selection (ADR-051)."""
+
+    calls: list[Path | None] = []
+
+    def ensure_ready(_self: object, root: Path | None) -> None:
+        calls.append(root)
+
+    monkeypatch.setattr(
+        "finishup.client.target_runtime.LocalTargetRuntime.ensure_ready", ensure_ready
+    )
     assert _invoke("add", "work", "--local").exit_code == 0
     assert _invoke("use", "work").exit_code == 0
     result = _invoke("connect", "local")
+    assert result.exit_code == 0, result.output
+    assert calls == [None]
+    assert "this computer's everyday server" in result.stdout
+
+
+def _dangling_selection(home: Path) -> None:
+    """Select a named local server, then delete its folder behind the selection's back."""
+
+    assert _invoke("add", "work", "--local").exit_code == 0
+    assert _invoke("use", "work").exit_code == 0
+    shutil.rmtree(targets.target_root(targets.find_target("work").target_id))
+
+
+def _malformed_selection(home: Path) -> None:
+    path = targets.selection_path()
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.write_bytes(b"{not json")
+    path.chmod(0o600)
+
+
+def _symlinked_selection(home: Path) -> None:
+    elsewhere = home / "elsewhere.json"
+    elsewhere.write_bytes(b'{"schema":"yoetz.server-selection/1","target_id":"t_0a1b2c3d"}\n')
+    elsewhere.chmod(0o600)
+    targets.selection_path().parent.mkdir(mode=0o700, exist_ok=True)
+    targets.selection_path().symlink_to(elsewhere)
+
+
+@pytest.mark.parametrize(
+    "break_selection", [_dangling_selection, _malformed_selection, _symlinked_selection]
+)
+def test_use_local_is_the_way_back_from_a_broken_selection(
+    home: Path, quiet_probe: None, break_selection: Callable[[Path], None]
+) -> None:
+    """A damaged or dangling selection fails closed, and the remedy it names actually works."""
+
+    break_selection(home)
+    for arguments in (("list",), ("status", "--json"), ("use", "work")):
+        refused = _invoke(*arguments)
+        assert refused.exit_code == 20, (arguments, refused.output)
+        assert refused.stderr.startswith("selection_invalid:")
+        assert "'finishup server use local' clears it" in refused.stderr
+
+    back = _invoke("use", "local")
+    assert back.exit_code == 0, back.output
+    assert not targets.selection_path().is_symlink()
+    assert not targets.selection_path().exists()
+    if break_selection is _symlinked_selection:
+        assert (home / "elsewhere.json").is_file()  # the link is removed, never what it names
+    reset_selection_memo()
+    assert active_root() is None
+    listed = _invoke("list")
+    assert listed.exit_code == 0, listed.output
+    assert listed.stdout.splitlines()[0].startswith("* local")
+
+
+def test_remove_select_local_clears_a_selection_that_cannot_be_read(home: Path) -> None:
+    assert _invoke("add", "work", "--local").exit_code == 0
+    _malformed_selection(home)
+    refused = _invoke("remove", "work")
+    assert refused.exit_code == 20
+    assert refused.stderr.startswith("selection_invalid:")
+    assert targets.list_targets() != ()
+
+    removed = _invoke("remove", "work", "--select-local")
+    assert removed.exit_code == 0, removed.output
+    assert not targets.selection_path().exists()
+    assert targets.list_targets() == ()
+    reset_selection_memo()
+    assert active_root() is None
+
+
+def test_another_target_can_be_removed_while_the_selection_dangles(home: Path) -> None:
+    assert _invoke("add", "spare", "--local").exit_code == 0
+    _dangling_selection(home)
+    removed = _invoke("remove", "spare")
+    assert removed.exit_code == 0, removed.output
+    assert targets.selection_path().exists()  # not this target's; 'use local' clears it
+
+
+def test_an_isolation_root_still_refuses_the_way_back(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _malformed_selection(home)
+    explicit = home / "explicit"
+    explicit.mkdir(mode=0o700)
+    monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(explicit))
+    result = _invoke("use", "local")
     assert result.exit_code == 2
-    assert result.stderr.startswith("selection_active:")
+    assert result.stderr.startswith("selection_overridden:")
+    assert targets.selection_path().exists()
 
 
 def test_an_isolation_root_overrides_the_selection(
@@ -496,6 +711,38 @@ def test_remote_use_refreshes_the_recorded_authorization(
     assert after.authorized_at != "2026-01-01T00:00:00.000Z"
     assert after.disclosure_version == targets.DISCLOSURE_VERSION
     assert authorized == [("fu", "https"), ("fu", "https")]
+
+
+def test_a_stale_disclosure_is_refused_by_connect_and_renewed_by_use(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    quiet_probe: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``connect`` sends nothing to a target confirmed under an older disclosure; ``use`` renews."""
+
+    assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    # A later release shows a newer disclosure than the one the owner confirmed.
+    monkeypatch.setattr(targets, "DISCLOSURE_VERSION", targets.DISCLOSURE_VERSION + 1)
+
+    refused = _invoke("connect", "lab")
+    assert refused.exit_code == 2
+    assert refused.stderr.startswith("target_reauthorization_required:")
+    assert "lab.example" not in refused.stderr
+    # Seeing, stopping and removing a stale target stay possible.
+    status = _status_json("lab")
+    authorization = cast(
+        dict[str, JsonValue], cast(dict[str, JsonValue], status["target"])["authorization"]
+    )
+    assert authorization["current"] is False
+    # This tree's SSH runtime stops a target that has no master running without running ssh.
+    stopped = _invoke("disconnect", "lab")
+    assert stopped.exit_code == 0, stopped.output
+
+    assert _invoke("use", "lab").exit_code == 0
+    (renewed,) = targets.list_targets()
+    assert not renewed.needs_reauthorization
+    assert authorized == [("lab", "ssh"), ("lab", "ssh")]
 
 
 # -- registrations and upgrade with a selection ---------------------------------------------

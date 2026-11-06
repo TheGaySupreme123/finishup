@@ -724,22 +724,22 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="workspace_binding_correction",
         directive=(
-            "This connection named both a workspace path and a workspace claim, so the service "
-            "refused it before any work. Reconnect through the FinishUP client for the selected "
-            "server; it sends exactly one of them."
+            "This request names its workspace in a form this connection cannot use (a client: "
+            "handle without a claim, or a path and a claim together), so nothing was recorded. "
+            "Name it by its absolute root and send it once under a NEW request_id."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
-        nudge="Never send a local path to a FinishUP server on another machine.",
+        nudge="The FinishUP MCP bridge and CLI choose the right form for the selected server.",
     ),
     RecoveryDirective(
         token="workspace_handle_required",
         directive=(
-            "This server cannot read paths on your machine, so a start naming an absolute "
-            "workspace path was refused before any write. Set workspace_ref to the client: "
-            "handle of this connection and send the start once under a NEW request_id."
+            "This server names a new session's workspace only by this connection's client: "
+            "handle, so the start was refused before any write. Send it once under a NEW "
+            "request_id with an external_ref and the canonical absolute workspace_ref."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
-        nudge="The FinishUP MCP bridge and CLI send the handle for you.",
+        nudge="The FinishUP MCP bridge and CLI send the handle in place of that path.",
     ),
     RecoveryDirective(
         token="workspace_agent_reconnect",
@@ -780,6 +780,16 @@ _DIRECTIVES: Final = (
         guidance_uri=_WORKFLOW_ERRORS,
     ),
     RecoveryDirective(
+        token="server_reauthorization_required",
+        directive=(
+            "The selected FinishUP server was authorized under an older disclosure, so nothing "
+            "was sent to it. Ask the owner to run 'finishup server use' with its name in their "
+            "own terminal, then repeat this request."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge="Never select or authorize a FinishUP server for the owner.",
+    ),
+    RecoveryDirective(
         token="server_selection_overridden",
         directive=(
             "An environment variable or a runtime pin chooses the FinishUP root, so the saved "
@@ -791,9 +801,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_server_test",
         directive=(
-            "The selected FinishUP server could not be reached, so nothing was recorded. Run "
-            "'finishup server test' to see which step failed, then repeat this request under its "
-            "original identity rules."
+            "The selected FinishUP server could not be reached, or the connection to it ended. "
+            "Run 'finishup server test' to see which step failed, then repeat this request under "
+            "its original identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never fall back to another server or a local service for this request.",
@@ -801,9 +811,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_credential_repair",
         directive=(
-            "The selected FinishUP server refused this client's credentials, so nothing was "
-            "recorded. Ask the owner to run 'finishup server login' for an HTTPS server, or to "
-            "load the SSH key for an SSH server, then repeat this request."
+            "The selected FinishUP server refused this client's credentials. Ask the owner to run "
+            "'finishup server login' for an HTTPS server, or to load the SSH key for an SSH "
+            "server, then repeat this request under its original identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never paste a key or credential into chat or a request body.",
@@ -821,9 +831,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_service_start_required",
         directive=(
-            "The selected server is reachable, but its FinishUP service is not running, so "
-            "nothing was recorded. Ask the owner to start it on the server host, then repeat "
-            "this request under its original identity rules."
+            "The selected server is reachable, but its FinishUP service is not running. Ask the "
+            "owner to start it on the server host, then repeat this request under its original "
+            "identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never match a FinishUP process by name or path to stop or start it.",

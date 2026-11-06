@@ -39,6 +39,7 @@ from finishup.application.observation_workspace import (
     LocalObservationWorkspace,
     ObservationWorkspaceAccess,
 )
+from finishup.application.reviewer_loop import LOCAL_READ_SECONDS
 from finishup.domain.receipts import CLIENT_ATTESTED
 from finishup.ports.approved_checks import ApprovedCheckApproval, ApprovedCheckResult
 from finishup.ports.change_capture import (
@@ -110,6 +111,11 @@ __all__ = [
 _GIT_SECONDS: Final = 60.0
 _READ_SECONDS: Final = 15.0
 _SNAPSHOT_GRACE_SECONDS: Final = 5.0
+# A reviewer's read (and its ignored-path probe) stops at the reviewer's own per-read budget, so
+# a slow agent ends the review ``deadline`` as a slow local read does, never past its reserve.
+_REVIEWER_READ_SECONDS: Final = LOCAL_READ_SECONDS + 1.0
+# Paths one ignored-path probe carries (the change capture's own requested-path bound).
+_PROBE_BATCH: Final = 64
 
 
 def client_bound(workspace: object) -> bool:
@@ -127,7 +133,8 @@ def _call(
 ) -> Any:  # noqa: ANN401 - the operation's own result type
     if hub is None:
         raise WorkspaceAgentUnavailable("hub_unavailable")
-    # A long approved check plus its grace never asks for more than one call may wait.
+    # A long approved check plus its grace never asks for more than one call may wait; the agent
+    # then ends the run early enough for its result, a timeout included, to arrive in time.
     bounded = min(timeout_seconds, MAX_WORKSPACE_DEADLINE_MS / 1000)
     return hub.call_blocking(handle, operation, arguments, timeout_seconds=bounded)
 
@@ -352,15 +359,56 @@ class ClientWorkspaceReads:
     def __repr__(self) -> str:
         return "ClientWorkspaceReads(<redacted>)"
 
-    def _read(self, operation: WorkspaceOperation, arguments: object) -> Any:  # noqa: ANN401
+    def _read(
+        self, operation: WorkspaceOperation, arguments: object, seconds: float = _READ_SECONDS
+    ) -> Any:  # noqa: ANN401
         try:
-            return _call(self._hub, self._handle, operation, arguments, _READ_SECONDS)
+            return _call(self._hub, self._handle, operation, arguments, seconds)
         except WorkspaceAgentUnavailable as exc:
             if exc.agent_reason == "read_deadline":
                 raise ReadDeadline("reviewer_read_deadline") from None
             if exc.reason in {"agent_refused", "agent_unavailable"}:
                 return None
             raise
+
+    def refused_paths(self, paths: tuple[str, ...]) -> frozenset[str]:
+        """The workspace-relative ``paths`` a reviewer may not read: Git-ignored, or unanswered.
+
+        The reviewer's ignored-path rule for this workspace, asked of the agent in batches of
+        ``probe_requested_paths`` within the reviewer's own read budget, rather than once per
+        listed entry. As the per-path rule: an empty path (the root) is never refused; a path
+        the agent could not answer for (refused, unavailable or any other fault) is refused; an
+        agent that is gone raises ``WorkspaceAgentUnavailable``, so the review ends on it.
+        """
+
+        wanted = tuple(dict.fromkeys(path for path in paths if path))
+        refused: set[str] = set()
+        for start in range(0, len(wanted), _PROBE_BATCH):
+            batch = wanted[start : start + _PROBE_BATCH]
+            try:
+                found = cast(
+                    tuple[RequestedPathProbe, ...],
+                    _call(
+                        self._hub,
+                        self._handle,
+                        WorkspaceOperation.PROBE_REQUESTED_PATHS,
+                        ProbeRequestedPathsArguments(self._handle, batch),
+                        _REVIEWER_READ_SECONDS,
+                    ),
+                )
+            except WorkspaceAgentUnavailable as exc:
+                if exc.reason in {"agent_refused", "agent_unavailable"}:
+                    refused.update(batch)  # the agent cannot say: refused, as locally
+                    continue
+                raise
+            except Exception:  # noqa: BLE001 - an unanswerable ignore state refuses the read
+                refused.update(batch)
+                continue
+            if type(found) is not tuple or len(found) != len(batch):
+                refused.update(batch)  # not an answer for these paths: refused, never guessed
+                continue
+            refused.update(path for path, probe in zip(batch, found) if probe.ignored is not False)
+        return frozenset(refused)
 
     def list_beneath(
         self,
@@ -371,12 +419,13 @@ class ClientWorkspaceReads:
         expired: Callable[[], bool],
         inspect: int = 128,
     ) -> tuple[tuple[tuple[str, bool], ...], bool] | None:
-        del expired  # the call's own deadline bounds it; the caller checks its stop after
+        del expired  # the reviewer's read budget bounds the call; the caller checks its stop
         return cast(
             tuple[tuple[tuple[str, bool], ...], bool] | None,
             self._read(
                 WorkspaceOperation.LIST_BENEATH,
                 ListBeneathArguments(root, relative, tuple(excluded), inspect),
+                _REVIEWER_READ_SECONDS,
             ),
         )
 
@@ -389,6 +438,7 @@ class ClientWorkspaceReads:
             self._read(
                 WorkspaceOperation.READ_TEXT_BENEATH,
                 ReadTextBeneathArguments(root, relative, tuple(excluded)),
+                _REVIEWER_READ_SECONDS,
             ),
         )
 
@@ -489,16 +539,24 @@ _OBSERVATION_SECONDS: Final = 60.0
 _CHECK_GRACE_SECONDS: Final = 30.0
 
 
-@dataclass(frozen=True, slots=True)
 class _ClientOpenedWorkspace:
     """Held inside a ``LocalWorkspaceHandle``: a claim-bound workspace its agent opened.
 
     ``workspace`` is the claim handle (the route to the agent), ``opened`` the agent's own
-    opaque handle for the workspace it opened. Neither is a path on this machine.
+    opaque handle for the workspace it opened. Neither is a path on this machine. Several
+    connections of one client may serve the same claim, and an agent may restart: an agent that
+    does not know ``opened`` answers ``handle_unknown``, and ``_opened_call`` then opens the
+    workspace again on the agent now serving the claim and keeps its new handle here.
     """
+
+    __slots__ = ("opened", "workspace")
 
     workspace: str
     opened: str
+
+    def __init__(self, workspace: str, opened: str) -> None:
+        self.workspace = workspace
+        self.opened = opened
 
     def __repr__(self) -> str:
         return "_ClientOpenedWorkspace(<redacted>)"
@@ -519,6 +577,47 @@ def _observation_call(
     return _call(hub, handle, operation, arguments, timeout_seconds)
 
 
+def _open_on_agent(hub: WorkspaceAgentHub | None, workspace: str) -> str:
+    return cast(
+        str,
+        _observation_call(
+            hub,
+            workspace,
+            WorkspaceOperation.OPEN_WORKSPACE,
+            OpenWorkspaceArguments(workspace, admitted_home_project=True),
+            _READ_SECONDS,
+        ),
+    )
+
+
+def _opened_call(
+    hub: WorkspaceAgentHub | None,
+    client: _ClientOpenedWorkspace,
+    operation: WorkspaceOperation,
+    arguments: Callable[[str], object],
+    timeout_seconds: float = _OBSERVATION_SECONDS,
+) -> Any:  # noqa: ANN401 - the operation's own result type
+    """One call naming the agent-opened workspace; reopened once if the agent forgot it.
+
+    The agent answering may not be the one that opened the workspace (another connection of the
+    same client now serves the claim, or the agent restarted). It says ``handle_unknown``, and
+    the workspace is opened again on it, exactly as first opened, before the call is retried
+    once. Every other outcome is the call's own.
+    """
+
+    try:
+        return _observation_call(
+            hub, client.workspace, operation, arguments(client.opened), timeout_seconds
+        )
+    except WorkspaceAgentUnavailable as exc:
+        if exc.agent_reason != "handle_unknown":
+            raise
+    client.opened = _open_on_agent(hub, client.workspace)
+    return _observation_call(
+        hub, client.workspace, operation, arguments(client.opened), timeout_seconds
+    )
+
+
 class _RoutedSubjectState:
     """``SubjectStateCapturePort``: a client-opened workspace is hashed by its agent."""
 
@@ -534,11 +633,11 @@ class _RoutedSubjectState:
             return self._local.capture(command)
         return cast(
             SubjectStateCaptureResult,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.SUBJECT_STATE_CAPTURE,
-                SubjectStateCaptureArguments(client.opened, command.expected_format),
+                lambda opened: SubjectStateCaptureArguments(opened, command.expected_format),
             ),
         )
 
@@ -558,11 +657,11 @@ class _RoutedInspect:
             return self._local.inspect(command)
         return cast(
             WorkspaceInspectResult,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.INSPECT,
-                InspectArguments(client.opened, command.relative_paths),
+                lambda opened: InspectArguments(opened, command.relative_paths),
             ),
         )
 
@@ -602,12 +701,12 @@ class RoutedApprovedCheckRunner(ApprovedCheckRunner):
             return super().run(command)
         run = cast(
             ApprovedCheckRun,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.RUN_APPROVED_CHECK,
-                RunApprovedCheckArguments(
-                    client.opened,
+                lambda opened: RunApprovedCheckArguments(
+                    opened,
                     approval,
                     command.subject_state_digest,
                     command.expected_subject_state_digest,
@@ -645,18 +744,8 @@ class RoutedObservationWorkspace:
     def open(self, locator: str) -> LocalWorkspaceHandle:
         if not client_bound(locator):
             return self._local.open(locator)
-        opened = cast(
-            str,
-            _observation_call(
-                self._hub,
-                locator,
-                WorkspaceOperation.OPEN_WORKSPACE,
-                OpenWorkspaceArguments(locator, admitted_home_project=True),
-                _READ_SECONDS,
-            ),
-        )
         return LocalWorkspaceHandle._from_validated_descriptor(  # pyright: ignore[reportPrivateUsage]
-            _ClientOpenedWorkspace(locator, opened)
+            _ClientOpenedWorkspace(locator, _open_on_agent(self._hub, locator))
         )
 
     def load_policy(self, locator: str) -> tuple[ObservationCheckPolicy, bytes]:
@@ -694,11 +783,11 @@ class RoutedObservationWorkspace:
             return self._local.list_changed(workspace)
         return cast(
             tuple[str, ...],
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.LIST_CHANGED_PATHS,
-                ListChangedPathsArguments(client.opened),
+                ListChangedPathsArguments,
             ),
         )
 

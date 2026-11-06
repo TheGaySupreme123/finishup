@@ -33,6 +33,7 @@ from finishup.ports.control import (
     WorkspaceClaim,
     WorkspaceReply,
 )
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 from finishup.protocol.ids import IdKind, new_id
 from finishup.service.api_keys import ApiKeyStore
 from finishup.service.http_api import NetworkApi, NetworkApiBindings
@@ -65,15 +66,30 @@ def service_status(generation: str = "7") -> ServiceStatus:
     )
 
 
-def claim(seed: str = "a") -> WorkspaceClaim:
-    return WorkspaceClaim("git_common_root", "sha256:" + hashlib.sha256(seed.encode()).hexdigest())
+def claim(seed: str = "a", worktree: str = "main") -> WorkspaceClaim:
+    """A claim on repository ``seed``; linked worktrees of one repository differ in ``worktree``."""
+
+    return WorkspaceClaim(
+        "git_common_root",
+        "sha256:" + hashlib.sha256(seed.encode()).hexdigest(),
+        "sha256:" + hashlib.sha256(b"worktree\x00" + worktree.encode()).hexdigest(),
+    )
 
 
 def context_for(workspace_claim: WorkspaceClaim) -> RepositoryPrivacyContext:
-    """What a claim resolver answers: a ``client_claim`` commitment derived from the digest."""
+    """What a claim resolver answers: a ``client_claim`` commitment derived from the digest.
+
+    The handle is derived from the commitment and the claim's worktree digest, as the daemon's
+    own resolver does (``claim_repository_privacy_context``).
+    """
 
     digest = hashlib.sha256(workspace_claim.digest.encode("ascii")).hexdigest()
-    return RepositoryPrivacyContext("hmac-sha256:" + digest, "client_claim")
+    commitment = "hmac-sha256:" + digest
+    return RepositoryPrivacyContext(
+        commitment,
+        "client_claim",
+        workspace_handle=workspace_handle_for_claim(commitment, workspace_claim.worktree),
+    )
 
 
 type _Dispatched = tuple[ControlClientKind, ControlCallRequest, RepositoryPrivacyContext | None]
@@ -144,6 +160,7 @@ class _Channel:
         default_factory=lambda: dict[str, asyncio.Future[WorkspaceReply]]()
     )
     closed: bool = False
+    worktree: str | None = None
 
 
 class FakeHub:
@@ -161,9 +178,10 @@ class FakeHub:
         service_instance_id: str,
         service_generation: str,
         writer: Callable[[WorkspaceCall], Awaitable[None]],
+        worktree: str | None = None,
     ) -> Any:
         del service_instance_id, service_generation
-        channel = _Channel(handle, declaration, writer)
+        channel = _Channel(handle, declaration, writer, worktree=worktree)
         self.channels.append(channel)
         return channel
 

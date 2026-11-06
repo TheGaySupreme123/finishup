@@ -31,7 +31,6 @@ from builders.network_api import (
 )
 from finishup.domain.values import JsonObject
 from finishup.ports.control import ControlClientKind, ControlMethod, ServiceStatus
-from finishup.ports.workspace_agent import workspace_handle_for_commitment
 from finishup.protocol.canonical import canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, new_id
 from finishup.service.api_keys import ApiKeyStore
@@ -252,7 +251,7 @@ async def test_a_claim_is_keyed_by_the_principal_and_binds_the_call(keys: ApiKey
         # A rotated key keeps its principal; another principal reaches another repository.
         assert handles[0] == handles[1] != handles[2]
         expected = context_for(claim_principal_digest(workspace, record.principal))
-        assert handles[0] == workspace_handle_for_commitment(expected.commitment)
+        assert handles[0] == expected.workspace_handle
         assert rotated.principal == record.principal
         response = await client.post(
             "/v1/service_status", headers={**_bearer(token), **header}, content=_STATUS_BODY

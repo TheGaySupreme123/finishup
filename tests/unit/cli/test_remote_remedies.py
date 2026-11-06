@@ -381,10 +381,10 @@ def test_an_unreadable_target_record_fails_closed_on_every_check(
     # A server-host command (a vault, a local service) is refused there too.
     with pytest.raises(ServerHostRequired) as refused:
         require_server_host("setup vault")
+    # The foundation's ``ServerTargetUnreadable`` line (its own tests pin the wording).
     line = server_host_refusal_line(refused.value)
-    assert line.startswith("requires_server_host: ") and "cannot be read" in line
+    assert "cannot be read" in line
     _assert_remote_words(line)
-    assert root.name not in line
 
 
 def test_a_readable_named_local_record_keeps_the_local_path(home: Path) -> None:

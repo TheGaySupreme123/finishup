@@ -71,16 +71,9 @@ def remote_root_selected() -> bool:
     loads only the target records.
     """
 
-    from finishup.client.targets import TargetError, active_root_record
-    from finishup.config.paths import PathSafetyError
+    from finishup.client.targets import active_root_may_be_remote
 
-    try:
-        state = active_root_record()
-    except PathSafetyError:
-        return False
-    except TargetError:
-        return True
-    return state is not None and state[1] is not None and state[1].is_remote
+    return active_root_may_be_remote()
 
 
 def remote_connection_phase(error: object) -> str | None:

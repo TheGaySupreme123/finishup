@@ -33,6 +33,7 @@ __all__ = [
     "TUI_COMMAND_SCOPES",
     "CommandScope",
     "ServerHostRequired",
+    "ServerTargetUnreadable",
     "command_scope",
     "install_server_host_guards",
     "iter_command_paths",
@@ -159,14 +160,31 @@ class ServerHostRequired(Exception):
     kind token, so a refusal line can say which target without echoing user-controlled text.
     """
 
-    reason: Final = REQUIRES_SERVER_HOST
+    reason: str
+    target_id: str | None
+    kind: str | None
 
-    def __init__(self, target_id: str | None, kind: str) -> None:
-        # ``target_id`` None, kind ``unreadable``: the root's record cannot be read, so whether it
-        # is this machine is not known.
+    def __init__(self, target_id: str | None, kind: str | None) -> None:
+        self.reason = REQUIRES_SERVER_HOST
         self.target_id = target_id
         self.kind = kind
         super().__init__(REQUIRES_SERVER_HOST)
+
+
+class ServerTargetUnreadable(ServerHostRequired):
+    """A ``server_host`` command while the active root's server target record cannot be read.
+
+    The root holds a ``target.json`` that is unsafe or invalid (a restored backup with the wrong
+    mode, a record a newer release wrote), so whether it is this machine's server is unknown and
+    the command fails closed rather than running a server-host action in what may be a remote
+    target's root. ``reason`` is the record's closed refusal (``target_root_unsafe`` or
+    ``target_record_invalid``); the kind is unknown.
+    """
+
+    def __init__(self, reason: str, target_id: str | None) -> None:
+        super().__init__(target_id, None)
+        self.reason = reason
+        self.args = (reason,)
 
 
 def command_scope(path: str) -> CommandScope:
@@ -192,14 +210,12 @@ def require_server_host(command: str) -> None:
     ``command`` is a CLI command path or a slash command token (``/observe``). A local root — the
     everyday server, an explicitly isolated root, or a named local server — is the server host, so
     this returns. A target root whose ``target.json`` names a remote kind raises
-    ``ServerHostRequired``, and so does a root whose ``target.json`` cannot be read (it may be a
-    remote target's: a server-host command run there would make a local vault or service in it).
-    A root that cannot be resolved at all is left to the command's own fail-closed path, so a
-    broken root is reported exactly as before.
+    ``ServerHostRequired``; one whose ``target.json`` cannot be read raises
+    ``ServerTargetUnreadable`` (fail closed). A root that cannot be resolved at all is left to the
+    command's own fail-closed path, so a broken root is reported exactly as before.
     """
 
-    from finishup.client.targets import TargetError, active_root_record
-    from finishup.config.paths import PathSafetyError
+    from finishup.client.targets import TargetError, TargetRecordUnreadable, active_target_record
 
     scope = (
         tui_command_scope(command.removeprefix("/"))
@@ -209,12 +225,11 @@ def require_server_host(command: str) -> None:
     if scope != "server_host":
         return
     try:
-        state = active_root_record()
-    except PathSafetyError:
-        return
+        record = active_target_record()
+    except TargetRecordUnreadable as error:
+        raise ServerTargetUnreadable(error.reason, error.target_id) from None
     except TargetError:
-        raise ServerHostRequired(None, "unreadable") from None
-    record = None if state is None else state[1]
+        return
     if record is not None and record.is_remote:
         raise ServerHostRequired(record.target_id, record.kind)
 
@@ -222,12 +237,13 @@ def require_server_host(command: str) -> None:
 def server_host_refusal_line(error: ServerHostRequired) -> str:
     """One bounded operator line for a refused server-host command (closed tokens and an id)."""
 
-    if error.target_id is None:
+    if isinstance(error, ServerTargetUnreadable):
+        which = "" if error.target_id is None else f" {error.target_id}"
         return (
-            f"{REQUIRES_SERVER_HOST}: this command runs on the FinishUP server host, and the "
-            "selected server target's record cannot be read, so it is not known to be this "
-            "machine and nothing was run; check it with 'finishup server status', or select "
-            "this machine's server with 'finishup server use local'"
+            f"{error.reason}: this command runs only on the FinishUP server host, and the server "
+            f"target record of this process's FinishUP root{which} cannot be read, so it was not "
+            "run; repair or remove that target, or select this machine's server with "
+            "'finishup server use local'"
         )
     return (
         f"{REQUIRES_SERVER_HOST}: this command runs on the FinishUP server host, and the "

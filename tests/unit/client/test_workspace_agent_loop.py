@@ -46,10 +46,7 @@ from finishup.ports.control import (
     WorkspaceLocator,
     WorkspaceReply,
 )
-from finishup.ports.workspace_agent import (
-    WORKSPACE_OPERATION_NAMES,
-    workspace_handle_for_commitment,
-)
+from finishup.ports.workspace_agent import WORKSPACE_OPERATION_NAMES
 from finishup.service.network_protocol import claim_principal_digest
 
 _WORKSPACE = WorkspaceLocator("/home/me/repo")
@@ -131,9 +128,8 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
     service = FakeService()
     api = make_api(service, keys, hub=hub)
     workspace = claim("repo")
-    handle = workspace_handle_for_commitment(
-        context_for(claim_principal_digest(workspace, key.principal)).commitment
-    )
+    handle = context_for(claim_principal_digest(workspace, key.principal)).workspace_handle
+    assert handle is not None
     note_workspace(root, _WORKSPACE)
     handler = _Handler()
     http = httpx.AsyncClient(
