@@ -284,7 +284,12 @@ answers bounded `workspace_call`s on a connection that declared it.
   outside reads stay inside the admitted roots the server names and the existing exclusions. The
   server names the claimed workspace by its handle, never by its path: a read root or an exclusion
   may be the handle, and a declared-test location may be `client:<16 hex>/<relative>`; the agent
-  maps them to its own root and refuses any other handle (`workspace_not_claimed`). An outside read
+  maps them to its own root and refuses any other handle (`workspace_not_claimed`). A declared test
+  is read only inside the claimed workspace: the call names no admitted root, and the agent cannot
+  tell whether its agent declared the path, so an outside location is `root_not_admitted` rather
+  than read on the server's word (amended 2026-11-06, review of the three pull requests; a local
+  service still reads a declared test outside the workspace, #1220, so on a remote target such a
+  test is not offered to the reviewer). An outside read
   never enters the claimed workspace through an outside root, nor the client's protected
   directories — its own FinishUP directories and the everyday installation's under both
   application names — whatever the server excludes. Where a local service's own caller narrowed
