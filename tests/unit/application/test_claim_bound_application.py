@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 import finishup.application.service as service_module
+from finishup.domain.events import (
+    ClientKind,
+    IntegrationKind,
+    RuntimeProfile,
+    SessionOpenedPayload,
+)
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     CHECK_TIME_CHANGE_UNAVAILABLE_REASONS,
@@ -214,3 +223,74 @@ def test_both_agent_gaps_are_classified_beside_their_siblings() -> None:
         assert code in PROOF_TOLERATED_GAPS
         sibling = GAP_EFFECT_TABLE["check_time_change_unavailable_capture_failed"]
         assert replace(GAP_EFFECT_TABLE[code], code=sibling.code) == sibling
+
+
+class _Ledger:
+    """A task ledger whose event read yields ``records`` and then fails with ``failure``."""
+
+    def __init__(self, records: tuple[object, ...], failure: Exception | None = None) -> None:
+        self._records = records
+        self._failure = failure
+
+    async def load_events(self, session_id: str) -> AsyncIterator[object]:
+        del session_id
+        for record in self._records:
+            yield record
+        if self._failure is not None:
+            raise self._failure
+
+
+def _runtime(ledger: _Ledger) -> Any:  # noqa: ANN401
+    return SimpleNamespace(
+        ledger=ledger,
+        session_id="ses_00000000-0000-4000-8000-000000000051",
+        fence=SimpleNamespace(service_instance_id=_INSTANCE),
+    )
+
+
+def _opened(workspace_ref: str | None) -> object:
+    return SimpleNamespace(
+        payload=SessionOpenedPayload(
+            task_title="Remote task",
+            client_kind=ClientKind.TEST_CLIENT,
+            client_version="0.1.0",
+            integration=IntegrationKind.LOCAL_CLI,
+            profile=RuntimeProfile.TEST_FAKE,
+            workspace_ref=workspace_ref,
+        )
+    )
+
+
+def test_the_attestation_reads_the_session_opening_and_none_means_not_claim_bound() -> None:
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    assert asyncio.run(attested_by(_runtime(_Ledger((_opened(_HANDLE),))))) == _INSTANCE
+    assert asyncio.run(attested_by(_runtime(_Ledger((_opened("/srv/project"),))))) is None
+    assert asyncio.run(attested_by(_runtime(_Ledger(())))) is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "retryable"),
+    [
+        (OSError(5, "input/output error"), PublicErrorCode.STORAGE_UNSAFE, True),
+        (ValueError("ledger_chain_invalid"), PublicErrorCode.STORAGE_CORRUPT, False),
+    ],
+)
+def test_a_failed_attestation_read_is_a_storage_error_never_an_unattested_receipt(
+    failure: Exception, code: PublicErrorCode, retryable: bool
+) -> None:
+    """A claim-bound receipt would otherwise render without its client-attested block."""
+
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    with pytest.raises(PublicOperationError) as raised:
+        asyncio.run(
+            attested_by(
+                _runtime(_Ledger((), failure)),
+                request_id="req_00000000-0000-4000-8000-000000051002",
+            )
+        )
+    assert raised.value.code is code
+    assert raised.value.retryable is retryable

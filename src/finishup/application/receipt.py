@@ -617,16 +617,18 @@ async def read_recorded_receipt(
         receipt_ref,
         digest,
         Frontier(record.ledger.ingestion_sequence, record.entry_digest),
-        await _attested_by(runtime),
+        await _attested_by(runtime, request_id=request.request_id),
     )
 
 
-async def _attested_by(runtime: TaskRuntime) -> str | None:
+async def _attested_by(runtime: TaskRuntime, *, request_id: str | None = None) -> str | None:
     """The serving service's instance id when the task is claim-bound, else None (ADR-051).
 
     A claim-bound task's session opened with its connection's ``client:`` handle, so every piece
     of workspace evidence it holds came from the client's workspace agent. Read from the
-    session's own opening event, a durable fact, so a replay renders the same block.
+    session's own opening event, a durable fact, so a replay renders the same block. None means
+    the read succeeded and found no claim-bound session; a read that fails is a classified
+    storage error, never None, so a claim-bound receipt never loses its client-attested block.
     """
 
     try:
@@ -635,8 +637,23 @@ async def _attested_by(runtime: TaskRuntime) -> str | None:
                 if workspace_handle_valid(record.payload.workspace_ref):
                     return runtime.fence.service_instance_id
                 return None
-    except Exception:
-        return None
+    except OSError as exc:
+        raise _classified_storage_error(
+            PublicErrorCode.STORAGE_UNSAFE,
+            "The task ledger is unavailable.",
+            exc,
+            retryable=True,
+            request_id=request_id,
+            operation="receipt_attestation_read",
+        ) from exc
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _classified_storage_error(
+            PublicErrorCode.STORAGE_CORRUPT,
+            "The task ledger is unreadable.",
+            exc,
+            request_id=request_id,
+            operation="receipt_attestation_read",
+        ) from exc
     return None
 
 
@@ -827,7 +844,7 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             receipt_ref,
             digest,
             result.result_frontier,
-            await _attested_by(runtime),
+            await _attested_by(runtime, request_id=request.request_id),
         )
     except ProtocolValueError as exc:
         raise _error(
