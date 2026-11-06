@@ -510,7 +510,17 @@ def _internal_result(
         else render_receipt_human(document, markdown=markdown)
     )
     if human is not None and attested_by is not None:
-        human = human + "\n\n" + client_attested_receipt_block(attested_by, markdown=markdown)
+        human = (
+            human
+            + "\n\n"
+            + client_attested_receipt_block(
+                attested_by,
+                markdown=markdown,
+                hook_observed=(
+                    PublicationChannel.HOOK_OBSERVED in document.coverage.publication_channels
+                ),
+            )
+        )
     return ReceiptInternalResult(
         "0.1",
         document.schema_version,

@@ -1307,7 +1307,9 @@ class ServiceDaemon:
                     # The wait runs inside the detached operation, before either dispatch gate
                     # is taken, so the sweeper can deliver rows while this check waits.
                     awaited = (
-                        await self._await_check_observations(check_body, request.deadline_ms)
+                        await self._await_check_observations(
+                            check_body, request.deadline_ms, repository_privacy_context
+                        )
                         if awaits_observations
                         else None
                     )
@@ -1328,7 +1330,9 @@ class ServiceDaemon:
                     request.deadline_ms,
                 )
             awaited = (
-                await self._await_check_observations(cast(CheckRequest, body), request.deadline_ms)
+                await self._await_check_observations(
+                    cast(CheckRequest, body), request.deadline_ms, repository_privacy_context
+                )
                 if awaits_observations
                 else None
             )
@@ -1349,17 +1353,27 @@ class ServiceDaemon:
             raise
 
     async def _await_check_observations(
-        self, body: CheckRequest, deadline_ms: int | None
+        self,
+        body: CheckRequest,
+        deadline_ms: int | None,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> CheckObservationsAwaited:
         """Run the optional bounded wait for this task's pending hook rows (issue #1012).
 
         Runs before the dispatch gates: the sweeper takes the observation gate per row, so a
-        wait under the gates could only ever time out. Never raises for the wait itself.
+        wait under the gates could only ever time out. Never raises for the wait itself. A
+        claim-bound connection's rows wait in its client's outbox, which this service cannot
+        read (ADR-051 decision 12), so that wait is ``unavailable``, never ``complete``.
         """
 
         application = self._application
         sweep = None if application is None else getattr(application, "observation_sweep", None)
         probe = getattr(sweep, "task_pending_probe", None)
+        if (
+            repository_privacy_context is not None
+            and repository_privacy_context.identity_kind == "client_claim"
+        ):
+            probe = None
         return await await_task_observations(
             cast(TaskPendingProbe, probe) if callable(probe) else None,
             body.session_id,
@@ -1742,6 +1756,14 @@ class ServiceDaemon:
             ControlMethod.PRIVACY_PROPOSE_POLICY,
             ControlMethod.PROJECT,
         }:
+            kwargs["repository_privacy_context"] = repository_privacy_context
+        if (
+            request.method is ControlMethod.OBSERVATION_INGEST
+            and repository_privacy_context is not None
+            and repository_privacy_context.identity_kind == "client_claim"
+        ):
+            # A claim-bound row goes to that claim's client-attested store (ADR-051 decision
+            # 12); every other connection's ingest is called exactly as before.
             kwargs["repository_privacy_context"] = repository_privacy_context
         return await operation(request.body, **kwargs)
 

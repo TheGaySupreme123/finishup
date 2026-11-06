@@ -10,6 +10,7 @@ import finishup.application.service as service_module
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     CHECK_TIME_CHANGE_UNAVAILABLE_REASONS,
+    CLIENT_ATTESTED_OBSERVATION_LINE,
     CLIENT_ATTESTED_WORKSPACE_LINE,
     client_attested_receipt_block,
 )
@@ -107,6 +108,20 @@ def test_the_attested_block_is_fixed_words_and_the_serving_instance() -> None:
     assert markdown.splitlines()[0] == "## Workspace evidence"
     with pytest.raises(ValueError):
         client_attested_receipt_block("dev.example.com", markdown=False)
+
+
+def test_hook_observed_evidence_adds_the_fixed_client_attested_observation_line() -> None:
+    """ADR-051 decision 12: the client's consent and commitments were not verified here."""
+
+    observed = client_attested_receipt_block(_INSTANCE, markdown=True, hook_observed=True)
+    assert observed.splitlines() == [
+        "## Workspace evidence",
+        CLIENT_ATTESTED_WORKSPACE_LINE,
+        CLIENT_ATTESTED_OBSERVATION_LINE,
+        f"Served by FinishUP service {_INSTANCE} (connection: client_claim).",
+    ]
+    assert "/" not in CLIENT_ATTESTED_OBSERVATION_LINE
+    assert "did not verify" in CLIENT_ATTESTED_OBSERVATION_LINE
 
 
 def test_an_unanswered_agent_is_a_closed_check_time_change_gap() -> None:

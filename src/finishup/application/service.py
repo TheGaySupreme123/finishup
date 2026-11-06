@@ -3139,8 +3139,21 @@ class Application:
     async def integration_execute(self, request: object) -> JsonObject:
         return await self._support(ControlMethod.INTEGRATION_EXECUTE, request)
 
-    async def observation_ingest(self, request: object) -> JsonObject:
-        return await self._support(ControlMethod.OBSERVATION_INGEST, request)
+    async def observation_ingest(
+        self,
+        request: object,
+        *,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
+    ) -> JsonObject:
+        # The daemon passes a context only for a claim-bound connection, whose rows go to that
+        # claim's client-attested store (ADR-051 decision 12); every other call is unchanged.
+        if repository_privacy_context is None:
+            return await self._support(ControlMethod.OBSERVATION_INGEST, request)
+        return await self._support(
+            ControlMethod.OBSERVATION_INGEST,
+            request,
+            repository_privacy_context=repository_privacy_context,
+        )
 
     async def observation_status(self, request: object) -> JsonObject:
         return await self._support(ControlMethod.OBSERVATION_STATUS, request)
@@ -3191,7 +3204,9 @@ class Application:
             ControlMethod.PRIVACY_GET_SETUP,
             ControlMethod.PRIVACY_GET_EFFECTIVE,
             ControlMethod.PRIVACY_PROPOSE_POLICY,
-        }:
+        } or (
+            method is ControlMethod.OBSERVATION_INGEST and repository_privacy_context is not None
+        ):
             kwargs["repository_privacy_context"] = repository_privacy_context
         result = await handler(request, **kwargs)
         if type(result) is not JsonObject or "privacy_projection" in result:

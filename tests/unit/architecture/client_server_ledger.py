@@ -263,6 +263,14 @@ LEDGER: Final[tuple[Crossing, ...]] = (
         1,
         "shared_pure",
     ),
+    # finishup.application.observation_claims (ADR-051 decision 12: a claim's attested mappings)
+    _c(
+        "application.observation_claims",
+        "adapters.integrations.codex_lifecycle",
+        "<module>",
+        1,
+        "to_rpc",
+    ),
     # finishup.application.observation_coordinator
     _c(
         "application.observation_coordinator",
