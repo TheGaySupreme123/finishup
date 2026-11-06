@@ -326,8 +326,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   (`check_time_change_unavailable_workspace_agent_unavailable`, with its own fixed sentence). A
   review whose file read finds the agent gone ends `workspace_agent_unavailable` and records an
   unavailable result of failure class `transport`, never a judgment. A missing reply is never a
-  pass, and an unknown change state fails closed for no-material-work. A refused operation is
-  `workspace_agent_refused`.
+  pass, and an unknown change state fails closed for no-material-work. A read the agent refused
+  (or an operation it never offered) is named apart: the check-time change records
+  `workspace_agent_refused` (`check_time_change_unavailable_workspace_agent_refused`, its own
+  fixed sentence), while `workspace_agent_unavailable`'s sentence covers an agent that was not
+  connected, too slow or failed; a refused reviewer read reads as nothing.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never
   falls back to the ambient one; a service refuses to run in a root whose target is remote
   (`target_root_is_remote`). The daemon refuses at composition, before anything is created, when

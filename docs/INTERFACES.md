@@ -4700,10 +4700,16 @@ admits only claims (a network gateway or listener) sets it; the daemon then clos
 names a `workspace_locator`. Local clients keep naming their path.
 
 **Agent loss in results.** A read that ends `WorkspaceAgentUnavailable` fires the gap of what it
-would have read. The check-time change records
-`check_time_change_unavailable_workspace_agent_unavailable`, whose fixed sentence is "the FinishUP
-workspace agent on the client machine did not answer the server's read of the workspace, so the
-server could not see the change."; it is registered in the gap-effect tables. A reviewer whose file
+would have read. The check-time change records one of two reasons, each with its own fixed sentence
+and registered in the gap-effect tables: `check_time_change_unavailable_workspace_agent_refused`
+when the agent refused the read or never offered the operation (hub reasons `agent_refused`,
+`operation_not_declared`): "the FinishUP workspace agent on the client machine refused the
+server's read of the workspace, so the server could not see the change."; and
+`check_time_change_unavailable_workspace_agent_unavailable` for every other loss (no agent, a
+dropped connection, a deadline, a busy agent, an undecodable reply, an agent that failed): "the
+FinishUP workspace agent on the client machine gave no usable answer to the server's read of the
+workspace (it was not connected, did not answer in time, or failed), so the server could not see
+the change." A reviewer read the agent refused reads as nothing. A reviewer whose file
 read finds the agent gone ends `workspace_agent_unavailable`
 (`application.reviewer_loop.WORKSPACE_AGENT_UNAVAILABLE_ENDING`), which becomes an unavailable
 semantic result with failure class `transport`, never a judgment.
@@ -4833,8 +4839,9 @@ The remote connection phases ride as `phase` on a retryable `service_unavailable
 `remote_incompatible` (whose text names both releases), and the client's own refusals
 `target_reauthorization_required` and `target_root_is_remote`. A client that catches that `TargetError` from the binding
 helpers raises it as this phase, so every surface renders its directive. The check-time change gains the
-unavailable reason `workspace_agent_unavailable`, so
-`check_time_change_unavailable_workspace_agent_unavailable` joins
+unavailable reasons `workspace_agent_unavailable` and `workspace_agent_refused`, so
+`check_time_change_unavailable_workspace_agent_unavailable` and
+`check_time_change_unavailable_workspace_agent_refused` join
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
 
 <!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with

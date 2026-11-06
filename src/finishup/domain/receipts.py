@@ -475,8 +475,13 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         # ADR-051: a claim-bound task's workspace is read only by the FinishUP workspace agent
         # on the client machine.
         "workspace_agent_unavailable": (
-            "the FinishUP workspace agent on the client machine did not answer the server's read "
-            "of the workspace, so the server could not see the change."
+            "the FinishUP workspace agent on the client machine gave no usable answer to the "
+            "server's read of the workspace (it was not connected, did not answer in time, or "
+            "failed), so the server could not see the change."
+        ),
+        "workspace_agent_refused": (
+            "the FinishUP workspace agent on the client machine refused the server's read of the "
+            "workspace, so the server could not see the change."
         ),
     }
 )

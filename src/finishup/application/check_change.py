@@ -107,6 +107,24 @@ _SHOWN_VIEW_DOMAIN: Final = b"yoetz/check-change-shown-view/v1\x00"
 _STRUCTURAL_METADATA_UNAVAILABLE: Final = "metadata_unavailable"
 # A claim-bound task's workspace agent did not answer a read the capture needed (ADR-051).
 _WORKSPACE_AGENT_UNAVAILABLE: Final = "workspace_agent_unavailable"
+_WORKSPACE_AGENT_REFUSED: Final = "workspace_agent_refused"
+# The hub reasons for an agent that answered with a refusal, or declared no such operation.
+_AGENT_REFUSALS: Final = frozenset({"agent_refused", "operation_not_declared"})
+
+
+def _agent_loss_reason(exc: WorkspaceAgentUnavailable) -> str:
+    """The check-time change reason for a workspace read the client's agent did not serve.
+
+    A refusal (or an operation the agent never offered) is ``workspace_agent_refused``; every
+    other loss (no agent, a dropped connection, a deadline, a busy agent, a reply that did not
+    decode, an agent that failed or was itself unavailable) is ``workspace_agent_unavailable``.
+    Each has its own fixed receipt sentence, so a receipt never says the agent was silent when it
+    refused, nor that it refused when it failed (ADR-051).
+    """
+
+    if exc.reason in _AGENT_REFUSALS:
+        return _WORKSPACE_AGENT_REFUSED
+    return _WORKSPACE_AGENT_UNAVAILABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,11 +355,11 @@ async def _pin_first_check_base(
             reason=exc.reason,
             request_id=request_id,
         )
-    except WorkspaceAgentUnavailable:
+    except WorkspaceAgentUnavailable as exc:
         record_bounded_event_without_raising(
             component=_COMPONENT,
             operation="check_time_change_base_not_pinned",
-            reason=_WORKSPACE_AGENT_UNAVAILABLE,
+            reason=_agent_loss_reason(exc),
             request_id=request_id,
         )
     except Exception as exc:
@@ -788,15 +806,17 @@ async def capture_check_time_change(
             request_id=request_id,
         )
         return CheckChangeOutcome(unavailable=True, reason=exc.reason)
-    except WorkspaceAgentUnavailable:
-        # The capture, or an input read inside it, needed the client's agent and got no answer.
+    except WorkspaceAgentUnavailable as exc:
+        # The capture, or an input read inside it, needed the client's agent and got no usable
+        # answer, or a refusal.
+        reason = _agent_loss_reason(exc)
         record_bounded_event_without_raising(
             component=_COMPONENT,
             operation="check_time_change_unavailable",
-            reason=_WORKSPACE_AGENT_UNAVAILABLE,
+            reason=reason,
             request_id=request_id,
         )
-        return CheckChangeOutcome(unavailable=True, reason=_WORKSPACE_AGENT_UNAVAILABLE)
+        return CheckChangeOutcome(unavailable=True, reason=reason)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -844,8 +864,8 @@ async def capture_structural_check_change(
             raise TypeError("check_change_metadata_invalid")
     except ChangeCaptureUnavailable as exc:
         return None, exc.reason
-    except WorkspaceAgentUnavailable:
-        return None, _WORKSPACE_AGENT_UNAVAILABLE
+    except WorkspaceAgentUnavailable as exc:
+        return None, _agent_loss_reason(exc)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -929,11 +949,11 @@ async def record_task_change_base(
             reason=exc.reason,
             request_id=request_id,
         )
-    except WorkspaceAgentUnavailable:
+    except WorkspaceAgentUnavailable as exc:
         record_bounded_event_without_raising(
             component="start",
             operation="task_change_base_unavailable",
-            reason=_WORKSPACE_AGENT_UNAVAILABLE,
+            reason=_agent_loss_reason(exc),
             request_id=request_id,
         )
     except Exception as exc:
