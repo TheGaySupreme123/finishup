@@ -421,7 +421,6 @@ from finishup.ports.start_catalog import (
 )
 from finishup.ports.workspace_agent import (
     WorkspaceAgentUnavailable,
-    workspace_handle_for_commitment,
 )
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
@@ -8616,11 +8615,7 @@ async def provide_service_ready_context(
         locator = context.workspace_locator
         # A claim-bound task's inputs are read by its client's agent beneath the same roots,
         # excluding the claimed workspace by its handle (ADR-051).
-        handle = (
-            workspace_handle_for_commitment(context.commitment)
-            if context.identity_kind == "client_claim"
-            else None
-        )
+        handle = context.workspace_handle if context.identity_kind == "client_claim" else None
         if privacy_application is None or (locator is None and handle is None):
             return None
         scope = AuthorizationScope(

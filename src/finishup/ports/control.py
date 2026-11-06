@@ -22,6 +22,7 @@ from finishup.ports.workspace_agent import (
     WORKSPACE_REPLY_REASONS,
     WorkspaceReplyOutcome,
     outcome_for_reason,
+    workspace_handle_valid,
 )
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.errors import SafeDetailValue, normalize_safe_details
@@ -132,11 +133,17 @@ class RepositoryPrivacyContext:
     ``workspace_locator`` is the exact locator the commitment was derived from. It stays in
     service memory for the life of the connection only, never in a result, log, or store, so the
     check-time change capture (ADR-031) reads the same directory the connection proved it is in.
+
+    A ``client_claim`` identity instead carries ``workspace_handle``, the ``client:`` handle the
+    service derived from the claim's commitment and its worktree digest (ADR-051): the commitment
+    names the repository, which every linked worktree shares, and the handle names the one
+    worktree whose agent answers this connection's workspace reads.
     """
 
     commitment: str
     identity_kind: RepositoryIdentityKind
     workspace_locator: WorkspaceLocator | None = field(default=None, repr=False, compare=False)
+    workspace_handle: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         validate_commitment(self.commitment)
@@ -149,6 +156,11 @@ class RepositoryPrivacyContext:
         if self.identity_kind == "client_claim" and self.workspace_locator is not None:
             # A claim-bound identity has no path the service could read.
             raise ValueError("repository_identity_kind_invalid")
+        if (self.identity_kind == "client_claim") is not workspace_handle_valid(
+            self.workspace_handle
+        ) or (self.identity_kind != "client_claim" and self.workspace_handle is not None):
+            # Exactly a claim-bound identity names its worktree's handle.
+            raise ValueError("workspace_handle_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,11 +169,16 @@ class WorkspaceClaim:
 
     ``digest`` is the client's HMAC over the shared canonical-root preimage under a salt kept
     per server target; it names no path, and the server derives its own commitment from it and
-    never resolves a directory (ADR-051). It stays out of every representation.
+    never resolves a directory (ADR-051). Every linked worktree of one repository claims the same
+    ``digest``. ``worktree`` is the client's HMAC, under the same salt and its own domain, over
+    the one worktree top level the connection's agent serves: it tells worktrees of one repository
+    apart, so each gets its own workspace handle, and it names no path either. Both stay out of
+    every representation.
     """
 
     identity_kind: WorkspaceIdentityKind
     digest: str = field(repr=False)
+    worktree: str = field(repr=False)
     schema_version: Literal["1.0.0"] = "1.0.0"
 
     def __post_init__(self) -> None:
@@ -171,6 +188,8 @@ class WorkspaceClaim:
             raise ValueError("workspace_claim_identity_kind_invalid")
         if type(self.digest) is not str or _CLAIM_DIGEST.fullmatch(self.digest) is None:
             raise ValueError("workspace_claim_digest_invalid")
+        if type(self.worktree) is not str or _CLAIM_DIGEST.fullmatch(self.worktree) is None:
+            raise ValueError("workspace_claim_worktree_invalid")
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,6 +19,7 @@ from finishup.ports.keys import (
     REPOSITORY_PRIVACY_MAC_DOMAIN,
     MacKeyHandle,
 )
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 
 __all__ = [
     "RepositoryIdentityError",
@@ -50,14 +51,18 @@ def claim_repository_privacy_context(
 
     The installation MAC runs over ``identity_kind NUL digest`` under its own domain, so the
     commitment names the claim and nothing else: no path is resolved, read or kept, and a claim
-    commitment can never equal one a locator produced.
+    commitment can never equal one a locator produced. Every linked worktree of one repository
+    shares that commitment; the workspace handle is derived from it and the claim's worktree
+    digest, so each worktree is routed to its own agent (``workspace_handle_for_claim``).
     """
 
     if type(claim) is not WorkspaceClaim:
         raise TypeError("workspace_claim_invalid")
     preimage = claim.identity_kind.encode("ascii") + b"\x00" + claim.digest.encode("ascii")
+    commitment = key.mac(REPOSITORY_CLAIM_MAC_DOMAIN, preimage)
     return RepositoryPrivacyContext(
-        commitment=key.mac(REPOSITORY_CLAIM_MAC_DOMAIN, preimage),
+        commitment=commitment,
         identity_kind="client_claim",
         workspace_locator=None,
+        workspace_handle=workspace_handle_for_claim(commitment, claim.worktree),
     )

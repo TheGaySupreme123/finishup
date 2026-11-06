@@ -15,13 +15,13 @@ from finishup.domain.receipts import (
     client_attested_receipt_block,
 )
 from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
-from finishup.ports.workspace_agent import workspace_handle_for_commitment
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import StartRequest
 
 _COMMITMENT = "hmac-sha256:" + "c" * 64
-_CLAIM = RepositoryPrivacyContext(_COMMITMENT, "client_claim")
-_HANDLE = workspace_handle_for_commitment(_COMMITMENT)
+_HANDLE = workspace_handle_for_claim(_COMMITMENT, "sha256:" + "a1" * 32)
+_CLAIM = RepositoryPrivacyContext(_COMMITMENT, "client_claim", workspace_handle=_HANDLE)
 _INSTANCE = "svc_00000000-0000-4000-8000-000000000051"
 
 _require: Any = getattr(service_module, "_require_portable_workspace_ref")
@@ -70,6 +70,21 @@ def test_a_claim_bound_start_records_only_its_own_handle() -> None:
             "workspace_ref_not_portable"
         )
         assert reference is None or reference not in error.message
+
+
+def test_another_worktree_of_the_repository_is_another_workspace() -> None:
+    """Linked worktrees share the repository's commitment, never a workspace handle."""
+
+    other = workspace_handle_for_claim(_COMMITMENT, "sha256:" + "b2" * 32)
+    sibling = RepositoryPrivacyContext(_COMMITMENT, "client_claim", workspace_handle=other)
+    assert other != _HANDLE and sibling.commitment == _CLAIM.commitment
+    assert service_module.context_workspace(sibling) == other
+    _require(_start(other), sibling)
+    with pytest.raises(PublicOperationError) as caught:
+        _require(_start(_HANDLE), sibling)
+    assert cast(dict[str, object], caught.value.safe_details)["reason_code"] == (
+        "workspace_ref_not_portable"
+    )
 
 
 def test_only_an_attach_to_an_existing_session_may_omit_the_handle() -> None:

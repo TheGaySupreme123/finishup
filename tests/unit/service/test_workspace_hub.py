@@ -15,6 +15,7 @@ from finishup.ports.workspace_agent import (
     WorkspaceOnlyArguments,
     WorkspaceOperation,
     operation_spec,
+    workspace_handle_for_claim,
 )
 from finishup.service.workspace_hub import (
     MAX_CALLS_PER_CHANNEL,
@@ -55,6 +56,8 @@ async def _register(
     *,
     declaration: WorkspaceAgentDeclaration | None = None,
     sent: list[WorkspaceCall] | None = None,
+    handle: str = _HANDLE,
+    worktree: str | None = None,
 ) -> WorkspaceAgentChannel:
     holder: list[WorkspaceAgentChannel] = []
 
@@ -66,11 +69,12 @@ async def _register(
             asyncio.get_running_loop().call_soon(hub.deliver, holder[0], reply)
 
     channel = await hub.register(
-        handle=_HANDLE,
+        handle=handle,
         declaration=declaration or _declaration(),
         service_instance_id=_INSTANCE,
         service_generation="7",
         writer=writer,
+        worktree=worktree,
     )
     holder.append(channel)
     return channel
@@ -239,14 +243,84 @@ async def test_one_connection_serves_a_bounded_number_of_calls_at_once() -> None
     assert results.count(_BASE) >= MAX_CALLS_PER_CHANNEL
 
 
-async def test_the_newest_connection_for_a_handle_answers() -> None:
+_COMMITMENT = "hmac-sha256:" + "0a" * 32
+_WORKTREE_MAIN = "sha256:" + "1" * 64
+_WORKTREE_LINKED = "sha256:" + "2" * 64
+
+
+async def test_linked_worktrees_have_their_own_handles_and_their_own_agents() -> None:
+    """ADR-051: one repository commitment, one handle per worktree; never another tree's agent."""
+
+    hub = _hub()
+    main = workspace_handle_for_claim(_COMMITMENT, _WORKTREE_MAIN)
+    linked = workspace_handle_for_claim(_COMMITMENT, _WORKTREE_LINKED)
+    assert main != linked
+    main_calls: list[WorkspaceCall] = []
+    linked_calls: list[WorkspaceCall] = []
+    await _register(
+        hub, lambda call: _ok(call, _BASE), sent=main_calls, handle=main, worktree=_WORKTREE_MAIN
+    )
+    # The linked worktree's agent connects later: it must never answer the main tree's task.
+    await _register(
+        hub,
+        lambda call: _ok(call, _BASE),
+        sent=linked_calls,
+        handle=linked,
+        worktree=_WORKTREE_LINKED,
+    )
+    for handle in (main, main, linked):
+        arguments = WorkspaceOnlyArguments(handle)
+        await hub.call(handle, WorkspaceOperation.READ_TASK_BASE, arguments, timeout_seconds=1.0)
+    assert [call.arguments["workspace"] for call in main_calls] == [main, main]
+    assert [call.arguments["workspace"] for call in linked_calls] == [linked]
+
+
+async def test_an_agent_of_another_worktree_is_never_admitted_under_a_handle() -> None:
     hub = _hub()
     first: list[WorkspaceCall] = []
-    second: list[WorkspaceCall] = []
-    await _register(hub, lambda call: _ok(call, _BASE), sent=first)
-    await _register(hub, lambda call: _ok(call, _BASE), sent=second)
+    await _register(hub, lambda call: _ok(call, _BASE), sent=first, worktree=_WORKTREE_MAIN)
+    with pytest.raises(ValueError, match="workspace_agent_worktree_conflict"):
+        await _register(hub, lambda call: _ok(call, _BASE), worktree=_WORKTREE_LINKED)
+    # Another connection from the same worktree is admitted beside it.
+    await _register(hub, lambda call: _ok(call, _BASE), worktree=_WORKTREE_MAIN)
+    with pytest.raises(ValueError, match="workspace_worktree_invalid"):
+        await _register(hub, lambda call: _ok(call, _BASE), worktree="/home/dev/repo")
+
+
+async def test_a_live_call_prefers_its_own_connections_agent() -> None:
+    hub = _hub()
+    own: list[WorkspaceCall] = []
+    newer: list[WorkspaceCall] = []
+    channel = await _register(hub, lambda call: _ok(call, _BASE), sent=own)
+    await _register(hub, lambda call: _ok(call, _BASE), sent=newer)
+    with live_call_scope(channel):
+        await hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0)
+
+        def blocking() -> object:
+            return hub.call_blocking(
+                _HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0
+            )
+
+        # A worker thread serving the same call keeps the preference.
+        assert await asyncio.to_thread(blocking) == _BASE
+    assert (len(own), len(newer)) == (2, 0)
+    # Background work has no serving connection; every channel serves the one worktree.
     await hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0)
-    assert (len(first), len(second)) == (0, 1)
+    assert (len(own), len(newer)) == (2, 1)
+    # A preference for a channel that is gone, or for another handle, is ignored.
+    other = workspace_handle_for_claim(_COMMITMENT, _WORKTREE_LINKED)
+    elsewhere: list[WorkspaceCall] = []
+    await _register(hub, lambda call: _ok(call, _BASE), sent=elsewhere, handle=other)
+    await hub.unregister(channel)
+    with live_call_scope(channel):
+        await hub.call(_HANDLE, WorkspaceOperation.READ_TASK_BASE, _ARGS, timeout_seconds=1.0)
+        await hub.call(
+            other,
+            WorkspaceOperation.READ_TASK_BASE,
+            WorkspaceOnlyArguments(other),
+            timeout_seconds=1.0,
+        )
+    assert (len(own), len(newer), len(elsewhere)) == (2, 2, 1)
 
 
 async def test_a_blocking_call_from_a_worker_thread_reaches_the_loop() -> None:

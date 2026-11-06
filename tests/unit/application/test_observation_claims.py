@@ -45,14 +45,15 @@ from finishup.domain.observation import (
 from finishup.domain.values import JsonObject, Timestamp
 from finishup.ports.control import ControlError, ControlMethod, RepositoryPrivacyContext
 from finishup.ports.start_catalog import TaskRoute, TaskRouteState
-from finishup.ports.workspace_agent import workspace_handle_for_commitment
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 from finishup.protocol.canonical import canonical_digest
 
 pytestmark = pytest.mark.anyio
 
 _CLAIM = "hmac-sha256:" + "0a1b2c3d4e5f6071" + "8" * 48
 _OTHER_CLAIM = "hmac-sha256:" + "f" * 64
-_HANDLE = workspace_handle_for_commitment(_CLAIM)
+_WORKTREE = "sha256:" + "a1" * 32
+_HANDLE = workspace_handle_for_claim(_CLAIM, _WORKTREE)
 _CLIENT_SESSION = "hmac-sha256:" + "5e" * 32
 _HOST_SESSION = "codex-session-1"
 _TASK = "tsk_00000000-0000-4000-8000-000000000c01"
@@ -177,8 +178,12 @@ def harness(tmp_path: Path) -> _Harness:
     return _Harness(state, {_SESSION: _route()})
 
 
-def _context(commitment: str = _CLAIM) -> RepositoryPrivacyContext:
-    return RepositoryPrivacyContext(commitment, "client_claim")
+def _context(commitment: str = _CLAIM, worktree: str = _WORKTREE) -> RepositoryPrivacyContext:
+    return RepositoryPrivacyContext(
+        commitment,
+        "client_claim",
+        workspace_handle=workspace_handle_for_claim(commitment, worktree),
+    )
 
 
 async def test_a_row_without_an_attestation_is_refused_before_any_write(
@@ -285,6 +290,36 @@ async def test_consent_changes_follow_the_client(harness: _Harness) -> None:
     assert coordinator.revoked == [workspace]
 
 
+async def test_each_worktree_of_a_claim_keeps_its_own_consent_and_trust(
+    harness: _Harness,
+) -> None:
+    """INTERFACES: consent for one worktree never covers another, over a claim as locally."""
+
+    router = harness.router()
+    linked_worktree = "sha256:" + "b2" * 32
+    linked_handle = workspace_handle_for_claim(_CLAIM, linked_worktree)
+    await router.ingest(_context(), _request(_attestation()))
+    await router.ingest(
+        _context(worktree=linked_worktree),
+        _request(_attestation(check_policy_digest=None)),
+    )
+    main, linked = harness.coordinators[_HANDLE], harness.coordinators[linked_handle]
+    assert main.store is not linked.store and main.state != linked.state
+    # The linked worktree trusting no policy leaves the main worktree's trust as attested.
+    assert main.store.policy_digest_is_trusted(main.store.claim_workspace, _POLICY)
+    assert not linked.store.policy_digest_is_trusted(linked.store.claim_workspace, _POLICY)
+
+    # Revoking the linked worktree fences only its own store.
+    await router.ingest(
+        _context(worktree=linked_worktree), _request(_attestation(consent="revoked"))
+    )
+    assert linked.revoked == [linked.store.claim_workspace] and main.revoked == []
+    kept = main.store.consent_for(main.store.claim_workspace)
+    assert kept is not None and kept.active and kept.revoked_at is None
+    gone = linked.store.consent_for(linked.store.claim_workspace)
+    assert gone is not None and gone.revoked_at is not None
+
+
 async def test_a_route_the_service_followed_to_its_successor_is_kept(
     harness: _Harness,
 ) -> None:
@@ -321,7 +356,7 @@ async def test_capacity_closes_an_idle_claim_and_refuses_when_all_are_busy(
     harness.routes = {_SESSION: _route()}
     await router.ingest(_context(), _request(_attestation()))
     first = harness.coordinators[_HANDLE]
-    other_handle = workspace_handle_for_commitment(_OTHER_CLAIM)
+    other_handle = workspace_handle_for_claim(_OTHER_CLAIM, _WORKTREE)
     harness.routes = {_SESSION: _route(commitment=_OTHER_CLAIM)}
     await router.ingest(_context(_OTHER_CLAIM), _request(_attestation()))
     assert first.closed

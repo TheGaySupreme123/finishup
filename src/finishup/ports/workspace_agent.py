@@ -101,6 +101,7 @@ __all__ = [
     "MAX_WORKSPACE_PAYLOAD_BYTES",
     "WORKSPACE_AGENT_SCHEMA_VERSION",
     "WORKSPACE_FAILURE_REASONS",
+    "WORKSPACE_HANDLE_DOMAIN",
     "WORKSPACE_HANDLE_PREFIX",
     "WORKSPACE_OPERATION_CATALOG",
     "WORKSPACE_OPERATION_FAMILIES",
@@ -143,7 +144,7 @@ __all__ = [
     "outcome_for_reason",
     "remote_workspace_handle_valid",
     "resolve_client_location",
-    "workspace_handle_for_commitment",
+    "workspace_handle_for_claim",
     "workspace_handle_valid",
 ]
 
@@ -176,6 +177,8 @@ _MAX_LSTAT_CANDIDATES: Final = 1_024
 _MAX_LISTED_NAME_BYTES: Final = 1_024
 
 WORKSPACE_HANDLE_PREFIX: Final = "client:"
+# Domain of the handle a server derives from a claim commitment and its worktree digest.
+WORKSPACE_HANDLE_DOMAIN: Final = b"yoetz/workspace-handle/v1\x00"
 _WORKSPACE_HANDLE: Final = re.compile(r"^client:[0-9a-f]{16}$", re.ASCII)
 _REMOTE_WORKSPACE_HANDLE: Final = re.compile(r"^rws_[0-9a-f]{32}$", re.ASCII)
 _COMMITMENT: Final = re.compile(r"^hmac-sha256:[0-9a-f]{64}$", re.ASCII)
@@ -212,12 +215,24 @@ def workspace_handle_valid(value: object) -> bool:
     return type(value) is str and _WORKSPACE_HANDLE.fullmatch(value) is not None
 
 
-def workspace_handle_for_commitment(commitment: str) -> str:
-    """The workspace handle the server derives from a claim commitment: its first 16 hex."""
+def workspace_handle_for_claim(commitment: str, worktree: str) -> str:
+    """The workspace handle the server derives for one claimed worktree (ADR-051).
+
+    ``commitment`` is the server's own commitment to the claim, shared by every linked worktree of
+    one repository; ``worktree`` is the claim's worktree digest, which tells those worktrees
+    apart. The handle is the first 16 hex of a domain-separated SHA-256 over both, so each
+    worktree has its own handle, and with it its own task workspace and its own agent route,
+    while the repository commitment (privacy authority and consent scope) stays the claim's.
+    """
 
     if type(commitment) is not str or _COMMITMENT.fullmatch(commitment) is None:
         raise ValueError("workspace_commitment_invalid")
-    return WORKSPACE_HANDLE_PREFIX + commitment[len("hmac-sha256:") : len("hmac-sha256:") + 16]
+    if type(worktree) is not str or _SHA256.fullmatch(worktree) is None:
+        raise ValueError("workspace_worktree_invalid")
+    digest = hashlib.sha256(
+        WORKSPACE_HANDLE_DOMAIN + commitment.encode("ascii") + b"\x00" + worktree.encode("ascii")
+    ).hexdigest()
+    return WORKSPACE_HANDLE_PREFIX + digest[:16]
 
 
 def remote_workspace_handle_valid(value: object) -> bool:

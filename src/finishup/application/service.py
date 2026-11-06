@@ -153,7 +153,6 @@ from finishup.ports.publish_response_catalog import (
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
 from finishup.ports.start_catalog import SessionState, StartCatalogPort, TaskRoute, TaskRouteState
 from finishup.ports.workspace_agent import (
-    workspace_handle_for_commitment,
     workspace_handle_valid,
 )
 from finishup.protocol.canonical import (
@@ -249,7 +248,7 @@ def context_workspace(context: RepositoryPrivacyContext | None) -> str | None:
     if context is None:
         return None
     if context.identity_kind == "client_claim":
-        return workspace_handle_for_commitment(context.commitment)
+        return context.workspace_handle
     return None if context.workspace_locator is None else context.workspace_locator.path
 
 
@@ -273,7 +272,7 @@ def _require_portable_workspace_ref(
         assert context is not None
         if reference is None and request.mode == "attach":
             return
-        if reference != workspace_handle_for_commitment(context.commitment):
+        if reference != context.workspace_handle:
             raise PublicOperationError(
                 PublicErrorCode.INVALID_REQUEST,
                 (

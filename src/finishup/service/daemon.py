@@ -2050,13 +2050,23 @@ class ServiceDaemon:
                         async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
                             await write_workspace_call(stream, call)
 
-                channel = await hub.register(
-                    handle=session.workspace_handle,
-                    declaration=session.workspace_agent,
-                    service_instance_id=session.service_instance_id,
-                    service_generation=session.service_generation,
-                    writer=write_call,
-                )
+                try:
+                    channel = await hub.register(
+                        handle=session.workspace_handle,
+                        declaration=session.workspace_agent,
+                        service_instance_id=session.service_instance_id,
+                        service_generation=session.service_generation,
+                        writer=write_call,
+                        worktree=session.workspace_worktree,
+                    )
+                except ValueError:
+                    # A handle names one worktree; an agent for another under it is never admitted.
+                    record_public_error_without_raising(
+                        component="service.daemon",
+                        operation="control_handshake",
+                        reason="workspace_agent_worktree_conflict",
+                    )
+                    return
             agent = channel
             while not self._stop_event.is_set():
                 try:
@@ -2091,7 +2101,9 @@ class ServiceDaemon:
                         target.cancel(EXPLICIT_CONTROL_CANCEL)
                     continue
                 task = asyncio.create_task(
-                    self._serve_call(stream, session, request, write_lock, admission)
+                    self._serve_call(
+                        stream, session, request, write_lock, admission, agent_channel=channel
+                    )
                 )
                 calls[request.rpc_id] = task
                 task.add_done_callback(lambda _task, rpc_id=request.rpc_id: calls.pop(rpc_id, None))
@@ -2200,6 +2212,8 @@ class ServiceDaemon:
         request: ControlCallRequest,
         write_lock: asyncio.Lock,
         admission: str | None = None,
+        *,
+        agent_channel: WorkspaceAgentChannel | None = None,
     ) -> None:
         call_started = time.monotonic()
         # Presentation facts from the hello describe rendering only. The owner view is the one
@@ -2211,8 +2225,9 @@ class ServiceDaemon:
             session.output_is_controlling_tty,
             owner_view=self._consume_owner_view(session, request, admission),
         )
-        # Workspace calls this dispatch makes wait the shorter bound for an agent (ADR-051).
-        with live_call_scope():
+        # Workspace calls this dispatch makes wait the shorter bound for an agent, and go to this
+        # connection's own agent first when it offered one (ADR-051).
+        with live_call_scope(agent_channel):
             if session.repository_privacy_context is None:
                 result = await self.dispatch(
                     session.client_kind,

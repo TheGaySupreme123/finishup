@@ -11,6 +11,11 @@ agent that holds the handle, through that connection's own write lock, and await
 30 s for background work), for a call slot on the agent's connection, and for the reply. Every
 failure is a typed ``WorkspaceAgentUnavailable`` with a closed reason; nothing here logs or raises
 a path, an argument or anything the agent sent besides its closed reply reason.
+
+A handle names one worktree (the server derives it from the claim's commitment and its worktree
+digest), so every channel under one handle serves the same tree. A channel whose claim names
+another worktree is never admitted under a handle that already has a live one. A live control
+call prefers the agent its own connection offered, when that connection offered one.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import re
 import threading
 from collections.abc import Awaitable, Callable, Generator
 from contextvars import ContextVar
@@ -59,28 +65,53 @@ MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL: Final = 2 * MAX_WORKSPACE_FRAME_BYTES
 # Room past a call's own deadline for its reply frame to arrive and be read.
 _REPLY_GRACE_SECONDS: Final = 1.0
 _COMPONENT: Final = "service.workspace_hub"
-
-# Whether the current work runs inside a live control call (the caller's connection is open and
-# waiting), set by the daemon around each dispatched call. Background work (verification
-# supervisors, sweeps, recovered jobs) runs outside it and waits longer for an agent.
-_LIVE_CALL: ContextVar[bool] = ContextVar("finishup_workspace_live_call", default=False)
+_WORKTREE_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 
 type WorkspaceCallWriter = Callable[[WorkspaceCall], Awaitable[None]]
 
 
-@contextlib.contextmanager
-def live_call_scope() -> Generator[None]:
-    """Mark the work below as serving a live control call (the shorter agent wait)."""
+class _CallScope:
+    """What the work below serves, set by the daemon around each dispatched control call.
 
-    token = _LIVE_CALL.set(True)
+    ``live``: a live control call (the caller's connection is open and waiting), which waits the
+    shorter bound for an agent; background work (verification supervisors, sweeps, recovered
+    jobs) runs outside any scope and waits longer. ``channel``: the agent the serving connection
+    itself offered, preferred for its own handle.
+    """
+
+    __slots__ = ("channel", "live")
+
+    def __init__(self, *, live: bool, channel: WorkspaceAgentChannel | None) -> None:
+        self.live = live
+        self.channel = channel
+
+    def __repr__(self) -> str:
+        return "_CallScope(<redacted>)"
+
+
+_SCOPE: ContextVar[_CallScope | None] = ContextVar("finishup_workspace_call_scope", default=None)
+
+
+@contextlib.contextmanager
+def live_call_scope(channel: WorkspaceAgentChannel | None = None) -> Generator[None]:
+    """Mark the work below as serving a live control call (the shorter agent wait).
+
+    ``channel`` is the agent the serving connection itself offered, if any: a call for its handle
+    goes to it ahead of any other live channel for that handle.
+    """
+
+    if channel is not None and type(channel) is not WorkspaceAgentChannel:
+        raise TypeError("workspace_agent_channel_invalid")
+    token = _SCOPE.set(_CallScope(live=True, channel=channel))
     try:
         yield
     finally:
-        _LIVE_CALL.reset(token)
+        _SCOPE.reset(token)
 
 
 def in_live_call() -> bool:
-    return _LIVE_CALL.get()
+    scope = _SCOPE.get()
+    return scope is not None and scope.live
 
 
 def _record(operation: str, reason: str) -> None:
@@ -104,6 +135,7 @@ class WorkspaceAgentChannel:
         "handle",
         "service_generation",
         "service_instance_id",
+        "worktree",
         "writer",
     )
 
@@ -115,6 +147,7 @@ class WorkspaceAgentChannel:
         service_instance_id: str,
         service_generation: str,
         writer: WorkspaceCallWriter,
+        worktree: str | None = None,
     ) -> None:
         if not workspace_handle_valid(handle):
             raise ValueError("workspace_handle_invalid")
@@ -122,7 +155,13 @@ class WorkspaceAgentChannel:
             raise TypeError("workspace_agent_invalid")
         if not callable(writer):
             raise TypeError("workspace_call_writer_invalid")
+        if worktree is not None and (
+            type(worktree) is not str or _WORKTREE_DIGEST.fullmatch(worktree) is None
+        ):
+            raise ValueError("workspace_worktree_invalid")
         self.handle = handle
+        # The claim's keyed worktree digest, when the connection's hello carried one.
+        self.worktree = worktree
         self.declaration = declaration
         self.service_instance_id = service_instance_id
         self.service_generation = service_generation
@@ -234,8 +273,15 @@ class WorkspaceAgentHub:
         service_instance_id: str,
         service_generation: str,
         writer: WorkspaceCallWriter,
+        worktree: str | None = None,
     ) -> WorkspaceAgentChannel:
-        """Admit one agent-declaring connection under its claim's handle."""
+        """Admit one agent-declaring connection under its claim's handle.
+
+        ``worktree`` is the claim's keyed worktree digest. A handle names one worktree, so a
+        connection whose digest differs from a live channel's under the same handle is refused
+        (``ValueError("workspace_agent_worktree_conflict")``; the daemon closes it) rather than
+        ever answering another worktree's calls.
+        """
 
         self.bind_loop()
         channel = WorkspaceAgentChannel(
@@ -244,9 +290,16 @@ class WorkspaceAgentHub:
             service_instance_id=service_instance_id,
             service_generation=service_generation,
             writer=writer,
+            worktree=worktree,
         )
         condition = self._condition()
         async with condition:
+            live = [item for item in self._channels.get(handle, ()) if not item.closed]
+            if worktree is not None and any(
+                item.worktree is not None and item.worktree != worktree for item in live
+            ):
+                _record("workspace_agent_registered", "worktree_conflict")
+                raise ValueError("workspace_agent_worktree_conflict")
             self._channels.setdefault(handle, []).append(channel)
             condition.notify_all()
         _record("workspace_agent_registered", "registered")
@@ -294,26 +347,43 @@ class WorkspaceAgentHub:
     # --- calls ----------------------------------------------------------------------------------
 
     def _live_channel(
-        self, handle: str, operation: WorkspaceOperation
+        self,
+        handle: str,
+        operation: WorkspaceOperation,
+        preferred: WorkspaceAgentChannel | None = None,
     ) -> WorkspaceAgentChannel | None:
+        if (
+            preferred is not None
+            and not preferred.closed
+            and preferred.handle == handle
+            and preferred.declares(operation)
+            and any(channel is preferred for channel in self._channels.get(handle, ()))
+        ):
+            # The serving connection's own agent: the one in front of the caller's worktree.
+            return preferred
         live = [channel for channel in self._channels.get(handle, ()) if not channel.closed]
         declaring = [channel for channel in live if channel.declares(operation)]
         if declaring:
-            # The newest connection is the agent most likely still in front of the workspace.
+            # Every channel under a handle serves its one worktree; the newest connection is the
+            # agent most likely still in front of it.
             return declaring[-1]
         if live:
             raise WorkspaceAgentUnavailable("operation_not_declared")
         return None
 
     async def _channel_for(
-        self, handle: str, operation: WorkspaceOperation, wait_seconds: float
+        self,
+        handle: str,
+        operation: WorkspaceOperation,
+        wait_seconds: float,
+        preferred: WorkspaceAgentChannel | None = None,
     ) -> WorkspaceAgentChannel:
         condition = self._condition()
         try:
             async with asyncio.timeout(max(0.0, wait_seconds)):
                 async with condition:
                     while True:
-                        channel = self._live_channel(handle, operation)
+                        channel = self._live_channel(handle, operation, preferred)
                         if channel is not None:
                             return channel
                         await condition.wait()
@@ -336,6 +406,25 @@ class WorkspaceAgentHub:
         it is decided by whether this work serves a live control call).
         """
 
+        return await self._call(
+            handle,
+            operation,
+            arguments,
+            timeout_seconds=timeout_seconds,
+            background=background,
+            scope=_SCOPE.get(),
+        )
+
+    async def _call(
+        self,
+        handle: str,
+        operation: WorkspaceOperation,
+        arguments: object,
+        *,
+        timeout_seconds: float,
+        background: bool | None,
+        scope: _CallScope | None,
+    ) -> Any:  # noqa: ANN401 - the operation's own result type
         spec = operation_spec(operation)
         if spec is None or not workspace_handle_valid(handle):
             raise ValueError("workspace_call_invalid")
@@ -351,10 +440,11 @@ class WorkspaceAgentHub:
             raise WorkspaceAgentUnavailable("arguments_invalid") from None
         size = len(canonical_encode(wire))
         if background is None:
-            background = not in_live_call()
+            background = scope is None or not scope.live
         wait = self._background_wait if background else self._inline_wait
+        preferred = None if scope is None else scope.channel
         try:
-            channel = await self._channel_for(handle, spec.operation, wait)
+            channel = await self._channel_for(handle, spec.operation, wait, preferred)
             reply = await self._exchange(channel, spec.operation, wire, size, timeout_seconds)
         except WorkspaceAgentUnavailable as exc:
             _record("workspace_call", exc.reason)
@@ -444,15 +534,18 @@ class WorkspaceAgentHub:
             # Waiting here would block the very loop that must deliver the reply.
             _record("workspace_call", "hub_unavailable")
             raise WorkspaceAgentUnavailable("hub_unavailable")
-        background = not in_live_call()
+        # The worker thread runs in a copy of its caller's context: what that call serves.
+        scope = _SCOPE.get()
+        background = scope is None or not scope.live
         wait = self._background_wait if background else self._inline_wait
         future = asyncio.run_coroutine_threadsafe(
-            self.call(
+            self._call(
                 handle,
                 operation,
                 arguments,
                 timeout_seconds=timeout_seconds,
                 background=background,
+                scope=scope,
             ),
             loop,
         )

@@ -48,7 +48,9 @@ from finishup.service.control_protocol import (
 
 _SERVICE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _HANDLE = "client:0123456789abcdef"
-_CLAIM = WorkspaceClaim(identity_kind="git_common_root", digest="sha256:" + "ab" * 32)
+_CLAIM = WorkspaceClaim(
+    identity_kind="git_common_root", digest="sha256:" + "ab" * 32, worktree="sha256:" + "cd" * 32
+)
 _WAIT_SECONDS = 10.0
 
 
