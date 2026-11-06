@@ -100,6 +100,27 @@ def quiet_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("finishup.client.target_runtime.LocalTargetRuntime.probe", _not_running)
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [(), *(((command.name or ""),) for command in server_cli.server_app.registered_commands)],
+    ids=lambda arguments: "-".join(arguments) or "server",
+)
+def test_every_server_command_renders_its_help(home: Path, arguments: tuple[str, ...]) -> None:
+    # Help renders as Rich markup: a bracketed address part such as ``[/base]`` once parsed as a
+    # closing tag and turned ``server add --help`` into internal_error.
+    result = _invoke(*arguments, "--help")
+    assert result.exit_code == 0, result.output
+    assert result.exception is None
+    assert "internal_error" not in result.output
+
+
+def test_add_help_names_both_remote_address_forms(home: Path) -> None:
+    result = _invoke("add", "--help")
+    assert result.exit_code == 0, result.output
+    assert "ssh://user@host:port" in result.stdout
+    assert "https://host:port/base" in result.stdout
+
+
 def test_add_use_and_their_reverses_for_a_named_local_server(home: Path, quiet_probe: None) -> None:
     added = _invoke("add", "work", "--local")
     assert added.exit_code == 0, added.output
