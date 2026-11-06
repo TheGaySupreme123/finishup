@@ -4182,8 +4182,8 @@ class _LockedHumanEffects:
                 # The open waits for it briefly, since a healthy one returns in moments; one
                 # still running at the deadline is a store that does not answer, and the open is
                 # refused rather than held. The released ceremony vocabulary has no closer code
-                # than ``state_forbidden``: the trusted helper, which can see the vault is open,
-                # tells the owner what happened and to try again.
+                # than ``state_forbidden``: the trusted helper, which then sees a passphrase vault
+                # ready or still unlocking in the status, tells the owner to try again.
                 if not await self._staged_reconcile.returned_within(
                     _ROTATION_RECONCILE_WAIT_SECONDS
                 ):

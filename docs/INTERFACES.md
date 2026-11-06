@@ -4095,9 +4095,12 @@ activation or the event loop, then proceeds; a reconcile still running then mean
 does not answer, and the open is refused as `state_forbidden` (logged as `vault_passphrase_rotate`
 outcome `refused`, reason `staged_reconcile_outstanding`). The released ceremony vocabulary has no
 closer code, so the interactive helper, which stages only after the open, checks the service
-status: with the vault open it reports the local reason `credential_store_check_in_progress`
-(continuation `ceremony_retry_shortly`: nothing changed, try again in a moment) on the CLI and in
-the terminal interface instead of the unlock advice. None starts while a rotation is open: only an
+status: with a passphrase vault `ready`, or still `unlocking` (the open needs only an open vault,
+so it can come while the unlock that started the reconcile still activates; status cannot tell
+that from a lock already being unlocked again, where a retry in a moment is also the answer), it
+reports the local reason `credential_store_check_in_progress` (continuation
+`ceremony_retry_shortly`: nothing changed, try again in a moment) on the CLI and in the terminal
+interface instead of the unlock advice. None starts while a rotation is open: only an
 unlock starts one, and the lock before it ends the ceremony. A lock or the deadline ends an
 attempt's wait for either call, not the thread.
 Until a call an attempt stopped waiting for returns, no attempt starts another store call; requests

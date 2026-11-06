@@ -447,12 +447,12 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="ceremony_retry_shortly",
         directive=(
-            "The vault is open; the service is still finishing a credential-store check from its "
-            "last unlock, so nothing changed. Run the same command again in a moment, once; if "
-            "it is refused again, report it."
+            "The service is still finishing its latest unlock or the credential-store check "
+            "after it, so nothing changed. Run the same command again in a moment, once; if it "
+            "is refused again, report it."
         ),
         guidance_uri=_TEMPLATES_SETUP,
-        nudge="The vault is already open: do not unlock it again or restart the service for this.",
+        nudge="The vault is open or opening: do not unlock it again or restart the service for this.",
     ),
     RecoveryDirective(
         token="vault_unlock_required",
@@ -923,7 +923,7 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "ceremony_busy": "ceremony_in_progress",
         # Recent confirmations did not succeed (#1073): wait up to five minutes, retry once.
         "reauthentication_rate_limited": "ceremony_retry_after_wait",
-        # A rotation refused while the vault is open and a credential-store check still runs.
+        # A rotation refused while the service is ready or unlocking and still finishing that.
         "credential_store_check_in_progress": "ceremony_retry_shortly",
         "ceremony_service_unavailable": "local_service_unavailable",
         "ceremony_unsupported": "ceremony_refusal_terminal",

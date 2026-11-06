@@ -460,7 +460,7 @@ async def _open_rotation(
         probes.append(vault_open)
         return vault_open
 
-    monkeypatch.setattr(unlock, "_service_reports_ready_passphrase_vault", probe)
+    monkeypatch.setattr(unlock, "_service_reports_unlocking_or_ready_passphrase_vault", probe)
     await unlock._complete_human_ceremony(
         cast(Any, _RefusingHumanControlClient("state_forbidden")),
         cast(Any, None),
@@ -481,7 +481,8 @@ async def test_a_rotation_refused_while_the_vault_is_open_says_why_and_to_try_ag
 ) -> None:
     # The service refuses a rotation's open as ``state_forbidden`` while the credential-store
     # check after its last unlock still runs (#492 review). The wire code is released and would
-    # print "the vault must be unlocked", which is false then: the helper sees the vault open.
+    # print "the vault must be unlocked", which is false then: the helper sees the vault open, or
+    # still opening when the open came while that unlock activated.
     with pytest.raises(HumanCeremonyCliError) as refused:
         await _open_rotation(monkeypatch, vault_open=True)
     assert refused.value.reason == "credential_store_check_in_progress"
@@ -490,8 +491,8 @@ async def test_a_rotation_refused_while_the_vault_is_open_says_why_and_to_try_ag
 
     captured = capsys.readouterr().err
     assert captured.startswith(
-        "credential_store_check_in_progress: the vault is open, but the service is still "
-        "finishing a credential-store check from its last unlock"
+        "credential_store_check_in_progress: the service is still finishing its latest unlock "
+        "or the credential-store check after it"
     )
     assert "nothing was stored; try again in a moment" in captured
     assert "Continuation: ceremony_retry_shortly" in captured
@@ -529,8 +530,12 @@ async def test_a_generated_rotation_keeps_the_refusal_it_was_given(
     ("state", "vault_mode", "expected"),
     [
         ("ready", "passphrase", True),
+        # The open needs only an open vault, so it can come while the unlock that started the
+        # check still activates (#492 review).
+        ("unlocking", "passphrase", True),
         ("locked", "passphrase", False),
         ("ready", "os_keyring", False),
+        ("unlocking", "os_keyring", False),
     ],
 )
 async def test_the_open_vault_probe_reads_the_service_status(
@@ -552,7 +557,7 @@ async def test_the_open_vault_probe_reads_the_service_status(
 
     monkeypatch.setattr("finishup.service.client.connect_service", connect)
 
-    assert await unlock._service_reports_ready_passphrase_vault() is expected
+    assert await unlock._service_reports_unlocking_or_ready_passphrase_vault() is expected
 
 
 @pytest.mark.anyio
@@ -567,4 +572,4 @@ async def test_the_open_vault_probe_is_false_when_the_service_cannot_be_asked(
 
     monkeypatch.setattr("finishup.service.client.connect_service", connect)
 
-    assert await unlock._service_reports_ready_passphrase_vault() is False
+    assert await unlock._service_reports_unlocking_or_ready_passphrase_vault() is False
