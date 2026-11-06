@@ -472,7 +472,8 @@ async def test_audit_lines_carry_closed_tokens_only(gateway: _Gateway) -> None:
     )
     await gateway.client.get("/v1/server", headers={"Origin": "https://evil.example"})
     assert gateway.audit.records
-    secret = gateway.agent_key.rsplit("_", 1)[1]
+    # The whole secret (``fuk_<key id>_<secret>``): base64url may itself contain "_".
+    secret = gateway.agent_key.split("_", 2)[2]
     for record in gateway.audit.records:
         assert set(record) == {
             "event",
