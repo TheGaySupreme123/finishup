@@ -164,7 +164,9 @@ server's questions about them.
 The workspace agent answers only a fixed list of questions, only about the project folder your
 session is working in, only within the folders you admitted, and only within the usual size
 limits. It runs only check commands from your project's approved check list. It reads files with
-the same safety checks FinishUP uses on one computer.
+the same safety checks FinishUP uses on one computer, and it never reads FinishUP's own folders on
+this computer — including the vault and settings of your everyday FinishUP — whichever server you
+use.
 
 It runs inside your FinishUP clients while they are connected to the server, and keeps running
 after a call returns, because some work — a longer review, an approved check — happens later. If
