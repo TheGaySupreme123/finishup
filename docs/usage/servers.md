@@ -212,8 +212,10 @@ The workspace agent answers only a fixed list of questions, only about the proje
 session is working in and the folders outside it that you let that server read (`finishup server
 folders`), and only within the usual size limits. It runs only check commands from your project's
 approved check list. It reads files with the same safety checks FinishUP uses on one computer,
-and it never reads FinishUP's own folders on this computer — including the vault and settings of
-your everyday FinishUP — whichever server you use.
+does not return a file of your project that Git reports as ignored (in a linked Git worktree
+FinishUP cannot ask Git, so there this check does not apply), and never reads FinishUP's own
+folders on this computer — including the vault and settings of your everyday FinishUP — whichever
+server you use.
 
 The workspace agent cannot tell an honest question from any other. A server that does not follow
 FinishUP's own rules could ask it for any file in your project folder, or in a folder you let that

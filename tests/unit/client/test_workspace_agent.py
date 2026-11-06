@@ -843,6 +843,77 @@ def test_a_declared_test_spelled_through_a_root_owned_top_link_is_the_same_place
     )
 
 
+def test_a_workspace_file_git_ignores_is_never_returned(repository: Path, protected: Path) -> None:
+    """The broker's ignore rule, applied on the agent too: a server that skips its probe still
+    never receives an ignored file's bytes."""
+
+    (repository / "ignored.log").write_text("IGNORED_MARKER\n", encoding="utf-8")
+    handler = _handler(repository, protected)
+    # The bare readers would return it.
+    assert read_text_beneath(os.fspath(repository), "ignored.log", excluded=(), expired=_never) == (
+        b"IGNORED_MARKER\n",
+        15,
+    )
+    assert read_declared_test(f"{repository}/ignored.log", excluded=()) == b"IGNORED_MARKER\n"
+    for operation, arguments in (
+        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(_HANDLE, "ignored.log")),
+        (
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(_HANDLE + "/ignored.log"),
+        ),
+        (
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(f"{repository}/ignored.log"),
+        ),
+    ):
+        assert _ok(handler, operation, arguments) is None, arguments
+    # A file Git does not ignore still reads.
+    assert _ok(
+        handler,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(_HANDLE, "src/app.py"),
+    ) == (b"print('hello')\n", 15)
+
+
+def test_where_git_cannot_answer_a_workspace_file_reads_as_locally(
+    tmp_path: Path, repository: Path, protected: Path
+) -> None:
+    """Only Git's own "ignored" refuses: no repository, or a linked worktree whose ``.git`` file
+    the change capture refuses (``unsafe_root``), reads as a local service reads."""
+
+    plain = (tmp_path / "plain").resolve()
+    (plain / "tests").mkdir(parents=True)
+    (plain / "tests" / "test_p.py").write_text("def test_p():\n    pass\n", encoding="utf-8")
+    handler = _handler(plain, protected)
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(_HANDLE + "/tests/test_p.py"),
+        )
+        == b"def test_p():\n    pass\n"
+    )
+    _git(repository, "worktree", "add", "-q", "-b", "feature", os.fspath(tmp_path / "linked"))
+    linked = _handler((tmp_path / "linked").resolve(), protected)
+    assert _refused(linked, WorkspaceOperation.READ_TASK_BASE, WorkspaceOnlyArguments(_HANDLE)) == (
+        "unavailable",
+        "unsafe_root",
+    )
+    assert _ok(
+        linked,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(_HANDLE, "src/app.py"),
+    ) == (b"print('hello')\n", 15)
+    assert (
+        _ok(
+            linked,
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(_HANDLE + "/tests/test_app.py"),
+        )
+        == b"def test_app():\n    pass\n"
+    )
+
+
 def test_no_agent_is_built_for_the_filesystem_root(protected: Path) -> None:
     with pytest.raises(ValueError, match="workspace_locator_path_invalid"):
         WorkspaceAgentHandler(WorkspaceLocator("/"), protected=(os.fspath(protected),))
