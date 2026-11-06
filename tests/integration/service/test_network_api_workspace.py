@@ -168,6 +168,8 @@ class _Remote:
     sent: list[bytes] = field(default_factory=list[bytes])
     agents: dict[str, _Agent] = field(default_factory=dict[str, _Agent])
     drop_on: str | None = None
+    # A claimed path whose agent answers from another checkout: the decoy setup (see below).
+    answer_from: dict[str, Path] = field(default_factory=dict[str, Path])
     ensured: list[Path] = field(default_factory=list[Path])
     loop: WorkspaceAgentLoop | None = None
     running: asyncio.Task[int] | None = None
@@ -177,8 +179,9 @@ class _Remote:
         return self.root / "state"
 
     def handler(self, locator: WorkspaceLocator, root: Path) -> _Agent:
+        answers = self.answer_from.get(locator.path)
         handler = WorkspaceAgentHandler(
-            locator,
+            locator if answers is None else WorkspaceLocator(str(answers.resolve())),
             protected=(*client_protected_directories(), str(root)),
             check_sandbox=_ReadySandbox(),
         )
@@ -368,10 +371,17 @@ async def test_a_remote_task_runs_its_whole_workflow_through_the_network_api_and
     network: NetworkApiServer,
 ) -> None:
     del network
+    # The decoy: a repository at the very path this client claims, readable by the server's
+    # process. The agent answers from the client's own checkout elsewhere, so a server that read
+    # the claimed path itself would record the decoy's commit instead of the client's.
+    claimed = tmp_path / "work" / "repo"
+    decoy_head = _repository(claimed, "decoy.py", "print('decoy')\n")
     repo = tmp_path / "client" / "repo"
     head = _repository(repo, "app.py", "print('client')\n")
     (repo / "app.py").write_text("print('client, edited')\n")
-    path = str(repo.resolve())
+    assert head != decoy_head
+    path = str(claimed.resolve())
+    remote.answer_from[path] = repo
     remote.start_agent()
     client = await _connect(path, ControlClientKind.MCP_BRIDGE)
     try:
@@ -443,7 +453,7 @@ async def test_a_remote_task_runs_its_whole_workflow_through_the_network_api_and
         assert await _task_base_commit(service, started) == head
         # The server's own adapters were never handed this task's workspace in any form.
         assert all(
-            started.session_id not in entry and path not in entry for entry in spy.workspaces
+            path not in entry and str(repo.resolve()) not in entry for entry in spy.workspaces
         ), spy.workspaces
         handle = cast(str, client.workspace_handle)
         assert all(handle not in entry for entry in spy.workspaces), spy.workspaces
@@ -459,8 +469,8 @@ async def test_a_remote_task_runs_its_whole_workflow_through_the_network_api_and
             f"This client reached FinishUP service {client.service_instance_id} (transport: https)."
         ) in rendered
         assert path not in rendered and path not in receipt.human_text
-        # No request this client sent carried the repository's path, in a body or a header.
-        remote.assert_no_path_sent(path, str(repo))
+        # No request this client sent carried either path, in a body or a header.
+        remote.assert_no_path_sent(path, str(repo.resolve()))
     finally:
         await client.close()
 
