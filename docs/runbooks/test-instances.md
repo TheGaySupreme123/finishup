@@ -184,7 +184,7 @@ CA` / `--port PORT --ca-file CA` followed by `server login NAME --key-file F`) a
 (`server use NAME`); both ask for the typed name on the trusted console. `server connect`, `server
 test` and `server status --json` start and show the connector. Its records are in the target root
 on the client: `state/connector-status.json`, `state/claimed-workspaces/` (one owner-only record
-per workspace a client claimed) and `log/connector.stderr`; the gateway's audit lines are in the
+per worktree a client claimed) and `log/connector.stderr`; the gateway's audit lines are in the
 server instance's log folder. Tear down with `server disconnect`, `server use local` and `server
 remove NAME` on the client, then `service gateway key revoke`, the gateway's own stop and
 `instance dispose` on the server.

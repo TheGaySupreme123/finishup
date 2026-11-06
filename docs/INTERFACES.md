@@ -5014,8 +5014,9 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   raises. `open_connector_agent(root, claim, dial)` reads the claimed-workspace index, derives
   the claim again from the recorded workspace with `binding_for_active_root(...,
   serve_workspace=True)` and returns None unless it matches.
-- `<troot>/state/claimed-workspaces/<64 hex of the claim digest>.json`
-  (`yoetz.claimed-workspace/1`; owner-only, `finishup.client.claimed_workspaces`):
+- `<troot>/state/claimed-workspaces/<64 hex of the claim digest>-<64 hex of its worktree
+  digest>.json` (`yoetz.claimed-workspace/1`; owner-only, `finishup.client.claimed_workspaces`;
+  one record per claimed worktree, since linked worktrees share the claim digest):
   `{"identity_kind", "schema", "workspace"}` with the workspace locator path the claim was
   computed from. `record_claimed_workspace(root, claim, workspace) -> bool` (best effort,
   idempotent) and `claimed_workspace(root, claim) -> WorkspaceLocator | None`. It never leaves the

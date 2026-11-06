@@ -640,21 +640,26 @@ through the same relay; human-control and secret channels never leave the server
   connection with no claim refuses an absolute `workspace_ref` instead of sending it.
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
-  connection per workspace whose claim it relayed, for 15 minutes after that workspace's last
-  hello (`open_background_agent(root, claim, dial)`). It learns which local workspace a claim
-  stands for from the root's owner-only claimed-workspace index (`<troot>/state/claimed-workspaces/
-  <64 hex>.json`, `yoetz.claimed-workspace/1`), which the connecting process writes and which
-  never leaves the machine; it derives the claim again from the recorded workspace with the
-  target's salt and serves it only when the two match. The agent connection runs the real
-  `WorkspaceAgentHandler`, is relayed by the connector itself over a socket pair (so it neither
-  keeps the connector from idling out nor renews its own lease), and reconnects whenever the
-  service ends it. Over the same connection the connector delivers what the client's hooks
-  captured for that workspace (the observation outbox and spool, `ClientObservationDrain`, each
-  row attested by the client's own store) every 30 seconds and once more as it stops; hooks
-  still drain once per pass. Several connections may serve one claim (a CLI command, the MCP
-  bridge, the connector); the service sends each call to the newest, and a workspace an agent
-  opened for observation verification and another agent does not know (`handle_unknown`) is
-  opened again on the answering agent and the call retried once.
+  connection per workspace whose claim it relayed, for 15 minutes after that workspace's last hello
+  (`open_background_agent(root, claim, dial)`); each linked worktree of one repository is its own
+  workspace here, with its own lease and agent, although the worktrees share the repository's claim
+  digest. It learns which local workspace a claim stands for from the root's owner-only
+  claimed-workspace index (`<troot>/state/claimed-workspaces/<64 hex>-<64 hex>.json`, named by the
+  claim's repository and worktree digests, `yoetz.claimed-workspace/1`), which the connecting
+  process writes and which never leaves the machine; it derives the claim again from the recorded
+  workspace with the target's salt and serves it only when the two match. The agent connection runs
+  the real `WorkspaceAgentHandler`, is relayed by the connector itself over a socket pair (so it
+  neither keeps the connector from idling out nor renews its own lease), and reconnects whenever the
+  service ends it. Over the same connection the connector delivers what the client's hooks captured
+  for that workspace (the observation outbox and spool, `ClientObservationDrain`, each row attested
+  by the client's own store) every 30 seconds and once more as it stops; hooks still drain once per
+  pass. Several connections may serve one worktree's handle (a CLI command, the MCP bridge, the
+  connector): a live call goes first to the agent its own connection offered, otherwise to the
+  newest, and a workspace an agent opened for observation verification and another agent does not
+  know (`handle_unknown`) is opened again on the answering agent and the call retried once. Every
+  answer comes from the task's own worktree; a linked worktree's change capture is refused
+  `unsafe_root` by the client's own adapter (its `.git` is a file), exactly as a service on that
+  machine refuses it.
 - **Remote remedies on every surface.** A remote target's failure is named by its closed phase
   and its ADR-030 directive on the CLI, the menu, setup's next steps, the MCP bridge, the hook
   contexts and the terminal interface: every `service_unavailable` from a remote root carries a

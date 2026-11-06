@@ -7,8 +7,10 @@ AI-powered review loop, observation verification) still reaches the workspace af
 that started it returned. A claim is a digest; the connector learns which folder it stands for
 from this owner-only index, written by the client process that made the claim:
 
-``<target root>/state/claimed-workspaces/<64 hex>.json`` (``yoetz.claimed-workspace/1``): the
-claim's identity kind and the workspace locator path the claim was computed from.
+``<target root>/state/claimed-workspaces/<64 hex>-<64 hex>.json`` (``yoetz.claimed-workspace/1``),
+named by the claim's repository digest and its worktree digest: the claim's identity kind and the
+workspace locator path the claim was computed from. Linked worktrees of one repository share the
+repository digest, so each worktree has its own record.
 
 The index never leaves this machine and nothing reads it but this installation's own client
 processes. A record is only a hint: the connector derives the claim again from the recorded path
@@ -45,13 +47,10 @@ _MAX_RECORD_BYTES: Final = 16_384
 def _record_path(root: Path, claim: WorkspaceClaim) -> Path:
     if type(claim) is not WorkspaceClaim:
         raise TypeError("workspace_claim_invalid")
-    # The claim's own validation pins the digest to ``sha256:`` and 64 lowercase hex.
-    return (
-        root
-        / "state"
-        / CLAIMED_WORKSPACES_DIRECTORY
-        / f"{claim.digest[len(_DIGEST_PREFIX) :]}.json"
-    )
+    # The claim's own validation pins both digests to ``sha256:`` and 64 lowercase hex.
+    digest = claim.digest[len(_DIGEST_PREFIX) :]
+    worktree = claim.worktree[len(_DIGEST_PREFIX) :]
+    return root / "state" / CLAIMED_WORKSPACES_DIRECTORY / f"{digest}-{worktree}.json"
 
 
 def _encode(claim: WorkspaceClaim, workspace: WorkspaceLocator) -> bytes:

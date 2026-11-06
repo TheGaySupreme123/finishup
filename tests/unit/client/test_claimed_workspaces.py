@@ -30,7 +30,7 @@ def test_a_recorded_claim_reads_back_as_its_workspace(root: Path, tmp_path: Path
     assert claimed_workspace(root, _CLAIM) is None
     assert record_claimed_workspace(root, _CLAIM, workspace) is True
     assert claimed_workspace(root, _CLAIM) == workspace
-    record = root / "state" / CLAIMED_WORKSPACES_DIRECTORY / f"{'ab' * 32}.json"
+    record = root / "state" / CLAIMED_WORKSPACES_DIRECTORY / f"{'ab' * 32}-{'cd' * 32}.json"
     assert record.stat().st_mode & 0o777 == 0o600
     assert record.parent.stat().st_mode & 0o777 == 0o700
     # Idempotent: an identical record is not rewritten.
@@ -43,10 +43,25 @@ def test_a_recorded_claim_reads_back_as_its_workspace(root: Path, tmp_path: Path
     )
 
 
+def test_each_linked_worktree_of_one_repository_has_its_own_record(
+    root: Path, tmp_path: Path
+) -> None:
+    """Worktrees share the repository's claim digest; the worktree digest keeps them apart."""
+
+    linked_claim = WorkspaceClaim(_CLAIM.identity_kind, _CLAIM.digest, "sha256:" + "ef" * 32)
+    main = WorkspaceLocator(str(tmp_path / "repo"))
+    linked = WorkspaceLocator(str(tmp_path / "linked"))
+    assert record_claimed_workspace(root, _CLAIM, main) is True
+    assert record_claimed_workspace(root, linked_claim, linked) is True
+    assert claimed_workspace(root, _CLAIM) == main
+    assert claimed_workspace(root, linked_claim) == linked
+    assert len(list((root / "state" / CLAIMED_WORKSPACES_DIRECTORY).iterdir())) == 2
+
+
 def test_a_tampered_or_unsafe_record_is_never_read(root: Path, tmp_path: Path) -> None:
     workspace = WorkspaceLocator(str(tmp_path / "repo"))
     record_claimed_workspace(root, _CLAIM, workspace)
-    record = root / "state" / CLAIMED_WORKSPACES_DIRECTORY / f"{'ab' * 32}.json"
+    record = root / "state" / CLAIMED_WORKSPACES_DIRECTORY / f"{'ab' * 32}-{'cd' * 32}.json"
     original = record.read_bytes()
     record.write_bytes(original.replace(b'"workspace"', b'"workspace" '))
     assert claimed_workspace(root, _CLAIM) is None

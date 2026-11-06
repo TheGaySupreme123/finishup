@@ -203,7 +203,7 @@ class Connector:
         self._started_at = now_stamp()
         self._active = 0
         self._last_activity = time.monotonic()
-        self._claims: dict[str, _ClaimLease] = {}
+        self._claims: dict[WorkspaceClaim, _ClaimLease] = {}
         self._stop = asyncio.Event()
         self._stop_reason = "stop_requested"
         self._connections: set[asyncio.Task[None]] = set()
@@ -288,10 +288,11 @@ class Connector:
 
     async def _observe_claim(self, claim: WorkspaceClaim) -> None:
         now = time.monotonic()
-        lease = self._claims.get(claim.digest)
+        # One lease per claimed worktree: linked worktrees share the repository's digest.
+        lease = self._claims.get(claim)
         if lease is None:
             lease = _ClaimLease(claim, now)
-            self._claims[claim.digest] = lease
+            self._claims[claim] = lease
         lease.last_seen = now
         if (lease.agent is not None and lease.agent.alive) or lease.opening:
             return
@@ -305,10 +306,10 @@ class Connector:
 
     async def _expire_claims(self) -> None:
         now = time.monotonic()
-        for digest, lease in tuple(self._claims.items()):
+        for claim, lease in tuple(self._claims.items()):
             if now - lease.last_seen < AGENT_LEASE_SECONDS:
                 continue
-            self._claims.pop(digest, None)
+            self._claims.pop(claim, None)
             if lease.agent is not None:
                 with contextlib.suppress(Exception):
                     await lease.agent.aclose()

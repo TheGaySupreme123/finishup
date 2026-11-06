@@ -310,7 +310,14 @@ def test_each_claimed_workspace_gets_one_background_agent_lease(home: Path) -> N
         await connector._observe_claim(claim)  # pyright: ignore[reportPrivateUsage]
         await connector._observe_claim(claim)  # pyright: ignore[reportPrivateUsage]
         assert [item.digest for item in opened] == [CLAIM_DIGEST]
-        lease = connector._claims[CLAIM_DIGEST]  # pyright: ignore[reportPrivateUsage]
+        # A linked worktree of the same repository shares its digest and gets its own agent.
+        linked = WorkspaceClaim(
+            identity_kind="directory", digest=CLAIM_DIGEST, worktree="sha256:" + "0e" * 32
+        )
+        await connector._observe_claim(linked)  # pyright: ignore[reportPrivateUsage]
+        assert opened == [claim, linked]
+        connector._claims.pop(linked)  # pyright: ignore[reportPrivateUsage]
+        lease = connector._claims[claim]  # pyright: ignore[reportPrivateUsage]
         lease.last_seen -= 10_000
         await connector._expire_claims()  # pyright: ignore[reportPrivateUsage]
         assert connector._claims == {}  # pyright: ignore[reportPrivateUsage]

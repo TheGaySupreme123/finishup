@@ -144,18 +144,25 @@ class _RecordingHandler(WorkspaceAgentHandler):
     """
 
     operations: ClassVar[list[str]] = []
+    # (the workspace this agent serves, operation, outcome, reason), for every answer.
+    answers: ClassVar[list[tuple[str, str, str, str | None]]] = []
     on_operation: ClassVar[Callable[[str], None] | None] = None
 
     def __init__(self, workspace: WorkspaceLocator, **options: Any) -> None:  # noqa: ANN401
         options.setdefault("check_sandbox", _ReadySandbox())
         super().__init__(workspace, **options)
+        self.workspace_path = workspace.path
 
     def answer(self, call: WorkspaceCall, *, workspace_handle: str | None) -> WorkspaceReply:
         type(self).operations.append(call.operation)
         hook = type(self).on_operation
         if hook is not None:
             hook(call.operation)
-        return super().answer(call, workspace_handle=workspace_handle)
+        reply = super().answer(call, workspace_handle=workspace_handle)
+        type(self).answers.append(
+            (self.workspace_path, call.operation, reply.outcome, reply.reason)
+        )
+        return reply
 
 
 @pytest.fixture
@@ -164,6 +171,7 @@ def agents(monkeypatch: pytest.MonkeyPatch) -> type[_RecordingHandler]:
 
     class Recording(_RecordingHandler):
         operations: ClassVar[list[str]] = []
+        answers: ClassVar[list[tuple[str, str, str, str | None]]] = []
         on_operation: ClassVar[Callable[[str], None] | None] = None
 
     monkeypatch.setattr(workspace_agent_module, "WorkspaceAgentHandler", Recording)
@@ -779,4 +787,110 @@ async def test_losing_the_server_is_a_remote_phase_and_never_a_local_service(
     assert refused.value.phase in REMOTE_CONNECTION_PHASES
     assert refused.value.phase == "remote_service_not_running"
     # The relay was already running; nothing was started on this machine, and no local service.
+    assert no_local_service == []
+
+
+# --- two linked worktrees of one repository on one remote target --------------------------------
+
+
+def _linked_worktrees(tmp_path: Path) -> tuple[Path, str, Path, str]:
+    """The client's repository and a linked worktree of it, on a branch one commit ahead."""
+
+    main, main_head = _client_repository(tmp_path)
+    linked = tmp_path / "client" / "linked"
+    _git(main, "worktree", "add", "-q", "-b", "feature", str(linked))
+    (linked / "app.py").write_text("print('the linked worktree')\n")
+    _git(linked, "commit", "-q", "-am", "the linked worktree's own change")
+    linked_head = _git(linked, "rev-parse", "HEAD")
+    assert linked_head != main_head
+    return main.resolve(), main_head, linked.resolve(), linked_head
+
+
+async def _read_app(service: _Service, handle: str) -> bytes:  # noqa: F811
+    """What the agent serving ``handle`` reads as ``app.py`` (the reviewer's file read)."""
+
+    from finishup.ports.workspace_agent import ReadTextBeneathArguments, WorkspaceOperation
+
+    text, _size = await service.hub.call(
+        handle,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(handle, "app.py"),
+        timeout_seconds=10.0,
+        background=True,
+    )
+    return text
+
+
+@pytest.mark.parametrize("kind", ["ssh", "https"])
+async def test_each_linked_worktree_is_answered_from_itself_through_the_connector(
+    kind: Kind,
+    tmp_path: Path,
+    home: Path,
+    spy: _Spy,  # noqa: F811
+    service: _Service,  # noqa: F811
+    agents: type[_RecordingHandler],
+    no_local_service: list[Path],
+) -> None:
+    """ADR-051: two worktrees of one repository share its claim digest, never a handle or agent.
+
+    Both connections go through one target's connector. Each gets its own handle and its own
+    task, and every workspace answer for a task comes from that task's own worktree: the main
+    worktree's task base is its HEAD, and the linked worktree's base read is answered by the
+    linked worktree's agent with the local change-capture rule's own ``unsafe_root`` (its ``.git``
+    is a file), exactly as a service on that machine would refuse it, never with the main
+    worktree's base. Once the client processes are gone the connector keeps one background agent
+    per worktree, each still answering from its own worktree.
+    """
+
+    from finishup.ports.workspace_agent import WorkspaceOnlyArguments, WorkspaceOperation
+
+    main, main_head, linked, _linked_head = _linked_worktrees(tmp_path)
+    async with _topology(kind, home, service) as topology:
+        main_connection = await _connect(main)
+        linked_connection = await _connect(linked)
+        try:
+            main_handle = main_connection.workspace_handle
+            linked_handle = linked_connection.workspace_handle
+            assert main_handle is not None and linked_handle is not None
+            assert main_handle != linked_handle
+            # One claimed-workspace record per worktree, on this machine only.
+            index = topology.root / "state" / "claimed-workspaces"
+            assert len(list(index.iterdir())) == 2
+            main_task = await _start(main_connection, main, f"connector-{kind}-main")
+            linked_task = await _start(linked_connection, linked, f"connector-{kind}-linked")
+            assert main_task.task_id != linked_task.task_id
+            assert await _recorded_base(service, main_task) == main_head
+            base_reads = [
+                (path, outcome, reason)
+                for path, operation, outcome, reason in agents.answers
+                if operation == "read_task_base"
+            ]
+            assert base_reads == [
+                (str(main), "ok", None),
+                (str(linked), "unavailable", "unsafe_root"),
+            ]
+            # The reviewer's file reads: each handle reads its own worktree's file.
+            assert await _read_app(service, main_handle) == b"print('client')\n"
+            assert await _read_app(service, linked_handle) == b"print('the linked worktree')\n"
+        finally:
+            await main_connection.close()
+            await linked_connection.close()
+        # The client processes are gone: the connector's background agent for each worktree
+        # answers that worktree's handle, from that worktree.
+        await _until(
+            lambda: service.hub.has_agent(main_handle) and service.hub.has_agent(linked_handle)
+        )
+        agents.answers.clear()
+        base = await service.hub.call(
+            main_handle,
+            WorkspaceOperation.READ_TASK_BASE,
+            WorkspaceOnlyArguments(main_handle),
+            timeout_seconds=10.0,
+            background=True,
+        )
+        assert base.commit == main_head
+        assert await _read_app(service, linked_handle) == b"print('the linked worktree')\n"
+        assert await _read_app(service, main_handle) == b"print('client')\n"
+        assert {path for path, *_rest in agents.answers} == {str(main), str(linked)}
+    assert spy.workspaces == []
     assert no_local_service == []
