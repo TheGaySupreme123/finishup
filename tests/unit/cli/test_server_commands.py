@@ -86,6 +86,7 @@ def authorized(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: False)
     monkeypatch.setattr(server_cli, "_confirm_on_trusted_console", confirm)
     monkeypatch.setattr(server_cli, "_probe_ssh_endpoint", ssh_endpoint)
+
     def key_accepted(_record: targets.ServerTarget, _secret: str) -> None:
         return None
 

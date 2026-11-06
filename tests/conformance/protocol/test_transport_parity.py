@@ -96,7 +96,9 @@ async def _relay(connector: Connector) -> list[bytes]:
     return received
 
 
-def _remote(name: str, kind: targets.TargetKind, **fields: object) -> tuple[targets.ServerTarget, Path]:
+def _remote(
+    name: str, kind: targets.TargetKind, **fields: object
+) -> tuple[targets.ServerTarget, Path]:
     with targets.registry_lock():
         return targets.new_remote_target(name, kind, **fields)  # type: ignore[arg-type]
 
