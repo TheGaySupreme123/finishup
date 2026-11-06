@@ -5181,7 +5181,9 @@ only, never sent). `WorkspaceAgentLoop(root, record, *, claim_factory, handler_f
 delivery_factory, …)` serves each noted workspace with, from `client.remote_workspace`:
 `claim_for_workspace(record, locator) -> WorkspaceClaim | None` (`workspace_claim` under
 `claim_salt(record)`, the same claim a client process sends), `handler_for_workspace(locator,
-root) -> WorkspaceAgentHandler` (the target root added to its protected directories), and
+root) -> WorkspaceAgentHandler` (the target root added to its protected directories, and
+`outside_folders=folders_reader(root)`, so it admits only the folders recorded for `root`'s own
+target, never the selected target's), and
 `CapturedObservationDelivery(record, root, locator, claim, *, connect=None)` whose `deliver()` runs
 one `ClientObservationDrain` pass (state `<troot>/state`) over one claim-bound `RestServiceClient`
 kept between passes and released after a pass that stopped at a control failure.

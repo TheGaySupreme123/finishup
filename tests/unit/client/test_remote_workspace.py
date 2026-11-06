@@ -10,12 +10,14 @@ The connect seam's own claim (``service.client._remote_claim``) is covered here 
 from __future__ import annotations
 
 import base64
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from builders.server_targets import ambient_home
 from finishup.client.observation_outbox import ClientDrainSummary
 from finishup.client.remote_workspace import (
     CapturedObservationDelivery,
@@ -92,6 +94,49 @@ def test_the_handler_protects_the_target_root(tmp_path: Path) -> None:
     assert type(handler) is WorkspaceAgentHandler
     protected = handler._protected  # pyright: ignore[reportPrivateUsage]
     assert str(root) in protected
+
+
+def test_the_handler_reads_the_folders_of_its_own_target_whatever_is_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051 decision 5: ``finishup agent run --root ROOT`` serves ROOT's target, so its handler
+    admits the folders the owner recorded for that target, never those of the target this
+    process selects, and reads the record on every call."""
+
+    from finishup.client import targets
+    from finishup.client.server_folders import add_folder, remove_folder
+    from finishup.config.paths import reset_selection_memo
+
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            served, served_root = targets.new_remote_target(
+                "lab", "https", base_url="https://lab.example"
+            )
+            selected, selected_root = targets.new_remote_target(
+                "bench", "https", base_url="https://bench.example"
+            )
+        mine, theirs = (tmp_path / "mine").resolve(), (tmp_path / "theirs").resolve()
+        mine.mkdir()
+        theirs.mkdir()
+        add_folder(served_root, served.target_id, os.fspath(mine))
+        add_folder(selected_root, selected.target_id, os.fspath(theirs))
+        with targets.registry_lock():
+            targets.write_selection(selected)
+        reset_selection_memo()
+        handler = handler_for_workspace(_repository(tmp_path / "repo"), served_root)
+        assert type(handler) is WorkspaceAgentHandler
+
+        def admitted() -> tuple[str, ...]:
+            return handler._folders()  # pyright: ignore[reportPrivateUsage]
+
+        assert admitted() == (os.fspath(mine),)
+        # A removal takes effect at the next call; the selected target's folder never applies.
+        remove_folder(served_root, served.target_id, os.fspath(mine))
+        assert admitted() == ()
+        # A root that holds no remote target's record admits nothing.
+        unbound = handler_for_workspace(_repository(tmp_path / "other"), tmp_path / "target")
+        assert type(unbound) is WorkspaceAgentHandler
+        assert unbound._folders() == ()  # pyright: ignore[reportPrivateUsage]
 
 
 class _Client:
