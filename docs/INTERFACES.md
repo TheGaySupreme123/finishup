@@ -4067,6 +4067,11 @@ service may re-read the same scoped entry (or retry OS keyring) before denying o
 control with `vault_locked`. When the credential succeeds but ready-application activation fails,
 the service preserves the soft-lock reason for up to three consecutive attempts so a later dispatch
 can retry; a fourth consecutive activation failure becomes terminal `unlock_failed`.
+The re-ready runs as one daemon-owned task: a caller that stops waiting (a claim hello at its
+5-second handshake deadline, a cancelled control call) never interrupts it, so it never leaves the
+lifecycle `unlocking` or turns a cancelled activation into `unlock_failed`; a caller that arrives
+meanwhile waits on the same attempt. Only shutdown cancels it, and the cancelled attempt locks the
+vault and returns to `locked` keeping its soft-lock reason.
 The resulting `VAULT_LOCKED` error is retryable only while this automatic recovery path remains
 eligible. `explicit_lock`, `monitor_lost`, and hard `auto_unlock_*` /
 `passphrase_required` reasons do not take that path. The trusted unlock helper may submit the scoped entry through the
