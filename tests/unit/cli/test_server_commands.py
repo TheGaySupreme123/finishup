@@ -15,7 +15,7 @@ import shutil
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import pytest
 from typer.testing import CliRunner, Result
@@ -283,14 +283,28 @@ def test_a_loopback_address_is_the_local_port_kind(
     assert authorized == [("gw", kind)]
 
 
+_MACHINE_SCOPE: Final = {"schema_version": "1.0.0", "scope": {"kind": "machine"}}
+
+
 class _PolicyClient:
-    """A control client whose ``privacy_get_setup`` answers like the wire: a ``JsonObject``."""
+    """A control client whose ``privacy_get_effective`` answers like the wire: a ``JsonObject``.
+
+    Like the service, it answers only a machine-scope request on a connection that names no
+    repository; ``privacy_get_setup`` needs a repository and is refused there.
+    """
 
     def __init__(self, reply: object) -> None:
         self.reply = reply
         self.closed = False
+        self.requests: list[object] = []
 
     async def privacy_get_setup(self, _request: object) -> object:
+        from finishup.ports.control import ControlError
+
+        raise ControlError("invalid_request")
+
+    async def privacy_get_effective(self, request: object) -> object:
+        self.requests.append(request)
         if isinstance(self.reply, BaseException):
             raise self.reply
         return self.reply
@@ -308,6 +322,7 @@ def _everyday_installation(home: Path) -> None:
 
 
 def _serve_policy(monkeypatch: pytest.MonkeyPatch, reply: object) -> list[_PolicyClient]:
+    from finishup.domain.values import JsonObject
     from finishup.ports.control import ControlError
 
     clients: list[_PolicyClient] = []
@@ -321,15 +336,17 @@ def _serve_policy(monkeypatch: pytest.MonkeyPatch, reply: object) -> list[_Polic
         return client
 
     monkeypatch.setattr("finishup.service.client.connect_service", connect)
+    monkeypatch.setattr(
+        "finishup.cli.provider_status.machine_scope_request",
+        lambda: JsonObject(_MACHINE_SCOPE),
+    )
     return clients
 
 
 def _policy(egress: bool) -> object:
     from finishup.domain.values import JsonObject
 
-    return JsonObject(
-        {"composed_policy": {"network_egress_permitted": egress, "schema_version": "1.0.0"}}
-    )
+    return JsonObject({"policy": {"network_egress_permitted": egress, "schema_version": "1.0.0"}})
 
 
 @pytest.mark.parametrize(("egress", "refused"), [(False, True), (True, False)])
@@ -341,6 +358,26 @@ def test_the_everyday_policy_decides_the_zero_network_state(
     assert server_cli._zero_network_in_force() is refused  # pyright: ignore[reportPrivateUsage]
     (client,) = clients
     assert client.closed
+    # A computer-wide question: the installation's machine scope, never a repository's setup.
+    assert client.requests == [_MACHINE_SCOPE]
+
+
+def test_an_installation_whose_identity_cannot_be_read_refuses_the_hop(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.cli.provider_status import MachineScopeError
+
+    _everyday_installation(home)
+    clients = _serve_policy(monkeypatch, _policy(True))
+
+    def unreadable() -> object:
+        raise MachineScopeError("installation_marker_invalid")
+
+    monkeypatch.setattr("finishup.cli.provider_status.machine_scope_request", unreadable)
+    with pytest.raises(server_cli.ServerCommandRefused) as refused:
+        server_cli._zero_network_in_force()  # pyright: ignore[reportPrivateUsage]
+    assert refused.value.reason == "network_policy_unreadable"
+    assert clients == []
 
 
 @pytest.mark.parametrize("failure", ["service_unavailable", "vault_locked"])
