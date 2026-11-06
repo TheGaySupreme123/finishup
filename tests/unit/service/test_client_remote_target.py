@@ -270,6 +270,54 @@ def test_a_connector_of_another_release_is_replaced_by_its_stamped_pid(
     assert stopped == [remote] and spawned == [remote]
 
 
+def test_a_connector_of_a_newer_release_is_never_replaced(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    """A process left from before an in-place upgrade (an open session's bridge) must not stop
+    the connector the upgraded clients use; it waits for that connector like any other."""
+
+    lock = ConnectorLock(remote)
+    lock.acquire(version="999.0.0", schema_manifest_digest="sha256:" + "b" * 64)
+
+    def stop(root: Path, *, timeout_seconds: float = 5.0) -> bool:
+        raise AssertionError("a newer connector is never stopped by an older client")
+
+    spawned: list[Path] = []
+
+    def spawn(root: Path) -> None:
+        spawned.append(root)
+
+    monkeypatch.setattr("finishup.client.connector_status.stop_connector", stop)
+    monkeypatch.setattr("finishup.client.connector_status.spawn_connector", spawn)
+    daemon = ScriptedDaemon()
+
+    async def exercise() -> None:
+        async def bind_late() -> None:
+            # The newer connector's endpoint is not up when the first attempt is made.
+            await asyncio.sleep(0.3)
+            listener = await bind_control_listener()
+            try:
+                await _serve(listener, daemon.serve)
+            finally:
+                await listener.aclose()
+
+        serving = asyncio.create_task(bind_late())
+        try:
+            client = await service_client.connect_service_on_demand(
+                ControlClientKind.CLI, timeout_seconds=10.0
+            )
+            await client.close()
+        finally:
+            serving.cancel()
+            await asyncio.gather(serving, return_exceptions=True)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        lock.release()
+    assert spawned == [] and daemon.connections == 1
+
+
 def test_the_latch_keys_on_the_connector_status_generation(remote: Path) -> None:
     assert service_client.service_holder_identity() is None
     lock = ConnectorLock(remote)

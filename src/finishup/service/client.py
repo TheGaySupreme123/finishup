@@ -2451,8 +2451,9 @@ async def _connect_remote_on_demand(
     """Connect to a remote target root, starting its connector (never a service) when absent.
 
     The connector is client-owned and vault-less, so starting one is always safe; a running
-    connector is replaced only when another release of this client left it, and a service on
-    the server is never superseded from this machine. A failure the connector names (a remote
+    connector is replaced only when an older release of this client left it (never a newer
+    one, which serves the upgraded clients), and a service on the server is never superseded
+    from this machine. A failure the connector names (a remote
     phase) ends the wait at once; every ``service_unavailable`` raised here names a remote phase.
     """
 
@@ -2508,12 +2509,19 @@ async def _connect_remote_attempts(
         if exc.reason != "service_unavailable" or exc.phase is not None:
             raise
     holder = connector_holder(root)
-    if holder is not None and (
-        holder.version != __version__
-        or holder.schema_manifest_digest != _manifest_digest_for_client()
+    if (
+        holder is not None
+        and (
+            holder.version != __version__
+            or holder.schema_manifest_digest != _manifest_digest_for_client()
+        )
+        and holder_version_order(holder.version) != "newer"
     ):
-        # A connector left by another release of this client (an in-place upgrade) is
-        # client-owned: replace it by its stamped pid. The remote service is never touched.
+        # A connector left by an older release of this client (an in-place upgrade) is
+        # client-owned: replace it by its stamped pid. One a newer release started is never
+        # replaced from here: this process predates the upgrade (an open session's bridge), and
+        # the newer connector also relays its connections while the server accepts its release.
+        # The remote service is never touched.
         if not await asyncio.to_thread(stop_connector, root):
             raise ControlError("service_unavailable", retryable=True)
         holder = None

@@ -490,7 +490,9 @@ through the same relay; human-control and secret channels never leave the server
 - **Connector** (`finishup.client.connector`; `finishup connector run --root <troot>`, hidden,
   `client_only`). `service.client` starts it on demand for a remote root instead of
   `service run`, and `finishup server connect` starts it explicitly; it never supersedes anything.
-  It takes the singleton flock `<troot>/state/connector.lock`, stamped with its pid, release and
+  A client replaces a running connector (by its stamped pid) only when an older release of this
+  client started it; a newer one is kept, since it serves the upgraded clients and also relays a
+  process that predates the upgrade. It takes the singleton flock `<troot>/state/connector.lock`, stamped with its pid, release and
   schema-manifest digest; binds `run/control.sock` through the existing Unix-socket listener,
   clearing a stale endpoint only while it holds that lock; runs with a scrubbed environment (no
   FinishUP variable and nothing secret-shaped; `SSH_AUTH_SOCK` is kept so OpenSSH can use the
