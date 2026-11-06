@@ -228,8 +228,10 @@ resource ripple.
   operations: [...], max_reply_bytes: <int>}`: this connection answers workspace calls for its
   claimed workspace.
 - **Hello-result.** It gains a required `workspace_binding: "none" | "local_path" |
-  "client_claim"` and an optional `workspace_handle` (`client:<16 hex>`, the first 16 hex of
-  `SHA-256("yoetz/workspace-handle/v1\0" ‖ claim commitment ‖ 0x00 ‖ worktree digest)`). Worktrees
+  "client_claim"` (absent only from the manifest-mismatch answer, which keeps the frozen pre-2.10
+  shape) and an optional `workspace_handle`, carried only with `client_claim` (`client:<16 hex>`,
+  the first 16 hex of `SHA-256("yoetz/workspace-handle/v1\0" ‖ claim commitment ‖ 0x00 ‖
+  worktree digest)`). Worktrees
   share a commitment, not a handle: a task records its own worktree's handle as its
   `workspace_ref`, so every later read of that task, in a live call or in background work after a
   reconnect, reaches only that worktree's agent. Coverage decisions are derived from
