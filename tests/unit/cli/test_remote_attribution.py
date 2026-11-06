@@ -19,7 +19,12 @@ from builders.status_wire import compact_status
 from finishup.cli import app as app_module
 from finishup.cli.render import render_human_receipt, render_human_status
 from finishup.client.attribution import ServiceAttribution
-from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE, client_attested_receipt_block
+from finishup.domain.receipts import (
+    CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    client_attested_receipt_block,
+    workspace_provenance_unknown_block,
+)
 from finishup.protocol.models import (
     ReceiptSuccessModel,
     StatusRequest,
@@ -43,11 +48,13 @@ def _json_receipt() -> ReceiptSuccessModel:
     return ReceiptSuccessModel.model_validate(_receipt_result_wire())
 
 
-def _text_receipt() -> ReceiptSuccessModel:
+def _text_receipt(block: str | None = None) -> ReceiptSuccessModel:
     wire = _receipt_result_wire()
     wire["format"] = "text"
     wire["document"] = None
-    wire["human_text"] = "Receipt\n\n" + client_attested_receipt_block(_SERVICE_ID, markdown=False)
+    if block is None:
+        block = client_attested_receipt_block(_SERVICE_ID, markdown=False)
+    wire["human_text"] = "Receipt\n\n" + block
     return ReceiptSuccessModel.model_validate(wire)
 
 
@@ -75,6 +82,14 @@ def test_a_text_receipt_carrying_the_service_block_gets_only_the_transport() -> 
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
     assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
     assert rendered.count(CLIENT_ATTESTED_WORKSPACE_LINE) == 1
+
+
+def test_a_text_receipt_whose_provenance_is_unknown_gets_only_the_transport() -> None:
+    receipt = _text_receipt(workspace_provenance_unknown_block(markdown=False))
+    rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
+    assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in rendered
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
 
 
 # --- the command wires the connection's attribution ---------------------------------------------

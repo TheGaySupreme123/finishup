@@ -17,7 +17,11 @@ from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
 import finishup.mcp.server as bridge
 from builders.status_wire import compact_status
 from finishup.client.attribution import ServiceAttribution
-from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE
+from finishup.domain.receipts import (
+    CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    workspace_provenance_unknown_block,
+)
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import ReceiptResultModel, StatusResultModel, public_model_to_wire
 
@@ -70,6 +74,24 @@ def test_a_receipt_keeps_its_exact_canonical_copy_ahead_of_the_attribution() -> 
     assert (
         attributed.structuredContent == bridge.result_from_public_model(receipt).structuredContent
     )
+
+
+@pytest.mark.parametrize("receipt_format", ["text", "markdown"])
+def test_a_receipt_whose_provenance_is_unknown_gets_only_the_producing_service(
+    receipt_format: str,
+) -> None:
+    wire = _receipt_result_wire()
+    wire["format"] = receipt_format
+    wire["document"] = None
+    wire["human_text"] = "Receipt\n\n" + workspace_provenance_unknown_block(
+        markdown=receipt_format == "markdown"
+    )
+    receipt = ReceiptResultModel.model_validate(wire)
+    local = _text(bridge.result_from_public_model(receipt))
+    attributed = _text(bridge.result_from_public_model(receipt, attribution=_ATTRIBUTION))
+    assert attributed == "\n".join((local, _REACHED))
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in attributed
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in attributed
 
 
 # --- the bridge attributes the connection that answered -----------------------------------------

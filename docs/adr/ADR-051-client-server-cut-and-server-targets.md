@@ -449,7 +449,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
-    service <service_instance_id> (transport: <token>).` The id is the one the hello-result named.
+    service <service_instance_id> (transport: <token>).` A receipt whose service text carries the
+    provenance-unknown line keeps only the second: the client's line is a fact about its
+    connection, the service's is about the task's own opening event, and the client does not
+    overrule the service by saying the evidence was read on its machine. The id is the one the
+    hello-result named.
     The token is a closed set supplied by whoever builds the connection: `unix` (the default, a
     service's local control endpoint), `connector` (a local relay that carries the connection on),
     `ssh` (an SSH channel the client process opened) or `https` (HTTPS the client process speaks).
