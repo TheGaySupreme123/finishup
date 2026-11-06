@@ -348,9 +348,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   repository's own Git does not answer for; no repository at all (`not_git`); a home-private
   path. An honest reviewer read costs nothing, since the broker refuses those reads itself. A
   declared test in such a place, or in a Git-ignored path, is therefore not offered on a remote
-  target, though a local service reads it (#1220): a parity gap that closes only when the
-  client's change capture can answer for linked worktrees and submodules. A listing
-  (`list_beneath`) returns names only and is not asked about; the broker filters its entries.
+  target, though a local service reads it (#1220). For a Git-ignored test that is the rule
+  itself. For a linked worktree or a submodule it is a parity gap that would narrow only if the
+  client's change capture could answer for them; in a folder with no repository it stays. A
+  listing (`list_beneath`) returns names only and is not asked about; the broker filters its
+  entries.
 - **Honest limit: what a server that breaks the protocol can still obtain.** The agent cannot tell
   an honest server's question from any other. Within the claimed worktree, such a server can
   obtain any file the adapters' fences pass and Git answers is not ignored, whether or not a task
