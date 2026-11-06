@@ -1925,11 +1925,17 @@ record changes as follows.
   installation reports an effective policy that does not permit network egress, and also while
   that policy cannot be read (`network_policy_unreadable`); a computer whose own FinishUP was
   never set up has no policy of its own, and the server's policy governs the work sent to it
-  (ADR-051 decision 8). **Honest limit:** clients do not consult the local policy again before
-  each connection, so tightening this computer's policy to zero-network later does not by itself
-  stop an already selected remote target. The way out is `finishup server use local`, then
-  restarting open agent sessions. Apart from such a target, the FinishUP-owned process set in the
-  zero-network state still permits only the exact endpoints decision 10 lists.
+  (ADR-051 decision 8). Clients do not consult the local policy again before each connection, so
+  setting this computer's policy to zero-network does not by itself stop an already selected
+  remote target. The maintainer decided (2026-11-06) that FinishUP surfaces it and the owner
+  decides: after every committed policy change in that state, the trusted console names the
+  target and offers switching to this computer's everyday FinishUP or keeping the target (the
+  default; FinishUP never switches on its own); without that console the facts and `finishup
+  server use local` are printed; and setup readiness, `server status` and the terminal interface
+  show the item while it lasts. **Honest limit:** while the owner keeps the target, and after
+  switching until open agent sessions restart, traffic to it continues. Apart from such a target,
+  the FinishUP-owned process set in the zero-network state still permits only the exact endpoints
+  decision 10 lists.
 - **Policy authority sits on the server.** The server's own effective policy, repository grants
   and never-send fence decide every AI-powered review disclosure from there, exactly as they do
   locally; the client's profile does not widen or narrow them. Workspace evidence reaches the

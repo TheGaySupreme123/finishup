@@ -51,14 +51,37 @@ a server: there is no agent tool for it, and the command refuses to run without 
 disclosure changes in a later release, FinishUP asks you to confirm again before using the server.
 
 If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
-or choose a server on another machine, a port or the web. It checks when you add or choose the
-server, not on every connection: changing the policy to zero-network later does not stop a server
-you already chose. To stop using it, run `finishup server use local`, then restart open agent
-sessions. FinishUP also refuses to add or choose such a server while the FinishUP set up
+or choose a server on another machine, a port or the web. It also refuses while the FinishUP set up
 on this computer cannot tell it its policy, because its service is stopped or locked: start it
 with `finishup service start`, unlock it if needed, and try again. A computer whose own FinishUP
 was never set up has no privacy policy of its own and can use a server; the server's policy then
 governs your work.
+
+### When you turn on zero-network with a server already chosen
+
+Turning the zero-network setting on does not by itself stop a server you already chose: your work
+keeps going to it. So whenever you change your privacy policy to that setting while a server on
+another machine, a port or the web is chosen, FinishUP tells you which server it is and lets you
+decide. It never switches for you.
+
+In your own terminal it asks:
+
+```text
+  1  Switch to this computer's everyday FinishUP now
+  2  Keep using the server t_1a2b3c4d (ssh)
+Choose 1 or 2 (Enter keeps the server):
+```
+
+Pressing Enter, or any answer but 1, keeps the server. Choosing 1 is `finishup server use local`.
+Without a terminal to ask in (a script, or a command asked for JSON), FinishUP switches nothing
+and prints the same facts with that command. Either way, restart open agent sessions after
+switching: they keep the server they started with until then. Choosing the server again needs the
+setting turned off first.
+
+Until you switch, `finishup setup status --next`, `finishup server status` and `finishup server
+list`, the setup summary and the terminal interface's header and `/server` keep saying so. If the
+saved server choice cannot be read, FinishUP says that instead of guessing, and `finishup server
+use local` clears it.
 
 ## Sign in to a web server
 
@@ -404,6 +427,8 @@ repeated safely.
 | `method_forbidden` | The API key's scope does not allow that call. | Use an `operator` key for management commands. |
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
+| `zero_network_remote_selected` | Your privacy policy forbids all network use, but a server on another machine, a port or the web is still chosen, so your work still goes there. | Run `finishup server use local`, then restart open agent sessions; or keep the server, knowing your work goes to it. |
+| `zero_network_selection_unreadable` | Your privacy policy forbids all network use, and the saved server choice cannot be read, so FinishUP cannot tell whether a server elsewhere is still chosen. | Run `finishup server use local`; it clears the choice even when it cannot be read. Then restart open agent sessions. |
 | `selection_invalid` | The saved server choice is damaged, or names a server whose folder on this computer is missing or unsafe. `finishup server` commands say this instead of `isolation_root_invalid`. | Run `finishup server use local`; it clears the choice even when it cannot be read. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |
 | `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | Keep the agent session open (or run `finishup server connect NAME --agent`) and check again; the receipt names what was not read. |

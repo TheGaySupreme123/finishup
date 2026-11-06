@@ -550,11 +550,38 @@ answers bounded `workspace_call`s on a connection that declared it.
   does not refuse it: the selected server's own policy governs the work sent to it. (Amended
   2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted
   `local_port`, and said the client re-checks before each hop, which no code does.) The check
-  runs when the owner adds or selects a remote target. **Honest limit:** client processes do not
-  consult the local policy again before each connection, so tightening this computer's policy to
-  zero-network does not by itself stop an already selected remote target; `finishup server use
-  local`, then a restart of open agent sessions (a running MCP bridge keeps the target it started
-  with), does.
+  runs when the owner adds or selects a remote target; client processes do not consult the local
+  policy again before each connection.
+- **Zero-network set while a remote target is selected: surfaced, and the owner decides**
+  (maintainer decision, 2026-11-06). FinishUP never switches servers on its own.
+  `cli/zero_network_selection.py` reads the selection file afresh (never the process memo) and,
+  only when it names a remote kind, the everyday installation's effective machine-scope policy;
+  a process whose root an isolation variable or pin decides is left alone. After every committed
+  policy change (a tightening applied on propose or tighten, or a policy decision that commits:
+  the privacy setup ceremony and its credential-heuristic, conversation and input-root changes,
+  `privacy propose|tighten|decide-policy`, `finishup setup`, `finishup ai`, the menu's wizard, the
+  terminal interface's privacy flows, and the relayed elevated grant), in that state:
+  - on the trusted foreground console it names the target by id and kind, says the setting does
+    not stop traffic to it, and offers `1` switch to this computer's everyday FinishUP now
+    (`finishup server use local`) or `2` keep using the target. Enter, end of input, an interrupt
+    or any other answer keeps it: switching is never chosen for the owner, and under zero-network
+    it cannot be undone without relaxing the policy;
+  - without that console, for a machine-readable answer, or for a grant relayed from an agent
+    chat, nothing switches: the facts, the command and the reminder to restart open agent sessions
+    go to stderr as `zero_network_remote_selected: …`.
+
+  The item stays visible while the state lasts: `server status` (stderr beside `--json`, whose
+  1.0.0 contract is unchanged) and `server list`, `setup status` (stderr), `setup status --next`
+  (a `server_selection` fact with its pinned continuation), the setup wizard's next steps, the
+  menu home, and the terminal interface's header and `/server` (read at start, after a privacy
+  ceremony, and on `/server`; the header drops it once the selection file changes). A selection
+  that cannot be read is reported as `zero_network_selection_unreadable` with its closed reason
+  (`selection_invalid`, `target_root_unsafe`, `target_record_invalid`) and `finishup server use
+  local` as the way back, never as "no server". While this computer's policy cannot be read,
+  nothing claims the zero-network state either way. **Honest limit:** while the owner keeps the
+  target, and after switching until open agent sessions restart (a running MCP bridge keeps the
+  target it started with), traffic to it continues. Agents cannot change the policy or the
+  selection, so no MCP tool surfaces or answers the choice.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -827,11 +854,12 @@ installation is never touched by a target operation.
   against the hook budgets and warns when a required startup gate would likely deny.
 - Upgrades are lockstep: every refusal names both releases.
 - The zero-network refusal (decision 8) is checked when the owner adds or selects a remote
-  target, not before each connection. Tightening this computer's policy to zero-network later
-  does not stop an already selected target; the way out is `finishup server use local`, then
-  restarting open agent sessions. The maintainer chose to disclose this limit in `PRIVACY.md`, the
-  servers guide and the ADR-009 amendment rather than add a per-connection policy check
-  (2026-11-06).
+  target, not before each connection. When this computer's policy is set to zero-network while
+  a remote target is selected, FinishUP surfaces it and the owner decides, on the trusted console
+  or from the printed command, whether to switch to the everyday FinishUP; it never switches on
+  its own (maintainer decision, 2026-11-06, replacing the earlier choice to only disclose the
+  limit). While the owner keeps the target, and after switching until open agent sessions
+  restart, traffic to it continues.
 - A Linux server whose runtime directory belongs to the login session loses its sockets at the
   last logout; `service endpoint --json` reports this, and the server needs linger or its own
   isolated root.

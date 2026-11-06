@@ -20,9 +20,12 @@ service is this trusted service and this protocol runs there unchanged. The hop 
 owner's FinishUP client and that server is the owner-authorized FinishUP server hop: it is not one
 of the five network channels below, and enabling it enables none of them. Adding or selecting a
 remote target is refused in the zero-network state (the ADR-009 amendment proposed by ADR-051).
-That check runs when the owner adds or selects the target, not before each connection, so
-tightening the policy to zero-network later does not stop a target already selected; the way out
-is `finishup server use local`, then restarting open agent sessions.
+Setting the policy to that state does not by itself stop a target already selected: clients do
+not consult the policy before each connection. The owner is told instead and decides (ADR-051
+decision 8): after the change, the trusted console offers switching to this computer's everyday
+FinishUP (`finishup server use local`) or keeping the target, and keeping is the default; without
+that console the facts and the command are printed and nothing switches. While the owner keeps the
+target, and after switching until open agent sessions restart, traffic to it continues.
 
 ## Content classes
 
