@@ -452,8 +452,17 @@ answers bounded `workspace_call`s on a connection that declared it.
     service <service_instance_id> (transport: <token>).` A receipt whose service text carries the
     provenance-unknown line keeps only the second: the client's line is a fact about its
     connection, the service's is about the task's own opening event, and the client does not
-    overrule the service by saying the evidence was read on its machine. The id is the one the
-    hello-result named.
+    overrule the service by saying the evidence was read on its machine. Every delivery page of a
+    receipt the service paged for an agent (the first from `receipt`, the rest from `status`
+    continuations) keeps only the second too: the receipt's section is cut into fragments with
+    the rest of its text and lands on at most one page, so no page can show which statement it
+    holds, and the agent reads it whole before the set is actionable-complete. The client reads
+    the receipt's provenance only from the text it renders: a JSON receipt, or one whose text the
+    service withheld, has no section to read, so its human rendering keeps both lines even when
+    the service could not establish the task's provenance, and only a text or markdown receipt
+    says so. (A provenance field on the receipt result would carry it to every page and format;
+    it would change the receipt result body, which this cut leaves unchanged.) The id is the one
+    the hello-result named.
     The token is a closed set supplied by whoever builds the connection: `unix` (the default, a
     service's local control endpoint), `connector` (a local relay that carries the connection on),
     `ssh` (an SSH channel the client process opened) or `https` (HTTPS the client process speaks).

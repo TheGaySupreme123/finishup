@@ -125,6 +125,29 @@ def test_a_receipt_whose_provenance_is_unknown_names_only_the_producing_service(
     )
 
 
+@pytest.mark.parametrize(
+    "shown",
+    [
+        "",
+        "Conclusion: clean",
+        client_attested_receipt_block(_SERVICE_ID, markdown=False),
+        workspace_provenance_unknown_block(markdown=True),
+        # A page can hold part of the provenance-unknown line, cut where a fragment ends.
+        workspace_provenance_unknown_block(markdown=False)[:80],
+    ],
+)
+def test_a_page_of_a_paged_receipt_names_only_the_producing_service(shown: str) -> None:
+    """The receipt's own "Workspace evidence" section lands on at most one page, so no page can
+    tell whether it says the evidence was client-attested or that this is unknown; the client
+    states neither on any page, whatever that page holds (ADR-051)."""
+
+    attribution = ServiceAttribution(_SERVICE_ID, "ssh")
+    assert attribution_lines(attribution, shown=shown, receipt_page=True) == (
+        f"This client reached FinishUP service {_SERVICE_ID} (transport: ssh).",
+    )
+    assert attribution_lines(None, shown=shown, receipt_page=True) == ()
+
+
 # --- the connection carries its facts -----------------------------------------------------------
 
 

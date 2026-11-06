@@ -206,14 +206,21 @@ another machine end with a line saying that workspace evidence was read on your 
 FinishUP workspace agent and attested over the connection, and a line naming the FinishUP service
 that answered by its id (such as `svc_…`) and how this computer reached it (for example `ssh` or
 `https`). This holds in the `finishup` command, in what your agent reads, and in the terminal
-interface; JSON output does not carry these lines. A receipt never leaves the workspace evidence
-section out. If the server cannot read the task's records at that moment, it refuses the receipt
-before recording anything, and you can ask again. If the record that opened the task's session was
-redacted, its key is no longer available, or the server could not read it when it loaded the task,
-the receipt is still made and says it cannot tell where the workspace evidence was read; it then
-leaves out the line saying the evidence was read on your computer, and still names the service.
-Once the server loads the task afresh, for example after it restarts, and can read that record,
-asking for the same receipt again shows where the evidence was read.
+interface; JSON output does not carry these lines. A text or markdown receipt says where the
+evidence was read in its own workspace evidence section and never leaves that section out; a
+receipt in JSON format has no such section. When your agent receives a long receipt in pages, every
+page names the service, and the receipt's workspace evidence section, on one of those pages, is
+the only place it says where the evidence was read. If the server cannot read the task's records
+at that moment, it refuses the receipt before recording anything, and you can ask again. If the
+record that opened the task's session was redacted, its key is no longer available, or the server
+could not read it when it loaded the task, the receipt is still made, and a text or markdown
+receipt says it cannot tell where the workspace evidence was read; it then leaves out the line
+saying the evidence was read on your computer, and still names the service. A receipt in JSON
+format cannot say this, so where it is shown with these lines it still ends with both, as does a
+receipt whose text your privacy policy withheld; only the section of a text or markdown receipt
+says whether the server could tell. Once the server loads the task afresh, for example after it
+restarts, and can read that record, asking for the same receipt again shows where the evidence was
+read.
 
 ## The workspace agent
 
