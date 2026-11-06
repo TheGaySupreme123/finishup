@@ -4767,6 +4767,35 @@ user-controlled is ever rendered beside it.
   connection supplies it: `ServiceClient(..., transport=)` through `_connected_client(...,
   transport=)`, exposed as `ServiceClient.transport` beside `ServiceClient.service_instance_id`.
 
+**Observation on a remote target** (ADR-051 decision 12). The client's observation store under the
+target root is the authority: consent, content profiles, the content-capture fence, approved-check
+trust, the observation key, the lifecycle mappings and the outbox and spool stay on the client,
+and the `observe` commands and `/observe` (scope `any`) administer it there. Over a claim-bound
+connection every `observation_ingest` body carries `client_attestation` (control-request 2.10.0,
+golden vector CTL-2106), built by `finishup.client.observation_attestation` when the row is sent:
+
+| Member | Value |
+|---|---|
+| `schema_version` | `1.0.0` |
+| `consent` | `active`, `paused` or `revoked` (no consent: the row goes unattested) |
+| `granted_at` | the consent's grant time |
+| `content_capture_profiles` | the enabled native content profiles |
+| `authority_generation` | the client's content-capture fence, or null |
+| `check_policy_digest` | the one approved-check policy digest trusted on the client, or null |
+| `route` | `{task_id, session_id, writer_id}` from the client's mapping, or null |
+
+Workspace-locator content in the row is replaced by the connection's `client:` handle. The service
+(`application.observation_claims.ClaimObservationRouter`) accepts the envelope's session
+commitment and the attestation as `client_attested`, records them in the claim's own store
+`<state dir>/observation-claims/<16 hex>/` (`ClientAttestedObservationStore`, an observation
+store and lifecycle-mapping directory under a key the service generates) and runs the unchanged
+coordinator over it with `client_workspace_handle` set. A route whose task was not opened under
+the same claim, and a claim-bound row without an attestation, are refused `consent_missing` before
+any write; an attestation on a connection without a claim is `frame_invalid`. Text and markdown
+receipts of a claim-bound task with hook-observed evidence add `CLIENT_ATTESTED_OBSERVATION_LINE`
+after the workspace-evidence line. A claim-bound `check` with `await_observations` reports the
+wait `unavailable`.
+
 **Closed tokens** (`protocol/errors.py` protocol reason codes, each with an ADR-030 directive in
 `protocol/recovery.py`):
 

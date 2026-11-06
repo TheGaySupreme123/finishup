@@ -155,6 +155,7 @@ from finishup.application.observation_advice_semantic import (
     observation_advice_to_candidate_context,
     reconcile_cancelled_advice_request,
 )
+from finishup.application.observation_claims import ClaimObservationRouter
 from finishup.application.observation_control import build_observation_support_handlers
 from finishup.application.observation_coordinator import ObservationCoordinator
 from finishup.application.observation_drain import (
@@ -8404,6 +8405,27 @@ async def provide_service_ready_context(
         advice_semantic_supervisor.set_revisit_handler(
             observation_coordinator.revisit_advice_semantic
         )
+
+    def claim_observation_coordinator(
+        handle: str, claim_store: LocalObservationStore, claim_state: Path
+    ) -> ObservationCoordinator:
+        # A claim-bound connection's rows run the same coordinator over that claim's own
+        # client-attested store (ADR-051 decision 12). The capture-budget bootstrap reads this
+        # machine's own store, so a claim composes none: its store never requires one.
+        return replace(
+            observation_coordinator,
+            local=claim_store,
+            state_root=claim_state,
+            capture_budget_bootstrap=None,
+            client_workspace_handle=handle,
+        )
+
+    claim_observation = ClaimObservationRouter(
+        state_root=paths.state,
+        coordinator_for=claim_observation_coordinator,
+        resolve_route=catalog.resolve_route,
+        observation_enabled=config.observation.enabled,
+    )
     observation_sweeper = ObservationOutboxSweeper(
         local_observation,
         observation_coordinator,
@@ -8469,6 +8491,7 @@ async def provide_service_ready_context(
     def close_observation_maintenance() -> None:
         legacy_spool_forwarder.close()
         observation_sweeper.close()
+        claim_observation.close()
         observation_coordinator.close()
 
     async def refresh_ready_recommendations() -> object:
@@ -8484,7 +8507,9 @@ async def provide_service_ready_context(
         )
         return await refresh_pending(context=context, root=paths.state)
 
-    observation_handlers = build_observation_support_handlers(observation_coordinator)
+    observation_handlers = build_observation_support_handlers(
+        observation_coordinator, claims=claim_observation
+    )
     support_handlers: dict[ControlMethod, Callable[..., Awaitable[JsonObject]]] = dict(
         cast(Mapping[ControlMethod, Callable[..., Awaitable[JsonObject]]], observation_handlers)
     )

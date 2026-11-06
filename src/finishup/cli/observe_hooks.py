@@ -2704,8 +2704,15 @@ async def _try_service_ingest(
     content_capture_profile: str | None = None,
     capture_only: bool = False,
     deadline_ms: int,
+    store: LocalObservationStore | None = None,
+    workspace_commitment: str | None = None,
+    _state: Path | None = None,
 ) -> ObservationIngestResult:
-    """Attempt one typed ingest through an already-open preflight client."""
+    """Attempt one typed ingest through an already-open preflight client.
+
+    Over a claim-bound connection (a remote server target) the row is attested from ``store``
+    and this root's mapping first (ADR-051 decision 12); every other connection sends it as is.
+    """
 
     from finishup.application.observation_drain import (
         ObservationControlFailure,
@@ -2715,15 +2722,28 @@ async def _try_service_ingest(
 
     stage = "request_encode"
     try:
-        body = observation_ingest_request_to_json(
-            ObservationIngestRequest(
-                codex_session_id=codex_session_id,
-                envelope=envelope,
-                content_chunks=content_chunks,
-                content_capture_profile=content_capture_profile,
-                capture_only=capture_only,
-            )
+        request = ObservationIngestRequest(
+            codex_session_id=codex_session_id,
+            envelope=envelope,
+            content_chunks=content_chunks,
+            content_capture_profile=content_capture_profile,
+            capture_only=capture_only,
         )
+        if (
+            getattr(client, "workspace_handle", None) is not None
+            and store is not None
+            and workspace_commitment is not None
+        ):
+            from finishup.client.observation_attestation import attest_for_connection
+
+            request = attest_for_connection(
+                request,
+                client,
+                store=store,
+                workspace_commitment=workspace_commitment,
+                state=_state,
+            )
+        body = observation_ingest_request_to_json(request)
         stage = "control"
         raw = await client.observation_ingest(body, deadline_ms=deadline_ms)
         stage = "response_decode"
@@ -2923,6 +2943,9 @@ async def _stage_native_content(
                     content_capture_profile=content_capture_profile,
                     capture_only=True,
                     deadline_ms=max(1, int(left * 1_000)),
+                    store=store,
+                    workspace_commitment=workspace_commitment,
+                    _state=_state,
                 ),
                 timeout=left,
             )
@@ -3274,6 +3297,9 @@ async def _drain_outbox_leased(
                         content_chunks=chunks,
                         content_capture_profile=row_profile,
                         deadline_ms=max(1, int(remaining * 1_000)),
+                        store=store,
+                        workspace_commitment=workspace_commitment,
+                        _state=_state,
                     ),
                     timeout=remaining,
                 )

@@ -116,6 +116,7 @@ __all__ = [
     "CHECK_TIME_CHANGE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASONS",
     "CLIENT_ATTESTED",
+    "CLIENT_ATTESTED_OBSERVATION_LINE",
     "CLIENT_ATTESTED_WORKSPACE_LINE",
     "client_attested_receipt_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
@@ -487,6 +488,13 @@ CLIENT_ATTESTED: Final = "client_attested"
 CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
     "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
     "attested over the connection; the server did not read the repository itself."
+)
+# ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
+# committed on the client; the service accepted them as attested and verified neither.
+CLIENT_ATTESTED_OBSERVATION_LINE: Final = (
+    "Hook observations were captured on the client machine under its own observation consent "
+    "and delivered over the connection; the server did not verify that consent or the session "
+    "commitments."
 )
 CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS: Final = frozenset(
     _CHECK_TIME_CHANGE_REASON_PREFIX + reason for reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
@@ -3611,11 +3619,14 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
     )
 
 
-def client_attested_receipt_block(service_instance_id: str, *, markdown: bool) -> str:
+def client_attested_receipt_block(
+    service_instance_id: str, *, markdown: bool, hook_observed: bool = False
+) -> str:
     """The section a claim-bound task's text or markdown receipt ends with (ADR-051).
 
-    The fixed provenance line, then the serving service by its own instance id and the closed
-    binding token of the connection it served; nothing user-controlled.
+    The fixed provenance line, then, when the task holds hook-observed evidence, the fixed
+    client-attested observation line (decision 12), then the serving service by its own instance
+    id and the closed binding token of the connection it served; nothing user-controlled.
     """
 
     validate_id(IdKind.SERVICE_INSTANCE, service_instance_id)
@@ -3624,6 +3635,7 @@ def client_attested_receipt_block(service_instance_id: str, *, markdown: bool) -
         (
             heading,
             CLIENT_ATTESTED_WORKSPACE_LINE,
+            *((CLIENT_ATTESTED_OBSERVATION_LINE,) if hook_observed else ()),
             f"Served by FinishUP service {service_instance_id} (connection: client_claim).",
         )
     )

@@ -277,11 +277,9 @@ answers bounded `workspace_call`s on a connection that declared it.
 - **Observation over claims.** Observation verification and approved checks for a `client:`
   locator route through the hub, and the client drains the outbox and spool it captured for a
   remote root over its own claim-bound connection (`ClientObservationDrain`; which long-lived
-  client process holds it is the approach's choice). The server's sweeper reads only its own state
-  directory, so it never touches a client root. Ingest itself still checks a row's session
-  commitment against the service's own keys, observation consent and capture mapping, which a
-  remote client's hooks do not share; until they travel with the claim, a remote root's rows are
-  refused before verification. That remaining step is open on issue #903.
+  client process holds it is the approach's choice). `observation_ingest` is allowed on a
+  claim-bound connection, and the server's sweeper reads only its own state directory, so it
+  never touches a client root. Decision 12 says whose consent and keys govern such an ingest.
 - **Local stays local.** Local targets never declare an agent, so the default path is unchanged.
 
 ### 6. Honest outcomes
@@ -385,12 +383,69 @@ superseded by a client. A compatibility window is a later decision.
 ### 11. What stays on the server host
 
 Vault setup, unlock and passphrase changes, provider and AI-powered review configuration, privacy
-ceremonies, elevated bootstrap, observation store administration, backup, restore and migrate run
-on the server host. Over SSH, `finishup service start|stop|restart|status|lock|unlock|diagnostics`
+ceremonies, elevated bootstrap, backup, restore and migrate run on the server host. Observation
+store administration (`observe …`, `/observe`) acts on the active root's own observation store,
+which on a remote target is the client's store and its authority (decision 12), so it runs on the
+client. Over SSH, `finishup service start|stop|restart|status|lock|unlock|diagnostics`
 can run there through `ssh -t`, whose remote pseudo-terminal passes the trusted-console check.
 On the client every `server_host` command is refused with `requires_server_host`, whose remedy
 says to run it on the server host (through `ssh -t` for an SSH target; by the server's operator for
 an HTTPS target).
+
+### 12. Observation on a remote target
+
+For a remote target the hooks run on the client, the owner granted observation consent there, and
+the rows were captured there. The server holds none of it and must not borrow it.
+
+- **The client is the authority.** The client's observation store under the target root (consent,
+  content-capture profiles, selection, approved-check policy trust, the observation key that
+  computes every session and workspace commitment), its lifecycle mappings and its outbox and
+  spool stay on the client. The `observe` commands and `/observe` administer that store, so they
+  are labelled `any`. The observation key never leaves the client.
+- **Client attestation.** On a claim-bound connection each `observation_ingest` body carries
+  `client_attestation` (control-request 2.10.0): `schema_version`, `consent`
+  (`active`, `paused` or `revoked`), `granted_at`, `content_capture_profiles`,
+  `authority_generation` (the client's content-capture fence), `check_policy_digest` (the one
+  policy digest the owner trusted there, or null) and `route` (the FinishUP task, session and
+  writer the client's mapping names for the host session, or null). The client builds it from its
+  own store and mapping when it sends the row (hook pass, `observe drain` and the background
+  drain alike), and replaces any workspace-locator content with the connection's handle, so no
+  path leaves the client.
+- **Accepted as `client_attested`, never verified.** The server cannot recompute a commitment made
+  under the client's key, so on a claim-bound connection it accepts the envelope's session
+  commitment and the attested consent, profiles, fence, trust and route as client-attested. It
+  records them keyed to the claim in a separate claim store, `<state dir>/observation-claims/<16
+  hex of the handle>/` (an ordinary observation store and lifecycle-mapping directory holding only
+  that claim's workspace, under a key the server generates), and runs the unchanged observation
+  coordinator over it with the claim's handle as the workspace. Its own observation store,
+  mappings and consent are never read or written for a claim.
+- **What the server still decides.** Only the connection's own claim is touched. The attested
+  route must name a task whose route was opened on a connection carrying the same claim (its
+  route commitment is the claim commitment); any other route is refused with `consent_missing`
+  before anything is written. The server's own observation switch and vault gate apply.
+  Verification opens the claimed workspace by its handle through the workspace agent (decision 5)
+  and never through a stored locator.
+- **Refusals keep their closed reasons.** A claim-bound ingest without an attestation is refused
+  with `consent_missing`, before anything is read or written; an attestation without a route is
+  `mapping_missing` (retryable, as locally); a paused or revoked consent is refused exactly as a
+  local one is. When too many claims are busy at once the row is refused `service_unavailable`
+  (retryable). An attestation on a connection that carries no claim is a malformed request
+  (`frame_invalid`). A locator-bound or unbound connection keeps today's checks byte for byte:
+  commitment against the server's key, consent and mapping from the server's own store.
+- **Consent changes travel with the next row.** A pause, resume or revoke on the client is mirrored
+  into the claim store when the next row arrives; a revoke runs the service's own revocation for
+  that claim (task stores deactivate their locator and trust rows), and later rows are refused.
+  Rows the server already accepted stay accepted, as for a local revoke.
+- **Honest receipts.** Text and markdown receipts of a claim-bound task whose coverage includes
+  hook-observed evidence add one fixed line after the workspace-evidence line: "Hook observations
+  were captured on the client machine under its own observation consent and delivered over the
+  connection; the server did not verify that consent or the session commitments." Logs carry the
+  `client_attested` label and closed tokens only.
+- **Limits.** Advice the service prepares for hooks to deliver stays in the claim store and does
+  not yet reach a remote client's hooks. After a server restart a claim's pending verification
+  resumes when that claim delivers its next row. The server's check barrier reconciles only its
+  own store's capture handoffs, and a claim-bound `check` that asks to await observations reports
+  that wait `unavailable`: the rows wait in the client's outbox, which the server cannot read.
 
 ## Topology (approach-specific)
 

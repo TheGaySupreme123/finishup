@@ -55,6 +55,8 @@ __all__ = [
     "CaptureHandoffRetirementReason",
     "CaptureHandoffRetirementStage",
     "OBSERVATION_BACKPRESSURE_REASON",
+    "OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION",
+    "OBSERVATION_CLIENT_CONSENT_STATES",
     "OBSERVATION_COMMAND_COMMITMENT_DOMAIN",
     "OBSERVATION_CONTENT_CAPTURE_PENDING_REASON",
     "OBSERVATION_HOOK_COMMITMENT_DOMAIN",
@@ -67,6 +69,8 @@ __all__ = [
     "ROUTINE_READ_SUMMARY_ALLOWED_GAPS",
     "RoutineReadSummary",
     "RoutineReadSummaryMember",
+    "ObservationClientAttestation",
+    "ObservationClientRoute",
     "ObservationControlCommand",
     "ObservationContentChunk",
     "ObservationContentManifest",
@@ -96,6 +100,8 @@ __all__ = [
     "hook_source_commitment",
     "normalize_observed_command",
     "observed_command_commitment",
+    "observation_client_attestation_from_json",
+    "observation_client_attestation_to_json",
     "observation_control_command_from_json",
     "observation_control_command_to_json",
     "observation_content_chunk_from_json",
@@ -2249,6 +2255,73 @@ class ObservationIngestResult:
                 raise _invalid()
 
 
+OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION: Final = "1.0.0"
+OBSERVATION_CLIENT_CONSENT_STATES: Final = frozenset({"active", "paused", "revoked"})
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationClientRoute:
+    """The FinishUP task, session and writer a client's lifecycle mapping names (ADR-051)."""
+
+    task_id: str
+    session_id: str
+    writer_id: str
+
+    def __post_init__(self) -> None:
+        validate_id(IdKind.TASK, self.task_id)
+        validate_id(IdKind.SESSION, self.session_id)
+        validate_id(IdKind.WRITER, self.writer_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationClientAttestation:
+    """A claim-bound client's own account of the consent and route behind one ingest (ADR-051).
+
+    For a remote server target the client's observation store is the authority: the owner granted
+    consent there, the hooks captured there, and every commitment was made under the client's
+    observation key, which never leaves it. The client states here, when it sends the row, what
+    its store and lifecycle mapping hold. A service accepts it only on a claim-bound connection
+    and only as ``client_attested``: it records it for that one claim and never verifies it.
+
+    ``authority_generation`` is the client's current content-capture fence (absent only without a
+    consent); ``check_policy_digest`` the one approved-check policy digest the owner trusted on
+    the client; ``route`` what the client's mapping names for the host session, or None when the
+    session is not mapped there.
+    """
+
+    consent: str
+    granted_at: Timestamp
+    content_capture_profiles: tuple[str, ...]
+    authority_generation: str | None
+    check_policy_digest: str | None
+    route: ObservationClientRoute | None
+
+    def __post_init__(self) -> None:
+        if type(self.consent) is not str or self.consent not in OBSERVATION_CLIENT_CONSENT_STATES:
+            raise _invalid("invalid_event_enum")
+        if type(self.granted_at) is not Timestamp:
+            raise _invalid("invalid_timestamp")
+        profiles = self.content_capture_profiles
+        if type(profiles) is not tuple or len(profiles) > 2:
+            raise _invalid()
+        for profile in profiles:
+            try:
+                validate_content_capture_profile(profile)
+            except ProtocolValueError as exc:
+                raise _invalid() from exc
+        if tuple(sorted(set(profiles), key=str.encode)) != profiles:
+            raise _invalid()
+        for digest in (self.authority_generation, self.check_policy_digest):
+            if digest is not None:
+                validate_sha256_digest(digest)
+        if self.route is not None and type(self.route) is not ObservationClientRoute:
+            raise _invalid()
+
+    @property
+    def active(self) -> bool:
+        return self.consent == "active"
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationIngestRequest:
     """Redacted local-control ingest body: session routing, envelope, and bounded chunks.
@@ -2256,7 +2329,8 @@ class ObservationIngestRequest:
     Callers MUST NOT supply FinishUP task/session/writer IDs. The service coordinator
     resolves those from the validated lifecycle mapping. Native-host chunks also
     carry the exact user-enabled content profile; profile-less requests preserve
-    the historical structural-only path.
+    the historical structural-only path. Only a claim-bound client adds
+    ``client_attestation`` (ADR-051): there the client's own mapping names the route.
     """
 
     codex_session_id: str
@@ -2272,6 +2346,8 @@ class ObservationIngestRequest:
     # This is intentionally opt-in and is emitted only by the native hook
     # drain before FIFO structural delivery.
     capture_only: bool = False
+    # ADR-051: what a claim-bound client's own store and mapping hold for this row.
+    client_attestation: ObservationClientAttestation | None = None
 
     def __post_init__(self) -> None:
         if type(self.codex_session_id) is not str or not self.codex_session_id:
@@ -2293,6 +2369,11 @@ class ObservationIngestRequest:
             except ProtocolValueError as exc:
                 raise _invalid() from exc
         if type(self.capture_only) is not bool:
+            raise _invalid()
+        if (
+            self.client_attestation is not None
+            and type(self.client_attestation) is not ObservationClientAttestation
+        ):
             raise _invalid()
         if self.capture_only:
             native_capture_sources = {
@@ -2626,7 +2707,84 @@ def observation_ingest_request_to_json(value: ObservationIngestRequest) -> JsonO
         payload["content_capture_profile"] = value.content_capture_profile
     if value.capture_only:
         payload["capture_only"] = True
+    if value.client_attestation is not None:
+        payload["client_attestation"] = observation_client_attestation_to_json(
+            value.client_attestation
+        )
     return JsonObject(payload)
+
+
+def observation_client_attestation_to_json(value: ObservationClientAttestation) -> JsonObject:
+    if type(value) is not ObservationClientAttestation:
+        raise _invalid()
+    route = value.route
+    return JsonObject(
+        {
+            "schema_version": OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION,
+            "consent": value.consent,
+            "granted_at": value.granted_at.wire,
+            "content_capture_profiles": value.content_capture_profiles,
+            "authority_generation": value.authority_generation,
+            "check_policy_digest": value.check_policy_digest,
+            "route": (
+                None
+                if route is None
+                else JsonObject(
+                    {
+                        "task_id": route.task_id,
+                        "session_id": route.session_id,
+                        "writer_id": route.writer_id,
+                    }
+                )
+            ),
+        }
+    )
+
+
+def observation_client_attestation_from_json(value: JsonValue) -> ObservationClientAttestation:
+    if type(value) is not JsonObject:
+        if isinstance(value, Mapping):
+            value = JsonObject(cast(Mapping[str, JsonValue], value))
+        else:
+            raise _invalid()
+    if set(value) != {
+        "schema_version",
+        "consent",
+        "granted_at",
+        "content_capture_profiles",
+        "authority_generation",
+        "check_policy_digest",
+        "route",
+    }:
+        raise _invalid()
+    if value["schema_version"] != OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION:
+        raise _invalid()
+    profiles = value["content_capture_profiles"]
+    if type(profiles) is not tuple:
+        raise _invalid()
+    route_raw = value["route"]
+    route: ObservationClientRoute | None = None
+    if route_raw is not None:
+        if type(route_raw) is not JsonObject:
+            if isinstance(route_raw, Mapping):
+                route_raw = JsonObject(cast(Mapping[str, JsonValue], route_raw))
+            else:
+                raise _invalid()
+        if set(route_raw) != {"task_id", "session_id", "writer_id"}:
+            raise _invalid()
+        route = ObservationClientRoute(
+            task_id=cast(str, route_raw["task_id"]),
+            session_id=cast(str, route_raw["session_id"]),
+            writer_id=cast(str, route_raw["writer_id"]),
+        )
+    return ObservationClientAttestation(
+        consent=cast(str, value["consent"]),
+        granted_at=timestamp_from_string(value["granted_at"]),
+        content_capture_profiles=cast(tuple[str, ...], profiles),
+        authority_generation=cast(str | None, value["authority_generation"]),
+        check_policy_digest=cast(str | None, value["check_policy_digest"]),
+        route=route,
+    )
 
 
 def observation_ingest_request_from_json(value: JsonValue) -> ObservationIngestRequest:
@@ -2639,6 +2797,7 @@ def observation_ingest_request_from_json(value: JsonValue) -> ObservationIngestR
         "content_chunks",
         "content_capture_profile",
         "capture_only",
+        "client_attestation",
     }:
         raise _invalid()
     envelope_raw = source["envelope"]
@@ -2663,6 +2822,11 @@ def observation_ingest_request_from_json(value: JsonValue) -> ObservationIngestR
             else cast(str, source["content_capture_profile"])
         ),
         capture_only=cast(bool, source.get("capture_only", False)),
+        client_attestation=(
+            None
+            if "client_attestation" not in source
+            else observation_client_attestation_from_json(source["client_attestation"])
+        ),
     )
 
 

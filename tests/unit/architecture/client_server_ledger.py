@@ -23,6 +23,10 @@ Dispositions (closed):
   crosses only because one module (``observation_local``) still holds both the client's outbox
   and the service's observation store. The crossing closes when the outbox moves out of that
   module. It is the one disposition a ``finishup.client`` module may carry.
+* ``client_side`` — the importer runs on the client, and the imported module serves whichever
+  side holds the workspace and its observation store: the client for a remote target (ADR-051
+  decision 12), the server host for a local one. The crossing closes when that module is
+  reclassified to the side both use.
 """
 
 from __future__ import annotations
@@ -32,10 +36,12 @@ from typing import Final, Literal
 
 __all__ = ["DISPOSITIONS", "LEDGER", "Crossing", "Disposition"]
 
-type Disposition = Literal["server_host_only", "shared_pure", "to_rpc", "client_outbox"]
+type Disposition = Literal[
+    "server_host_only", "shared_pure", "to_rpc", "client_outbox", "client_side"
+]
 
 DISPOSITIONS: Final[frozenset[str]] = frozenset(
-    {"server_host_only", "shared_pure", "to_rpc", "client_outbox"}
+    {"server_host_only", "shared_pure", "to_rpc", "client_outbox", "client_side"}
 )
 
 
@@ -90,31 +96,6 @@ _CONSENT_COMMANDS: Final = (
     "elevated-bootstrap prepare",
     "elevated-bootstrap review",
     "elevated-bootstrap status",
-)
-_OBSERVE_COMMANDS: Final = (
-    "observe checks preview",
-    "observe checks revoke",
-    "observe checks run",
-    "observe checks status",
-    "observe checks trust",
-    "observe content-disable",
-    "observe content-enable",
-    "observe content-status",
-    "observe drain",
-    "observe grant",
-    "observe pause",
-    "observe promote",
-    "observe protect-read",
-    "observe reclaim",
-    "observe reconcile",
-    "observe resume",
-    "observe revoke",
-    "observe selection-apply",
-    "observe selection-preview",
-    "observe selection-revoke",
-    "observe selection-status",
-    "observe status",
-    "/observe",
 )
 _RECOMMEND_COMMANDS: Final = ("recommend accept", "recommend decline", "recommend list")
 
@@ -257,6 +238,14 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     _c(
         "application.host_connection",
         "adapters.integrations.observation_local",
+        "<module>",
+        1,
+        "to_rpc",
+    ),
+    # finishup.application.observation_claims (ADR-051 decision 12: a claim's attested mappings)
+    _c(
+        "application.observation_claims",
+        "adapters.integrations.codex_lifecycle",
         "<module>",
         1,
         "to_rpc",
@@ -459,22 +448,8 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     # finishup.cli.menu
     _c("cli.menu", "service.vault", "_provider_menu", 1, "shared_pure"),
     # finishup.cli.observe
-    _c(
-        "cli.observe",
-        "adapters.integrations.observation_local",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
-    _c(
-        "cli.observe",
-        "application.observation_verification",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
+    _c("cli.observe", "adapters.integrations.observation_local", "<module>", 1, "client_side"),
+    _c("cli.observe", "application.observation_verification", "<module>", 1, "client_side"),
     # finishup.cli.observe_hooks
     _c("cli.observe_hooks", "adapters.integrations.observation_local", "<module>", 1, "to_rpc"),
     _c(

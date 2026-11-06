@@ -1660,11 +1660,17 @@ async def _drain_pass(
         tally.attempted += 1
         stage = "request_encode"
         try:
-            body = observation_ingest_request_to_json(
-                ObservationIngestRequest(
-                    codex_session_id=row.codex_session_id, envelope=row.envelope
-                )
+            request = ObservationIngestRequest(
+                codex_session_id=row.codex_session_id, envelope=row.envelope
             )
+            if getattr(client, "workspace_handle", None) is not None:
+                # A remote server target receives each row attested (ADR-051 decision 12).
+                from finishup.client.observation_attestation import attest_for_connection
+
+                request = attest_for_connection(
+                    request, client, store=store, workspace_commitment=commitment, state=_state
+                )
+            body = observation_ingest_request_to_json(request)
             stage = "control"
             raw = await client.observation_ingest(body, deadline_ms=_DRAIN_DEADLINE_MS)
             stage = "response_decode"
