@@ -5323,7 +5323,10 @@ decoded UTC receipt timestamps in canonical millisecond RFC3339 form (issues #73
 0.2.3 schema inventory is reported by version-manifest `2.2.1`, the 0.2.4 inventory by `2.2.2`,
 and the 0.2 line's setup-readiness and setup-status additions by `2.2.3` and `2.2.4`; the 0.3
 line reports its inventory, including both setup contracts and `isolation-report` `1.0.0`
-(issue #567), through `2.3.0`. Manifests carried from the 0.2 line retain their bytes.
+(issue #567), through `2.3.0`. Manifests carried from the 0.2 line retain their bytes. `2.3.0`
+shipped in v0.3.0 and is frozen with them; the ADR-051 inventory (control `2.10.0`,
+`isolation-report` `1.1.0`, `server-target-status` `1.0.0` and the approach's own contracts) is
+reported by `2.4.0`.
 
 `PrivacyAuditPort.list_pending_disclosures(audience) -> PendingDisclosurePage` projects only
 `PendingDisclosureEntry(pending_id, task_id, expires_at)` for proposals in `awaiting_human` or

@@ -65,12 +65,12 @@ SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
 SCHEMA_MEMBER_COUNT: Final = (
-    252  # #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
+    253  # #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0, privacy-policy 1.3.0;
     # #1119: host-connection batch report and nonsecret ai-status 1.0.0;
     # ADR-051: +4 control envelopes 2.10.0 (workspace claims and workspace-agent frames),
     # isolation-report 1.1.0 and server-target-status 1.0.0; the HTTPS binding v1's
-    # rest-error 1.0.0 and server-info 1.0.0
+    # rest-error 1.0.0 and server-info 1.0.0; version-manifest 2.4.0 (2.3.0 shipped in v0.3.0)
 )
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
