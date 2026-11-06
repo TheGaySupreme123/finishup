@@ -2088,7 +2088,7 @@ async def _call_support(
             raise
         _human_or_json(result, json_output=json_output)
         if policy_server is not None:
-            _stderr(policy_server.outcome_line(result.get("outcome")))
+            _stderr(policy_server.answer_line(result))
         if method in _POLICY_CHANGE_METHODS and result.get("outcome") == "tightening_applied":
             await _surface_zero_network_selection(json_output)
         if method == "privacy_get_effective" and not json_output and sys.stdout.isatty():

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -28,7 +28,7 @@ from builders.tui_runtime import FakeRuntime
 from finishup.cli import app as cli
 from finishup.cli import setup as setup_cli
 from finishup.cli.exits import exit_code_for
-from finishup.cli.policy_server import PolicyServer, selected_policy_server
+from finishup.cli.policy_server import PendingProposal, PolicyServer, selected_policy_server
 from finishup.client import targets
 from finishup.config.paths import reset_selection_memo
 from finishup.domain.privacy import PrivacyPolicy
@@ -37,13 +37,19 @@ from finishup.ports.control import ControlError
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import PublicErrorCode
 from finishup.tui.app import FinishUpTui
+from finishup.tui.runtime import RuntimeError_
 from finishup.tui.symbols import Level
+from finishup.tui.widgets.views import ApprovalView, SelectionView, TextEntryView
 
 _RUNNER = CliRunner()
 # A name the owner typed: it must never appear in anything these paths print.
 _NAME = "owner-typed-lab"
 _REMOTE_KINDS = ("ssh", "https", "local_port")
 _PROPOSAL = "ppr_10000000-0000-4000-8000-000000000009"
+# The server's expiry of that proposal; it is named rounded down to the minute, in UTC.
+_EXPIRES = "2026-11-06T22:40:30.000Z"
+_DEADLINE = "before 2026-11-06 22:40 UTC"
+_WAITING = PendingProposal(_PROPOSAL, _EXPIRES)
 
 
 @pytest.fixture
@@ -105,27 +111,76 @@ def test_every_line_names_the_server_by_id_and_kind_only() -> None:
     lines = (
         server.before_line(),
         server.applied_line(),
+        server.pending_line(_WAITING),
         server.pending_line(),
         server.unchanged_line(),
         server.unconfirmed_line(),
         server.summary_suffix(),
+        server.privacy_next_step(_WAITING),
+        server.privacy_next_step(),
+        server.credential_next_step(),
     )
 
     assert all("t_1a2b3c4d (ssh)" in line for line in lines)
     assert "selected FinishUP server t_1a2b3c4d (ssh)" in server.before_line()
     assert "this computer's everyday FinishUP" in server.before_line()
-    assert "'finishup privacy decide-policy' on that server host" in server.pending_line()
     assert "'finishup privacy show'" in server.unconfirmed_line()
-    assert server.outcome_line("tightening_applied") == server.applied_line()
-    assert server.outcome_line("decision_required") == server.pending_line()
-    assert server.outcome_line("something_else") == server.unconfirmed_line()
-    assert server.report_line("configured") == server.applied_line()
-    assert server.report_line("cancelled", "requires_server_host") == server.pending_line()
+    waiting = SimpleNamespace(
+        outcome="cancelled",
+        reason="requires_server_host",
+        proposal_id=_PROPOSAL,
+        expires_at=_EXPIRES,
+    )
+    assert server.answer_line({"outcome": "tightening_applied"}) == server.applied_line()
+    assert server.answer_line(
+        {"outcome": "decision_required", "proposal_id": _PROPOSAL, "expires_at": _EXPIRES}
+    ) == server.pending_line(_WAITING)
+    assert server.answer_line({"outcome": "something_else"}) == server.unconfirmed_line()
+    assert server.result_line(SimpleNamespace(outcome="configured")) == server.applied_line()
+    assert server.result_line(waiting) == server.pending_line(_WAITING)
     for outcome in ("unchanged", "cancelled", "failed"):
-        assert server.report_line(outcome, "privacy_decision_not_approved") == (
-            server.unchanged_line()
-        )
-    assert server.report_line(None) == server.unconfirmed_line()
+        declined = SimpleNamespace(outcome=outcome, reason="privacy_decision_not_approved")
+        assert server.result_line(declined) == server.unchanged_line()
+    assert server.result_line(None) == server.unconfirmed_line()
+
+
+def test_a_waiting_proposal_is_named_with_its_id_its_expiry_and_the_retry() -> None:
+    """What happened, why, and that a retry helps: the id to decide, until when, and after."""
+
+    server = PolicyServer("t_1a2b3c4d", "ssh")
+
+    line = server.pending_line(_WAITING)
+    assert "its policy has not changed yet" in line
+    assert "a trusted decision runs only on that server host" in line
+    assert f"Run 'finishup privacy decide-policy {_PROPOSAL}' on that host {_DEADLINE}" in line
+    assert "after that it expires unchanged" in line
+    assert "making the change again here proposes it anew" in line
+    # The expiry may be unknown; the id is still named, and so is the retry.
+    assert f"decide-policy {_PROPOSAL}' on that host before it expires" in server.pending_line(
+        PendingProposal(_PROPOSAL)
+    )
+    # Setup's next step names the same continuation, never 'finishup --privacy'.
+    step = server.privacy_next_step(_WAITING)
+    assert f"'finishup privacy decide-policy {_PROPOSAL}' on that server host {_DEADLINE}" in step
+    assert "rerun 'finishup setup run' here to propose it again" in step
+    assert "finishup --privacy" not in step
+    retry = server.privacy_next_step()
+    assert retry.startswith("rerun 'finishup setup run' here to choose the privacy policy")
+    assert "'finishup --privacy' runs only on that server host" in retry
+    assert "on the host of the FinishUP server t_1a2b3c4d (ssh)" in server.credential_next_step()
+
+
+def test_a_server_answer_of_another_shape_is_never_printed() -> None:
+    server = PolicyServer("t_1a2b3c4d", "ssh")
+    hostile = PendingProposal("ppr_$(touch /tmp/x)", "tomorrow; rm -rf ~")
+
+    for line in (server.pending_line(hostile), server.privacy_next_step(hostile)):
+        assert "touch" not in line
+        assert "tomorrow" not in line
+    assert server.pending_line(hostile).endswith("Make the change again here to propose it anew.")
+    assert PendingProposal(_PROPOSAL, "tomorrow").deadline() == "before it expires"
+    assert PendingProposal.of(None, _EXPIRES) is None
+    assert PendingProposal.of(_PROPOSAL, 5) == PendingProposal(_PROPOSAL)
 
 
 # --- privacy tighten | propose -----------------------------------------------------------------
@@ -142,6 +197,7 @@ class _PolicyClient:
         body: dict[str, JsonValue] = {"schema_version": "1.0.0", "outcome": self.outcome}
         if self.outcome == "decision_required":
             body["proposal_id"] = _PROPOSAL
+            body["expires_at"] = _EXPIRES
         return JsonObject(body)
 
     async def privacy_propose_policy(self, _request: JsonObject, **_kwargs: object) -> JsonObject:
@@ -212,9 +268,13 @@ def test_a_proposal_waiting_for_a_decision_says_where_it_waits(
     result = _invoke("privacy", "propose", "--request", "{}", *(["--json"] if json_output else []))
 
     assert result.exit_code == 0, result.output
-    assert events == [server.before_line(), "request", server.pending_line()]
+    assert events == [server.before_line(), "request", server.pending_line(_WAITING)]
     assert json.loads(result.stdout)["proposal_id"] == _PROPOSAL
     assert f"decision on the FinishUP server {_server(record)}" in result.stderr
+    # The owner can act on it: the exact id to decide on the server host, and until when.
+    assert f"'finishup privacy decide-policy {_PROPOSAL}' on that host {_DEADLINE}" in (
+        result.stderr
+    )
 
 
 @pytest.mark.parametrize("command", ["tighten", "propose"])
@@ -295,9 +355,9 @@ def _questionnaire(
     def choose(_current: PrivacyPolicy, *_args: object, **_kwargs: object) -> PrivacyPolicy:
         return current
 
-    async def propose(*_args: object, **_kwargs: object) -> str | None:
+    async def propose(*_args: object, **_kwargs: object) -> PendingProposal | None:
         printed.append("<proposed>")
-        return proposal
+        return None if proposal is None else PendingProposal(proposal, _EXPIRES)
 
     async def decide(proposal_id: str) -> object:
         decided.append(proposal_id)
@@ -318,7 +378,7 @@ def _questionnaire(
     monkeypatch.setattr(privacy_setup, "_configured_bindings", lambda: (None, None))
     monkeypatch.setattr(privacy_setup, "_configured_fallback_binding", lambda: None)
     monkeypatch.setattr(privacy_setup, "_choose_candidate", choose)
-    monkeypatch.setattr(privacy_setup, "_propose", propose)
+    monkeypatch.setattr(privacy_setup, "_propose_pending", propose)
     monkeypatch.setattr(privacy_setup, "_decide", decide)
     monkeypatch.setattr(privacy_setup, "_warn_if_agent_route_cannot_dispatch", nothing)
     monkeypatch.setattr(privacy_setup, "_reconcile_host_admission", ignore)
@@ -353,12 +413,15 @@ def test_a_widening_on_a_remote_server_waits_there_instead_of_opening_a_ceremony
 
     # The trusted decision runs only on the server host: no ceremony is opened on this computer.
     assert decided == []
-    assert (report.outcome, report.proposal_id, report.reason) == (
+    assert (report.outcome, report.proposal_id, report.reason, report.expires_at) == (
         "cancelled",
         _PROPOSAL,
         "requires_server_host",
+        _EXPIRES,
     )
-    assert printed[-1] == server.pending_line()
+    # The result names the proposal to decide there and until when.
+    assert printed[-1] == server.pending_line(_WAITING)
+    assert _PROPOSAL in printed[-1]
     assert "Final widening decision (trusted local ceremony)" not in printed
 
 
@@ -406,29 +469,236 @@ def test_the_setup_summary_names_the_server_on_its_privacy_lines(
         "next_steps": [],
     }
     emit = setup_cli._emit_human_report  # pyright: ignore[reportPrivateUsage]
+    layers = setup_cli._emit_provider_setup_layer_report  # pyright: ignore[reportPrivateUsage]
+    codex_layers = setup_cli._emit_codex_subscription_layer_report  # pyright: ignore[reportPrivateUsage]
+    incomplete = setup_cli._emit_privacy_incomplete  # pyright: ignore[reportPrivateUsage]
 
     emit(report)
-    setup_cli._emit_provider_setup_layer_report(privacy_outcome="configured")  # pyright: ignore[reportPrivateUsage]
+    layers(privacy_outcome="configured")
+    incomplete(
+        reason="privacy_decision_not_approved", privacy_outcome="cancelled", api_key_unstored=True
+    )
     everyday = capsys.readouterr().out
     assert "  Privacy: configured (local_only); repository grant: granted\n" in everyday
     assert "  Privacy policy: configured\n" in everyday
+    assert "finishup --privacy" in everyday
+    assert "rerun 'finishup --set'" in everyday
 
-    record = _remote("https")
-    emit(report)
-    setup_cli._emit_provider_setup_layer_report(privacy_outcome="configured")  # pyright: ignore[reportPrivateUsage]
-    setup_cli._emit_codex_subscription_layer_report(privacy_outcome="configured")  # pyright: ignore[reportPrivateUsage]
-    setup_cli._emit_privacy_incomplete(  # pyright: ignore[reportPrivateUsage]
-        reason="requires_server_host", privacy_outcome="cancelled", api_key_unstored=False
+    # The server the privacy step changed is passed in, never read again here.
+    server = PolicyServer("t_1a2b3c4d", "https")
+    emit(report, policy_server=server)
+    layers(privacy_outcome="configured", policy_server=server)
+    codex_layers(privacy_outcome="configured", policy_server=server)
+    incomplete(
+        reason="requires_server_host",
+        privacy_outcome="cancelled",
+        api_key_unstored=True,
+        policy_server=server,
+        pending=_WAITING,
     )
     remote = capsys.readouterr().out
-    suffix = f" (on the FinishUP server {_server(record)})"
+    suffix = " (on the FinishUP server t_1a2b3c4d (https))"
     assert f"  Privacy: configured (local_only); repository grant: granted{suffix}\n" in remote
     assert remote.count(f"  Privacy policy: configured{suffix}\n") == 2
     assert f"Privacy policy: cancelled{suffix}\n" in remote
-    assert _NAME not in remote
+    # A proposal waiting on that server's host: decided there with its id, or setup runs again.
+    assert f"Next: {server.privacy_next_step(_WAITING)}; the provider binding is kept.\n" in remote
+    assert f"{server.credential_next_step()}\n" in remote
+    assert "run 'finishup --privacy'" not in remote
+    assert "rerun 'finishup --set'" not in remote
+
+
+# --- setup end to end: the server read once, the waiting proposal named -------------------------
+
+
+def _setup_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> tuple[Path, Path]:
+    """A HOME and a scratch folder under the isolated root (targets live under its XDG dirs)."""
+
+    from finishup.cli import zero_network_selection
+
+    user_home = home / "home"
+    user_home.mkdir(mode=0o700)
+    scratch = home / "scratch"
+    scratch.mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", str(user_home))
+    # This computer's own policy is not part of these cases: never ask a service about it.
+    monkeypatch.setattr(zero_network_selection, "find_zero_network_selection", lambda: None)
+    return user_home, scratch
+
+
+async def _waiting_report(**_kwargs: object) -> privacy_setup.PrivacySetupReport:
+    return privacy_setup.PrivacySetupReport(
+        "cancelled",
+        "local_only",
+        _PROPOSAL,
+        "requires_server_host",
+        "missing",
+        "not_applicable",
+        _EXPIRES,
+    )
+
+
+async def _declined_report(**_kwargs: object) -> privacy_setup.PrivacySetupReport:
+    return privacy_setup.PrivacySetupReport(
+        "cancelled", "local_only", None, "privacy_decision_not_approved"
+    )
+
+
+async def _switching_report(**_kwargs: object) -> privacy_setup.PrivacySetupReport:
+    """The owner answers the zero-network choice with "switch" during the privacy step."""
+
+    from finishup.cli.server import use_target
+
+    use_target("local")
+    reset_selection_memo()
+    assert selected_policy_server() is None
+    return privacy_setup.PrivacySetupReport(
+        "configured", "minimal_external", grant_state="granted", migration_state="not_applicable"
+    )
+
+
+def _setup_run(
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    privacy: Callable[..., Awaitable[object]],
+    *,
+    semantic_ready: bool,
+) -> int:
+    """``finishup setup run`` through its real provider and summary steps (Codex sign-in)."""
+
+    from tests.unit.cli import test_setup_wizard_smoothness as smoothness
+
+    user_home, scratch = _setup_home(monkeypatch, home)
+    smoothness._codex_wizard_with_codex_sign_in(  # pyright: ignore[reportPrivateUsage]
+        monkeypatch,
+        user_home,
+        scratch,
+        privacy,
+        semantic_ready=semantic_ready,
+    )
+    monkeypatch.setattr(setup_cli, "_emit_human_report", _REAL_HUMAN_REPORT)
+    return smoothness._codex_wizard()  # pyright: ignore[reportPrivateUsage]
+
+
+_REAL_HUMAN_REPORT = setup_cli._emit_human_report  # pyright: ignore[reportPrivateUsage]
+
+
+def _provider_setup(
+    monkeypatch: pytest.MonkeyPatch, home: Path, privacy: Callable[..., Awaitable[object]]
+) -> int:
+    """The provider step ``setup run --host`` runs (``run_provider_setup``), Codex sign-in."""
+
+    import anyio
+    from tests.unit.cli import test_setup_wizard_smoothness as smoothness
+
+    _setup_home(monkeypatch, home)
+    smoothness._codex_provider_run(monkeypatch, privacy)  # pyright: ignore[reportPrivateUsage]
+    return anyio.run(setup_cli.run_provider_setup)
+
+
+def test_setup_names_the_waiting_proposal_and_where_to_decide_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = _remote()
+    server = PolicyServer(record.target_id, "ssh")
+
+    assert _setup_run(monkeypatch, home, _waiting_report, semantic_ready=False) == 20
+
+    out = capsys.readouterr().out
+    assert f"Privacy policy: cancelled (on the FinishUP server {_server(record)})" in out
+    assert f"Next: {server.privacy_next_step(_WAITING)}; the provider binding is kept." in out
+    assert f"'finishup privacy decide-policy {_PROPOSAL}' on that server host {_DEADLINE}" in out
+    # Nothing points at a command that runs only on that server's host.
+    assert "finishup --privacy" not in out
+    assert "finishup --set" not in out
+    assert _NAME not in out
+
+
+def test_setup_on_a_remote_server_retries_here_instead_of_finishup_privacy(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = _remote()
+    server = PolicyServer(record.target_id, "ssh")
+
+    assert _setup_run(monkeypatch, home, _declined_report, semantic_ready=False) == 20
+
+    out = capsys.readouterr().out
+    assert f"Next: {server.privacy_next_step()}; the provider binding is kept." in out
+    assert "run 'finishup --privacy'" not in out
+
+
+def test_setup_keeps_naming_the_server_when_the_owner_switches_during_the_privacy_step(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = _remote()
+    suffix = f" (on the FinishUP server {_server(record)})"
+
+    assert _setup_run(monkeypatch, home, _switching_report, semantic_ready=True) == 0
+
+    out = capsys.readouterr().out
+    # The remote server's policy changed, so the summary still says whose, though the owner
+    # switched to this computer's everyday FinishUP during the step.
+    assert f"  Privacy: configured (minimal_external); repository grant: granted{suffix}" in out
+    assert f"  Privacy policy: configured{suffix}" in out
+
+
+def test_setup_next_steps_on_a_remote_server_never_point_at_finishup_privacy(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.unit.cli import test_setup_wizard_smoothness as smoothness
+
+    user_home, scratch = _setup_home(monkeypatch, home)
+    smoothness._codex_only(monkeypatch, user_home, scratch, "ai_powered")  # pyright: ignore[reportPrivateUsage]
+    project = scratch / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(setup_cli, "_is_interactive_terminal", lambda: False)
+    next_privacy = setup_cli._NEXT_PRIVACY  # pyright: ignore[reportPrivateUsage]
+
+    def next_steps() -> list[str]:
+        assert smoothness._codex_wizard(json_output=True, non_interactive=True) == 0  # pyright: ignore[reportPrivateUsage]
+        return cast(list[str], json.loads(capsys.readouterr().out)["next_steps"])
+
+    # This computer's everyday FinishUP keeps its released next step.
+    assert next_privacy in next_steps()
+
+    record = _remote()
+    steps = next_steps()
+    # 'finishup --privacy' runs only on that server's host: setup names the retry here instead.
+    assert PolicyServer(record.target_id, "ssh").privacy_next_step() in steps
+    assert next_privacy not in steps
+    assert _NAME not in json.dumps(steps)
+
+
+def test_provider_setup_names_the_waiting_proposal_and_where_to_decide_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = _remote()
+    server = PolicyServer(record.target_id, "ssh")
+
+    assert _provider_setup(monkeypatch, home, _waiting_report) == 20
+
+    out = capsys.readouterr().out
+    assert f"Privacy policy: cancelled (on the FinishUP server {_server(record)})" in out
+    assert f"Next: {server.privacy_next_step(_WAITING)}; the provider binding is kept." in out
+    assert "finishup --privacy" not in out
+
+
+def test_provider_setup_keeps_naming_the_server_when_the_owner_switches_during_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = _remote()
+
+    assert _provider_setup(monkeypatch, home, _switching_report) == 0
+
+    out = capsys.readouterr().out
+    assert f"  Privacy policy: configured (on the FinishUP server {_server(record)})" in out
 
 
 # --- the terminal interface --------------------------------------------------------------------
+
+
+_HAND_OVERS = ("privacy", "local_only", "codex_subscription", "provider_binding")
 
 
 class _Said:
@@ -444,46 +714,113 @@ class _Said:
         async def refresh() -> None:
             return None
 
+        async def ask(view: object) -> str | None:
+            """Approve, pick an API provider or the first option, keep every typed default."""
+
+            name = getattr(view, "name", "")
+            if isinstance(view, TextEntryView):
+                return "entered"
+            if isinstance(view, ApprovalView):
+                return None if name == "confidential" else "approve"
+            keys = [option.key for option in cast(SelectionView, view).options]
+            return "api_key" if "api_key" in keys else keys[0]
+
         app.say = say  # pyright: ignore[reportAttributeAccessIssue]
+        app.ask = ask  # pyright: ignore[reportAttributeAccessIssue]
         app.hand_over_terminal = handover  # pyright: ignore[reportAttributeAccessIssue]
         app._refresh_header = refresh  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage]
 
+    def named(self) -> list[tuple[str, ...]]:
+        return [body for _level, title, body in self.lines if "FinishUP server" in title]
+
+
+async def _hand_over(app: FinishUpTui, which: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive one of the four places the interface hands its terminal to the questionnaire."""
+
+    import finishup.tui.app as app_module
+
+    def rendered(*_args: object) -> tuple[str, ...]:
+        return ()
+
+    monkeypatch.setattr(app_module, "render_provider_stored", rendered)
+    if which == "privacy":
+        await app._hand_privacy_to_trusted_terminal("private")  # pyright: ignore[reportPrivateUsage]
+    elif which == "local_only":
+        await app._record_local_only()  # pyright: ignore[reportPrivateUsage]
+    elif which == "codex_subscription":
+        await app._command_codex_subscription()  # pyright: ignore[reportPrivateUsage]
+    else:
+        await app.command_provider()
+
 
 @pytest.mark.anyio
-async def test_the_terminal_interface_names_the_server_after_each_questionnaire() -> None:
+@pytest.mark.parametrize("which", _HAND_OVERS)
+@pytest.mark.parametrize("outcome", ["applied", "waiting", "raised"])
+async def test_each_hand_over_names_the_server_after_the_questionnaire(
+    monkeypatch: pytest.MonkeyPatch, which: str, outcome: str
+) -> None:
     server = PolicyServer("t_1a2b3c4d", "ssh")
     runtime = FakeRuntime(policy_server=server)
+    expected = server.applied_line()
+    if outcome == "waiting":
+        runtime.privacy_report = await _waiting_report()
+        expected = server.pending_line(_WAITING)
+    elif outcome == "raised":
+        runtime.privacy_error = RuntimeError_("privacy_setup_failed", "the ceremony failed")
+        expected = server.unconfirmed_line()
     app = FinishUpTui(runtime)  # pyright: ignore[reportArgumentType]
     said = _Said(app)
 
-    await app._hand_privacy_to_trusted_terminal("private")  # pyright: ignore[reportPrivateUsage]
-    assert await app._record_local_only()  # pyright: ignore[reportPrivateUsage]
+    await _hand_over(app, which, monkeypatch)
 
-    named = [body for _level, title, body in said.lines if "FinishUP server" in title]
-    assert named == [(server.applied_line(),), (server.applied_line(),)]
-    assert len(runtime.policy_server_reports) == 2
+    assert said.named() == [(expected,)]
+    assert runtime.policy_server_reads == 1
+    if outcome == "waiting":
+        assert _PROPOSAL in expected
 
 
 @pytest.mark.anyio
-async def test_the_terminal_interface_says_nothing_more_for_this_computers_server() -> None:
+@pytest.mark.parametrize("which", _HAND_OVERS)
+async def test_each_hand_over_keeps_the_server_when_the_owner_switches_during_it(
+    monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    server = PolicyServer("t_1a2b3c4d", "ssh")
+    runtime = FakeRuntime(policy_server=server, switch_servers_during_privacy=True)
+    app = FinishUpTui(runtime)  # pyright: ignore[reportArgumentType]
+    said = _Said(app)
+
+    await _hand_over(app, which, monkeypatch)
+
+    # The selection reads as this computer's server afterwards; the change was the remote one's.
+    assert runtime.selected_policy_server() is None
+    assert said.named() == [(server.applied_line(),)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("which", _HAND_OVERS)
+async def test_the_terminal_interface_says_nothing_more_for_this_computers_server(
+    monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
     runtime = FakeRuntime()
     app = FinishUpTui(runtime)  # pyright: ignore[reportArgumentType]
     said = _Said(app)
 
-    await app._hand_privacy_to_trusted_terminal("private")  # pyright: ignore[reportPrivateUsage]
+    await _hand_over(app, which, monkeypatch)
 
-    assert not any("FinishUP server" in title for _level, title, _body in said.lines)
+    assert said.named() == []
+    assert runtime.policy_server_reads == 1
 
 
-def test_the_runtime_names_the_selected_remote_server(home: Path) -> None:
+def test_the_runtime_reads_the_server_of_its_resolved_root(home: Path) -> None:
+    from finishup.cli.server import use_target
     from finishup.tui.runtime import FinishUpRuntime
 
     runtime = FinishUpRuntime(cwd=home)
-    assert runtime.policy_server_line(SimpleNamespace(outcome="configured")) is None
+    assert runtime.selected_policy_server() is None
 
     record = _remote("local_port")
-    server = PolicyServer(record.target_id, "local_port")
-    assert runtime.policy_server_line(SimpleNamespace(outcome="configured")) == (
-        server.applied_line()
-    )
-    assert runtime.policy_server_line(None) == server.unconfirmed_line()
+    assert runtime.selected_policy_server() == PolicyServer(record.target_id, "local_port")
+
+    use_target("local")
+    reset_selection_memo()
+    assert runtime.selected_policy_server() is None

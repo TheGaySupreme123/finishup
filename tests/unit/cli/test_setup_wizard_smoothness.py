@@ -1001,7 +1001,11 @@ def test_setup_names_a_remote_server_still_selected_under_zero_network(
 
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr(wizard, "_service_reachability", ready)
-    monkeypatch.setattr(wizard, "_emit_human_report", reports.append)
+
+    def capture(report: dict[str, object], **_kwargs: object) -> None:
+        reports.append(report)
+
+    monkeypatch.setattr(wizard, "_emit_human_report", capture)
     monkeypatch.setattr(zero_network_selection, "find_zero_network_selection", lambda: item)
 
     assert _codex_wizard() == 0

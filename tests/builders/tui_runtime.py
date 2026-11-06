@@ -171,10 +171,15 @@ class FakeRuntime:
     # The zero-network item (ADR-051 decision 8): lines ``/server`` shows, and how often it was read.
     zero_network: tuple[str, ...] = ()
     zero_network_reads: int = 0
-    # The remote server whose privacy policy a questionnaire changes (ADR-051 decision 8), and
-    # the reports the interface asked it to describe.
+    # The remote server whose privacy policy a questionnaire changes (ADR-051 decision 8), how
+    # often the interface read it, and whether the owner switches away from it during the
+    # questionnaire (the zero-network choice offers that), after which it reads as ``None``.
     policy_server: PolicyServer | None = None
-    policy_server_reports: list[object | None] = field(default_factory=lambda: [])
+    policy_server_reads: int = 0
+    switch_servers_during_privacy: bool = False
+    # What the questionnaire answers instead of its configured report: a report, or an error.
+    privacy_report: object | None = None
+    privacy_error: RuntimeError_ | None = None
 
     def project_root(self) -> Path:
         return Path("/tmp/project")
@@ -225,6 +230,12 @@ class FakeRuntime:
         from finishup.cli.privacy_setup import PrivacySetupReport
 
         self.credential_probes.append(credential_probe)
+        if self.switch_servers_during_privacy:
+            self.policy_server = None
+        if self.privacy_error is not None:
+            raise self.privacy_error
+        if self.privacy_report is not None:
+            return self.privacy_report
 
         # ``None`` means the CLI opens on its recommendation; the fake resolves it the same way
         # the real one does so the interface cannot be tested against a rule of its own. The
@@ -507,15 +518,9 @@ class FakeRuntime:
         self.zero_network_reads += 1
         return self.zero_network
 
-    def policy_server_line(self, report: object | None) -> str | None:
-        self.policy_server_reports.append(report)
-        if self.policy_server is None:
-            return None
-        if report is None:
-            return self.policy_server.unconfirmed_line()
-        return self.policy_server.report_line(
-            getattr(report, "outcome", None), getattr(report, "reason", None)
-        )
+    def selected_policy_server(self) -> PolicyServer | None:
+        self.policy_server_reads += 1
+        return self.policy_server
 
     async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
         if self.server_error is not None:
