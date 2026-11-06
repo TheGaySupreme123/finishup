@@ -11,8 +11,10 @@ the binding the server's gateway speaks (``docs/INTERFACES.md``, *HTTPS binding 
   never posted twice: after an ambiguous failure the adapter only asks for the result (at most
   once);
 * a cancel → ``POST …/cancel``, sent only once the gateway answered the call it names, so it never
-  overtakes that call (the short first wait bounds how long a cancel waits); any other client
-  frame (``workspace_reply``) → ``POST …/frames``;
+  overtakes that call (the short first wait bounds how long a cancel waits), and only while that
+  call's result has not arrived: the service refuses a cancel naming a call it already finished
+  by closing the whole connection; any other client frame (``workspace_reply``) →
+  ``POST …/frames``;
 * server frames (``workspace_call``) → a long-poll on ``GET …/frames?wait_ms=`` (``200`` one frame,
   ``204`` none yet), run only for a session whose hello declared a workspace agent;
 * close → ``DELETE /v1/sessions/{sid}`` (best effort; the gateway also expires idle sessions).
@@ -321,6 +323,7 @@ class BindingControlStream:
         "_failure",
         "_inbound",
         "_last_activity",
+        "_open_calls",
         "_outbound",
         "_peer",
         "_posted",
@@ -336,6 +339,7 @@ class BindingControlStream:
     _failure: str | None
     _inbound: bytearray
     _last_activity: float
+    _open_calls: set[str]
     _outbound: bytearray
     _peer: RemotePeerIdentity
     _posted: dict[str, asyncio.Event]
@@ -352,6 +356,7 @@ class BindingControlStream:
         self._failure = None
         self._inbound = bytearray()
         self._last_activity = time.monotonic()
+        self._open_calls = set()
         self._outbound = bytearray()
         self._posted = {}
         self._readable = asyncio.Event()
@@ -441,10 +446,13 @@ class BindingControlStream:
                 raise TransportError("remote_unreachable") from None
             posted = asyncio.Event()
             self._posted[cast(str, rpc_id)] = posted
+            self._open_calls.add(cast(str, rpc_id))
             self._spawn(self._call(cast(str, rpc_id), payload, posted))
         elif kind == "cancel":
             target = frame.get("target_rpc_id")
-            self._spawn(self._post("cancel", payload, after=self._posted.get(cast(str, target))))
+            if type(target) is not str:
+                raise TransportError("remote_unreachable")
+            self._spawn(self._cancel(target, payload, self._posted.get(target)))
         elif kind == "workspace_reply":
             self._spawn(self._post("frames", payload))
         else:
@@ -500,39 +508,55 @@ class BindingControlStream:
 
     async def _call(self, rpc_id: str, payload: bytes, posted: asyncio.Event) -> None:
         path = self._session_path()
-        status: int | None
+        status: int | None = None
+        body = b""
         try:
-            status, _headers, body = await self._request(
-                "POST", f"{path}/calls", content=payload, wait_ms=CALL_WAIT_MS
-            )
-        except TransportError:
-            # The call may have reached the gateway: never post it again, only ask for its result.
-            status, body = None, b""
-        finally:
-            posted.set()
-            if self._posted.get(rpc_id) is posted:
-                del self._posted[rpc_id]
-        while not self._ended:
-            if status == 200:
-                self._deliver(body)
-                return
-            if status is not None and status != 202:
-                # ``404`` is an expired session: end the stream so the caller reconnects.
-                self._end(None if status == 404 else phase_for_status(status))
-                return
             try:
                 status, _headers, body = await self._request(
-                    "GET", f"{path}/results/{rpc_id}", wait_ms=LONG_POLL_WAIT_MS
+                    "POST", f"{path}/calls", content=payload, wait_ms=CALL_WAIT_MS
                 )
-            except TransportError as error:
-                self._end(error.phase)
-                return
+            except TransportError:
+                # The call may have reached the gateway: never post it again, only ask for its
+                # result.
+                status, body = None, b""
+            finally:
+                if status == 200:
+                    # Answered in its own post: the service finished it, so a cancel waiting
+                    # for this post is dropped instead of sent.
+                    self._open_calls.discard(rpc_id)
+                posted.set()
+                if self._posted.get(rpc_id) is posted:
+                    del self._posted[rpc_id]
+            while not self._ended:
+                if status == 200:
+                    self._deliver(body)
+                    return
+                if status is not None and status != 202:
+                    # ``404`` is an expired session: end the stream so the caller reconnects.
+                    self._end(None if status == 404 else phase_for_status(status))
+                    return
+                try:
+                    status, _headers, body = await self._request(
+                        "GET", f"{path}/results/{rpc_id}", wait_ms=LONG_POLL_WAIT_MS
+                    )
+                except TransportError as error:
+                    self._end(error.phase)
+                    return
+        finally:
+            self._open_calls.discard(rpc_id)
 
-    async def _post(
-        self, endpoint: str, payload: bytes, *, after: asyncio.Event | None = None
-    ) -> None:
-        if after is not None:
-            await after.wait()
+    async def _cancel(self, target: str, payload: bytes, posted: asyncio.Event | None) -> None:
+        """Send a cancel once its call's post was answered, and only while that call is open."""
+
+        if posted is not None:
+            await posted.wait()
+        if target not in self._open_calls:
+            # Its result arrived (or no call of this stream has that id): the service has
+            # nothing to cancel, and a cancel naming no active call closes the whole connection.
+            return
+        await self._post("cancel", payload)
+
+    async def _post(self, endpoint: str, payload: bytes) -> None:
         try:
             status, _headers, _body = await self._request(
                 "POST", f"{self._session_path()}/{endpoint}", content=payload

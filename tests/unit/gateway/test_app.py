@@ -285,6 +285,46 @@ async def test_never_over_https_methods_are_refused_for_every_scope(gateway: _Ga
     assert not method_allowed("operator", ControlMethod.OBSERVATION_INGEST, claim_bound=False)
 
 
+def _cancel(sequence: int, target: int) -> bytes:
+    return encode_control_frame(
+        {
+            "kind": "cancel",
+            "protocol_version": "1.0",
+            "rpc_id": rpc_id(sequence),
+            "service_instance_id": SERVICE_ID,
+            "service_generation": "1",
+            "target_rpc_id": rpc_id(target),
+        }
+    )[4:]
+
+
+@pytest.mark.anyio
+async def test_a_cancel_naming_no_active_call_is_acknowledged_and_never_forwarded(
+    gateway: _Gateway,
+) -> None:
+    # The daemon closes the whole connection on a cancel naming no active call, so a cancel for a
+    # call it already answered, or for one it never had, never reaches it.
+    sid = await _open(gateway)
+    answered = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
+    )
+    assert answered.status_code == 200
+    for target in (7, 0x7777):
+        response = await gateway.client.post(
+            f"/v1/sessions/{sid}/cancel",
+            content=_cancel(0x7000 + target, target),
+            headers=gateway.headers(),
+        )
+        assert response.status_code == 202
+    # The session still serves calls; the daemon reads in order, so by this call's answer it has
+    # read anything forwarded before it.
+    later = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(8), headers=gateway.headers()
+    )
+    assert later.status_code == 200
+    assert not [frame for frame in gateway.daemon.received() if b'"kind":"cancel"' in frame]
+
+
 @pytest.mark.anyio
 async def test_a_pending_call_long_polls_and_is_delivered_at_most_once(gateway: _Gateway) -> None:
     sid = await _open(gateway)

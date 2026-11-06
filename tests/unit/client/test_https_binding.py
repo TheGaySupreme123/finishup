@@ -41,6 +41,7 @@ from finishup.client.https_binding import (
 )
 from finishup.client.transports import HttpsTransport, TransportError
 from finishup.ports.control import (
+    ControlCancelRequest,
     ControlClientKind,
     ControlError,
     ControlMethod,
@@ -282,6 +283,69 @@ def test_a_session_lost_under_a_call_is_a_retryable_remote_phase(status: int, ph
     # the caller's reconnect-once replays the same request_id.
     for error in asyncio.run(exercise()):
         assert (error.reason, error.retryable, error.phase) == ("service_unavailable", True, phase)
+
+
+def test_a_cancel_for_a_call_its_own_post_answered_is_never_sent() -> None:
+    # The service refuses a cancel naming a call it already finished by closing the whole
+    # connection, so a cancel that waited for its call's post is dropped once that post answered.
+    from finishup.client.https_binding import BindingControlStream
+
+    seen: list[str] = []
+
+    async def exercise() -> None:
+        received = asyncio.Event()
+        release = asyncio.Event()
+
+        async def strict_server(stream: ControlStream) -> None:
+            session = await server_handshake(stream, stream.peer_identity, service_status())
+            while True:
+                try:
+                    request = parse_control_request(
+                        await read_control_frame(stream, eof_reason="session_closed")
+                    )
+                    seen.append(request.kind)
+                    # As the daemon admits every frame: a cancel naming no active call fails.
+                    session.admit(request)
+                except Exception:
+                    await stream.aclose()
+                    return
+                if isinstance(request, ControlCancelRequest):
+                    continue
+                received.set()
+                await release.wait()
+                result = ControlResult(
+                    protocol_version="1.0",
+                    rpc_id=request.rpc_id,
+                    service_instance_id=session.service_instance_id,
+                    service_generation=session.service_generation,
+                    method=ControlMethod.SERVICE_STATUS,
+                    outcome="ok",
+                    body=service_status(),
+                )
+                session.correlate(result)
+                await write_control_frame(stream, result)
+
+        gateway = _gateway(strict_server)
+        gateway.wait_cap_ms = 5_000  # the call's own post waits for its result
+        client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
+        stream = cast(BindingControlStream, client._stream)  # pyright: ignore[reportPrivateUsage]
+        try:
+            caller = asyncio.create_task(client.service_status())
+            await received.wait()
+            # The caller gives up while the post is still waiting: the cancel waits for it.
+            caller.cancel()
+            await asyncio.gather(caller, return_exceptions=True)
+            release.set()
+            # Every request the stream started (the call's post, the cancel) has settled.
+            await asyncio.gather(*tuple(stream._tasks))  # pyright: ignore[reportPrivateUsage]
+            # The connection stays usable: the service never saw a cancel it would refuse.
+            status = await client.service_status()
+            assert status.service_instance_id == service_status().service_instance_id
+        finally:
+            await client.close()
+
+    asyncio.run(exercise())
+    assert seen == ["call", "call"]
 
 
 class _LoseFirstCallResponse(httpx.AsyncBaseTransport):

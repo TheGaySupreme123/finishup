@@ -4916,8 +4916,11 @@ an HTTP body to its frame bytes; where this table and those artifacts differ, th
 `GET …/frames` answers `200` with exactly one frame's body, or `204` when none arrived within
 `wait_ms`. When the daemon closes a session's upstream connection the session ends: every later
 request on it, a pending long-poll included, answers `404` `session_unknown`. A client posts a
-`cancel` only after the call it names was posted, and never posts a call twice: after a lost
-response it asks `GET …/results/{rpc_id}` instead.
+`cancel` only after the call it names was posted, and only while that call's result has not
+arrived, and never posts a call twice: after a lost response it asks `GET …/results/{rpc_id}`
+instead. The daemon closes a connection whose `cancel` names no active call, so the gateway
+answers `202` to a `cancel` naming a call whose result it already holds, or a call it never had,
+and does not forward it.
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
 expires after 120 seconds idle, and one key holds at most 64 sessions. Workflow outcomes —

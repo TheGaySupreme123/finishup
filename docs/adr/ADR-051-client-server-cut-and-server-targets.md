@@ -512,7 +512,9 @@ HTTPS and LOCALHOST PORT
   in `Location`); a call `POST …/calls` that waits up to 2 s for its result, after which a `202`
   continues with the 25 s results long-poll (a call is never posted twice, and after a lost
   response only its result is asked for); a cancel `POST …/cancel`, sent once the gateway has
-  answered the call it names, so it never overtakes that call and waits at most those 2 s; a
+  answered the call it names, so it never overtakes that call and waits at most those 2 s, and
+  dropped when that answer was the call's result (the daemon closes a connection whose cancel
+  names a call it already finished; the gateway likewise forwards no such cancel); a
   `workspace_reply` `POST …/frames`; `workspace_call`s arrive through the `GET …/frames`
   long-poll, run only for a session whose hello declared the agent, which also keeps that session
   out of the gateway's 120 s idle expiry. A session idle past 90 s is checked before a call, so an

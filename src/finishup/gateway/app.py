@@ -394,6 +394,12 @@ class GatewayApp:
         frame = _frame(payload := await self._body(request))
         if frame.get("kind") != "cancel":
             raise _Refused("frame_invalid")
+        target = frame.get("target_rpc_id")
+        slot = session.slot(target) if type(target) is str else None
+        if slot is None or slot.done():
+            # The daemon already answered that call (or never had it), and it refuses a cancel
+            # naming no active call by closing the whole connection: there is nothing to cancel.
+            return _Answer(202)
         await session.forward(payload)
         return _Answer(202)
 
