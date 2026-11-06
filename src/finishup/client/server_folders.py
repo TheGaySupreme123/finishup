@@ -1,19 +1,31 @@
-"""The folders outside a project that a server on another machine may read here (ADR-051).
+"""What a server on another machine may read here outside a project (ADR-051 decision 5).
 
 A FinishUP server on another machine reads nothing on this computer by itself: the workspace
 agent (``finishup.client.workspace_agent``) answers its bounded calls. Inside the claimed worktree
-the agent reads under the existing fences. Outside it, it reads only beneath a folder this
-computer's owner admitted for that server target with ``finishup server folders add``. Which
-folders those are is this client's own fact, as approved-check trust is (ADR-051 decisions 5 and
-12): it is never sent to the server, and nothing the server sends changes it.
+the agent reads under the existing fences. Outside it, each server target has an **outside-read
+mode**, this client's own fact, as approved-check trust is (ADR-051 decisions 5 and 12): it is
+never sent to the server, and nothing the server sends changes it.
+
+* ``local``: the agent answers the server's outside reads as a FinishUP service on this computer
+  would answer them. The server's own admitted-root policy chooses the roots, and the adapters'
+  own fences and the agent's protected directories still hold; no folder of this record is asked.
+* ``listed``: the agent reads outside the worktree only beneath a folder this computer's owner
+  listed for that target with ``finishup server folders add``; anything else is refused.
+
+``finishup server folders mode NAME local|listed`` sets the mode. A target with no mode set has
+its kind's default, from the one table ``DEFAULT_OUTSIDE_READ_MODE`` (``ssh`` and ``local_port``
+``local``, ``https`` ``listed``), except that an HTTPS target at an official FinishUP endpoint
+(``OFFICIAL_ENDPOINT_HOSTS``, matched by exact hostname, and only while it trusts the system
+certificate store) defaults to ``local``. A record that cannot be read is ``listed`` with no
+folder: it fails closed.
 
 The record is ``<target root>/config/folders.json`` (``yoetz.server-folders/1``): an owner-only
 regular file of canonical JSON with exactly ``schema``, ``target_id`` (the root's own id) and
-``folders`` (sorted, unique, at most ``MAX_FOLDERS``). Each folder is an absolute path an owner
-could admit as an input root (``admitted_input_root_valid``) that is neither the home directory
-nor one that holds it. Only a remote target has such a record; removing the target removes it
-with its root. Every failure is a closed reason, never a path. Standard library and lean shared
-modules only.
+``folders`` (sorted, unique, at most ``MAX_FOLDERS``), and ``mode`` when the owner set one. Each
+folder is an absolute path an owner could admit as an input root (``admitted_input_root_valid``)
+that is neither the home directory nor one that holds it. Only a remote target has such a record;
+removing the target removes it with its root. Every failure is a closed reason, never a path.
+Standard library and lean shared modules only.
 """
 
 from __future__ import annotations
@@ -25,29 +37,48 @@ import os
 import posixpath
 import secrets
 import stat
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, cast
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final, Literal, cast
+from urllib.parse import urlsplit
 
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
 from finishup.domain.privacy import admitted_input_root_valid
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
+if TYPE_CHECKING:
+    from finishup.client.targets import ServerTarget
+
 __all__ = [
+    "DEFAULT_OUTSIDE_READ_MODE",
     "FOLDERS_FILE_NAME",
     "FOLDERS_SCHEMA",
     "MAX_FOLDERS",
+    "OFFICIAL_ENDPOINT_HOSTS",
+    "OUTSIDE_READ_MODES",
+    "ClearOutcome",
     "FolderError",
+    "FolderRecord",
+    "OutsideReadMode",
+    "OutsideReadSource",
+    "OutsideReads",
     "add_folder",
     "clear_folders",
+    "default_outside_read_mode",
     "folder_admissible",
     "folder_covers",
     "folder_holds_home",
     "folders_path",
-    "folders_reader",
+    "mode_of",
+    "official_endpoint",
+    "outside_reads_of",
+    "outside_reads_reader",
     "read_folders",
+    "read_record",
     "remove_folder",
-    "target_folders",
+    "set_mode",
 ]
 
 FOLDERS_SCHEMA: Final = "yoetz.server-folders/1"
@@ -57,14 +88,43 @@ FOLDERS_FILE_NAME: Final = "folders.json"
 MAX_FOLDERS: Final = 32
 _MAX_RECORD_BYTES: Final = 16_384
 _FIELDS: Final = frozenset({"schema", "target_id", "folders"})
+_FIELDS_WITH_MODE: Final = _FIELDS | {"mode"}
 _REASONS: Final = frozenset(
     {
         "folder_invalid",
         "folder_limit",
         "folders_record_invalid",
         "folders_record_unsafe",
+        "outside_read_mode_invalid",
     }
 )
+
+# ``local``: outside reads are answered as a FinishUP service on this computer answers them.
+# ``listed``: only beneath a folder the owner listed for the target here.
+type OutsideReadMode = Literal["local", "listed"]
+# Where a target's mode came from: the owner ('server folders mode'); with no mode recorded, its
+# kind's default or the official-endpoint default; or a record that cannot be read, which is
+# 'listed' with no folder.
+type OutsideReadSource = Literal["owner", "kind_default", "official_endpoint", "unreadable"]
+OUTSIDE_READ_MODES: Final[tuple[OutsideReadMode, ...]] = ("listed", "local")
+
+# The outside-read mode of each remote kind while its owner has set none (ADR-051 decision 5).
+# The one table of defaults: a change of default is a change of one line here, and applies to
+# every target whose owner has not set a mode. A kind missing here defaults to 'listed'.
+DEFAULT_OUTSIDE_READ_MODE: Final[Mapping[str, OutsideReadMode]] = MappingProxyType(
+    {
+        "ssh": "local",  # the owner's own account on another machine: owner-equivalent
+        "local_port": "local",  # a FinishUP served on this same computer
+        "https": "listed",  # a server on the web
+    }
+)
+
+# Hostnames of official FinishUP endpoints, whose HTTPS targets default to 'local' as a FinishUP
+# on this computer would read. Reviewed by the maintainer, who adds each exact, lowercase
+# hostname here when an official hosted endpoint exists. Empty today: none exists yet. A target
+# matches only by its exact hostname, and only while it trusts the system certificate store:
+# one added with --ca-file or --tls-pin never counts as official by its hostname alone.
+OFFICIAL_ENDPOINT_HOSTS: Final[frozenset[str]] = frozenset()
 
 
 class FolderError(Exception):
@@ -77,6 +137,74 @@ class FolderError(Exception):
             raise ValueError("folder_reason_invalid")
         self.reason = reason
         super().__init__(reason)
+
+
+@dataclass(frozen=True, slots=True)
+class FolderRecord:
+    """What one target's record holds: its listed folders, and the mode its owner set (None: the
+    owner set none, so the kind's default applies)."""
+
+    folders: tuple[str, ...] = ()
+    mode: OutsideReadMode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideReads:
+    """What the server of one target may read outside the claimed worktree, read now.
+
+    In ``local`` mode ``folders`` are those listed for ``listed`` mode and are not consulted.
+    """
+
+    mode: OutsideReadMode
+    folders: tuple[str, ...] = ()
+    source: OutsideReadSource = "kind_default"
+
+
+# An agent bound to no record, and a record that cannot be read: 'listed' with no folder.
+_LISTED_NOTHING: Final = OutsideReads("listed", (), "unreadable")
+
+type ClearOutcome = Literal["absent", "cleared", "reset_to_listed"]
+
+
+def official_endpoint(record: ServerTarget) -> bool:
+    """Whether ``record`` is an HTTPS target at an official FinishUP endpoint.
+
+    Its exact hostname must be in ``OFFICIAL_ENDPOINT_HOSTS`` and it must trust the system
+    certificate store: a target with its own ``ca_file`` or ``tls_pin`` never counts by hostname.
+    """
+
+    if (
+        record.kind != "https"
+        or record.base_url is None
+        or record.ca_file is not None
+        or record.tls_pin is not None
+    ):
+        return False
+    try:
+        host = urlsplit(record.base_url).hostname
+    except ValueError:
+        return False
+    return host is not None and host in OFFICIAL_ENDPOINT_HOSTS
+
+
+def default_outside_read_mode(record: ServerTarget) -> OutsideReadMode:
+    """The mode of ``record`` while its owner has set none: its kind's
+    (``DEFAULT_OUTSIDE_READ_MODE``), except ``local`` for an official FinishUP endpoint
+    (``official_endpoint``)."""
+
+    if official_endpoint(record):
+        return "local"
+    return DEFAULT_OUTSIDE_READ_MODE.get(record.kind, "listed")
+
+
+def mode_of(record: ServerTarget, found: FolderRecord) -> tuple[OutsideReadMode, OutsideReadSource]:
+    """The mode ``record`` is in given its readable record ``found``, and where it came from."""
+
+    if found.mode is not None:
+        return found.mode, "owner"
+    if official_endpoint(record):
+        return "local", "official_endpoint"
+    return default_outside_read_mode(record), "kind_default"
 
 
 def folders_path(root: Path) -> Path:
@@ -160,7 +288,7 @@ def folder_admissible(folder: str) -> bool:
     )
 
 
-def _decode(encoded: bytes, target_id: str) -> tuple[str, ...]:
+def _decode(encoded: bytes, target_id: str) -> FolderRecord:
     try:
         if not encoded.endswith(b"\n"):
             raise ValueError("trailer")
@@ -171,28 +299,33 @@ def _decode(encoded: bytes, target_id: str) -> tuple[str, ...]:
         raise FolderError("folders_record_invalid")
     source = cast(dict[str, JsonValue], value)
     folders = source.get("folders")
+    mode = source.get("mode")
     if (
-        frozenset(source) != _FIELDS
+        frozenset(source) not in (_FIELDS, _FIELDS_WITH_MODE)
         or source.get("schema") != FOLDERS_SCHEMA
         or source.get("target_id") != target_id
         or type(folders) is not list
+        or ("mode" in source and mode not in OUTSIDE_READ_MODES)
     ):
         raise FolderError("folders_record_invalid")
     items = cast(list[object], folders)
     if len(items) > MAX_FOLDERS or not all(_well_formed(item) for item in items):
         raise FolderError("folders_record_invalid")
     ordered = tuple(sorted(set(cast(list[str], items)), key=str.encode))
-    if list(ordered) != items or _encode(target_id, ordered) != encoded:
+    record = FolderRecord(ordered, cast(OutsideReadMode | None, mode))
+    if list(ordered) != items or _encode(target_id, record) != encoded:
         raise FolderError("folders_record_invalid")
-    return ordered
+    return record
 
 
-def _encode(target_id: str, folders: tuple[str, ...]) -> bytes:
+def _encode(target_id: str, record: FolderRecord) -> bytes:
     document: dict[str, JsonValue] = {
         "schema": FOLDERS_SCHEMA,
         "target_id": target_id,
-        "folders": list(folders),
+        "folders": list(record.folders),
     }
+    if record.mode is not None:
+        document["mode"] = record.mode
     return canonical_encode(document) + b"\n"
 
 
@@ -232,7 +365,7 @@ def _read_owner_only(path: Path) -> bytes | None:
     return data
 
 
-def _write(root: Path, target_id: str, folders: tuple[str, ...]) -> None:
+def _write(root: Path, target_id: str, record: FolderRecord) -> None:
     """Atomically replace the record (owner-only temporary file, fsync, rename)."""
 
     path = folders_path(root)
@@ -241,7 +374,7 @@ def _write(root: Path, target_id: str, folders: tuple[str, ...]) -> None:
     except PathSafetyError:
         raise FolderError("folders_record_unsafe") from None
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-    encoded = _encode(target_id, folders)
+    encoded = _encode(target_id, record)
     try:
         descriptor = os.open(
             temporary,
@@ -269,21 +402,31 @@ def _write(root: Path, target_id: str, folders: tuple[str, ...]) -> None:
         raise FolderError("folders_record_unsafe") from None
 
 
-def read_folders(root: Path, target_id: str) -> tuple[str, ...]:
-    """The folders the owner admitted for the target at ``root``; ``()`` when none were.
+def read_record(root: Path, target_id: str) -> FolderRecord:
+    """The record of the target at ``root``: its listed folders and the mode its owner set.
 
-    Raises ``FolderError`` (``folders_record_unsafe`` or ``folders_record_invalid``) for a record
-    that is not owner-only, a link, too large, malformed, or another target's.
+    No record is ``FolderRecord()``: no folder listed, no mode set. Raises ``FolderError``
+    (``folders_record_unsafe`` or ``folders_record_invalid``) for a record that is not
+    owner-only, a link, too large, malformed, or another target's.
     """
 
     encoded = _read_owner_only(folders_path(root))
     if encoded is None:
-        return ()
+        return FolderRecord()
     return _decode(encoded, target_id)
 
 
+def read_folders(root: Path, target_id: str) -> tuple[str, ...]:
+    """The folders the owner listed for the target at ``root``; ``()`` when none were.
+
+    Raises as ``read_record`` does.
+    """
+
+    return read_record(root, target_id).folders
+
+
 def add_folder(root: Path, target_id: str, folder: str) -> bool:
-    """Admit ``folder`` for the target at ``root``; False when it already was.
+    """List ``folder`` for the target at ``root``; False when it already was. The mode is kept.
 
     ``folder`` is already canonical (the caller applied the input-root rule on the trusted
     console). A damaged record is refused, never replaced: ``clear_folders`` is its way out.
@@ -292,68 +435,104 @@ def add_folder(root: Path, target_id: str, folder: str) -> bool:
 
     if not folder_admissible(folder):
         raise FolderError("folder_invalid")
-    current = read_folders(root, target_id)
-    if folder in current:
+    current = read_record(root, target_id)
+    if folder in current.folders:
         return False
-    if len(current) >= MAX_FOLDERS:
+    if len(current.folders) >= MAX_FOLDERS:
         raise FolderError("folder_limit")
-    _write(root, target_id, tuple(sorted({*current, folder}, key=str.encode)))
+    folders = tuple(sorted({*current.folders, folder}, key=str.encode))
+    _write(root, target_id, FolderRecord(folders, current.mode))
     return True
 
 
 def remove_folder(root: Path, target_id: str, folder: str) -> bool:
-    """Stop admitting ``folder`` (compared in normal form); False when it was not admitted."""
+    """Stop listing ``folder`` (compared in normal form); False when it was not listed. The mode
+    is kept."""
 
     wanted = posixpath.normpath(folder) if folder else folder
-    current = read_folders(root, target_id)
-    if wanted not in current:
+    current = read_record(root, target_id)
+    if wanted not in current.folders:
         return False
-    _write(root, target_id, tuple(item for item in current if item != wanted))
+    folders = tuple(item for item in current.folders if item != wanted)
+    _write(root, target_id, FolderRecord(folders, current.mode))
     return True
 
 
-def clear_folders(root: Path) -> bool:
-    """Remove the whole record, also one that cannot be read; False when there was none.
+def set_mode(root: Path, target_id: str, mode: OutsideReadMode) -> bool:
+    """Record ``mode`` as the owner's choice for the target at ``root``; False when it already
+    was. The listed folders are kept.
 
-    The way back from a damaged record. Unlinking a link removes the link, never its target;
-    anything but a file or a link is refused.
+    A mode is recorded even where it equals the kind's default, so a later change of default
+    never changes a mode its owner chose. A damaged record is refused, never replaced:
+    ``clear_folders`` is its way out. Callers hold ``targets.registry_lock()``.
+    """
+
+    if mode not in OUTSIDE_READ_MODES:
+        raise FolderError("outside_read_mode_invalid")
+    current = read_record(root, target_id)
+    if current.mode == mode:
+        return False
+    _write(root, target_id, FolderRecord(current.folders, mode))
+    return True
+
+
+def clear_folders(root: Path, target_id: str) -> ClearOutcome:
+    """Stop listing every folder for the target at ``root``; the way back from a damaged record.
+
+    ``absent`` when there was nothing to clear. ``cleared`` when a readable record listed a
+    folder: none is listed now, and the mode its owner set, if any, is kept. ``reset_to_listed``
+    when the record could not be read: it is replaced by one that lists nothing in ``listed``
+    mode, the state a record that cannot be read already stood for, so clearing it never widens
+    what the server may read (a kind whose default is ``local`` included); the owner chooses
+    ``local`` again with ``set_mode``. A link is replaced itself, never its target; anything but
+    a file or a link is refused. Callers hold ``targets.registry_lock()``.
     """
 
     path = folders_path(root)
     try:
         facts = path.lstat()
     except (FileNotFoundError, NotADirectoryError):
-        return False
+        return "absent"
     except OSError:
         raise FolderError("folders_record_unsafe") from None
     if not (stat.S_ISREG(facts.st_mode) or stat.S_ISLNK(facts.st_mode)):
         raise FolderError("folders_record_unsafe")
     try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        raise FolderError("folders_record_unsafe") from None
-    return True
+        current = read_record(root, target_id)
+    except FolderError:
+        current = None
+    if current is not None:
+        if not current.folders:
+            return "absent"
+        _write(root, target_id, FolderRecord((), current.mode))
+        return "cleared"
+    # Replaced in one rename, which replaces a link itself and never its target: there is no
+    # moment without a record, when a kind's default could apply.
+    _write(root, target_id, FolderRecord((), "listed"))
+    return "reset_to_listed"
 
 
-def target_folders(root: Path, target_id: str) -> tuple[str, ...]:
-    """The folders admitted for the target ``target_id`` at ``root``; ``()`` when none can be.
+def outside_reads_of(root: Path, record: ServerTarget) -> OutsideReads:
+    """What the server of the remote target ``record`` (whose root is ``root``) may read outside
+    the claimed worktree on this computer, read now.
 
-    Never raises: a record that cannot be read, or is another target's, admits nothing. A folder
-    that holds the home directory is never admitted here; one recorded under another home
+    Never raises: a record that cannot be read, or is another target's, is ``listed`` with no
+    folder. With no mode set, the kind's default applies (``default_outside_read_mode``). A
+    folder that holds the home directory is never listed here; one recorded under another home
     directory than this process's is left out rather than read.
     """
 
     try:
-        folders = read_folders(root, target_id)
-    except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
-        return ()
-    return tuple(folder for folder in folders if not folder_holds_home(folder))
+        found = read_record(root, record.target_id)
+    except Exception:  # noqa: BLE001 - an unreadable record is 'listed' with no folder
+        return _LISTED_NOTHING
+    folders = tuple(folder for folder in found.folders if not folder_holds_home(folder))
+    mode, source = mode_of(record, found)
+    return OutsideReads(mode, folders, source)
 
 
-def _admit_nothing() -> tuple[str, ...]:
-    return ()
+def _read_nothing() -> OutsideReads:
+    return _LISTED_NOTHING
 
 
 def _salt_matches(recorded: str | None, claim_salt: bytes) -> bool:
@@ -364,38 +543,40 @@ def _salt_matches(recorded: str | None, claim_salt: bytes) -> bool:
     return bool(salt) and hmac.compare_digest(salt, claim_salt)
 
 
-def folders_reader(
+def outside_reads_reader(
     root: Path | None = None, *, claim_salt: bytes | None = None
-) -> Callable[[], tuple[str, ...]]:
-    """A reader of the folders admitted for one remote target, bound to that target now.
+) -> Callable[[], OutsideReads]:
+    """A reader of what one remote target's server may read outside the worktree, bound to that
+    target now.
 
     The workspace agent of a connection is built with one; it reads the record on every outside
-    read, in the agent's worker thread, so a removal takes effect at the next call. The target is
-    fixed here, when the agent is built: ``root``, or the root this process uses now, which is
-    taken only with ``claim_salt`` (the salt the connection's claim was made under) and only when
-    it is the target whose salt that is, since this process's selection may name another server.
-    A later change of this process's selection (``server use``, or another target probed under
-    ``selection_override``) therefore never makes the agent read another target's record. Neither
-    ``root`` nor ``claim_salt``, a root that is not a remote target, a target record that cannot
-    be read and a salt that does not match all bind a reader that admits nothing. Never raises.
+    read, in the agent's worker thread, so a change of mode or folders takes effect at the next
+    call. The target is fixed here, when the agent is built: ``root``, or the root this process
+    uses now, which is taken only with ``claim_salt`` (the salt the connection's claim was made
+    under) and only when it is the target whose salt that is, since this process's selection may
+    name another server. A later change of this process's selection (``server use``, or another
+    target probed under ``selection_override``) therefore never makes the agent read another
+    target's record. Neither ``root`` nor ``claim_salt``, a root that is not a remote target, a
+    target record that cannot be read and a salt that does not match all bind a reader that
+    answers ``listed`` with no folder, whatever any kind's default. Never raises.
     """
 
     from finishup.client.targets import read_target
     from finishup.config.paths import active_root
 
     if root is None and claim_salt is None:
-        return _admit_nothing  # the selection alone never says which server the agent serves
+        return _read_nothing  # the selection alone never says which server the agent serves
     try:
         where = active_root() if root is None else root
         record = None if where is None else read_target(where)
-    except Exception:  # noqa: BLE001 - an unreadable target admits nothing (fail closed)
-        return _admit_nothing
+    except Exception:  # noqa: BLE001 - an unreadable target reads nothing outside (fail closed)
+        return _read_nothing
     if (
         where is None
         or record is None
         or not record.is_remote
         or (claim_salt is not None and not _salt_matches(record.claim_salt, claim_salt))
     ):
-        return _admit_nothing
-    bound_root, target_id = where, record.target_id
-    return lambda: target_folders(bound_root, target_id)
+        return _read_nothing
+    bound_root, bound = where, record
+    return lambda: outside_reads_of(bound_root, bound)

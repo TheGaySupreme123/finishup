@@ -1,10 +1,13 @@
-"""The folders a remote target's server may read here: this client's own record (ADR-051).
+"""What a remote target's server may read here outside a project: this client's own record
+(ADR-051 decision 5).
 
-``finishup server folders add`` records them under the target's root; a workspace agent is bound
-to its own target's record when it is built, reads it on every outside read, and admits nothing
-when it cannot. The record
-is owner-only canonical JSON bound to its target, and a folder that holds the home directory, or
-lies in its private trees, is never admitted.
+Each target has an outside-read mode: ``local`` (as a FinishUP service on this computer would
+read) or ``listed`` (only beneath the folders ``finishup server folders add`` records under the
+target's root). With no mode set, the kind's default applies from one table, with an exception
+for an official FinishUP endpoint. A workspace agent is bound to its own target's record when it
+is built, reads it on every outside read, and reads ``listed`` with no folder when it cannot. The
+record is owner-only canonical JSON bound to its target, and a folder that holds the home
+directory, or lies in its private trees, is never admitted.
 """
 
 from __future__ import annotations
@@ -14,25 +17,36 @@ import os
 import stat
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from builders.server_targets import ambient_home
-from finishup.client import targets
+from finishup.client import server_folders, targets
 from finishup.client.server_folders import (
+    DEFAULT_OUTSIDE_READ_MODE,
     FOLDERS_SCHEMA,
     MAX_FOLDERS,
+    OFFICIAL_ENDPOINT_HOSTS,
     FolderError,
+    FolderRecord,
+    OutsideReadMode,
+    OutsideReads,
+    OutsideReadSource,
     add_folder,
     clear_folders,
+    default_outside_read_mode,
     folder_admissible,
     folder_covers,
     folder_holds_home,
     folders_path,
-    folders_reader,
+    official_endpoint,
+    outside_reads_of,
+    outside_reads_reader,
     read_folders,
+    read_record,
     remove_folder,
-    target_folders,
+    set_mode,
 )
 from finishup.config.paths import reset_selection_memo
 
@@ -48,6 +62,15 @@ def remote(home: Path) -> tuple[targets.ServerTarget, Path]:
     del home
     with targets.registry_lock():
         return targets.new_remote_target("lab", "https", base_url="https://lab.example")
+
+
+_NOTHING: OutsideReads = OutsideReads("listed", (), "unreadable")
+
+
+def _listed(*folders: str) -> OutsideReads:
+    """What an HTTPS target with no mode set reads: its kind's default, ``listed``."""
+
+    return OutsideReads("listed", folders, "kind_default")
 
 
 @pytest.fixture
@@ -101,8 +124,8 @@ def test_remove_and_clear_are_the_way_out(
     assert read_folders(root, record.target_id) == ()
     assert remove_folder(root, record.target_id, folder) is False
     add_folder(root, record.target_id, folder)
-    assert clear_folders(root) is True
-    assert clear_folders(root) is False
+    assert clear_folders(root, record.target_id) == "cleared"
+    assert clear_folders(root, record.target_id) == "absent"
     assert read_folders(root, record.target_id) == ()
 
 
@@ -136,11 +159,16 @@ def test_a_damaged_record_fails_closed_and_clear_removes_it(
     reason = "folders_record_unsafe" if damage in {"mode", "link"} else "folders_record_invalid"
     with pytest.raises(FolderError, match=reason):
         read_folders(root, record.target_id)
-    # Adding to a damaged record never replaces it; clearing it is the way back.
+    # Adding to a damaged record, or setting its mode, never replaces it; clearing it is the way
+    # back, to the 'listed' state with no folder that a damaged record already stood for.
     with pytest.raises(FolderError):
         add_folder(root, record.target_id, folder)
-    assert clear_folders(root) is True
-    assert read_folders(root, record.target_id) == ()
+    with pytest.raises(FolderError):
+        set_mode(root, record.target_id, "local")
+    assert outside_reads_of(root, record) == _NOTHING
+    assert clear_folders(root, record.target_id) == "reset_to_listed"
+    assert read_record(root, record.target_id) == FolderRecord((), "listed")
+    assert not folders_path(root).is_symlink()
     if damage == "link":
         assert (tmp_path / "elsewhere.json").exists()  # the link went, never its target
 
@@ -204,20 +232,20 @@ def test_the_active_target_record_admits_and_fails_closed(
     salt = base64.b64decode(record.claim_salt or "", validate=True)
     add_folder(root, record.target_id, folder)
     # Not selected: this process uses the everyday installation, which admits nothing here.
-    assert folders_reader(claim_salt=salt)() == ()
+    assert outside_reads_reader(claim_salt=salt)() == _NOTHING
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    assert folders_reader(claim_salt=salt)() == (folder,)
+    assert outside_reads_reader(claim_salt=salt)() == _listed(folder)
     folders_path(root).chmod(0o644)  # an unreadable record admits nothing
-    assert folders_reader(claim_salt=salt)() == ()
+    assert outside_reads_reader(claim_salt=salt)() == _NOTHING
     folders_path(root).chmod(0o600)
     # A named local server reads with its own service: no folder record applies to it.
     with targets.registry_lock():
         local, _local_root = targets.new_local_target("bench")
         targets.write_selection(local)
     reset_selection_memo()
-    assert folders_reader(claim_salt=salt)() == ()
+    assert outside_reads_reader(claim_salt=salt)() == _NOTHING
     del home
 
 
@@ -235,8 +263,8 @@ def test_the_selection_alone_never_binds_a_reader(
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    assert folders_reader(root)() == (folder,)
-    assert folders_reader()() == ()
+    assert outside_reads_reader(root)() == _listed(folder)
+    assert outside_reads_reader()() == _NOTHING
 
 
 def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
@@ -247,12 +275,12 @@ def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    by_root = folders_reader(root)
+    by_root = outside_reads_reader(root)
     salt = base64.b64decode(record.claim_salt or "", validate=True)
-    by_salt = folders_reader(claim_salt=salt)
-    assert by_root() == by_salt() == ()
+    by_salt = outside_reads_reader(claim_salt=salt)
+    assert by_root() == by_salt() == _listed()
     add_folder(root, record.target_id, folder)  # read at the next call, never cached
-    assert by_root() == by_salt() == (folder,) == target_folders(root, record.target_id)
+    assert by_root() == by_salt() == _listed(folder) == outside_reads_of(root, record)
     # Bound when built: another selection later changes nothing for these readers.
     with targets.registry_lock():
         other, other_root = targets.new_remote_target(
@@ -260,18 +288,23 @@ def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
         )
         targets.write_selection(other)
     reset_selection_memo()
-    assert by_root() == by_salt() == (folder,)
+    assert by_root() == by_salt() == _listed(folder)
     # A salt that is not the selected target's, a local root and a missing root admit nothing.
-    assert folders_reader(claim_salt=salt)() == ()
-    assert folders_reader(other_root, claim_salt=salt)() == ()
-    assert folders_reader(root, claim_salt=b"x" * 32)() == ()
-    assert folders_reader(root.parent / "t_00000000")() == ()
+    assert outside_reads_reader(claim_salt=salt)() == _NOTHING
+    assert outside_reads_reader(other_root, claim_salt=salt)() == _NOTHING
+    assert outside_reads_reader(root, claim_salt=b"x" * 32)() == _NOTHING
+    assert outside_reads_reader(root.parent / "t_00000000")() == _NOTHING
     # A record that cannot be read admits nothing, and a removal takes effect at once.
     folders_path(root).chmod(0o644)
-    assert by_root() == () == target_folders(root, record.target_id)
+    assert by_root() == _NOTHING == outside_reads_of(root, record)
     folders_path(root).chmod(0o600)
     remove_folder(root, record.target_id, folder)
-    assert by_root() == ()
+    assert by_root() == _listed()
+    # So does a change of mode, both ways.
+    set_mode(root, record.target_id, "local")
+    assert by_root() == by_salt() == OutsideReads("local", (), "owner")
+    set_mode(root, record.target_id, "listed")
+    assert by_root() == OutsideReads("listed", (), "owner")
 
 
 def test_admissibility_is_the_rule_add_applies(
@@ -291,3 +324,157 @@ def test_admissibility_is_the_rule_add_applies(
     ):
         assert folder_admissible(refused) is False, refused
     assert folder_admissible(os.fspath(user_home / "projects")) is True
+
+
+# --- the outside-read mode -------------------------------------------------------------------
+
+
+def _remote(kind: str, name: str, **fields: object) -> tuple[targets.ServerTarget, Path]:
+    with targets.registry_lock():
+        if kind == "ssh":
+            return targets.new_remote_target(name, "ssh", host="devbox.example", port=22)
+        if kind == "local_port":
+            return targets.new_remote_target(name, "local_port", base_url="https://127.0.0.1:8443")
+        return targets.new_remote_target(
+            name,
+            "https",
+            base_url=cast(str, fields.get("base_url", "https://lab.example")),
+            ca_file=cast("str | None", fields.get("ca_file")),
+            tls_pin=cast("str | None", fields.get("tls_pin")),
+        )
+
+
+def test_the_defaults_are_one_table_by_kind(home: Path) -> None:
+    """The owner's own account elsewhere and this computer read as locally; the web is listed."""
+
+    del home
+    assert dict(DEFAULT_OUTSIDE_READ_MODE) == {
+        "ssh": "local",
+        "local_port": "local",
+        "https": "listed",
+    }
+    expected: tuple[tuple[str, OutsideReadMode], ...] = (
+        ("ssh", "local"),
+        ("local_port", "local"),
+        ("https", "listed"),
+    )
+    for kind, mode in expected:
+        record, root = _remote(kind, kind.replace("_", "-"))
+        assert default_outside_read_mode(record) == mode
+        assert outside_reads_of(root, record) == OutsideReads(mode, (), "kind_default")
+    with targets.registry_lock():
+        local, _root = targets.new_local_target("bench")
+    assert default_outside_read_mode(local) == "listed"  # a kind missing from the table
+
+
+def test_a_record_with_no_mode_reads_as_its_kinds_default(home: Path, folder: str) -> None:
+    del home
+    record, root = _remote("ssh", "devbox")
+    add_folder(root, record.target_id, folder)
+    assert b'"mode"' not in folders_path(root).read_bytes()
+    assert read_record(root, record.target_id) == FolderRecord((folder,), None)
+    assert outside_reads_of(root, record) == OutsideReads("local", (folder,), "kind_default")
+
+
+def test_the_mode_switches_both_ways_and_folder_changes_keep_it(
+    remote: tuple[targets.ServerTarget, Path], folder: str
+) -> None:
+    record, root = remote
+    assert set_mode(root, record.target_id, "local") is True
+    assert set_mode(root, record.target_id, "local") is False  # already recorded
+    body = folders_path(root).read_bytes()
+    assert body == (
+        b'{"folders":[],"mode":"local","schema":"'
+        + FOLDERS_SCHEMA.encode()
+        + b'","target_id":"'
+        + record.target_id.encode()
+        + b'"}\n'
+    )
+    assert outside_reads_of(root, record) == OutsideReads("local", (), "owner")
+    # Listing or removing a folder keeps the mode the owner chose, and so does clearing them.
+    add_folder(root, record.target_id, folder)
+    assert read_record(root, record.target_id) == FolderRecord((folder,), "local")
+    assert outside_reads_of(root, record) == OutsideReads("local", (folder,), "owner")
+    remove_folder(root, record.target_id, folder)
+    add_folder(root, record.target_id, folder)
+    assert clear_folders(root, record.target_id) == "cleared"
+    assert read_record(root, record.target_id) == FolderRecord((), "local")
+    # And back: the listed folders are kept across the switch.
+    add_folder(root, record.target_id, folder)
+    assert set_mode(root, record.target_id, "listed") is True
+    assert outside_reads_of(root, record) == OutsideReads("listed", (folder,), "owner")
+    # A mode the owner set is kept even where it equals the kind's default.
+    assert read_record(root, record.target_id).mode == "listed"
+    with pytest.raises(FolderError, match="outside_read_mode_invalid"):
+        set_mode(root, record.target_id, cast("OutsideReadMode", "open"))
+
+
+@pytest.mark.parametrize("value", ['"open"', "null", '""', '"LOCAL"'])
+def test_a_record_with_an_unknown_mode_fails_closed(home: Path, folder: str, value: str) -> None:
+    """Even for a kind whose default is ``local``: a damaged record is ``listed``, no folder."""
+
+    del home
+    record, root = _remote("ssh", "devbox")
+    add_folder(root, record.target_id, folder)
+    set_mode(root, record.target_id, "local")
+    path = folders_path(root)
+    path.write_bytes(path.read_bytes().replace(b'"local"', value.encode()))
+    with pytest.raises(FolderError, match="folders_record_invalid"):
+        read_record(root, record.target_id)
+    assert outside_reads_of(root, record) == _NOTHING
+
+
+@pytest.mark.parametrize("damage", ["mode", "json"])
+def test_an_unreadable_record_fails_closed_to_listed_where_the_default_is_local(
+    home: Path, folder: str, damage: str
+) -> None:
+    del home
+    record, root = _remote("ssh", "devbox")
+    assert outside_reads_of(root, record).mode == "local"
+    add_folder(root, record.target_id, folder)
+    if damage == "mode":
+        folders_path(root).chmod(0o644)
+    else:
+        folders_path(root).write_text("{damaged\n")
+        folders_path(root).chmod(0o600)
+    assert outside_reads_of(root, record) == _NOTHING
+    assert outside_reads_reader(root)() == _NOTHING
+    # Clearing it never widens it to the kind's 'local' default.
+    assert clear_folders(root, record.target_id) == "reset_to_listed"
+    assert outside_reads_of(root, record) == OutsideReads("listed", (), "owner")
+
+
+def test_no_official_endpoint_is_named_yet() -> None:
+    """The reviewed constant is empty until an official hosted FinishUP endpoint exists."""
+
+    assert OFFICIAL_ENDPOINT_HOSTS == frozenset()
+
+
+def test_an_official_endpoint_defaults_to_local_by_exact_host_and_system_trust(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del home
+    monkeypatch.setattr(server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset({"fu.example"}))
+    pin = "sha256:" + "a" * 64
+    cases: tuple[tuple[str, dict[str, str], OutsideReadMode], ...] = (
+        ("official", {"base_url": "https://fu.example"}, "local"),
+        ("official-port", {"base_url": "https://fu.example:8443/api"}, "local"),
+        ("sub", {"base_url": "https://api.fu.example"}, "listed"),
+        ("suffix", {"base_url": "https://fu.example.evil"}, "listed"),
+        ("prefix", {"base_url": "https://notfu.example"}, "listed"),
+        ("ca-file", {"base_url": "https://fu.example", "ca_file": "/etc/fu-ca.pem"}, "listed"),
+        ("pinned", {"base_url": "https://fu.example", "tls_pin": pin}, "listed"),
+    )
+    for name, fields, mode in cases:
+        record, root = _remote("https", name, **fields)
+        assert official_endpoint(record) is (mode == "local"), name
+        assert default_outside_read_mode(record) == mode, name
+        source: OutsideReadSource = "official_endpoint" if mode == "local" else "kind_default"
+        assert outside_reads_of(root, record) == OutsideReads(mode, (), source), name
+    # The owner's own choice still wins over the official default.
+    record, root = _remote("https", "chosen", base_url="https://fu.example")
+    set_mode(root, record.target_id, "listed")
+    assert outside_reads_of(root, record) == OutsideReads("listed", (), "owner")
+    # Neither kind but HTTPS counts, whatever its host.
+    ssh, _root = _remote("ssh", "devbox")
+    assert official_endpoint(ssh) is False

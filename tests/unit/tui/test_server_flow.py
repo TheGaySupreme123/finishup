@@ -9,6 +9,7 @@ command line, so ``/server`` prints those commands. Server-host commands refuse 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -119,6 +120,8 @@ async def test_declining_the_remote_switch_changes_nothing() -> None:
         ("remove", "finishup server remove NAME"),
         ("login", "finishup server login NAME"),
         ("folders", "finishup server folders add NAME"),
+        ("folders", "finishup server folders mode NAME local"),
+        ("folders", "finishup server folders mode NAME listed"),
     ],
 )
 async def test_registry_changes_print_the_cli_command(choice: str, command: str) -> None:
@@ -239,3 +242,46 @@ async def test_the_real_runtime_lists_switches_and_names_the_header(
             await runtime.use_server("nowhere")
         assert raised.value.reason == "target_unknown"
         assert "nowhere" not in raised.value.message
+
+
+async def test_the_real_runtime_status_shows_what_a_remote_server_may_read_outside(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ADR-051 decision 5: ``/server`` status shows the outside-read mode, where it came from,
+    and the folders listed for that server, as ``finishup server status`` does."""
+
+    from builders.server_targets import ambient_home
+    from finishup.cli import server as server_cli
+    from finishup.client import targets
+    from finishup.client.server_folders import add_folder, set_mode
+    from finishup.client.target_runtime import ProbeResult
+    from finishup.tui.runtime import FinishUpRuntime
+
+    def unreachable(_record: object, _root: object) -> ProbeResult:
+        return ProbeResult("unavailable", reason="remote_unreachable")
+
+    monkeypatch.setattr(server_cli, "_probe", unreachable)
+    with ambient_home(monkeypatch) as home:
+        with targets.registry_lock():
+            record, root = targets.new_remote_target(
+                "devbox", "ssh", host="devbox.example", port=22
+            )
+        shared = (tmp_path / "shared").resolve()
+        shared.mkdir()
+        with targets.registry_lock():
+            add_folder(root, record.target_id, str(shared))
+        runtime = FinishUpRuntime(cwd=home)
+        lines = await runtime.server_status_lines("devbox")
+        assert (
+            "Outside your projects: reads as FinishUP on this computer would (mode local, the "
+            "default for an SSH server)"
+        ) in lines
+        assert f"  {shared}" in lines
+        with targets.registry_lock():
+            set_mode(root, record.target_id, "listed")
+        lines = await runtime.server_status_lines("devbox")
+        assert (
+            "Outside your projects: reads only folders you list (mode listed, set by you)" in lines
+        )
+        at = lines.index("Folders it may read outside your projects:")
+        assert lines[at + 1] == f"  {shared}"

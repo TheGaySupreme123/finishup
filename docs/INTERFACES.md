@@ -4579,7 +4579,7 @@ never inside a repository, with exact field sets.
 |---|---|---|
 | `yoetz.server-target/1` | `<ambient state dir>/servers/t_<8 hex>/target.json` | `schema`, `target_id` (`t_` + 8 lowercase hex), `name`, `kind`, `created_at`. `ssh` adds `user`, `host`, `port`, `remote_root`, `remote_launcher`. `https` and `local_port` add `base_url`, one of `ca_file` or `tls_pin` (`sha256:<64 hex>`), and `credential` (`keyring\|file`). Every remote kind adds `claim_salt` (32 random bytes), `authorized_at` and `disclosure_version`. |
 | `yoetz.server-selection/1` | `<ambient config dir>/server-selection.json` | `schema`, `target_id`. Absent means the ambient service. |
-| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory). Absent means none. Written only by `server folders add`/`remove`, never sent to a server. |
+| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory), and `mode` (`local\|listed`) only once the owner set one. No `mode` means the kind's default (`client.server_folders.DEFAULT_OUTSIDE_READ_MODE`: `ssh` and `local_port` `local`, `https` `listed`; an HTTPS target whose exact hostname is in `OFFICIAL_ENDPOINT_HOSTS` and that trusts the system certificate store, `local`). An absent record means no folder and no mode; one that cannot be read means `listed` with no folder. Written only by `server folders add`/`remove`/`mode`, never sent to a server. |
 
 A target name matches `[a-z0-9][a-z0-9-]{0,15}` and `local` is reserved. The name appears only in
 `target.json` and in owner displays (`server list`, `server status`, `server test`); errors, logs,
@@ -4612,13 +4612,20 @@ server-host guard runs, so the service never reads a selection its spawner did n
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` and `finishup server folders add NAME FOLDER|list NAME|remove
-NAME FOLDER|--all` (`cli/server.py`). `server folders add` refuses a folder that
-`client.server_folders.folder_admissible` rejects (`folder_invalid`: not the input-root shape, the
-home directory, a folder holding it by spelling or identity, or one in its private trees) before
-it asks on the trusted console, and `add_folder` applies the same rule again under the registry
-lock. `server status --json` emits `server-target-status-1.0.0` and names the deciding root
-source, never a credential; the text form also lists the remote target's admitted folders, which
-the JSON contract does not carry.
+NAME FOLDER|--all|mode NAME local|listed` (`cli/server.py`). `server folders mode NAME local`
+asks on the trusted console unless `local` is already the target's mode; `mode NAME listed` is
+its reverse and asks nothing; any other value is `outside_read_mode_invalid`. `server folders add`
+refuses a folder that `client.server_folders.folder_admissible` rejects (`folder_invalid`: not the
+input-root shape, the home directory, a folder holding it by spelling or identity, or one in its
+private trees) before it asks on the trusted console, and `add_folder` applies the same rule again
+under the registry lock. `server folders remove NAME --all` on a record that cannot be read
+replaces it with an empty one in `listed` mode (`clear_folders` → `reset_to_listed`). `server
+add` prints a remote target's mode and the command that changes it. `server status --json` emits
+`server-target-status-1.0.0` and names the deciding root source, never a credential; for a remote
+target its `target.outside_reads` carries `mode` (`local|listed`), `mode_source`
+(`owner|kind_default|official_endpoint|unreadable`) and the listed `folders`, and is null for any
+other target (the golden vector is `fixtures/service/server-target-status.case.json`). The text
+form, `server folders list` and the terminal's `/server` status show the same.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds (the edge
@@ -4794,7 +4801,7 @@ Outside-input roots and `lstat` candidates stay absolute.
 
 **Workspace agent (client side).** `finishup.client.workspace_agent.WorkspaceAgentHandler(workspace,
 *, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None,
-opened_handle_key=None, check_policy_trust=None, outside_folders=None)` answers the
+opened_handle_key=None, check_policy_trust=None, outside_reads=None)` answers the
 catalog against the real local adapters with their existing fences: Git hardening, ownership
 checks and the change capture's ignore rules, credential-named and hidden-path refusals, byte and
 time bounds, and the network-denying check sandbox. `answer(call, *, workspace_handle)` is synchronous and runs in a worker thread. Its
@@ -4806,20 +4813,22 @@ confinement rules:
   `client.workspace_claim.workspace_claim` refuses it with `repository_locator_invalid`, so a
   connection started at `/` names no workspace.
 - Outside admission is this client's own record (`client.server_folders`, ADR-051 decision 5).
-  `outside_folders` answers the admitted folders on each call; it is bound, when the handler is
-  built, to the record of the target the connection's claim was made for:
-  `folders_reader(root)` for a caller that holds the target's root, or
-  `folders_reader(claim_salt=...)` (as `remote_workspace_binding` does) for the target this
+  `outside_reads` answers, on each call, an `OutsideReads(mode, folders, source)`; it is bound,
+  when the handler is built, to the record of the target the connection's claim was made for:
+  `outside_reads_reader(root)` for a caller that holds the target's root, or
+  `outside_reads_reader(claim_salt=...)` (as `remote_workspace_binding` does) for the target this
   process uses then, which must be the one whose salt the claim was made under. A handler built
-  with no `outside_folders` admits no folder, and `folders_reader()` with neither argument binds
-  a reader that admits nothing: the process's selection alone may name another server. A later
+  with no `outside_reads`, and `outside_reads_reader()` with neither argument, are `listed` with no
+  folder, never a kind's default: the process's selection alone may name another server. A later
   change of the process's selection (`server use`, a `selection_override` probe of another
   target) never switches an agent to another target's record. A local root, a mismatched salt,
-  or a record that cannot be read admits nothing. Every read root must pass
-  `admitted_input_root_valid` (the shape
-  an owner may admit), and what it reaches must lie inside the claimed worktree or at or beneath
-  an admitted folder (`folder_covers`, exact spelling); the record narrows the server's roots,
-  never widens them:
+  a record that cannot be read, and an answer that fails or is not an `OutsideReads` are `listed`
+  with no folder. Every read root must pass `admitted_input_root_valid` (the shape an owner may
+  admit) and lie outside the protected directories. In mode `local` that is all: reads are
+  answered as the local adapters answer them, task-input reads walk every named root, and a
+  declared test outside the claimed root is read as a local service reads it. In mode `listed`
+  what a read reaches must lie inside the claimed worktree or at or beneath a listed folder
+  (`folder_covers`, exact spelling); the record narrows the server's roots, never widens them:
   - `read_text_beneath` and `list_beneath` on an absolute root are admitted when the root lies
     inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
     `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a
@@ -4835,11 +4844,11 @@ confinement rules:
   is reported as not found. An exclusion naming a directory this user cannot examine does not
   empty the read.
 - `read_declared_test` reads a location strictly beneath the claimed root (handle-relative, or
-  absolute under the root's spelling) or at or beneath an admitted folder; anything else is
-  `root_not_admitted`. Both comparisons are made on the location as written and as the local read
+  absolute under the root's spelling), or outside it in mode `local`, or at or beneath a listed
+  folder in mode `listed`; anything else is `root_not_admitted`. Both comparisons are made on the location as written and as the local read
   walks it (`task_input_read.declared_test_top`: a first component that is a root-owned link to a
   directory at most two levels deep, macOS `/tmp` or `/var`, is replaced by its target). The read
-  is the local `read_declared_test`, with its own fences; one admitted through a folder also
+  is the local `read_declared_test`, with its own fences; one read outside the claimed root also
   excludes the claimed root, by case-folded spelling and by device and inode, as every other
   outside read does, so another spelling of the workspace (another case on a case-insensitive
   volume, a bind mount) never reaches a file Git would report ignored.

@@ -283,6 +283,103 @@ def test_a_loopback_address_is_the_local_port_kind(
     assert authorized == [("gw", kind)]
 
 
+@pytest.mark.parametrize(
+    ("arguments", "mode", "origin", "change"),
+    [
+        (("ssh://owner@lab.example",), "local", "the default for an SSH server", "listed"),
+        (
+            ("--port", "9443"),
+            "local",
+            "the default for a server on a port of this computer",
+            "listed",
+        ),
+        (("https://fu.example",), "listed", "the default for a web server", "local"),
+    ],
+)
+def test_remote_add_says_which_outside_read_mode_it_chose_and_how_to_change_it(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    arguments: tuple[str, ...],
+    mode: str,
+    origin: str,
+    change: str,
+) -> None:
+    """ADR-051 decision 5: the kind's default, from one table, until the owner sets one."""
+
+    from finishup.client.server_folders import FolderRecord, read_record
+
+    result = _invoke("add", "gw", *arguments)
+    assert result.exit_code == 0, result.output
+    assert f"(mode {mode}, {origin})" in result.stdout
+    assert f"'finishup server folders mode gw {change}'" in result.stdout
+    (record,) = targets.list_targets()
+    # Nothing is recorded: a later change of the kind's default applies to this target too.
+    assert read_record(targets.target_root(record.target_id), record.target_id) == FolderRecord()
+
+
+def test_an_official_endpoint_is_added_in_mode_local_only_with_the_system_trust(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client import server_folders
+
+    monkeypatch.setattr(server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset({"fu.example"}))
+    official = _invoke("add", "fu", "https://fu.example")
+    assert official.exit_code == 0, official.output
+    assert "(mode local, the default for an official FinishUP server)" in official.stdout
+    pinned = _invoke("add", "pinned", "https://fu.example", "--tls-pin", "sha256:" + "a" * 64)
+    assert pinned.exit_code == 0, pinned.output
+    assert "(mode listed, the default for a web server)" in pinned.stdout
+
+
+def test_a_named_local_server_has_no_outside_read_mode(home: Path) -> None:
+    result = _invoke("add", "work", "--local")
+    assert result.exit_code == 0, result.output
+    assert "mode" not in result.stdout.replace("finishup setup", "")
+
+
+def test_the_golden_status_vector_carries_a_remote_targets_outside_reads() -> None:
+    """``server-target-status`` 1.0.0 (unreleased, amended in place): a remote target's mode,
+    where it came from, and its listed folders (ADR-051 decision 5)."""
+
+    from pydantic import ValidationError
+
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.schemas import SchemaInstanceInvalid
+    from finishup.protocol.server_target_status import ServerTargetStatusContract
+
+    raw = (
+        Path(__file__).parents[3] / "fixtures/service/server-target-status.case.json"
+    ).read_bytes()
+    payload = cast(dict[str, JsonValue], json.loads(raw))
+    assert canonical_encode(cast(JsonValue, payload)) == raw
+    validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, payload))
+    ServerTargetStatusContract.model_validate(payload)
+    target = cast(dict[str, JsonValue], payload["target"])
+    assert target["outside_reads"] == {
+        "folders": ["/srv/team-specs"],
+        "mode": "listed",
+        "mode_source": "owner",
+    }
+    wrongs: tuple[dict[str, JsonValue], ...] = (
+        {"mode": "open", "mode_source": "owner", "folders": []},
+        {"mode": "local", "mode_source": "selection", "folders": []},
+        {"mode": "local", "mode_source": "owner", "folders": ["relative"]},
+        {"mode": "local", "mode_source": "owner"},
+    )
+    for wrong in wrongs:
+        broken: dict[str, JsonValue] = {**payload, "target": {**target, "outside_reads": wrong}}
+        with pytest.raises(SchemaInstanceInvalid):
+            validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, broken))
+        with pytest.raises(ValidationError):
+            ServerTargetStatusContract.model_validate(broken)
+    # A target that is not remote carries none, and the field is never left out.
+    local = {**payload, "target": {**target, "kind": "local", "outside_reads": None}}
+    validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, local))
+    absent = {**payload, "target": {k: v for k, v in target.items() if k != "outside_reads"}}
+    with pytest.raises(SchemaInstanceInvalid):
+        validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, absent))
+
+
 _MACHINE_SCOPE: Final = {"schema_version": "1.0.0", "scope": {"kind": "machine"}}
 
 

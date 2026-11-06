@@ -17,11 +17,13 @@ trusted console; refusals name a target by its id or not at all, with a closed r
 An isolation root or a runtime pin outranks the selection; while one is in force every command
 that would change or use the selection is refused with ``selection_overridden``.
 
-``folders add NAME FOLDER`` lets a remote target's server read beneath one folder outside the
-claimed workspace on this computer, after the owner types the target name on the trusted console;
-``folders remove`` is the reverse, and ``folders list`` and ``status`` show them. The record is
-this client's own (``finishup.client.server_folders``) and never sent to the server (ADR-051
-decision 5).
+``folders mode NAME local|listed`` chooses what a remote target's server may read outside the
+claimed workspace on this computer: in ``local`` mode, as a FinishUP service on this computer
+would; in ``listed`` mode, only beneath the folders listed for it. ``local`` needs the owner to
+type the target name on the trusted console; ``listed`` is the way back. ``folders add NAME
+FOLDER`` lists one folder, with the same typed confirmation; ``folders remove`` is the reverse.
+``folders list``, ``status`` and ``add`` show the mode. The record is this client's own
+(``finishup.client.server_folders``) and never sent to the server (ADR-051 decision 5).
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, NoReturn, cast
 
 import typer
 
@@ -67,6 +69,9 @@ from finishup.client.targets import (
 from finishup.config.installation import format_rfc3339_ms
 from finishup.config.paths import PathSafetyError
 from finishup.protocol.canonical import JsonValue, canonical_encode
+
+if TYPE_CHECKING:
+    from finishup.client.server_folders import FolderRecord
 
 __all__ = [
     "DISCLOSURE_LINES",
@@ -175,14 +180,20 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         _USAGE,
     ),
     "folders_record_invalid": (
-        "the record of folders that server may read is damaged, so it reads none; 'finishup "
-        "server folders remove NAME --all' clears it",
+        "the record of what that server may read outside your projects is damaged, so it reads "
+        "no folder there (mode listed); 'finishup server folders remove NAME --all' clears it",
         _UNSAFE,
     ),
     "folders_record_unsafe": (
-        "the record of folders that server may read is not owner-only or is a link, so it reads "
-        "none; 'finishup server folders remove NAME --all' clears it",
+        "the record of what that server may read outside your projects is not owner-only or is "
+        "a link, so it reads no folder there (mode listed); 'finishup server folders remove NAME "
+        "--all' clears it",
         _UNSAFE,
+    ),
+    "outside_read_mode_invalid": (
+        "give 'local' (read outside your projects as FinishUP on this computer would) or "
+        "'listed' (only the folders you list)",
+        _USAGE,
     ),
     "zero_network_in_force": (
         "this computer's FinishUP is set to make no network connections, so it cannot use a "
@@ -699,6 +710,8 @@ def server_add(
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     typer.echo(f"Added server target {record.name} ({record.target_id}, {record.kind}).")
+    if record.is_remote:
+        _emit(_added_mode_lines(record))
     if kind == "local":
         _emit(
             (
@@ -710,6 +723,28 @@ def server_add(
         _emit((f"Store its API key with 'finishup server login {record.name}'.",))
     else:
         _emit((f"Check it with 'finishup server test {record.name}'.",))
+
+
+def _added_mode_lines(record: ServerTarget) -> tuple[str, ...]:
+    """What ``server add`` says of a new remote target's outside-read mode, and how to change it."""
+
+    from finishup.client.server_folders import outside_reads_of
+
+    found = outside_reads_of(target_root(record.target_id), record)
+    origin = _mode_origin(record.kind, found.source)
+    if found.mode == "local":
+        return (
+            f"Outside your projects it reads as FinishUP on this computer would (mode local, "
+            f"{origin}).",
+            f"To let it read only folders you list: 'finishup server folders mode {record.name} "
+            "listed'.",
+        )
+    return (
+        f"Outside your projects it reads only folders you list, none yet (mode listed, {origin}).",
+        f"List one with 'finishup server folders add {record.name} FOLDER', or, if you trust it "
+        f"as you trust FinishUP on this computer: 'finishup server folders mode {record.name} "
+        "local'.",
+    )
 
 
 def _loopback_origin(base_url: str) -> bool:
@@ -939,6 +974,18 @@ def build_status_document(
     credential: str = "not_applicable"
     if record is not None and record.kind in {"https", "local_port"}:
         credential = record.credential or "none"
+    outside_reads: JsonValue = None
+    if record is not None and record.is_remote and root is not None:
+        # This client's own record (ADR-051 decision 5): what that server may read here outside
+        # the claimed project. Never sent to the server.
+        from finishup.client.server_folders import outside_reads_of
+
+        found = outside_reads_of(root, record)
+        outside_reads = {
+            "mode": found.mode,
+            "mode_source": found.source,
+            "folders": list(found.folders),
+        }
     target: dict[str, JsonValue] = {
         "target_id": None if record is None else record.target_id,
         "name": "local" if everyday else (None if record is None else record.name),
@@ -946,6 +993,7 @@ def build_status_document(
         "location": _location(record),
         "credential": credential,
         "authorization": authorization,
+        "outside_reads": outside_reads,
     }
     stamp = (now or (lambda: datetime.now(UTC)))()
     document: dict[str, JsonValue] = {
@@ -963,8 +1011,8 @@ def build_status_document(
     return document
 
 
-def status_lines(document: dict[str, JsonValue], folders: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """The owner display of a status document; ``folders`` are ``admitted_folder_lines``."""
+def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
+    """The owner display of a status document, a remote target's outside reads included."""
 
     target = cast(dict[str, JsonValue], document["target"])
     probe = cast(dict[str, JsonValue], document["probe"])
@@ -994,9 +1042,62 @@ def status_lines(document: dict[str, JsonValue], folders: tuple[str, ...] = ()) 
         lines.append(
             f"Round trip p95: {probe['round_trip_p95_ms']} ms over {probe['samples']} status calls"
         )
-    lines.extend(folders)
+    lines.extend(outside_read_lines(target))
     if document["selection_overridden"]:
         lines.append("The server selection is not used here: an isolation root decides it.")
+    return tuple(lines)
+
+
+_KIND_NOUNS: Final = {
+    "local_port": "a server on a port of this computer",
+    "ssh": "an SSH server",
+    "https": "a web server",
+}
+
+
+def _mode_origin(kind: str, source: str) -> str:
+    """Why a target is in its outside-read mode, in the owner's words."""
+
+    if source == "owner":
+        return "set by you"
+    if source == "official_endpoint":
+        return "the default for an official FinishUP server"
+    if source == "unreadable":
+        return "because its record cannot be read"
+    return f"the default for {_KIND_NOUNS.get(kind, 'this kind of server')}"
+
+
+def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """Owner-display lines of a status document's remote target: its outside-read mode and the
+    folders listed for it. Empty for a target that is not remote."""
+
+    outside = target.get("outside_reads")
+    if not isinstance(outside, dict):
+        return ()
+    mode = outside.get("mode")
+    source = cast(str, outside.get("mode_source"))
+    folders = [item for item in cast(list[JsonValue], outside.get("folders")) if type(item) is str]
+    origin = _mode_origin(cast(str, target.get("kind")), source)
+    if mode == "local":
+        lines = [
+            f"Outside your projects: reads as FinishUP on this computer would (mode local, "
+            f"{origin})"
+        ]
+        if folders:
+            lines.append("Folders listed for it, read only in mode listed:")
+            lines.extend(f"  {folder}" for folder in folders)
+        return tuple(lines)
+    lines = [f"Outside your projects: reads only folders you list (mode listed, {origin})"]
+    if source == "unreadable":
+        lines.append(
+            "Folders it may read outside your projects: none, its record cannot be read "
+            "('finishup server folders remove NAME --all' clears it)"
+        )
+    elif not folders:
+        lines.append("Folders it may read outside your projects: none")
+    else:
+        lines.append("Folders it may read outside your projects:")
+        lines.extend(f"  {folder}" for folder in folders)
     return tuple(lines)
 
 
@@ -1014,7 +1115,7 @@ def server_status(
         sys.stdout.buffer.write(canonical_encode(cast(JsonValue, document)) + b"\n")
         sys.stdout.flush()
         return
-    _emit(status_lines(document, admitted_folder_lines(document)))
+    _emit(status_lines(document))
 
 
 @server_app.command("test")
@@ -1241,10 +1342,10 @@ def server_disconnect(
     typer.echo(f"Disconnected: {label}.")
 
 
-# --- folders outside your projects a server may read (ADR-051 decision 5) --------------------
+# --- what a server may read outside your projects (ADR-051 decision 5) ------------------------
 
 folders_app = typer.Typer(
-    help="Let a server on another machine read a folder outside your projects on this computer.",
+    help="Choose what a server on another machine may read outside your projects on this computer.",
     no_args_is_help=True,
 )
 server_app.add_typer(folders_app, name="folders")
@@ -1264,6 +1365,23 @@ _FOLDER_NOTICE: Final = (
     "",
 )
 
+_LOCAL_MODE_NOTICE: Final = (
+    "Let server target {name} ({target_id}) read outside your projects on this computer as",
+    "FinishUP on this computer would (mode local):",
+    "",
+    "When that server checks or reviews your work, the FinishUP workspace agent here answers its",
+    "reads outside your project folder as a FinishUP service on this computer answers them: the",
+    "server's own privacy policy chooses the folders it reads task inputs from, and the agent no",
+    "longer limits it to the folders you listed for it. FinishUP's usual safety checks still hold:",
+    "hidden, credential-named and system files, your home folder's private folders and FinishUP's",
+    "own folders are never read, and links are never followed. But that policy does not bind a",
+    "server that breaks FinishUP's rules: such a server could read any other such file on this",
+    "computer and list the names in its folders. Choose this only for a server you trust as you",
+    "trust FinishUP on this computer.",
+    "Undo it with 'finishup server folders mode {name} listed'.",
+    "",
+)
+
 
 def _remote_target_or_fail(name: str) -> ServerTarget:
     record = _target_or_fail(name)
@@ -1275,11 +1393,21 @@ def _remote_target_or_fail(name: str) -> ServerTarget:
 def _confirm_folder_on_trusted_console(record: ServerTarget, folder: str) -> None:
     """Show what admitting ``folder`` lets ``record``'s server read; require the typed name."""
 
+    _confirm_notice(record, _FOLDER_NOTICE, folder=folder)
+
+
+def _confirm_local_mode_on_trusted_console(record: ServerTarget) -> None:
+    """Show what ``local`` mode lets ``record``'s server read; require the typed name."""
+
+    _confirm_notice(record, _LOCAL_MODE_NOTICE)
+
+
+def _confirm_notice(record: ServerTarget, notice: tuple[str, ...], *, folder: str = "") -> None:
     from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 
     try:
         with TrustedForegroundConsole() as console:
-            for line in _FOLDER_NOTICE:
+            for line in notice:
                 console.write(
                     line.format(name=record.name, target_id=record.target_id, folder=folder) + "\n"
                 )
@@ -1293,39 +1421,30 @@ def _confirm_folder_on_trusted_console(record: ServerTarget, folder: str) -> Non
         raise ServerCommandRefused("authorization_declined") from None
 
 
-def _folders_of(record: ServerTarget) -> tuple[str, ...]:
-    from finishup.client.server_folders import FolderError, read_folders
+def _record_of(record: ServerTarget) -> FolderRecord:
+    from finishup.client.server_folders import FolderError, read_record
 
     try:
-        return read_folders(target_root(record.target_id), record.target_id)
+        return read_record(target_root(record.target_id), record.target_id)
     except FolderError as error:
         raise ServerCommandRefused(error.reason) from None
 
 
-def admitted_folder_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
-    """Owner-display lines naming the folders a status document's remote target may read here.
+def _mode_and_origin(record: ServerTarget, current: FolderRecord) -> tuple[str, str]:
+    """The mode ``record`` is in, given its readable ``current`` record, and why."""
 
-    Empty for a local target. Read from this client's own record, never from the server; a
-    record that cannot be read admits nothing, and says so.
-    """
+    from finishup.client.server_folders import mode_of
 
-    from finishup.client.server_folders import FolderError, read_folders
-    from finishup.client.targets import REMOTE_KINDS
+    mode, source = mode_of(record, current)
+    return mode, _mode_origin(record.kind, source)
 
-    target = cast(dict[str, JsonValue], document["target"])
-    target_id = target["target_id"]
-    if type(target_id) is not str or target["kind"] not in REMOTE_KINDS:
-        return ()
-    try:
-        folders = read_folders(target_root(target_id), target_id)
-    except (FolderError, TargetError):
-        return (
-            "Folders it may read outside your projects: none, its record cannot be read "
-            "('finishup server folders remove NAME --all' clears it)",
-        )
-    if not folders:
-        return ("Folders it may read outside your projects: none",)
-    return ("Folders it may read outside your projects:", *(f"  {folder}" for folder in folders))
+
+def _still_local_line(record: ServerTarget) -> str:
+    return (
+        f"It is in mode local, so outside your projects it still reads as FinishUP on this "
+        f"computer would; 'finishup server folders mode {record.name} listed' limits it to the "
+        "folders you list."
+    )
 
 
 @folders_app.command("add")
@@ -1334,7 +1453,7 @@ def server_folders_add(
     name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
     folder: Annotated[str, typer.Argument(help="An existing folder, by its full path.")],
 ) -> None:
-    """Let a server read files beneath FOLDER on this computer (you confirm it here)."""
+    """List a folder a server may read in mode listed (you confirm it here)."""
 
     from finishup.cli.privacy_setup import admitted_root_from_path
     from finishup.client.server_folders import (
@@ -1353,11 +1472,11 @@ def server_folders_add(
     canonical = admitted_root_from_path(folder)
     if canonical is None or not folder_admissible(canonical):
         raise ServerCommandRefused("folder_invalid")
-    current = _folders_of(record)
-    if canonical in current:
+    current = _record_of(record)
+    if canonical in current.folders:
         typer.echo(f"{record.name} ({record.target_id}) may already read that folder.")
         return
-    if len(current) >= MAX_FOLDERS:
+    if len(current.folders) >= MAX_FOLDERS:
         raise ServerCommandRefused("folder_limit")
     _confirm_folder_on_trusted_console(record, canonical)
     try:
@@ -1366,6 +1485,11 @@ def server_folders_add(
     except FolderError as error:
         raise ServerCommandRefused(error.reason) from None
     typer.echo(f"{record.name} ({record.target_id}) may now read files beneath {canonical}.")
+    if _mode_and_origin(record, current)[0] == "local":
+        typer.echo(
+            "It is in mode local, so outside your projects it already reads as FinishUP on this "
+            "computer would; this folder is what it reads in mode listed."
+        )
 
 
 @folders_app.command("list")
@@ -1373,19 +1497,34 @@ def server_folders_add(
 def server_folders_list(
     name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
 ) -> None:
-    """Show the folders outside your projects a server may read on this computer."""
+    """Show what a server may read outside your projects: its mode and listed folders."""
 
     _require_no_explicit_source()
     record = _remote_target_or_fail(name)
-    folders = _folders_of(record)
-    if not folders:
+    current = _record_of(record)
+    mode, origin = _mode_and_origin(record, current)
+    who = f"{record.name} ({record.target_id})"
+    if mode == "local":
         typer.echo(
-            f"{record.name} ({record.target_id}) may read no folder outside your projects on "
-            "this computer."
+            f"{who} reads outside your projects as FinishUP on this computer would (mode local, "
+            f"{origin})."
+        )
+        if current.folders:
+            typer.echo("Folders listed for it, read only in mode listed:")
+            _emit(tuple(f"  {item}" for item in current.folders))
+        typer.echo(
+            f"To let it read only folders you list: 'finishup server folders mode {record.name} "
+            "listed'."
         )
         return
-    typer.echo(f"{record.name} ({record.target_id}) may read files beneath:")
-    _emit(tuple(f"  {item}" for item in folders))
+    if not current.folders:
+        typer.echo(
+            f"{who} may read no folder outside your projects on this computer (mode listed, "
+            f"{origin})."
+        )
+        return
+    typer.echo(f"{who} may read files beneath (mode listed, {origin}):")
+    _emit(tuple(f"  {item}" for item in current.folders))
 
 
 @folders_app.command("remove")
@@ -1400,9 +1539,14 @@ def server_folders_remove(
         typer.Option("--all", help="Remove every folder (also clears a damaged record)."),
     ] = False,
 ) -> None:
-    """Stop a server reading beneath a folder on this computer (takes effect at once)."""
+    """Stop listing a folder for a server (takes effect at once)."""
 
-    from finishup.client.server_folders import FolderError, clear_folders, remove_folder
+    from finishup.client.server_folders import (
+        FolderError,
+        clear_folders,
+        outside_reads_of,
+        remove_folder,
+    )
 
     _require_no_explicit_source()
     if (folder is None) == (not all_folders):
@@ -1411,15 +1555,78 @@ def server_folders_remove(
     root = target_root(record.target_id)
     try:
         with registry_lock():
-            removed = (
-                clear_folders(root)
+            outcome = (
+                clear_folders(root, record.target_id)
                 if folder is None
-                else remove_folder(root, record.target_id, folder)
+                else ("cleared" if remove_folder(root, record.target_id, folder) else "absent")
             )
     except FolderError as error:
         raise ServerCommandRefused(error.reason) from None
-    if not removed:
-        typer.echo(f"No such folder was admitted for {record.name} ({record.target_id}).")
+    who = f"{record.name} ({record.target_id})"
+    if outcome == "absent":
+        typer.echo(f"No such folder was admitted for {who}.")
+        return
+    if outcome == "reset_to_listed":
+        typer.echo(
+            f"{who} may no longer read any folder on this computer: its record could not be "
+            "read, so it now lists none, in mode listed. 'finishup server folders mode "
+            f"{record.name} local' lets it read as FinishUP on this computer would."
+        )
         return
     which = "any folder" if folder is None else "that folder"
-    typer.echo(f"{record.name} ({record.target_id}) may no longer read {which} on this computer.")
+    if outside_reads_of(root, record).mode == "local":
+        typer.echo(f"{who} no longer lists {which}.")
+        typer.echo(_still_local_line(record))
+        return
+    typer.echo(f"{who} may no longer read {which} on this computer.")
+
+
+@folders_app.command("mode")
+@_cli
+def server_folders_mode(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    mode: Annotated[
+        str,
+        typer.Argument(
+            help="local: read as FinishUP on this computer would; listed: only folders you list."
+        ),
+    ],
+) -> None:
+    """Choose what a server may read outside your projects (local needs your confirmation)."""
+
+    from finishup.client.server_folders import OUTSIDE_READ_MODES, FolderError, set_mode
+
+    if mode not in OUTSIDE_READ_MODES:
+        raise ServerCommandRefused("outside_read_mode_invalid")
+    # Widening needs the selection in force and the typed name, as 'folders add' does; the way
+    # back narrows and needs neither, as 'folders remove'.
+    if mode == "local":
+        _require_selection_in_force()
+    else:
+        _require_no_explicit_source()
+    record = _remote_target_or_fail(name)
+    current = _record_of(record)
+    who = f"{record.name} ({record.target_id})"
+    if current.mode == mode:
+        typer.echo(f"{who} is already in mode {mode}, set by you.")
+        return
+    if mode == "local" and _mode_and_origin(record, current)[0] != "local":
+        _confirm_local_mode_on_trusted_console(record)
+    try:
+        with registry_lock():
+            set_mode(target_root(record.target_id), record.target_id, mode)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    if mode == "local":
+        typer.echo(
+            f"{who} now reads outside your projects as FinishUP on this computer would (mode "
+            f"local). Undo it with 'finishup server folders mode {record.name} listed'."
+        )
+        return
+    count = len(current.folders)
+    listed = "no folder" if count == 0 else f"{count} folder{'s' if count != 1 else ''}"
+    typer.echo(
+        f"{who} now reads outside your projects only beneath folders you list (mode listed), "
+        f"from its next read: {listed} so far. 'finishup server folders list {record.name}' "
+        "shows them."
+    )

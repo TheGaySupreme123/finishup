@@ -39,7 +39,13 @@ from finishup.adapters.task_input_read import (
 from finishup.adapters.workspace_inspect import LocalWorkspaceInspectAdapter
 from finishup.client import targets
 from finishup.client import workspace_agent as agent_module
-from finishup.client.server_folders import add_folder, folders_reader
+from finishup.client.server_folders import (
+    OutsideReadMode,
+    OutsideReads,
+    add_folder,
+    outside_reads_reader,
+    set_mode,
+)
 from finishup.client.workspace_agent import (
     WorkspaceAgentHandler,
     client_protected_directories,
@@ -168,16 +174,18 @@ def _handler(
     *,
     operations: Sequence[str] | None = None,
     folders: Sequence[Path | str] = (),
+    mode: OutsideReadMode = "listed",
 ) -> WorkspaceAgentHandler:
-    """A handler for ``repository``; ``folders`` stand for the client's admitted-folder record."""
+    """A handler for ``repository``; ``mode`` and ``folders`` stand for the client's record of
+    what the server may read outside the workspace (``listed`` unless a test says otherwise)."""
 
-    admitted = tuple(os.fspath(folder) for folder in folders)
+    admitted = OutsideReads(mode, tuple(os.fspath(folder) for folder in folders))
     return WorkspaceAgentHandler(
         WorkspaceLocator(os.fspath(repository)),
         protected=(os.fspath(protected),),
         operations=operations,
         check_sandbox=_ReadySandbox(),
-        outside_folders=lambda: admitted,
+        outside_reads=lambda: admitted,
     )
 
 
@@ -771,15 +779,15 @@ def test_the_admitted_folders_are_read_on_every_call_and_fail_closed(
     admitted: list[str] = [os.fspath(shared)]
     failing = False
 
-    def folders() -> tuple[str, ...]:
+    def folders() -> OutsideReads:
         if failing:
             raise OSError("record_unreadable")
-        return tuple(admitted)
+        return OutsideReads("listed", tuple(admitted))
 
     handler = WorkspaceAgentHandler(
         WorkspaceLocator(os.fspath(repository)),
         protected=(os.fspath(protected),),
-        outside_folders=folders,
+        outside_reads=folders,
     )
     read = (
         WorkspaceOperation.READ_TEXT_BENEATH,
@@ -829,9 +837,244 @@ def test_a_handler_bound_to_no_record_admits_no_folder(
         bound = WorkspaceAgentHandler(
             WorkspaceLocator(os.fspath(repository)),
             protected=(os.fspath(protected),),
-            outside_folders=folders_reader(selected_root),
+            outside_reads=outside_reads_reader(selected_root),
         )
         assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)
+
+
+def test_an_unbound_handler_never_takes_a_kinds_local_default(
+    repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An SSH target defaults to ``local``, but an agent its caller bound to no record, or to a
+    record it cannot read, is ``listed`` with no folder (ADR-051 decision 5)."""
+
+    read = (
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+    )
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            selected, selected_root = targets.new_remote_target(
+                "devbox", "ssh", host="devbox.example", port=22
+            )
+            targets.write_selection(selected)
+        reset_selection_memo()
+        bound = WorkspaceAgentHandler(
+            WorkspaceLocator(os.fspath(repository)),
+            protected=(os.fspath(protected),),
+            outside_reads=outside_reads_reader(selected_root),
+        )
+        assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)  # the kind's default: local
+        for unbound in (
+            WorkspaceAgentHandler(
+                WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
+            ),
+            WorkspaceAgentHandler(
+                WorkspaceLocator(os.fspath(repository)),
+                protected=(os.fspath(protected),),
+                outside_reads=outside_reads_reader(),
+            ),
+        ):
+            assert _refused(unbound, *read) == ("refused", "root_not_admitted")
+
+
+# --- the outside-read mode: 'local' answers as a local service, 'listed' as the owner listed ---
+
+
+def test_in_local_mode_outside_reads_are_answered_as_a_local_service_answers_them(
+    repository: Path, protected: Path, shared: Path, tmp_path: Path
+) -> None:
+    """No folder is listed, yet every outside read ``listed`` refuses is read exactly as the
+    local reader reads it: the server's own policy chose the roots (ADR-051 decision 5)."""
+
+    local = _handler(repository, protected, mode="local")
+    listed = _handler(repository, protected)
+    other = (tmp_path / "other").resolve()
+    other.mkdir()
+    (other / "notes.md").write_text("OTHER_MARKER\n", encoding="utf-8")
+    root = os.fspath(shared)
+    roots = (os.fspath(other), root)
+    values = (f"{other}/notes.md", f"{shared}/spec.md", f"{shared}/data/rows.csv")
+    excluded = (os.fspath(repository), os.fspath(protected))
+    reads: tuple[tuple[WorkspaceOperation, object, object], ...] = (
+        (
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(root, "spec.md"),
+            read_text_beneath(root, "spec.md", excluded=excluded, expired=_never),
+        ),
+        (
+            WorkspaceOperation.LIST_BENEATH,
+            ListBeneathArguments(root, ""),
+            list_beneath(root, "", excluded=excluded, expired=_never),
+        ),
+        (
+            WorkspaceOperation.READ_OUTSIDE_INPUTS,
+            ReadOutsideInputsArguments(roots, values, limit=4),
+            read_outside_inputs(roots, values, limit=4, excluded=excluded),
+        ),
+        (
+            WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+            SnapshotOutsideInputsArguments(
+                roots, values, limit=4, max_bytes=65_536, budget_ms=10_000
+            ),
+            snapshot_outside_inputs(
+                roots, values, limit=4, max_bytes=65_536, seconds=10.0, excluded=excluded
+            ),
+        ),
+        (
+            WorkspaceOperation.READ_DECLARED_TEST,
+            ReadDeclaredTestArguments(f"{other}/notes.md"),
+            read_declared_test(f"{other}/notes.md", excluded=excluded),
+        ),
+    )
+    for operation, arguments, expected in reads:
+        assert _refused(listed, operation, arguments) == ("refused", "root_not_admitted")
+        assert expected  # the local reader reads it, so the comparison means something
+        assert _ok(local, operation, arguments) == expected, operation
+    inputs = _ok(local, *reads[2][:2])
+    assert [item.path for item in inputs] == list(values)
+
+
+@pytest.mark.parametrize("root", ["/etc", "/proc/self", "/srv/.hidden"])
+def test_local_mode_refuses_only_where_a_local_service_would(
+    repository: Path, protected: Path, root: str
+) -> None:
+    """A root of a shape no owner could admit is still refused in ``local`` mode."""
+
+    local = _handler(repository, protected, mode="local")
+    for operation, arguments in (
+        (
+            WorkspaceOperation.READ_OUTSIDE_INPUTS,
+            ReadOutsideInputsArguments((root,), (f"{root}/passwd",)),
+        ),
+        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(root, "passwd")),
+        (WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, "")),
+    ):
+        assert _refused(local, operation, arguments) == ("refused", "root_not_admitted")
+
+
+def test_local_mode_keeps_every_fence_of_the_outside_read(
+    repository: Path,
+    protected: Path,
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FinishUP's own directories, the claimed workspace through an outside root, hidden and
+    system files, and Git's ignore rule inside the workspace all hold in ``local`` mode."""
+
+    monkeypatch.setenv("HOME", os.fspath(tmp_path_factory.mktemp("elsewhere-home")))
+    local = _handler(repository, protected, mode="local")
+    root = os.fspath(tmp_path.resolve())
+    values = (f"{repository}/tracked.txt", f"{protected}/vault.txt")
+    assert read_outside_inputs((root,), values, limit=4) != ()  # the bare reader would read them
+    assert (
+        _ok(
+            local,
+            WorkspaceOperation.READ_OUTSIDE_INPUTS,
+            ReadOutsideInputsArguments((root,), values, limit=4),
+        )
+        == ()
+    )
+    for relative in ("project/tracked.txt", "finishup-state/vault.txt"):
+        assert (
+            _ok(
+                local,
+                WorkspaceOperation.READ_TEXT_BENEATH,
+                ReadTextBeneathArguments(root, relative),
+            )
+            is None
+        )
+    assert _refused(
+        local, WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(os.fspath(protected), "")
+    ) == ("refused", "root_not_admitted")
+    hidden = tmp_path / "outside" / ".hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "test_h.py").write_text("def test_h():\n    pass\n", encoding="utf-8")
+    (repository / "ignored.log").write_text("IGNORED_MARKER\n", encoding="utf-8")
+    for location in (
+        f"{hidden.resolve()}/test_h.py",
+        "/etc/hostname",
+        f"{protected}/vault.txt",
+        f"{repository}/ignored.log",
+    ):
+        assert (
+            _ok(local, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location))
+            is None
+        ), location
+
+
+def test_the_mode_is_read_on_every_call_and_switches_both_ways(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    current: list[object] = [OutsideReads("listed")]
+
+    def answer() -> OutsideReads:
+        found = current[0]
+        if isinstance(found, Exception):
+            raise found
+        return cast(OutsideReads, found)
+
+    handler = WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        outside_reads=answer,
+    )
+    read = (
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+    )
+    assert _refused(handler, *read) == ("refused", "root_not_admitted")
+    current[0] = OutsideReads("local")
+    assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+    current[0] = OutsideReads("listed")
+    assert _refused(handler, *read) == ("refused", "root_not_admitted")
+    current[0] = OutsideReads("local")
+    assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+    # An answer that fails, or is not one the record could give, is 'listed' with no folder.
+    for wrong in (
+        OSError("record_unreadable"),
+        ("local", ()),
+        OutsideReads(cast(OutsideReadMode, "open")),
+    ):
+        current[0] = wrong
+        assert _refused(handler, *read) == ("refused", "root_not_admitted"), wrong
+
+
+def test_the_bound_record_decides_the_mode_at_each_call(
+    repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``server folders mode`` takes effect at the next call; a record that cannot be read
+    fails closed to ``listed`` even for a kind whose default is ``local``."""
+
+    from finishup.client.server_folders import folders_path
+
+    read = (
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+    )
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            record, root = targets.new_remote_target(
+                "devbox", "ssh", host="devbox.example", port=22
+            )
+        handler = WorkspaceAgentHandler(
+            WorkspaceLocator(os.fspath(repository)),
+            protected=(os.fspath(protected),),
+            outside_reads=outside_reads_reader(root),
+        )
+        assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+        with targets.registry_lock():
+            set_mode(root, record.target_id, "listed")
+        assert _refused(handler, *read) == ("refused", "root_not_admitted")
+        with targets.registry_lock():
+            add_folder(root, record.target_id, os.fspath(shared))
+        assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+        with targets.registry_lock():
+            set_mode(root, record.target_id, "local")
+        assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
+        folders_path(root).chmod(0o644)  # not owner-only: unreadable
+        assert _refused(handler, *read) == ("refused", "root_not_admitted")
 
 
 def test_a_declared_test_beneath_an_admitted_folder_is_read_as_locally(
