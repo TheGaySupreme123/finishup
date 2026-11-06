@@ -168,10 +168,13 @@ the same safety checks FinishUP uses on one computer, and it never reads FinishU
 this computer — including the vault and settings of your everyday FinishUP — whichever server you
 use.
 
-It runs inside your FinishUP clients while they are connected to the server, and keeps running
-after a call returns, because some work — a longer review, an approved check — happens later. If
-nothing on your computer answers in time, the receipt names exactly what could not be read; a check
-never passes because a read was missing.
+It runs inside your FinishUP clients while they are connected to the server: the FinishUP tools in
+your agent, the CLI and the terminal interface answer for the project they are working in. Some
+work happens after a call returns — a longer review, or an approved check after a hook saw a
+command — so the connection helper (below) also keeps a workspace agent for each project folder you
+used with that server, for 15 minutes after that folder was last used, and delivers what your
+agent's hooks recorded there. If nothing on your computer answers in time, the receipt names
+exactly what could not be read; a check never passes because a read was missing.
 
 ## Preparing the server
 

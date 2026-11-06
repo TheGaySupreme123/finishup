@@ -1502,6 +1502,14 @@ later process to the default service.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.
+- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the
+  MCP bridge's connection also answers them while a call runs. Work that outlives a call (the
+  AI-powered review loop, observation verification) is answered by the target's connector, which
+  keeps a background workspace agent for the session's workspace for 15 minutes after its last use and delivers
+  the hook-captured rows every 30 seconds. A SessionStart context for an unreachable or locked
+  remote server names the closed phase and its continuation token (for example `remote_unreachable`
+  with `remote_server_test`, or `remote_vault_unlock_required`), never a local `service run` or
+  `service unlock`, a host or a target name.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
   `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
   applies: put the intended launcher first on `PATH`.

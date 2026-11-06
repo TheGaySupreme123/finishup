@@ -492,6 +492,14 @@ process to the default service.
 - **Routes.** A strict route (`--semantic off`) stays allowed on a remote target, and the server
   enforces it. On the policy route the initialize instructions say that AI-powered review is
   decided by the selected server, named by its target id, not by a local provider.
+- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the
+  MCP bridge's connection also answers them while a call runs. Work that outlives a call (the
+  AI-powered review loop, observation verification) is answered by the target's connector, which
+  keeps a background workspace agent for `${CLAUDE_PROJECT_DIR}` for 15 minutes after its last use and delivers
+  the hook-captured rows every 30 seconds. A SessionStart context for an unreachable or locked
+  remote server names the closed phase and its continuation token (for example `remote_unreachable`
+  with `remote_server_test`, or `remote_vault_unlock_required`), never a local `service run` or
+  `service unlock`, a host or a target name.
 - **Budgets.** Hook budgets are not relaxed for a remote target. `finishup server test` measures
   the round trip and warns when the required startup gate would likely deny.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is

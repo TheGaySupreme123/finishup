@@ -4683,7 +4683,10 @@ injects. `WorkspaceRouting.compose(hub, local_capture)` gives `.change_capture`
 default), and `RoutedApprovedCheckRunner` runs approved checks. An absolute-path workspace goes to
 the unchanged local adapter; a `client:<16 hex>` handle (`client_bound(value)`) goes to the hub, and
 no local adapter is ever handed it. An agent answer that carries a change-capture reason raises the
-same `ChangeCaptureUnavailable` a local read would. The reviewer broker's file reads (and its
+same `ChangeCaptureUnavailable` a local read would. A call naming an agent-opened workspace
+(`subject_state_capture`, `list_changed_paths`, `inspect`, `run_approved_check`) that the answering
+agent answers `handle_unknown` opens the workspace again on that agent (`open_workspace`, exactly as
+first opened), keeps the new handle and retries the call once. The reviewer broker's file reads (and its
 refusal probe), declared-test pinning, the observation verification steps and the post-run hash
 now run in `asyncio.to_thread`. `build_ready_application_factory(..., workspace_hub=)` and
 `provide_service_ready_context(..., workspace_hub=)` take the composition's one hub; without one, a
@@ -4878,12 +4881,26 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   the vault-less relay that binds a remote target root's `run/control.sock`. Exit 0 when stopped
   or when another connector already serves the root, 2 for a root that is not a remote target's
   own (or that an isolation variable or pin names differently), 20 when the endpoint could not be
-  bound. It refuses a hello carrying `workspace_locator`. Its integration point for long-lived
-  agents is `open_background_agent(root: Path, claim: WorkspaceClaim) -> BackgroundAgent | None`
-  (a `BackgroundAgent` has `alive` and `aclose()`), kept for `AGENT_LEASE_SECONDS` (900) after
-  that workspace's last hello. Its integration point for the client-captured observation outbox
-  and spool is `drain_captured_observations(root: Path) -> None`, called every
-  `DRAIN_INTERVAL_SECONDS` (30) while the connector runs and once more as it stops.
+  bound. It refuses a hello carrying `workspace_locator`. For each claim a client hello carried it
+  opens `open_background_agent(root: Path, claim: WorkspaceClaim, dial: Dial) ->
+  BackgroundAgent | None` (a `BackgroundAgent` has `alive`, `drain()` and `aclose()`; `Dial` is
+  `Callable[[], Awaitable[AuthenticatedUnixStream]]`, a connection the connector relays over a
+  socket pair without passing its endpoint, which counts as no client activity and renews no
+  lease), kept for `AGENT_LEASE_SECONDS` (900) after that workspace's last client hello. Every
+  `DRAIN_INTERVAL_SECONDS` (30), and once more as it stops before closing the agents, it calls
+  each live agent's `drain()`.
+- `finishup.client.connector_agent`: `ConnectorAgent(binding, drain, dial)` holds one claim-bound
+  connection offering the real `WorkspaceAgentHandler` and reconnects (0.5 s, doubling to 30 s)
+  whenever the service ends it; `drain()` runs `ClientObservationDrain.drain` over it and never
+  raises. `open_connector_agent(root, claim, dial)` reads the claimed-workspace index, derives
+  the claim again from the recorded workspace with `binding_for_active_root(...,
+  serve_workspace=True)` and returns None unless it matches.
+- `<troot>/state/claimed-workspaces/<64 hex of the claim digest>.json`
+  (`yoetz.claimed-workspace/1`; owner-only, `finishup.client.claimed_workspaces`):
+  `{"identity_kind", "schema", "workspace"}` with the workspace locator path the claim was
+  computed from. `record_claimed_workspace(root, claim, workspace) -> bool` (best effort,
+  idempotent) and `claimed_workspace(root, claim) -> WorkspaceLocator | None`. It never leaves the
+  client machine.
 - `<troot>/state/connector.lock`: the connector's singleton flock, stamped with `pid`, `version`
   and `schema_manifest_digest`; `<troot>/state/connector-status.json`
   (`yoetz.connector-status/1`): `schema`, `generation` (moves on every change of phase or reason
@@ -4896,13 +4913,31 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   stream-local forward (`finishup.client.ssh_upstream`; argv fixed by `master_argv`).
 - `finishup.client.connector_runtime.ConnectorTargetRuntime`: the `TargetRuntime` registered for
   `ssh`, `https` and `local_port`.
-- `service.client`: for a remote root the hello carries no `workspace_locator` (the claim and the
-  agent offer come from `_remote_workspace_binding(workspace_locator)`), on-demand start spawns
-  the connector and never `service run` or a supersede, a connection the connector accepted and
-  closed raises `service_unavailable` with the connector status's remote phase and correlation id,
-  a release mismatch is `remote_incompatible`, and `service_holder_identity()` reports the live
-  connector with `instance_id` `connector-<generation>`. `ensure_service_running()` returns a raw
-  control stream to this root's service, starting it on demand, for the gateway.
+- `service.client`: for a remote root `connect_service(..., serve_workspace: bool = False)` and
+  `connect_service_on_demand(..., serve_workspace: bool = False)` turn the locator into the
+  target's claim (`binding_for_active_root`), record it in the claimed-workspace index, send no
+  `workspace_locator`, set the connection's `transport` to `connector`, and start the connector
+  (never `service run` or a supersede) when none answers; with `serve_workspace` the connection
+  also offers the workspace agent (the CLI's `build_service_client` and the MCP bridge pass it,
+  hooks do not). A local root ignores `serve_workspace`. Every `service_unavailable` raised for a
+  remote root, including on a connection lost mid-session, names a remote phase: the connector
+  status's, or `remote_unreachable` when it recorded none. A release mismatch is
+  `remote_incompatible`, and `service_holder_identity()` reports the live connector with
+  `instance_id` `connector-<generation>`. `connect_service_stream(stream, client_kind, *,
+  workspace_binding, transport, timeout_seconds=5.0)` handshakes a claim-bound connection over a
+  stream a relay already holds; `ServiceClient.closed` and `ServiceClient.wait_closed()` let a
+  holder reconnect. `ensure_service_running()` returns a raw control stream to this root's
+  service, starting it on demand, for the gateway.
+- `client.workspace_ref.start_request_for_connection`: a connection whose `transport` is not
+  `unix` never sends an absolute `workspace_ref`, claim-bound or not (`WorkspaceRefNotPortable`).
+- `client.targets.active_target_is_remote() -> bool` (never raises) and
+  `finishup.cli.remote_remedy` (`remote_failure(error)`, `remote_remedy_line(error)`,
+  `remote_unreachable_directive()`, `remote_locked_directive()`): the remote remedy every client
+  surface names. A locked vault on a selected remote server resolves the CLI-local reason
+  `remote_vault_locked` to the directive `remote_vault_unlock_required`; the MCP bridge sends it as
+  `safe_details.continuation` beside `VAULT_LOCKED`. The hook SessionStart contexts carry the
+  remote phase and its token (`StatusOutcome.phase`, `unavailable_context(phase)`,
+  `locked_context()`).
 - `adapters.control.unix_socket.connect_owner_only_endpoint(path)`: the fixed endpoints' fences
   (owner, mode 0700 directory, mode 0600 socket, one link, peer UID, unchanged inode) for an
   explicit socket path.

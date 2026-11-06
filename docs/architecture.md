@@ -169,7 +169,15 @@ HTTPS:  client ─AF_UNIX─► connector ═══ HTTPS binding v1 (key, scope
 
 The connector writes a status file of closed tokens, so a client names a failed remote connection
 (`remote_unreachable`, `remote_auth_failed`, `remote_identity_changed`,
-`remote_service_not_running`, `remote_incompatible`) instead of reporting a local service problem.
+`remote_service_not_running`, `remote_incompatible`) instead of reporting a local service problem;
+a locked vault on the remote server is `remote_vault_unlock_required`. The connect seam in
+`service.client` claims the workspace for every connection to a remote root; the CLI, the menu,
+the terminal interface and the MCP bridge also answer workspace calls on their own connection,
+and hooks only claim. For work that outlives a call (the AI-powered review loop, observation
+verification) the connector keeps one background workspace agent per workspace whose claim it
+relayed, for 15 minutes after that workspace's last hello, and delivers that workspace's
+hook-captured observations over it. It learns which folder a claim stands for from an owner-only
+index the connecting process writes on the client.
 
 
 ## The six operations

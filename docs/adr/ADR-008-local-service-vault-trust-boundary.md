@@ -568,7 +568,12 @@ for HTTPS, a same-user gateway on the server:
   through that endpoint. Human-control and secret endpoints are never forwarded."
 - **Trust table rows added.** *Target connector* (client host, per target, no vault): narrowly
   trusted to relay control frames for one owner-selected target and to hold its target
-  credential; no storage, vault, policy or provider authority. *Service gateway* (server host,
+  credential; no storage, vault, policy or provider authority. It also holds the background
+  workspace agent of each workspace whose claim it relayed (the workspace-agent row's authority,
+  nothing more) and delivers that workspace's hook-captured observations, attested by the
+  client's own observation store; it learns which local folder a claim stands for only from an
+  owner-only index on the client and serves it only when the claim derived again matches.
+  *Service gateway* (server host,
   same UID as the service): narrowly trusted to authenticate API keys, apply their scope, refuse
   locators and `Origin` headers, and re-enter through the owner-only control endpoint as an
   ordinary client; no vault, storage or policy authority.

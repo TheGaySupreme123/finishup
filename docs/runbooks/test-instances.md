@@ -170,6 +170,22 @@ selection. Never point either instance at the everyday install's directories, an
 processes you started (`finishup server disconnect`, `finishup instance dispose`), never by
 pattern.
 
+**Edge relay (approach A).** On the server account, provision an instance and start it
+(`<server launcher> service start`); for an `https` or `local_port` target also create a key on
+its trusted console or into a new owner-only file (`service gateway key create --label L --scope
+agent --output-file F`) and run `service gateway run --listen 127.0.0.1:PORT --tls-cert C
+--tls-key K` under that account. On the client account, install the same revision's wheel into an
+unpinned runtime so the selection applies, then add the target (`server add NAME
+ssh://user@host:port --remote-launcher <server launcher>`, or `server add NAME https://… --ca-file
+CA` / `--port PORT --ca-file CA` followed by `server login NAME --key-file F`) and select it
+(`server use NAME`); both ask for the typed name on the trusted console. `server connect`, `server
+test` and `server status --json` start and show the connector. Its records are in the target root
+on the client: `state/connector-status.json`, `state/claimed-workspaces/` (one owner-only record
+per workspace a client claimed) and `log/connector.stderr`; the gateway's audit lines are in the
+server instance's log folder. Tear down with `server disconnect`, `server use local` and `server
+remove NAME` on the client, then `service gateway key revoke`, the gateway's own stop and
+`instance dispose` on the server.
+
 ## Concurrency
 
 - One tag per worker or job. Two workers must never share a `<base>/<tag>`; the second `create`

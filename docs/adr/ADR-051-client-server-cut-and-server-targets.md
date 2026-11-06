@@ -267,7 +267,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   ran synchronously on the event loop — the reviewer broker's file reads, declared-test pinning,
   the observation verification steps and the post-run hash — move to a worker thread at their call
   sites, with no other behaviour change. A composition built without the hub fails a claim-bound
-  read as unavailable (`hub_unavailable`), never as a local read.
+  read as unavailable (`hub_unavailable`), never as a local read. Several connections of one
+  client may serve the same claim; a call naming a workspace an agent opened for observation
+  verification that the answering agent does not know (`handle_unknown`: another connection now
+  serves the claim, or the agent restarted) opens the workspace again on that agent, exactly as
+  first opened, and is retried once.
 - **The client side.** A connection to a remote root sends a `ClientWorkspaceBinding` (the claim,
   and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
@@ -527,17 +531,48 @@ through the same relay; human-control and secret channels never leave the server
   status, closed reason and correlation id only. v1 has one principal (`owner`): claims pass
   unchanged, so the owner's SSH and HTTPS clients reach the same tasks; per-principal claim
   namespaces wait for multi-key hosting.
+- **Binding at the connect seam.** `service.client` binds every connection to a remote root:
+  `connect_service` and `connect_service_on_demand` turn the caller's locator into the target's
+  claim (`binding_for_active_root`), never send the path, mark the connection's transport
+  `connector`, and start the connector when none answers (the plain connect too: it is
+  client-owned and vault-less). Processes whose calls run workspace work while they are live
+  pass `serve_workspace=True` and answer the server's workspace calls on their own connection:
+  the CLI (`build_service_client`, which the menu and the terminal interface also use) and the
+  MCP bridge. Hooks stay claim-only, so their observation ingest is attested and their `start`
+  sends the handle. A workspace the shared root rule cannot resolve is not claimed, and a remote
+  connection with no claim refuses an absolute `workspace_ref` instead of sending it.
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
   connection per workspace whose claim it relayed, for 15 minutes after that workspace's last
-  hello (`open_background_agent(root, claim)`). It is also the process that drains what the
-  client captured for a remote root (the observation outbox and spool) in the background, every
-  30 seconds and once more as it stops (`drain_captured_observations(root)`); hooks still drain
-  once per pass.
+  hello (`open_background_agent(root, claim, dial)`). It learns which local workspace a claim
+  stands for from the root's owner-only claimed-workspace index (`<troot>/state/claimed-workspaces/
+  <64 hex>.json`, `yoetz.claimed-workspace/1`), which the connecting process writes and which
+  never leaves the machine; it derives the claim again from the recorded workspace with the
+  target's salt and serves it only when the two match. The agent connection runs the real
+  `WorkspaceAgentHandler`, is relayed by the connector itself over a socket pair (so it neither
+  keeps the connector from idling out nor renews its own lease), and reconnects whenever the
+  service ends it. Over the same connection the connector delivers what the client's hooks
+  captured for that workspace (the observation outbox and spool, `ClientObservationDrain`, each
+  row attested by the client's own store) every 30 seconds and once more as it stops; hooks
+  still drain once per pass. Several connections may serve one claim (a CLI command, the MCP
+  bridge, the connector); the service sends each call to the newest, and a workspace an agent
+  opened for observation verification and another agent does not know (`handle_unknown`) is
+  opened again on the answering agent and the call retried once.
+- **Remote remedies on every surface.** A remote target's failure is named by its closed phase
+  and its ADR-030 directive on the CLI, the menu, setup's next steps, the MCP bridge, the hook
+  contexts and the terminal interface: every `service_unavailable` from a remote root carries a
+  remote phase (the connector's recorded one, or `remote_unreachable` when it recorded none,
+  including a connection lost mid-session), and a locked vault on the remote server is
+  `remote_vault_unlock_required`. None of them names a local `service run` or `service unlock`,
+  a host or a target name; a local root keeps its exact text.
 - **Reverse states.** `server connect` / `server disconnect` (the stamped pid only, then `ssh -O
   exit` for a master that outlived it; never by pattern) and the 15-minute idle exit;
   `service gateway key create` / `key revoke`; `service gateway run` / Ctrl-C or the supervisor.
   `server status` and `server test` show the connector's state; `key list` shows the keys.
+- **Modules.** `finishup.client.connector` (relay, leases, drain), `connector_status`,
+  `connector_runtime`, `connector_agent` (the background agent), `claimed_workspaces` (the index),
+  `ssh_upstream`, `https_upstream`; `finishup.gateway` and `finishup.protocol.rest_binding`;
+  `finishup.cli.remote_remedy` (one place for every surface's remote remedy).
 - **Why this shape.** The credential and the warm connection live in one process per target, so a
   short-lived hook pays a local Unix connect plus the round trips, never a TLS or SSH handshake,
   and `httpx` never enters the hook import path. The cost is one supervised client process per
