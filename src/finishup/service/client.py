@@ -2495,7 +2495,19 @@ async def _connect_remote_on_demand(
             raise
         if not await start_remote_service(transport, deadline - time.monotonic()):
             raise
-    return await attempt()
+    try:
+        return await attempt()
+    except ControlError as exc:
+        if exc.phase != "remote_service_not_running":
+            raise
+        # The server's own ``service start`` just reported its service running, yet the channel
+        # to its endpoint is still refused. OpenSSH reports a refused stream-local channel the
+        # same way whatever the cause, so this one is not a stopped service: the server's sshd
+        # refuses stream-local forwarding, or the login user cannot reach the endpoint. Starting
+        # the service again cannot help; the endpoint cannot be reached.
+        raise ControlError(
+            "service_unavailable", retryable=exc.retryable, phase="remote_unreachable"
+        ) from None
 
 
 async def ensure_service_running(

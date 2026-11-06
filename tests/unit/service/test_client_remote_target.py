@@ -269,6 +269,40 @@ def test_a_stopped_ssh_service_is_started_once_through_its_launcher(
     assert len(starts) == 1 and 0 < starts[0] <= 5.0
 
 
+def test_a_channel_refused_after_a_successful_start_is_not_a_stopped_service(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # OpenSSH reports a refused stream-local channel the same way when sshd refuses forwarding:
+    # once the server's own start reported its service running, starting it is not the remedy.
+    starts: list[float] = []
+
+    async def dial() -> ControlStream:
+        raise TransportError("remote_service_not_running")
+
+    async def start(_transport: object, seconds: float) -> bool:
+        starts.append(seconds)
+        return True
+
+    transport = _FakeTransport(remote, dial)
+    _use(monkeypatch, transport)
+    monkeypatch.setattr(transports, "start_remote_service", start)
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await client_module.connect_service_on_demand(
+                ControlClientKind.CLI, timeout_seconds=5.0
+            )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == (
+        "service_unavailable",
+        True,
+        "remote_unreachable",
+    )
+    assert transport.dials == 2 and len(starts) == 1
+
+
 class _ClosingStream:
     """A remote stream that ends at once and names why (as an ``ssh`` child would)."""
 
