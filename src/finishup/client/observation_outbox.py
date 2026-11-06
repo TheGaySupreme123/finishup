@@ -10,8 +10,9 @@ its own claim-bound connection.
 One pass is the service's own: it replays this workspace's spooled hook records into the outbox
 the way the service replays them (``handle_observe`` with no service), then runs the shared
 ``ObservationOutboxSweeper`` over the outbox, narrowed to the one workspace the connection
-claimed, with each ingest sent as ``observation_ingest``. Routing, attempt accounting, gaps,
-quarantine and the per-lane FIFO order are that sweeper's. Like the CLI drain, a pass stops at
+claimed, with each ingest sent as ``observation_ingest``, attested with what this client's store
+and mapping hold for it (ADR-051 decision 12, ``finishup.client.observation_attestation``).
+Routing, attempt accounting, gaps, quarantine and the per-lane FIFO order are that sweeper's. Like the CLI drain, a pass stops at
 the first control failure instead of charging every later row an attempt for a connection that
 is gone; rows it did not settle stay pending for the next pass.
 """
@@ -34,6 +35,7 @@ from finishup.application.observation_drain import (
     ObservationOutboxSweeper,
     observation_control_failure,
 )
+from finishup.client.observation_attestation import attest_for_connection
 from finishup.domain.observation import (
     ObservationIngestDisposition,
     ObservationIngestRequest,
@@ -92,13 +94,27 @@ class _PassStopped(BaseException):
 
 
 class _ClientIngest:
-    """``ObservationIngestCoordinator`` over one client connection, mapped as the CLI drain maps it."""
+    """``ObservationIngestCoordinator`` over one client connection, mapped as the CLI drain maps it.
 
-    __slots__ = ("_client", "_deadline_ms", "failure")
+    Each row is attested from ``store`` before it is sent when the connection is claim-bound.
+    """
 
-    def __init__(self, client: ObservationIngestClient, deadline_ms: int) -> None:
+    __slots__ = ("_client", "_deadline_ms", "_state", "_store", "_workspace", "failure")
+
+    def __init__(
+        self,
+        client: ObservationIngestClient,
+        deadline_ms: int,
+        *,
+        store: LocalObservationStore,
+        workspace_commitment: str,
+        state: Path | None,
+    ) -> None:
         self._client = client
         self._deadline_ms = deadline_ms
+        self._store = store
+        self._workspace = workspace_commitment
+        self._state = state
         self.failure: str | None = None
 
     async def ingest_request(self, request: ObservationIngestRequest) -> ObservationIngestResult:
@@ -106,6 +122,17 @@ class _ClientIngest:
             raise _PassStopped
         stage = "request_encode"
         try:
+            request = await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(
+                    attest_for_connection,
+                    request,
+                    self._client,
+                    store=self._store,
+                    workspace_commitment=self._workspace,
+                    state=self._state,
+                ),
+            )
             body = observation_ingest_request_to_json(request)
             stage = "control"
             raw = await self._client.observation_ingest(body, deadline_ms=self._deadline_ms)
@@ -227,15 +254,28 @@ class ClientObservationDrain:
         if commitment is None:
             return ClientDrainSummary(0, ObservationDrainSummary(0, 0, 0, 0, ()))
         replayed = await self._replay(commitment)
-        ingest = _ClientIngest(client, self._deadline_ms)
         sweeper = self._sweeper
         if sweeper is None:
             store = await loop.run_in_executor(
                 None, partial(_WorkspaceStore, commitment, _state=self._state)
             )
+            ingest = _ClientIngest(
+                client,
+                self._deadline_ms,
+                store=store,
+                workspace_commitment=commitment,
+                state=self._state,
+            )
             sweeper = ObservationOutboxSweeper(store, ingest, budget_seconds=self._budget_seconds)
             self._sweeper = sweeper
         else:
+            ingest = _ClientIngest(
+                client,
+                self._deadline_ms,
+                store=sweeper.local,
+                workspace_commitment=commitment,
+                state=self._state,
+            )
             sweeper.coordinator = ingest
         try:
             summary = await sweeper.sweep()
