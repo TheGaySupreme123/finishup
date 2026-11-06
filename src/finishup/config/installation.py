@@ -20,6 +20,7 @@ import json
 import os
 import re
 import stat
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,8 @@ __all__ = [
     "INSTANCE_IDENTITY_NAME",
     "INSTANCE_IDENTITY_SCHEMA",
     "INSTANCE_LIFECYCLES",
+    "INSTANCE_LONGEST_ENDPOINT",
+    "MAX_SOCKET_PATH_BYTES",
     "REPORTED_LIFECYCLES",
     "InstanceIdentity",
     "InstanceIdentityError",
@@ -46,12 +49,15 @@ __all__ = [
     "SourceState",
     "format_rfc3339_ms",
     "instance_identity_path",
+    "instance_root_fits",
     "is_expired",
     "new_instance_identity",
     "parse_rfc3339_ms",
     "read_instance_identity",
     "remove_runtime_pin",
     "runtime_prefix_digest",
+    "socket_path_fits",
+    "usable_socket_path_bytes",
     "validate_package_digest",
     "validate_source_ref",
     "verify_instance_binding",
@@ -112,6 +118,35 @@ _REASONS: Final = frozenset(
         "runtime_pin_unwritable",
     }
 )
+
+
+def usable_socket_path_bytes(platform: str = sys.platform) -> int:
+    """The bytes a Unix socket path may hold on ``platform``, its terminating NUL excluded.
+
+    ``sun_path`` holds 108 bytes on Linux (WSL 2 included) and 104 on Darwin and the BSDs; any
+    other platform gets the smaller bound.
+    """
+
+    return 107 if platform.startswith("linux") else 103
+
+
+# The one socket-path bound for this platform: ``instance_root_too_long`` (``finishup instance``)
+# and ``target_root_too_long`` (``finishup server add``) both check against it.
+MAX_SOCKET_PATH_BYTES: Final = usable_socket_path_bytes()
+# The longest endpoint a service binds beneath an instance root.
+INSTANCE_LONGEST_ENDPOINT: Final = Path("run") / "secret-ingress.sock"
+
+
+def socket_path_fits(path: Path, *, temporary_suffix_bytes: int = 0) -> bool:
+    """Whether a socket bound at ``path`` (first at ``path`` plus a temporary suffix) fits."""
+
+    return len(os.fsencode(path)) + temporary_suffix_bytes <= MAX_SOCKET_PATH_BYTES
+
+
+def instance_root_fits(root: Path) -> bool:
+    """Whether every endpoint a service binds beneath the instance ``root`` fits ``sun_path``."""
+
+    return socket_path_fits(root / INSTANCE_LONGEST_ENDPOINT)
 
 
 class InstanceIdentityError(Exception):
