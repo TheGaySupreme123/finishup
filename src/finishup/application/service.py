@@ -1019,8 +1019,9 @@ class Application:
     observation_sweep_close: Callable[[], None] | None = field(
         default=None, repr=False, compare=False
     )
-    # Awaited last in close: waits, within its own bound, for the sweep workers
-    # ``observation_sweep_close`` asked to stop, so their writes finish before close returns.
+    # Awaited last in close: waits, within its own bound, for the legacy hook-spool pass
+    # ``observation_sweep_close`` asked to stop. The observation sweeper's and coordinator's
+    # pools are still shut down without a wait (#1320).
     observation_sweep_wait_closed: Callable[[], Awaitable[None]] | None = field(
         default=None, repr=False, compare=False
     )
@@ -3922,7 +3923,7 @@ class Application:
             if failure is None:
                 failure = exc
         try:
-            # Last: wait, within its own bound, for a worker the first step asked to stop.
+            # Last: wait, within its own bound, for the hook-spool pass the first step asked to stop.
             if self.observation_sweep_wait_closed is not None:
                 await self.observation_sweep_wait_closed()
         except BaseException as exc:

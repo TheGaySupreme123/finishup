@@ -767,11 +767,13 @@ def test_legacy_spool_pass_stopped_before_it_began_touches_nothing(tmp_path: Pat
 async def test_ready_close_returns_only_after_a_cancelled_sweeps_spool_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing a READY generation started writes to its state once its close has returned.
+    """A spool pass the cancelled sweep started finishes its writes before close returns.
 
     The daemon cancels its maintenance loop and then closes the application, so a spool pass
     the cancelled sweep started is still running. The pass is held until close begins waiting
     for it, the worst case for a close that does not wait, and then makes its real first write.
+    Close waits for this pass only within its bound; the observation sweeper's and coordinator's
+    pools are still not waited for (#1320).
     """
 
     started = threading.Event()
