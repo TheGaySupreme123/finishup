@@ -53,6 +53,7 @@ from finishup.tui.models import (
 if TYPE_CHECKING:  # Runtime imports stay lazy; annotations still type-check.
     from finishup.adapters.integrations.observation_local import LocalObservationStore
     from finishup.application.harness_mcp import HarnessMcpService
+    from finishup.cli.policy_server import PolicyServer
     from finishup.cli.zero_network_selection import ZeroNetworkSelection
     from finishup.domain.observation_budget import CapacityRequest
     from finishup.domain.observation_settings import ObservationDetailProfile
@@ -1488,22 +1489,18 @@ class FinishUpRuntime:
         indicator = None if record is None else f"{record.kind} {record.target_id}"
         return self._zero_network_indicator(indicator)
 
-    def policy_server_line(self, report: object | None) -> str | None:
-        """Which remote server's privacy policy the questionnaire changed (ADR-051 decision 8).
+    def selected_policy_server(self) -> PolicyServer | None:
+        """The remote server whose privacy policy a questionnaire changes (ADR-051 decision 8).
 
-        ``None`` for this computer's everyday FinishUP. ``report`` is the questionnaire's report,
-        or ``None`` when it raised: the change is then unconfirmed. The same fixed sentence the
-        questionnaire printed on the handed-over terminal, by generated id and closed kind only.
+        ``None`` for this computer's everyday FinishUP. The interface reads it once before it
+        hands the terminal over and names that server afterwards, by generated id and closed kind
+        only: the owner may switch servers during the questionnaire, and the change stays that
+        server's.
         """
 
         from finishup.cli.policy_server import selected_policy_server
 
-        server = selected_policy_server()
-        if server is None:
-            return None
-        if report is None:
-            return server.unconfirmed_line()
-        return server.report_line(getattr(report, "outcome", None), getattr(report, "reason", None))
+        return selected_policy_server()
 
     def _zero_network_indicator(self, indicator: str | None) -> str | None:
         """The header names the zero-network item while the selection on disk still shows it.

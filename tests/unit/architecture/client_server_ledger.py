@@ -461,7 +461,6 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     ),
     # finishup.cli.privacy_setup
     _c("cli.privacy_setup", "adapters.privacy.catalog", "<module>", 1, "shared_pure"),
-    _c("cli.privacy_setup", "adapters.privacy.catalog", "_propose", 1, "shared_pure"),
     _c("cli.privacy_setup", "adapters.privacy.local_enforcer", "<module>", 1, "shared_pure"),
     _c("cli.privacy_setup", "adapters.providers.data_use_catalog", "<module>", 1, "shared_pure"),
     _c(

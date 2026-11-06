@@ -21,7 +21,7 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, cast
 
 from textual import events, on
 from textual.app import App, ComposeResult, SuspendNotSupported
@@ -86,6 +86,9 @@ from finishup.tui.widgets.views import (
     TextEntryView,
     ViewDismissed,
 )
+
+if TYPE_CHECKING:
+    from finishup.cli.policy_server import PolicyServer
 
 __all__ = ["FinishUpTui"]
 
@@ -864,7 +867,7 @@ class FinishUpTui(App[int]):
         """
 
         try:
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: self.runtime.run_privacy_setup("private", conversation_review="local_only")
             )
         except SuspendNotSupported:
@@ -876,9 +879,7 @@ class FinishUpTui(App[int]):
             return False
         except RuntimeError_ as error:
             self._report(error)
-            self._say_policy_server(None)
             return False
-        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.UNPROVEN,
@@ -888,17 +889,36 @@ class FinishUpTui(App[int]):
 
         return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
 
-    def _say_policy_server(self, report: object | None) -> None:
-        """Name the remote server whose privacy policy the questionnaire changed (ADR-051).
+    async def _hand_over_privacy(self, operation: Callable[[], Awaitable[object]]) -> object:
+        """Hand the terminal to the trusted questionnaire, then name the server it changed.
 
         With a server on another machine, a port or the web selected, the questionnaire changes
-        that server's policy, not this computer's (decision 8). It said so on the handed-over
-        terminal; this says it again here, by generated id and closed kind only. ``report`` is
-        ``None`` when the questionnaire raised. Nothing is said for this computer's server.
+        that server's policy, not this computer's (ADR-051 decision 8). It said so on the
+        handed-over terminal; this says it again here, by generated id and closed kind only, with
+        a waiting proposal's id and expiry. The server is read before the hand-over and kept: the
+        owner may switch servers during the questionnaire, and the change stays that server's. A
+        questionnaire that raised ``RuntimeError_`` is named as unconfirmed before the error goes
+        on to the caller; ``SuspendNotSupported`` means nothing ran, so nothing is said.
         """
 
-        line = self.runtime.policy_server_line(report)
-        if line is not None:
+        server = self.runtime.selected_policy_server()
+        try:
+            report = await self.hand_over_terminal(operation)
+        except RuntimeError_:
+            self._say_policy_server(server, None)
+            raise
+        self._say_policy_server(server, report)
+        return report
+
+    def _say_policy_server(self, server: PolicyServer | None, report: object | None) -> None:
+        """One message naming ``server`` and what the questionnaire did to its policy.
+
+        ``report`` is ``None`` when the questionnaire raised. Nothing is said for this computer's
+        server.
+        """
+
+        if server is not None:
+            line = server.result_line(report)
             self.say(Level.ACTIVE, "Privacy policy of the selected FinishUP server", (line,))
 
     async def _choose_harnesses(
@@ -2215,7 +2235,7 @@ class FinishUpTui(App[int]):
         """Suspend and let the trusted CLI ceremony own the decision end to end."""
 
         try:
-            report = await self.hand_over_terminal(lambda: self.runtime.run_privacy_setup(recipe))
+            report = await self._hand_over_privacy(lambda: self.runtime.run_privacy_setup(recipe))
         except SuspendNotSupported:
             self.say(
                 Level.UNPROVEN,
@@ -2233,9 +2253,7 @@ class FinishUpTui(App[int]):
                 "Privacy setup did not complete",
                 (f"Reason: {error.reason}",),
             )
-            self._say_policy_server(None)
             return
-        self._say_policy_server(report)
         outcome = getattr(report, "outcome", "failed")
         if outcome in {"configured", "unchanged"}:
             await self._refresh_header()
@@ -2454,7 +2472,7 @@ class FinishUpTui(App[int]):
             # ADR-049 review round 1: a first-run answer that adds AI-powered review lists the
             # AI recipes (Assisted review by default), never the Private recommendation a
             # subscription reviewer gets on its own.
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: (
                     self.runtime.run_privacy_setup(
                         None, conversation_review=conversation_review, ai_review_add_on=True
@@ -2466,7 +2484,6 @@ class FinishUpTui(App[int]):
         except (SuspendNotSupported, RuntimeError_) as error:
             if isinstance(error, RuntimeError_):
                 self._report(error)
-                self._say_policy_server(None)
             else:
                 self.say(
                     Level.UNPROVEN,
@@ -2474,7 +2491,6 @@ class FinishUpTui(App[int]):
                     ("Run 'finishup privacy setup' from your shell.",),
                 )
             return
-        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.BLOCKED,
@@ -2845,7 +2861,7 @@ class FinishUpTui(App[int]):
             return
         try:
             # Authorize the exact provider channel before any credential-bearing probe can run.
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: self.runtime.run_privacy_setup(
                     None,
                     offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
@@ -2863,9 +2879,7 @@ class FinishUpTui(App[int]):
             return
         except RuntimeError_ as error:
             self._report(error)
-            self._say_policy_server(None)
             return
-        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.BLOCKED,

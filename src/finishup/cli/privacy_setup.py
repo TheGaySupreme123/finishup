@@ -34,6 +34,7 @@ from finishup.adapters.providers.data_use_catalog import data_use_record_for_end
 from finishup.adapters.providers.openai_responses_factory import (
     endpoint_profile_data_use_reviewed,
 )
+from finishup.cli.policy_server import PendingProposal, selected_policy_server
 from finishup.domain.privacy import (
     MAX_ADMITTED_INPUT_ROOTS,
     AuthorizationScopeKind,
@@ -194,6 +195,9 @@ class PrivacySetupReport:
     reason: str | None = None
     grant_state: Literal["granted", "missing"] | None = None
     migration_state: str | None = None
+    # The server's expiry of ``proposal_id`` when the proposal waits on a remote server's host
+    # for its decision (``requires_server_host``, ADR-051 decision 8); ``None`` otherwise.
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1437,7 +1441,27 @@ async def _propose(
     workspace_locator: Path | None = None,
     prompt: bool = True,
 ) -> str | None:
-    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+    """Propose ``candidate``: ``None`` once a tightening applied, else the waiting proposal's id."""
+
+    pending = await _propose_pending(
+        candidate, authority_digest, workspace_locator=workspace_locator, prompt=prompt
+    )
+    return None if pending is None else pending.proposal_id
+
+
+async def _propose_pending(
+    candidate: PrivacyPolicy,
+    authority_digest: str,
+    *,
+    workspace_locator: Path | None = None,
+    prompt: bool = True,
+) -> PendingProposal | None:
+    """Propose ``candidate``: ``None`` once a tightening applied, else the waiting proposal.
+
+    The proposal carries the server's expiry, which the questionnaire names when the proposal
+    waits on a remote server's host for its decision (ADR-051 decision 8).
+    """
+
     from finishup.cli.app import build_service_client
     from finishup.ports.control import ProjectionRenderMode, WorkspaceLocator
 
@@ -1461,9 +1485,9 @@ async def _propose(
         await client.close()
     if result.get("schema_version") != "2.0.0":
         raise ValueError("privacy_setup_proposal_invalid")
-    proposal_id = result.get("proposal_id")
-    if result.get("outcome") == "decision_required" and type(proposal_id) is str:
-        return proposal_id
+    pending = PendingProposal.from_answer(result)
+    if result.get("outcome") == "decision_required" and pending is not None:
+        return pending
     if result.get("outcome") == "tightening_applied":
         await _surface_zero_network_selection(prompt=prompt)
         return None
@@ -1772,8 +1796,6 @@ async def run_privacy_setup(
             "unknown",
             reason="local_terminal_required",
         )
-    from finishup.cli.policy_server import selected_policy_server
-
     # ADR-051 decision 8: with a remote server selected this is that server's policy; it is named
     # before anything is read or sent and again in the result.
     server = selected_policy_server()
@@ -1797,7 +1819,7 @@ async def run_privacy_setup(
             typer.echo(server.unconfirmed_line())
         raise
     if server is not None:
-        typer.echo(server.report_line(report.outcome, report.reason))
+        typer.echo(server.result_line(report))
     return report
 
 
@@ -1818,7 +1840,8 @@ async def _privacy_setup_questionnaire(
 
     ``decide_here`` is False on a remote server: its trusted decision runs only on its own host
     (ADR-051 decisions 7 and 11), so a widening's proposal is left waiting there and reported
-    with ``requires_server_host`` instead of opening a ceremony this computer cannot reach.
+    with ``requires_server_host``, its id and the server's expiry, instead of opening a ceremony
+    this computer cannot reach.
     """
 
     locator = Path.cwd() if workspace_locator is None else workspace_locator
@@ -1871,12 +1894,12 @@ async def _privacy_setup_questionnaire(
             grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
-    proposal_id = await _propose(
+    pending = await _propose_pending(
         candidate,
         snapshot.authority_digest,
         workspace_locator=locator,
     )
-    if proposal_id is None:
+    if pending is None:
         await _warn_if_agent_route_cannot_dispatch(candidate)
         _reconcile_host_admission(candidate, locator)
         return PrivacySetupReport(
@@ -1885,9 +1908,11 @@ async def _privacy_setup_questionnaire(
             grant_state="granted",
             migration_state=snapshot.migration_state,
         )
+    proposal_id = pending.proposal_id
     if not decide_here:
         from finishup.cli.command_scope import REQUIRES_SERVER_HOST
 
+        # The proposal waits on the server host until its expiry, which the result names.
         return PrivacySetupReport(
             "cancelled",
             current.profile.value,
@@ -1895,6 +1920,7 @@ async def _privacy_setup_questionnaire(
             REQUIRES_SERVER_HOST,
             snapshot.grant_state,
             snapshot.migration_state,
+            pending.expires_at,
         )
     typer.echo("")
     typer.echo("Final widening decision (trusted local ceremony)")
