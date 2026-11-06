@@ -263,26 +263,30 @@ def test_a_master_that_outlived_its_connector_is_asked_to_exit_first(
             orphan.wait()
 
 
-def test_only_an_owner_owned_socket_is_removed(tmp_path: Path) -> None:
+def test_only_an_owner_owned_socket_is_removed(monkeypatch: pytest.MonkeyPatch) -> None:
     from finishup.client.ssh_upstream import remove_owned_socket
 
-    socket_path = tmp_path / "s.sock"
-    _stale_socket(socket_path)
-    regular = tmp_path / "regular"
-    regular.write_bytes(b"")
-    linked = tmp_path / "linked.sock"
-    target_socket = tmp_path / "target.sock"
-    _stale_socket(target_socket)
-    linked.symlink_to(target_socket)
+    # A short owner-only directory: pytest's tmp_path beneath CI's job temp is too long for the
+    # AF_UNIX paths (``sun_path``) the stale sockets below are bound at.
+    with ambient_home(monkeypatch) as home:
+        base = home / "sockets"
+        socket_path = base / "s.sock"
+        _stale_socket(socket_path)
+        regular = base / "regular"
+        regular.write_bytes(b"")
+        linked = base / "linked.sock"
+        target_socket = base / "target.sock"
+        _stale_socket(target_socket)
+        linked.symlink_to(target_socket)
 
-    remove_owned_socket(socket_path)
-    remove_owned_socket(regular)
-    remove_owned_socket(linked)
-    remove_owned_socket(tmp_path / "absent.sock")
+        remove_owned_socket(socket_path)
+        remove_owned_socket(regular)
+        remove_owned_socket(linked)
+        remove_owned_socket(base / "absent.sock")
 
-    assert not socket_path.exists()
-    assert regular.exists()
-    assert linked.is_symlink() and target_socket.exists()
+        assert not socket_path.exists()
+        assert regular.exists()
+        assert linked.is_symlink() and target_socket.exists()
 
 
 def test_a_stopped_master_leaves_no_forward_behind(

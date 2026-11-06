@@ -220,7 +220,9 @@ def test_direct_start_binds_the_default_client_to_the_actual_cwd(
         workspace_locator: WorkspaceLocator | None = None,
         projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
         output_is_controlling_tty: bool = False,
+        serve_workspace: bool = False,
     ) -> _Client:
+        assert serve_workspace is True  # the CLI answers a remote server's workspace calls
         assert projection_render_mode is ProjectionRenderMode.MACHINE_READABLE
         assert output_is_controlling_tty is False
         observed.append((client_kind, workspace_locator))
@@ -263,7 +265,9 @@ async def test_default_client_allows_an_explicit_unbound_connection(
         workspace_locator: WorkspaceLocator | None = None,
         projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
         output_is_controlling_tty: bool = False,
+        serve_workspace: bool = False,
     ) -> _Client:
+        assert serve_workspace is True  # the CLI answers a remote server's workspace calls
         assert client_kind is ControlClientKind.CLI
         assert projection_render_mode is ProjectionRenderMode.MACHINE_READABLE
         assert output_is_controlling_tty is False
