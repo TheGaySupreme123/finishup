@@ -5065,7 +5065,9 @@ user-controlled is ever rendered beside it.
   malformed facts raises `service_attribution_invalid` instead of dropping its provenance.
   `ServiceAttribution(service_instance_id, transport).lines()` is the fixed line plus `This client
   reached FinishUP service <svc_…> (transport: <token>).`; `attribution_lines(attribution, shown=)`
-  omits a line the rendered text already carries. `render_human_status` and
+  omits a line the rendered text already carries, and omits `CLIENT_ATTESTED_WORKSPACE_LINE` when
+  that text carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE`, so a receipt of unknown provenance gains
+  only the `This client reached …` line. `render_human_status` and
   `render_human_receipt` (CLI), `result_from_public_model(..., attribution=)` for the MCP `status`
   and `receipt` text and its canonical fallback, and the terminal interface's task views and
   receipt (through `FinishUpRuntime`) end with these lines. Structured MCP content, CLI JSON and

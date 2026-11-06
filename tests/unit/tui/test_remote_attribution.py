@@ -18,7 +18,11 @@ from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
 from tests.unit.tui.test_workflow_contract import _SESSION, _Client
 
 from finishup.cli.render import render_human_status
-from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE
+from finishup.domain.receipts import (
+    CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    workspace_provenance_unknown_block,
+)
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.models import (
     ReceiptRequestModel,
@@ -44,10 +48,16 @@ class _BoundClient(_Client):
         self.workspace_binding = binding
         self.service_instance_id = _SERVICE_ID
         self.transport = "connector"
+        self.human_text: str | None = None
 
     async def receipt(self, request: ReceiptRequestModel) -> object:
         self.requests.append(request)
-        return ReceiptResultModel.model_validate(_receipt_result_wire())
+        wire = _receipt_result_wire()
+        if self.human_text is not None:
+            wire["format"] = "text"
+            wire["document"] = None
+            wire["human_text"] = self.human_text
+        return ReceiptResultModel.model_validate(wire)
 
 
 def _document_lines() -> tuple[str, ...]:
@@ -112,3 +122,14 @@ async def test_a_local_receipt_is_the_document_alone(
     runtime, _client = await _runtime(monkeypatch, tmp_path, "local_path")
     summary = await runtime.build_receipt(_SESSION, "json")
     assert summary.rendered_lines == _document_lines()
+
+
+async def test_a_claim_bound_receipt_of_unknown_provenance_names_only_its_producer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime, client = await _runtime(monkeypatch, tmp_path, "client_claim")
+    client.human_text = "Receipt\n\n" + workspace_provenance_unknown_block(markdown=False)
+    summary = await runtime.build_receipt(_SESSION, "text")
+    assert summary.rendered_lines[-1] == _REACHED
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in summary.rendered_lines
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines
