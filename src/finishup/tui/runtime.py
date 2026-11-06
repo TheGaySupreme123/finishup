@@ -2077,7 +2077,8 @@ class FinishUpRuntime:
             if error.reason == "credential_store_check_in_progress":
                 from finishup.cli.exits import remediation_message
 
-                # The vault is open and nothing changed: say why, and to try again in a moment.
+                # The service is still finishing an unlock and nothing changed: say why, and to
+                # try again in a moment.
                 raise RuntimeError_(
                     error.reason,
                     remediation_message(error.reason) or "the passphrase could not be changed",

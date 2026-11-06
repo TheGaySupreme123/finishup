@@ -260,7 +260,7 @@ async def test_store_provider_credential_supplies_the_scoped_reauthentication_se
 async def test_a_rotation_refused_while_a_credential_store_check_runs_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The vault is open and nothing changed, so the screen says why and to try again (#492)."""
+    """Nothing changed while an unlock finishes, so the screen says why and to retry (#492)."""
 
     from finishup.cli.unlock import HumanCeremonyCliError
 
@@ -274,7 +274,7 @@ async def test_a_rotation_refused_while_a_credential_store_check_runs_says_so(
 
     assert error.value.reason == "credential_store_check_in_progress"
     assert error.value.message.startswith(
-        "the vault is open, but the service is still finishing a credential-store check"
+        "the service is still finishing its latest unlock or the credential-store check"
     )
     assert error.value.message.endswith("try again in a moment")
 
