@@ -102,8 +102,8 @@ _FIXED_ERROR_REASONS: Final = frozenset(
     {
         "cancelled",
         "confirmation_mismatch",
-        # A passphrase rotation refused at open while the vault is open: the service is still
-        # finishing the credential-store check after its last unlock (#492 review).
+        # A passphrase rotation refused at open while the service is ready or unlocking: it is
+        # still finishing its latest unlock or the credential-store check after it (#492 review).
         "credential_store_check_in_progress",
         "empty_input",
         "eof",
@@ -1209,12 +1209,16 @@ async def _complete_human_ceremony(
             kind is HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE
             and vault_rewrap_secret is None
             and error.reason == "state_forbidden"
-            and await _service_reports_ready_passphrase_vault()
+            and await _service_reports_unlocking_or_ready_passphrase_vault()
         ):
-            # The vault is open, so this is not the locked vault ``state_forbidden`` usually
-            # means: the service waited for the credential-store check after its last unlock,
-            # which is still running (#492 review). This helper stages the replacement only
-            # after the open, so nothing was staged or changed and running it again is safe.
+            # A passphrase vault ready or still unlocking: the service refused the open while the
+            # credential-store check after its latest unlock still ran (#492 review), not for the
+            # locked vault ``state_forbidden`` usually means. The open needs only an open vault,
+            # so it can come while that unlock still activates, with the status ``unlocking``.
+            # Status alone cannot tell that from a lock the service is already unlocking again;
+            # either way a retry in a moment is the answer, not an unlock. This helper stages the
+            # replacement only after the open, so nothing was staged or changed and running it
+            # again is safe.
             raise HumanCeremonyCliError("credential_store_check_in_progress") from None
         raise
     async with session:
@@ -1486,8 +1490,8 @@ async def _service_reports_unusable_auto_unlock() -> bool:
     return reason in {"auto_unlock_stale", "auto_unlock_rejected"}
 
 
-async def _service_reports_ready_passphrase_vault() -> bool:
-    """True when the service status shows an open passphrase vault; False when unproven."""
+async def _service_reports_unlocking_or_ready_passphrase_vault() -> bool:
+    """True when the status shows a passphrase vault ready or unlocking; False when unproven."""
 
     try:
         from finishup.ports.control import ControlClientKind, ServiceState
@@ -1500,7 +1504,10 @@ async def _service_reports_ready_passphrase_vault() -> bool:
             await client.close()
     except Exception:
         return False
-    return status.state is ServiceState.READY and status.vault_mode == "passphrase"
+    return (
+        status.state in {ServiceState.READY, ServiceState.UNLOCKING}
+        and status.vault_mode == "passphrase"
+    )
 
 
 async def unlock_vault(passphrase: bytearray | None = None) -> VaultStateResult:
