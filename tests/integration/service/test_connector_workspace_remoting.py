@@ -800,25 +800,45 @@ def _linked_worktrees(tmp_path: Path) -> tuple[Path, str, Path, str]:
     linked = tmp_path / "client" / "linked"
     _git(main, "worktree", "add", "-q", "-b", "feature", str(linked))
     (linked / "app.py").write_text("print('the linked worktree')\n")
+    (linked / "feature.py").write_text("print('only in the linked worktree')\n")
+    _git(linked, "add", "feature.py")
     _git(linked, "commit", "-q", "-am", "the linked worktree's own change")
     linked_head = _git(linked, "rev-parse", "HEAD")
     assert linked_head != main_head
     return main.resolve(), main_head, linked.resolve(), linked_head
 
 
-async def _read_app(service: _Service, handle: str) -> bytes:  # noqa: F811
-    """What the agent serving ``handle`` reads as ``app.py`` (the reviewer's file read)."""
+async def _read_app(service: _Service, handle: str) -> bytes | None:  # noqa: F811
+    """What the agent serving ``handle`` returns for ``app.py`` (a reviewer's file read); None
+    where it returns no bytes."""
 
     from finishup.ports.workspace_agent import ReadTextBeneathArguments, WorkspaceOperation
 
-    text, _size = await service.hub.call(
+    read = await service.hub.call(
         handle,
         WorkspaceOperation.READ_TEXT_BENEATH,
         ReadTextBeneathArguments(handle, "app.py"),
         timeout_seconds=10.0,
         background=True,
     )
-    return text
+    return None if read is None else cast(tuple[bytes, int], read)[0]
+
+
+async def _names(service: _Service, handle: str) -> set[str]:  # noqa: F811
+    """The names the agent serving ``handle`` lists at its worktree's top (a reviewer's listing)."""
+
+    from finishup.ports.workspace_agent import ListBeneathArguments, WorkspaceOperation
+
+    listing = await service.hub.call(
+        handle,
+        WorkspaceOperation.LIST_BENEATH,
+        ListBeneathArguments(handle, ""),
+        timeout_seconds=10.0,
+        background=True,
+    )
+    assert listing is not None
+    entries, _truncated = cast(tuple[tuple[tuple[str, bool], ...], bool], listing)
+    return {name for name, _directory in entries}
 
 
 @pytest.mark.parametrize("kind", ["ssh", "https"])
@@ -839,7 +859,10 @@ async def test_each_linked_worktree_is_answered_from_itself_through_the_connecto
     linked worktree's agent with the local change-capture rule's own ``unsafe_root`` (its ``.git``
     is a file), exactly as a service on that machine would refuse it, never with the main
     worktree's base. Once the client processes are gone the connector keeps one background agent
-    per worktree, each still answering from its own worktree.
+    per worktree, each still answering from its own worktree. A reviewer's listing shows each
+    worktree's own files; a file read returns bytes only where Git answers that the file is not
+    ignored, which it cannot do in the linked worktree, so that agent returns none, as an honest
+    server's reviewer never reads one there.
     """
 
     from finishup.ports.workspace_agent import WorkspaceOnlyArguments, WorkspaceOperation
@@ -869,9 +892,11 @@ async def test_each_linked_worktree_is_answered_from_itself_through_the_connecto
                 (str(main), "ok", None),
                 (str(linked), "unavailable", "unsafe_root"),
             ]
-            # The reviewer's file reads: each handle reads its own worktree's file.
+            # The reviewer's reads: each handle is answered from its own worktree.
             assert await _read_app(service, main_handle) == b"print('client')\n"
-            assert await _read_app(service, linked_handle) == b"print('the linked worktree')\n"
+            assert await _read_app(service, linked_handle) is None
+            assert "feature.py" in await _names(service, linked_handle)
+            assert "feature.py" not in await _names(service, main_handle)
         finally:
             await main_connection.close()
             await linked_connection.close()
@@ -889,7 +914,8 @@ async def test_each_linked_worktree_is_answered_from_itself_through_the_connecto
             background=True,
         )
         assert base.commit == main_head
-        assert await _read_app(service, linked_handle) == b"print('the linked worktree')\n"
+        assert "feature.py" in await _names(service, linked_handle)
+        assert await _read_app(service, linked_handle) is None
         assert await _read_app(service, main_handle) == b"print('client')\n"
         assert {path for path, *_rest in agents.answers} == {str(main), str(linked)}
     assert spy.workspaces == []
