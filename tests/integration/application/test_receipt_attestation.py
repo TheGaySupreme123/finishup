@@ -2,15 +2,18 @@
 
 ADR-051: a claim-bound task's text and markdown receipts end with the client-attested block,
 decided from the session's opening event. Decision D4: when that event cannot be read, the
-receipt is still built and its section says what happened, why it matters and what to do; a
-retry once the read succeeds renders the binding. These drive the real ``Application`` facade
-over the memory and SQLite ledgers of the respond/status/receipt harness.
+receipt is still built and its section says what happened, why it matters and whether a retry
+can help. A passing cause (a failed read, a record that did not load) says to retry, and a retry
+once the read succeeds renders the binding; a lasting cause (a redacted or erased record, a key
+that is gone, a version this service cannot decode) says the record will not become readable
+again, and every retry keeps saying so. These drive the real ``Application`` facade over the
+memory and SQLite ledgers of the respond/status/receipt harness.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from dataclasses import replace
+from collections.abc import AsyncIterator, Callable
+from dataclasses import fields, replace
 from typing import Any, Literal, cast
 
 import pytest
@@ -23,14 +26,30 @@ from finishup.application.service import (
     ControlProjectionBinding,
     ProjectionRenderMode,
 )
-from finishup.domain.events import LedgerRecord, RedactionState
+from finishup.domain.events import (
+    AcceptedEvent,
+    EventSchema,
+    LedgerRecord,
+    ProjectionLocator,
+    RedactionState,
+    UnknownEvent,
+    accepted_record_digest_preimage,
+    compute_entry_digest,
+)
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
-from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_wire,
+)
 from finishup.ports.control import ControlClientKind, ControlMethod, RepositoryPrivacyContext
 from finishup.ports.objects import ObjectKind, ObjectRef
 from finishup.ports.workspace_agent import workspace_handle_for_claim
@@ -145,13 +164,20 @@ async def test_an_opening_recovery_could_not_read_leaves_the_receipt_unknown_unt
         frontier=checked.result_frontier,
     )
     request = ReceiptRequest.model_validate({**wire, "format": "text"})
-    unknown_block = "\n\n" + workspace_provenance_unknown_block(markdown=False)
+    unknown_block = "\n\n" + workspace_provenance_unknown_block(
+        markdown=False, reason=SESSION_OPENING_UNREADABLE
+    )
 
     recorded = await app.receipt(request)
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
     assert recorded.human_text is not None
     assert recorded.human_text.endswith(unknown_block)
     assert recorded.human_text.count("Workspace evidence") == 1
+    # A record that did not load can pass: the receipt says to run it again, then restart.
+    assert recorded.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire(
+        SESSION_OPENING_UNREADABLE
+    )
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE not in recorded.human_text
 
     # Storage reads normally again, but this ledger keeps the gap: a replay still cannot say.
     storage.failure = None
@@ -216,7 +242,9 @@ async def test_a_failed_attestation_read_records_the_receipt_and_a_retry_recover
         frontier=checked.result_frontier,
     )
     request = ReceiptRequest.model_validate({**wire, "format": "text"})
-    unknown_block = "\n\n" + workspace_provenance_unknown_block(markdown=False)
+    unknown_block = "\n\n" + workspace_provenance_unknown_block(
+        markdown=False, reason=SESSION_OPENING_UNREADABLE
+    )
 
     recorded = await app.receipt(request)
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
@@ -224,6 +252,9 @@ async def test_a_failed_attestation_read_records_the_receipt_and_a_retry_recover
     assert recorded.human_text is not None
     assert recorded.human_text.endswith(unknown_block)
     assert recorded.human_text.count("Workspace evidence") == 1
+    # A failed read can pass: the receipt says to run it again, then restart, and nothing else.
+    assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE)
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE not in recorded.human_text
 
     # The fault clears: running the same receipt again reads the opening, and this task is
     # not claim-bound, so the replay carries no workspace-evidence section at all.
@@ -288,7 +319,10 @@ async def test_a_claim_bound_receipt_shows_unknown_then_its_attested_block_on_re
 
     unknown = await app.receipt(request)
     assert unknown.human_text is not None
-    assert unknown.human_text.endswith("\n\n" + workspace_provenance_unknown_block(markdown=False))
+    assert unknown.human_text.endswith(
+        "\n\n"
+        + workspace_provenance_unknown_block(markdown=False, reason=SESSION_OPENING_UNREADABLE)
+    )
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in unknown.human_text
 
     faulty.failing = False
@@ -302,15 +336,189 @@ async def test_a_claim_bound_receipt_shows_unknown_then_its_attested_block_on_re
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE not in attested.human_text
 
 
+def _reminted(record: LedgerRecord, **changes: object) -> AcceptedEvent:
+    """``record`` with ``changes`` and a valid entry digest, as a ledger would return it.
+
+    The digest preimage is the record itself, so it is computed over an unvalidated copy and the
+    real record, which re-validates every invariant, is built from it.
+    """
+
+    assert type(record) is AcceptedEvent
+    values: dict[str, object] = {
+        item.name: getattr(record, item.name) for item in fields(AcceptedEvent) if item.init
+    }
+    values.update(changes)
+    unvalidated = object.__new__(AcceptedEvent)
+    for item in fields(AcceptedEvent):
+        object.__setattr__(
+            unvalidated, item.name, values.get(item.name, getattr(record, item.name))
+        )
+    values["entry_digest"] = compute_entry_digest(accepted_record_digest_preimage(unvalidated))
+    return AcceptedEvent(**cast(Any, values))
+
+
+def _undecodable(record: LedgerRecord) -> UnknownEvent:
+    """``record`` as a ``session_opened`` version this service cannot decode, digest valid."""
+
+    assert type(record) is AcceptedEvent
+    schema = EventSchema("session_opened", "9.0.0")
+    digest = record.projection_locator.canonical_payload_digest
+    values: dict[str, object] = {
+        item.name: getattr(record, item.name)
+        for item in fields(UnknownEvent)
+        if item.init and item.name not in {"payload", "canonical_payload_digest"}
+    }
+    values.update(
+        schema=schema,
+        payload=None,
+        projection_locator=ProjectionLocator(schema, None, digest),
+        canonical_payload_digest=digest,
+    )
+    unvalidated = object.__new__(UnknownEvent)
+    for item in fields(UnknownEvent):
+        if item.init:
+            object.__setattr__(unvalidated, item.name, values[item.name])
+        else:
+            object.__setattr__(unvalidated, item.name, item.default)
+    values["entry_digest"] = compute_entry_digest(accepted_record_digest_preimage(unvalidated))
+    return UnknownEvent(**cast(Any, values))
+
+
+class _OpeningReadsAs:
+    """A task ledger whose whole-session read (the attestation's) returns the session's opening
+    record as ``lasting`` makes it; every bounded read and every other method is the real one."""
+
+    def __init__(self, ledger: Any, lasting: Any) -> None:  # noqa: ANN401
+        self._ledger = ledger
+        self._lasting = lasting
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._ledger, name)
+
+    async def _events(self, session_id: str, **kwargs: Any) -> AsyncIterator[LedgerRecord]:  # noqa: ANN401
+        async for record in self._ledger.load_events(session_id, **kwargs):
+            if kwargs.get("through") is None and record.schema.name == "session_opened":
+                yield self._lasting(record)
+            else:
+                yield record
+
+    def load_events(self, session_id: str, **kwargs: Any) -> AsyncIterator[LedgerRecord]:  # noqa: ANN401
+        return self._events(session_id, **kwargs)
+
+
+_LASTING_OPENINGS: dict[str, Callable[[LedgerRecord], LedgerRecord]] = {
+    "logically_redacted": lambda record: _reminted(
+        record, redaction=RedactionState.LOGICALLY_REDACTED, payload=None
+    ),
+    "erased_claimed": lambda record: _reminted(
+        record, redaction=RedactionState.ERASED_CLAIMED, payload=None
+    ),
+    "key_unavailable": lambda record: _reminted(
+        record, redaction=RedactionState.KEY_UNAVAILABLE, payload=None
+    ),
+    "undecodable_version": _undecodable,
+}
+
+
+@pytest.mark.parametrize("cause", sorted(_LASTING_OPENINGS))
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_a_lasting_cause_says_the_record_will_not_clear_and_every_retry_keeps_saying_so(
+    backend: Literal["memory", "sqlite"], cause: str
+) -> None:
+    """Decision D4b: a redacted or erased opening, one whose key is gone, or one this version
+    cannot decode will not become readable again. The receipt is recorded and says so in every
+    format, with no retry or restart advice, and a replay or a new receipt says the same."""
+
+    app, runtime, _ = _build_app(seed_offset=54, ledger_backend=backend)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=6000)
+    ledger, objects = runtime.resources[started.task_id]
+    runtime.resources[started.task_id] = (
+        cast(Any, _OpeningReadsAs(ledger, _LASTING_OPENINGS[cause])),
+        objects,
+    )
+    receipts_before = objects.refs_for_kind(ObjectKind.RECEIPT)
+    request = ReceiptRequest.model_validate(
+        {
+            **_receipt_wire(
+                6010,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=checked.result_frontier,
+            ),
+            "format": "text",
+        }
+    )
+    lasting_block = "\n\n" + workspace_provenance_unknown_block(
+        markdown=False, reason=SESSION_OPENING_UNRECOVERABLE
+    )
+    member = workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE)
+
+    recorded = await app.receipt(request)
+    assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
+    assert recorded.human_text is not None
+    assert recorded.human_text.endswith(lasting_block)
+    assert recorded.human_text.count("Workspace evidence") == 1
+    assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE)
+    assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in recorded.human_text
+    assert "finishup service restart" not in recorded.human_text
+    assert recorded.as_json()["workspace_provenance"] == member
+    for context in _CONTEXTS.values():
+        projected = await _project(app, request, recorded, context)
+        assert projected.workspace_provenance is not None
+        assert projected.workspace_provenance.model_dump() == member
+
+    # Running the same receipt again changes nothing: the record will not become readable.
+    replayed = await app.receipt(request)
+    assert replayed.receipt_id == recorded.receipt_id
+    assert replayed.human_text == recorded.human_text
+    assert replayed.as_json()["workspace_provenance"] == member
+
+    # A new receipt, in any format, says the same.
+    frontier = recorded.result_frontier
+    for seed, receipt_format in ((6011, "markdown"), (6012, "json")):
+        fresh = await app.receipt(
+            ReceiptRequest.model_validate(
+                {
+                    **_receipt_wire(
+                        seed,
+                        task_id=started.task_id,
+                        session=started.session_id,
+                        writer=started.writer_id,
+                        frontier=frontier,
+                    ),
+                    "format": receipt_format,
+                }
+            )
+        )
+        frontier = fresh.result_frontier
+        assert fresh.receipt_id != recorded.receipt_id
+        assert fresh.as_json()["workspace_provenance"] == member
+        if receipt_format == "json":
+            assert fresh.human_text is None
+            continue
+        assert fresh.human_text is not None
+        assert fresh.human_text.endswith(
+            "\n\n"
+            + workspace_provenance_unknown_block(
+                markdown=True, reason=SESSION_OPENING_UNRECOVERABLE
+            )
+        )
+    assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 3
+
+
+@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
 @pytest.mark.parametrize("receipt_format", ["text", "markdown", "json"])
 async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_block(
-    receipt_format: Literal["text", "markdown", "json"], monkeypatch: pytest.MonkeyPatch
+    receipt_format: Literal["text", "markdown", "json"],
+    reason: WorkspaceProvenanceReason,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A redacted or unreadable opening event never leaves the section out silently."""
 
     from finishup.application import receipt as receipt_module
 
-    unknown = getattr(receipt_module, "_Provenance").UNKNOWN
+    unknown = getattr(receipt_module, "_Provenance")(reason)
 
     async def opening_cannot_say(runtime: object, *, request_id: str | None = None) -> object:
         del runtime, request_id
@@ -331,7 +539,7 @@ async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_bl
     # Decision D4: every format, JSON included, carries the fixed member. This harness's JSON
     # document predates the children section the public model requires, so the client
     # projection is driven for text and markdown; the unit tests admit the member on JSON.
-    assert result.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire()
+    assert result.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire(reason)
     for context in (
         ()
         if receipt_format == "json"
@@ -346,12 +554,14 @@ async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_bl
     ):
         projected = await _project(app, request, result, context)
         assert projected.workspace_provenance is not None
-        assert projected.workspace_provenance.model_dump() == workspace_provenance_unknown_wire()
+        assert projected.workspace_provenance.model_dump() == workspace_provenance_unknown_wire(
+            reason
+        )
     if receipt_format == "json":
         assert result.human_text is None
         return
     assert result.human_text is not None
-    block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown")
+    block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown", reason=reason)
     assert result.human_text.endswith("\n\n" + block)
     assert result.human_text.count("Workspace evidence") == 1
 
@@ -426,11 +636,13 @@ def _render_long(monkeypatch: pytest.MonkeyPatch, length: int) -> None:
     monkeypatch.setattr(receipt_module, "render_receipt_human", render)
 
 
+@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
 @pytest.mark.parametrize("length", [32_400, 32_768])
 @pytest.mark.parametrize("receipt_format", ["text", "markdown"])
 async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_section(
     receipt_format: Literal["text", "markdown"],
     length: int,
+    reason: WorkspaceProvenanceReason,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Decision D4 at the wire bound: the closing section's room is reserved, so a receipt whose
@@ -438,7 +650,7 @@ async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_sectio
 
     from finishup.application import receipt as receipt_module
 
-    unknown = getattr(receipt_module, "_Provenance").UNKNOWN
+    unknown = getattr(receipt_module, "_Provenance")(reason)
 
     async def opening_cannot_say(runtime: object, *, request_id: str | None = None) -> object:
         del runtime, request_id
@@ -460,7 +672,7 @@ async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_sectio
             "format": receipt_format,
         }
     )
-    block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown")
+    block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown", reason=reason)
 
     result = await app.receipt(request)
 
@@ -472,6 +684,7 @@ async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_sectio
         assert isinstance(projected.human_text, str)
         assert projected.human_text.endswith("\n\n" + block)
         assert projected.workspace_provenance is not None
+        assert projected.workspace_provenance.reason == reason
 
 
 @pytest.mark.parametrize("receipt_format", ["text", "markdown"])

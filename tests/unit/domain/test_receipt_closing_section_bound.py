@@ -21,6 +21,10 @@ from finishup.domain.receipts import (
     render_receipt_human,
     workspace_provenance_unknown_block,
 )
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+)
 from finishup.protocol.errors import ProtocolValueError
 
 _HUMAN_TEXT_MAX = 32_768
@@ -51,7 +55,12 @@ def _padded(document: ReceiptDocument, *, markdown: bool, length: int) -> Receip
 
 def _trailers(markdown: bool) -> dict[str, str]:
     return {
-        "unknown": workspace_provenance_unknown_block(markdown=markdown),
+        "unknown": workspace_provenance_unknown_block(
+            markdown=markdown, reason=SESSION_OPENING_UNREADABLE
+        ),
+        "unknown_lasting": workspace_provenance_unknown_block(
+            markdown=markdown, reason=SESSION_OPENING_UNRECOVERABLE
+        ),
         "attested": client_attested_receipt_block(_SERVICE_ID, markdown=markdown),
         "attested_hook": client_attested_receipt_block(
             _SERVICE_ID, markdown=markdown, hook_observed=True
@@ -60,7 +69,7 @@ def _trailers(markdown: bool) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("markdown", [False, True], ids=["text", "markdown"])
-@pytest.mark.parametrize("section", ["unknown", "attested", "attested_hook"])
+@pytest.mark.parametrize("section", ["unknown", "unknown_lasting", "attested", "attested_hook"])
 @pytest.mark.parametrize("length", [32_400, 32_700, _HUMAN_TEXT_MAX])
 def test_a_receipt_at_the_bound_still_ends_with_its_whole_closing_section(
     markdown: bool, section: str, length: int
@@ -85,7 +94,7 @@ def test_a_receipt_at_the_bound_still_ends_with_its_whole_closing_section(
 
 
 @pytest.mark.parametrize("markdown", [False, True], ids=["text", "markdown"])
-@pytest.mark.parametrize("section", ["unknown", "attested", "attested_hook"])
+@pytest.mark.parametrize("section", ["unknown", "unknown_lasting", "attested", "attested_hook"])
 def test_an_overlong_receipt_is_cut_before_its_closing_section(
     markdown: bool, section: str
 ) -> None:
@@ -103,7 +112,7 @@ def test_an_overlong_receipt_is_cut_before_its_closing_section(
 
 
 @pytest.mark.parametrize("markdown", [False, True], ids=["text", "markdown"])
-@pytest.mark.parametrize("section", ["unknown", "attested", "attested_hook"])
+@pytest.mark.parametrize("section", ["unknown", "unknown_lasting", "attested", "attested_hook"])
 def test_a_receipt_with_room_gains_the_section_and_nothing_else(
     markdown: bool, section: str
 ) -> None:

@@ -21,12 +21,19 @@ from finishup.cli.render import render_human_receipt, render_human_status
 from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
-from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_lines,
+    workspace_provenance_unknown_wire,
+)
 from finishup.protocol.models import (
     ReceiptRequest,
     ReceiptResultModel,
@@ -88,8 +95,28 @@ def test_a_text_receipt_carrying_the_service_block_gets_only_the_transport() -> 
     assert rendered.count(CLIENT_ATTESTED_WORKSPACE_LINE) == 1
 
 
-def test_a_text_receipt_whose_provenance_is_unknown_gets_only_the_transport() -> None:
-    receipt = _text_receipt(workspace_provenance_unknown_block(markdown=False))
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+)
+# The line only that reason's section ends with, and the line the other reason's ends with.
+_OWN_AND_OTHER: dict[str, tuple[str, str]] = {
+    SESSION_OPENING_UNREADABLE: (
+        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
+    ),
+    SESSION_OPENING_UNRECOVERABLE: (
+        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+    ),
+}
+
+
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_text_receipt_whose_provenance_is_unknown_gets_only_the_transport(
+    reason: WorkspaceProvenanceReason,
+) -> None:
+    receipt = _text_receipt(workspace_provenance_unknown_block(markdown=False, reason=reason))
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
     assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in rendered
@@ -99,46 +126,68 @@ def test_a_text_receipt_whose_provenance_is_unknown_gets_only_the_transport() ->
 # --- decision D4: every format says when the provenance is unknown ------------------------------
 
 
-def _unknown(receipt: ReceiptSuccessModel) -> ReceiptSuccessModel:
+def _unknown(
+    receipt: ReceiptSuccessModel, reason: WorkspaceProvenanceReason = SESSION_OPENING_UNREADABLE
+) -> ReceiptSuccessModel:
     wire = receipt.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire(reason)
     return ReceiptSuccessModel.model_validate(wire)
 
 
-def test_a_json_receipt_of_unknown_provenance_shows_the_section_and_only_the_transport() -> None:
-    """A JSON receipt has no text section, so the CLI shows the fixed one from the result."""
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_json_receipt_of_unknown_provenance_shows_the_section_and_only_the_transport(
+    reason: WorkspaceProvenanceReason,
+) -> None:
+    """A JSON receipt has no text section, so the CLI shows the fixed one for the result's own
+    reason: a passing cause says to retry, a lasting one says it will not clear and never says
+    to retry or restart."""
 
-    receipt = _unknown(_json_receipt())
+    receipt = _unknown(_json_receipt(), reason)
     local = render_human_receipt(receipt)
-    block = workspace_provenance_unknown_block(markdown=False)
+    block = workspace_provenance_unknown_block(markdown=False, reason=reason)
     assert local == render_human_receipt(_json_receipt()) + "\n" + block
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
     assert rendered == local + "\n" + _REACHED
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
-    for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES:
+    for line in workspace_provenance_unknown_lines(reason):
         assert rendered.count(line) == 1
+    own, other = _OWN_AND_OTHER[reason]
+    assert own in rendered
+    assert other not in rendered
 
 
-def test_a_text_receipt_of_unknown_provenance_shows_its_section_once() -> None:
-    receipt = _unknown(_text_receipt(workspace_provenance_unknown_block(markdown=False)))
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_text_receipt_of_unknown_provenance_shows_its_section_once(
+    reason: WorkspaceProvenanceReason,
+) -> None:
+    receipt = _unknown(
+        _text_receipt(workspace_provenance_unknown_block(markdown=False, reason=reason)), reason
+    )
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
     assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
     assert rendered.count(WORKSPACE_PROVENANCE_UNKNOWN_LINE) == 1
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+    own, other = _OWN_AND_OTHER[reason]
+    assert rendered.count(own) == 1
+    assert other not in rendered
 
 
-def test_a_withheld_text_receipt_of_unknown_provenance_still_shows_the_section() -> None:
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_withheld_text_receipt_of_unknown_provenance_still_shows_the_section(
+    reason: WorkspaceProvenanceReason,
+) -> None:
     wire = _text_receipt().model_dump(mode="json", by_alias=True, exclude_unset=True)
     wire["human_text"] = {
         "omitted": True,
         "category": "finding_summary",
         "reason": "local_disclosure_not_authorized",
     }
-    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire(reason)
     receipt = ReceiptSuccessModel.model_validate(wire)
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
-    assert workspace_provenance_unknown_block(markdown=False) in rendered
+    assert workspace_provenance_unknown_block(markdown=False, reason=reason) in rendered
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
+    assert _OWN_AND_OTHER[reason][1] not in rendered
     assert rendered.endswith("\n" + _REACHED)
 
 
@@ -255,15 +304,20 @@ class _ReceiptClient(_Client):
         return self.receipt_result
 
 
+@pytest.mark.parametrize("reason", _REASONS)
 @pytest.mark.parametrize("json_output", [False, True])
 def test_the_receipt_command_says_an_unknown_provenance_in_every_output(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], json_output: bool
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    json_output: bool,
+    reason: WorkspaceProvenanceReason,
 ) -> None:
-    """Decision D4: a claim-bound JSON receipt of unknown provenance shows the fixed section and
-    no "read on the client" line on a terminal; JSON output carries the member itself."""
+    """Decision D4: a claim-bound JSON receipt of unknown provenance shows the fixed section for
+    its reason and no "read on the client" line on a terminal; JSON output carries the member
+    itself, reason included."""
 
     wire = _receipt_result_wire()
-    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire(reason)
     result = ReceiptResultModel.model_validate(wire)
     client = _ReceiptClient("client_claim", result)
 
@@ -282,9 +336,10 @@ def test_the_receipt_command_says_an_unknown_provenance_in_every_output(
     out = capsys.readouterr().out
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in out
     if json_output:
-        assert json.loads(out)["workspace_provenance"] == workspace_provenance_unknown_wire()
+        assert json.loads(out)["workspace_provenance"] == workspace_provenance_unknown_wire(reason)
         return
     success = cast(ReceiptSuccessModel, result.root)
     assert out == render_human_receipt(success, attribution=_ATTRIBUTION) + "\n"
-    assert workspace_provenance_unknown_block(markdown=False) in out
+    assert workspace_provenance_unknown_block(markdown=False, reason=reason) in out
+    assert _OWN_AND_OTHER[reason][1] not in out
     assert out.endswith(_REACHED + "\n")

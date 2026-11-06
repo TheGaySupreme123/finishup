@@ -5258,20 +5258,30 @@ user-controlled is ever rendered beside it.
   `record_classified_exception_without_raising` under component `application.receipt` and
   operation `receipt_attestation_read`, and leaves the binding unknown; cancellation propagates.
   An opening record that carries no decoded `SessionOpenedPayload` leaves the binding unknown
-  too: one that is `logically_redacted`, `erased_claimed` or `key_unavailable`, an `UnknownEvent`
-  of a `session_opened` version this service cannot decode, and any opening record
-  (`AcceptedEvent` or `UnknownEvent`) whose envelope is `present` but whose payload is None. The
-  last is what `SqliteLedger` recovery keeps when it cannot read a payload object (`KeyError`,
-  `OSError` or `ValueError` from `open_verified`), and it keeps it for as long as that ledger
-  holds the task. The receipt is built and its text and markdown renderings end with
-  `workspace_provenance_unknown_block(markdown=...)`: the "Workspace evidence" heading and the
-  fixed `WORKSPACE_PROVENANCE_UNKNOWN_LINES`, which are `WORKSPACE_PROVENANCE_UNKNOWN_LINE`
-  (what happened: "Provenance unknown: the record of how this task's session was opened could not
-  be read from the server's ledger."), `WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE` (why it
-  matters) and `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` (run receipt again; if it persists,
-  `finishup service restart` on the server host, then run receipt again), never with no section.
-  The words live in `domain.workspace_provenance` (standard library only, so the protocol models
-  admit exactly them) and `domain.receipts` re-exports them.
+  too. `_attested_by` answers a `_Provenance` whose value is the closed reason (decision D4b):
+  `_Provenance.UNREADABLE` (`session_opening_unreadable`, a passing cause) for a failed read and
+  for an `AcceptedEvent` opening whose envelope is `present` but whose payload is None, which is
+  what `SqliteLedger` recovery keeps when it cannot read a payload object (`KeyError`, `OSError`
+  or `ValueError` from `open_verified`) and keeps for as long as that ledger holds the task;
+  `_Provenance.UNRECOVERABLE` (`session_opening_unrecoverable`, a lasting cause) for an opening
+  that is `logically_redacted`, `erased_claimed` or `key_unavailable`, for any `UnknownEvent`
+  (a `session_opened` version this service cannot decode, its payload read or not), and for any
+  other non-`SessionOpenedPayload` payload. A failed read is never called lasting: nothing there
+  tells a passing fault from a lasting one. The receipt is built and its text and markdown
+  renderings end with `workspace_provenance_unknown_block(markdown=..., reason=...)`: the
+  "Workspace evidence" heading and `workspace_provenance_unknown_lines(reason)`, never with no
+  section. Both reasons share `WORKSPACE_PROVENANCE_UNKNOWN_LINE` (what happened: "Provenance
+  unknown: the record of how this task's session was opened could not be read from the server's
+  ledger.") and `WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE` (why it matters). A passing cause
+  ends with `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` (run receipt again; if it persists,
+  `finishup service restart` on the server host, then run receipt again); a lasting one ends with
+  `WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE` ("Why it lasts: the record is redacted or erased,
+  its key is gone, or it is in a format this FinishUP version cannot decode, so it will not
+  become readable again and this task's receipts will keep saying so. Running receipt again or
+  restarting the service will not change this."), which gives no retry or restart advice. Any
+  other reason is `invalid_receipt_document`. The words live in `domain.workspace_provenance`
+  (standard library only, so the protocol models admit exactly them; `SESSION_OPENING_UNREADABLE`
+  and `SESSION_OPENING_UNRECOVERABLE` name the tokens) and `domain.receipts` re-exports the lines.
   Either "Workspace evidence" section is rendered with the receipt, never appended to it:
   `_internal_result` passes it as `render_receipt_human(document, markdown=, trailer=)`, and the
   renderer reserves the section's room (`"\n\n"` plus the section, at most
@@ -5285,23 +5295,25 @@ user-controlled is ever rendered beside it.
   Every receipt format, JSON included, also carries the result member `workspace_provenance`
   (receipt-result 1.5.0, `ReceiptSuccessModel.workspace_provenance`,
   `ReceiptWorkspaceProvenanceModel`; 1.4.0 shipped in v0.3.0 and is never amended; control-result
-  2.10.0 carries 1.5.0 bodies), built by `workspace_provenance_unknown_wire()`: `status` `unknown`;
-  `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS`, today only
-  `session_opening_unreadable` (the record that opened the task's session could not be read or
-  could not say whether the session is claim-bound); and `notice`, exactly
-  `WORKSPACE_PROVENANCE_UNKNOWN_NOTICE` (the three lines joined by newlines). It is optional and
-  non-null: absent whenever the binding was read, never an explicit null. Its three leaves are
-  `public_structural`. `result_delivery` places it right after `conclusion` among the actionable
-  items, so a paged receipt delivers it whole at the head of its first page.
+  2.10.0 carries 1.5.0 bodies), built by `workspace_provenance_unknown_wire(reason)`: `status`
+  `unknown`; `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS`
+  (`session_opening_unreadable`: the read failed or the record did not load, which can pass;
+  `session_opening_unrecoverable`: the record is redacted or erased, its key is gone, or this
+  version cannot decode it, which lasts); and `notice`, exactly
+  `workspace_provenance_unknown_notice(reason)` (that reason's three lines joined by newlines).
+  Each reason admits only its own notice: `ReceiptWorkspaceProvenanceModel` refuses another as
+  `workspace_provenance_notice_invalid`, and the 1.5.0 schema pairs them with a `oneOf` beside
+  the `enum`s. The token is carried only by 1.5.0, which is unreleased, so 1.5.0 is amended in
+  place and no released schema changes. It is optional and non-null: absent whenever the binding
+  was read, never an explicit null. Its three leaves are `public_structural`. `result_delivery`
+  places it right after `conclusion` among the actionable items, so a paged receipt delivers it
+  whole at the head of its first page.
   Every receipt and replay reads the opening record again, so once the read succeeds (a transient
   fault clears, or the task's ledger is opened afresh after the runtime evicts the idle entry or
   the service restarts, and the object reads) the same request renders the binding the record
-  holds. `session_opening_unreadable` covers passing and lasting causes alike, and the fixed
-  `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` helps only the passing ones: a `logically_redacted`
-  or `erased_claimed` opening never reads again, a `key_unavailable` one reads only once the key
-  is available again, and an `UnknownEvent` one only after an upgrade, so those tasks' receipts
-  keep the section through every retry and restart (`docs/usage/servers.md` says so). No token
-  tells them apart yet.
+  holds. A `session_opening_unrecoverable` receipt keeps its section, and says it will, through
+  every retry and restart; an `UnknownEvent` opening reads only once the service is upgraded to a
+  version that knows its format (`docs/usage/servers.md` says so).
 - Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
   ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with
@@ -5318,10 +5330,13 @@ user-controlled is ever rendered beside it.
   rest of `human_text` and lands on at most one page; it sets `provenance_unknown` for a receipt
   that carries `workspace_provenance`. A JSON receipt, or one whose `human_text` is an omission,
   has no section of its own: `render_human_receipt` appends
-  `workspace_provenance_unknown_block(markdown=False)` from the member unless the text already
-  carries it, the terminal interface's JSON receipt shows it after the document, the MCP
-  canonical text carries the member, and `summary_for_receipt` admits the three lines as required
-  parts only when the member's `notice` is the exact fixed text. `render_human_status` and
+  `workspace_provenance_unknown_block(markdown=False, reason=<the member's reason>)` unless the
+  text already carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE`, the terminal interface's JSON receipt
+  shows the same block after the document, the MCP canonical text carries the member (its reason
+  token included), and `summary_for_receipt` admits that reason's three lines as required parts
+  only when the member's `reason` is a closed token and its `notice` is exactly that reason's
+  fixed text. A lasting reason's rendering on every surface ends with the lasting line and never
+  with the retry line. `render_human_status` and
   `render_human_receipt` (CLI), `result_from_public_model(..., attribution=)` for the MCP `status`
   and `receipt` text and its canonical fallback, and the terminal interface's task views and
   receipt (through `FinishUpRuntime`) end with these lines. The connection's lines never enter
