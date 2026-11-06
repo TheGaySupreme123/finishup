@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 import uuid
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final, cast
@@ -28,6 +29,9 @@ __all__ = ["HookSpool", "SpooledHookObservation"]
 
 _MAX_RECORD_BYTES: Final = 8 * 1024
 DEFAULT_HOOK_SPOOL_CLAIM_LIMIT: Final = 64
+# How often a claim given a stop event retries a workspace lock that a hook holds. Setting the
+# event wakes the wait at once; this only spaces the retries while the lock stays busy.
+_STOPPABLE_LOCK_RETRY_SECONDS: Final = 0.05
 _SpoolFileIdentity = tuple[int, int]
 _SAFE_FIELDS: Final = frozenset(
     {
@@ -164,7 +168,7 @@ class HookSpool:
         workspace_commitment: str,
         *,
         limit: int = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT,
-        should_stop: Callable[[], bool] | None = None,
+        stop: threading.Event | None = None,
     ) -> Generator[tuple[SpooledHookObservation, ...]]:
         """Fence one bounded batch; failure leaves the durable cursor unchanged.
 
@@ -173,9 +177,10 @@ class HookSpool:
         replays the batch at least once while a file larger than ``limit`` advances in FIFO
         batches instead of being loaded into memory or deleted as one giant pass.
 
-        ``should_stop`` is asked again once the workspace lock is held. A caller told to stop
-        while it waited for that lock, which a hook may hold, claims nothing: the spool is left
-        as it was.
+        With ``stop``, waiting for the workspace lock, which a hook may hold, ends as soon as
+        ``stop`` is set: a caller told to stop before it holds that lock claims nothing and the
+        spool is left as it was. A batch already claimed is not interrupted; committing its
+        cursor waits for the lock as a hook's append does.
         """
 
         if type(limit) is not int or isinstance(limit, bool) or limit < 1:
@@ -193,7 +198,7 @@ class HookSpool:
                 pending,
                 draining,
                 limit,
-                should_stop,
+                stop,
             )
         except (OSError, PathSafetyError):
             yield ()
@@ -218,7 +223,7 @@ class HookSpool:
         pending: Path,
         draining: Path,
         limit: int,
-        should_stop: Callable[[], bool] | None = None,
+        stop: threading.Event | None = None,
     ) -> tuple[
         tuple[SpooledHookObservation, ...],
         int,
@@ -226,8 +231,8 @@ class HookSpool:
         BinaryIO | None,
     ]:
         ensure_owner_only_dir(self._root)
-        with self._workspace_lock(workspace_commitment):
-            if should_stop is not None and should_stop():
+        with self._workspace_lock(workspace_commitment, stop=stop) as held:
+            if not held or (stop is not None and stop.is_set()):
                 return (), 0, None, None
             if pending.is_symlink() or draining.is_symlink():
                 raise PathSafetyError("hook_spool_symlink")
@@ -397,10 +402,20 @@ class HookSpool:
         return (chunk if len(chunk) <= _MAX_RECORD_BYTES else b"", terminated)
 
     @contextlib.contextmanager
-    def _workspace_lock(self, workspace_commitment: str) -> Generator[None]:
+    def _workspace_lock(
+        self, workspace_commitment: str, *, stop: threading.Event | None = None
+    ) -> Generator[bool]:
+        """Hold the workspace's spool lock for the block; yield whether it is held.
+
+        Without ``stop`` this waits for the lock however long its holder keeps it. With ``stop``
+        it gives up once ``stop`` is set and yields ``False`` without the lock, so a hook that
+        holds the lock cannot keep a stopped caller's thread, or its process's exit, waiting.
+        """
+
         digest = workspace_commitment.removeprefix("hmac-sha256:")
         lock_path = self._root / f"{digest}.lock"
         descriptor: int | None = None
+        held = False
         try:
             descriptor = os.open(
                 lock_path,
@@ -408,13 +423,12 @@ class HookSpool:
                 0o600,
             )
             os.fchmod(descriptor, 0o600)
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-            yield
+            held = _lock_unless_stopped(descriptor, stop)
+            yield held
         finally:
             if descriptor is not None:
                 try:
-                    if fcntl is not None:
+                    if held and fcntl is not None:
                         fcntl.flock(descriptor, fcntl.LOCK_UN)
                 finally:
                     os.close(descriptor)
@@ -459,3 +473,21 @@ class HookSpool:
             if not 16 <= len(key) <= 64:
                 raise OSError("hook_spool_key_invalid")
             return key
+
+
+def _lock_unless_stopped(descriptor: int, stop: threading.Event | None) -> bool:
+    """Take the exclusive spool lock; with ``stop``, return ``False`` once it is set instead."""
+
+    if fcntl is None:
+        return True
+    if stop is None:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return True
+    while not stop.is_set():
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            stop.wait(_STOPPABLE_LOCK_RETRY_SECONDS)
+        else:
+            return True
+    return False

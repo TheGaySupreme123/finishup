@@ -483,9 +483,9 @@ _LEDGER_NAME = "ledger.sqlite3"
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _LEGACY_HOOK_SPOOL_BATCH_LIMIT: Final = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT
 # How long generation close waits for a spool pass it asked to stop: the drain a soft lock gives
-# in-flight work before it closes the generation. A pass parked on a hook's spool flock past it must
-# not hang a stop, restart or idle relock; close records that and goes on, and the pass ends at its
-# next stop check.
+# in-flight work before it closes the generation. A pass waiting for a hook's spool lock stops at
+# once; a batch it had already claimed finishes. One still running past this bound must not hang a
+# stop, restart or idle relock; close records that and goes on.
 _LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS: Final = float(LOCK_DRAIN_SECONDS)
 # The egress purpose every background advice dispatch carries; admission judges the same one.
 _ADVICE_SEMANTIC_PURPOSE: Final = "semantic-review"
@@ -788,9 +788,6 @@ def _replay_legacy_hook_spool(state: Path, *, stop: threading.Event | None = Non
     from finishup.cli.observe_hooks import handle_observe
 
     remaining = _LEGACY_HOOK_SPOOL_BATCH_LIMIT
-    # The claim asks again once it holds the workspace lock, so a pass that waited on a hook's
-    # spool lock past generation close claims nothing when that lock is released.
-    should_stop = None if stop is None else stop.is_set
     # A pass that generation close asked to stop before it began leaves the spool untouched:
     # listing it creates the spool directory.
     if stop is not None and stop.is_set():
@@ -798,7 +795,10 @@ def _replay_legacy_hook_spool(state: Path, *, stop: threading.Event | None = Non
     for workspace_commitment in spool.pending_workspaces():
         if remaining <= 0 or (stop is not None and stop.is_set()):
             return
-        with spool.claim(workspace_commitment, limit=remaining, should_stop=should_stop) as records:
+        # The claim waits for a hook's workspace lock on ``stop``: generation close wakes a pass
+        # parked there at once, and it claims nothing, so a hook that keeps the lock cannot keep
+        # this worker, or the service process's exit, waiting.
+        with spool.claim(workspace_commitment, limit=remaining, stop=stop) as records:
             for record in records:
                 handle_observe(
                     event_name=record.event_name,
@@ -823,10 +823,10 @@ class _LegacyHookSpoolForwarder:
     The spool claim renames a file and the local hook adapter opens its own short-lived state
     handles. One replay pass claims at most one bounded batch. A cancelled await therefore cannot
     safely start a second claim until the first worker has finished; retaining the future also lets
-    the next maintenance pass join that worker. ``close`` asks the worker to stop between claims
-    during generation teardown but lets its active batch finish its owned local writes;
-    ``wait_closed`` then waits a bounded time for that batch, so normally no spool write outlives
-    the generation's close.
+    the next maintenance pass join that worker. ``close`` asks the worker to stop between claims,
+    or while a claim waits for a hook's spool lock, during generation teardown but lets its active
+    batch finish its owned local writes; ``wait_closed`` then waits a bounded time for that batch,
+    so normally no spool write outlives the generation's close.
     """
 
     def __init__(self, state: Path) -> None:
@@ -901,9 +901,10 @@ class _LegacyHookSpoolForwarder:
 
         A cancelled maintenance pass leaves its worker running. Without this wait the worker
         could still create or claim spool files after the generation and its owner had closed.
-        A pass still running at ``_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS`` is recorded and left to
-        end at its next stop check. A failure is already recorded by ``close``; waiting never
-        raises it again.
+        A pass waiting for a hook's spool lock ends as soon as ``close`` sets the stop flag. A
+        batch it had already claimed finishes and commits its cursor; one still running at
+        ``_LEGACY_HOOK_SPOOL_CLOSE_WAIT_SECONDS`` is recorded and left to finish. A failure is
+        already recorded by ``close``; waiting never raises it again.
         """
 
         self.close()
