@@ -168,11 +168,21 @@ def _transport_for(record: ServerTarget) -> httpx.AsyncBaseTransport:
 
 
 def _is_identity_failure(error: BaseException) -> bool:
+    """Whether the server's identity was refused: its certificate (chain or host name) failed
+    verification, or its leaf did not match the pin.
+
+    Any other TLS failure — a reset or end of stream mid-handshake, a protocol or cipher
+    mismatch, a plain-HTTP port — says nothing about who the server is, and stays
+    ``remote_unreachable``.
+    """
+
     seen: set[int] = set()
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, ssl.SSLError) or "tls_pin_mismatch" in str(current.args[:1]):
+        if isinstance(current, ssl.SSLCertVerificationError) or "tls_pin_mismatch" in str(
+            current.args[:1]
+        ):
             return True
         current = current.__cause__ or current.__context__
     return False

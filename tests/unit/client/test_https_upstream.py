@@ -318,3 +318,71 @@ def test_the_pin_is_checked_after_the_handshake_and_before_any_request_byte() ->
         await transport.aclose()
 
     asyncio.run(exercise())
+
+
+def _wrapped(cause: BaseException) -> httpx.ConnectError:
+    """An ``httpx.ConnectError`` raised from ``cause`` the way httpx and anyio chain them."""
+
+    try:
+        try:
+            raise cause
+        except BaseException as inner:
+            raise httpcore.ConnectError(str(inner)) from inner
+    except httpcore.ConnectError as middle:
+        try:
+            raise httpx.ConnectError(str(middle)) from middle
+        except httpx.ConnectError as outer:
+            return outer
+
+
+@pytest.mark.parametrize(
+    ("cause", "reason"),
+    [
+        (ssl.SSLCertVerificationError(1, "certificate verify failed"), "remote_identity_changed"),
+        (httpcore.ConnectError("tls_pin_mismatch"), "remote_identity_changed"),
+        (ssl.SSLEOFError(8, "EOF occurred in violation of protocol"), "remote_unreachable"),
+        (ssl.SSLError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number"), "remote_unreachable"),
+        (ConnectionResetError(104, "Connection reset by peer"), "remote_unreachable"),
+    ],
+)
+def test_only_a_refused_identity_is_named_an_identity_change(
+    cause: BaseException, reason: str
+) -> None:
+    from finishup.client.https_upstream import (
+        _unreachable,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _unreachable(_wrapped(cause)).reason == reason
+
+
+def test_a_plain_http_port_is_unreachable_not_an_identity_change(home: Path) -> None:
+    """A client pointed at a gateway run ``--behind-proxy`` (plain HTTP) is a configuration
+    fault: the TLS handshake fails on the HTTP answer, before any certificate is seen."""
+
+    from finishup.client.https_upstream import HttpsUpstream
+    from finishup.client.ssh_upstream import UpstreamUnavailable
+
+    async def exercise() -> None:
+        async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.read(1_024)
+            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(answer, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        with targets.registry_lock():
+            record, _root = targets.new_remote_target(
+                "plain", "https", base_url=f"https://127.0.0.1:{port}", tls_pin="sha256:" + "a" * 64
+            )
+        upstream = HttpsUpstream(record, lambda: "fuk_000000000000_secret")
+        try:
+            with pytest.raises(UpstreamUnavailable) as failed:
+                await upstream.server_info()
+            assert failed.value.reason == "remote_unreachable"
+        finally:
+            await upstream.aclose()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(exercise())
