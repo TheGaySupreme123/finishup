@@ -333,8 +333,14 @@ answers bounded `workspace_call`s on a connection that declared it.
 - **Observation over claims.** Observation verification and approved checks for a `client:`
   locator route through the hub, and the client drains the outbox and spool it captured for a
   remote root over its own claim-bound connection (`ClientObservationDrain`; which long-lived
-  client process holds it is the approach's choice). `observation_ingest` is allowed on a
-  claim-bound connection, and the server's sweeper reads only its own state directory, so it
+  client process holds it is the approach's choice). A hook pass's own drain and `finishup
+  observe drain` claim their workspace the same way on a remote root, or on one whose record
+  cannot be read: they name the workspace to the connect seam, which claims it, and never open
+  an unbound connection there. A hook pass that knows no workspace, like `observe drain` for any
+  workspace but the one it names (the current folder's by default), sends nothing there and leaves
+  the rows pending for the background drain (amended 2026-11-06 after the real-environment runs,
+  where an unbound drain was refused or its rows quarantined). `observation_ingest` is allowed on
+  a claim-bound connection, and the server's sweeper reads only its own state directory, so it
   never touches a client root. Decision 12 says whose consent and keys govern such an ingest.
 - **Local stays local.** Local targets never declare an agent, so the default path is unchanged.
 

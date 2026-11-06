@@ -71,6 +71,7 @@ __all__ = [
     "TargetError",
     "TargetKind",
     "TargetRecordUnreadable",
+    "active_root_may_be_remote",
     "active_target_record",
     "clear_selection",
     "find_target",
@@ -877,6 +878,26 @@ def selection_source() -> SelectionSource:
     """Which source decided this process's root: the variable, the pin, the selection, ambient."""
 
     return isolation_binding()
+
+
+def active_root_may_be_remote() -> bool:
+    """Whether a connection from this process must claim its workspace instead of naming a path.
+
+    True when the root's ``target.json`` names a remote kind, and also when the root resolves but
+    its record cannot be read: that record may name a server on another machine, so a caller
+    fails closed (it never sends a path there, and the connect seam then refuses on its own).
+    False for the everyday installation, an isolated root that is not a target, a named local
+    server, and a root that cannot be resolved at all, whose own path reports it exactly as
+    before. Hook-safe: it reads only the target records.
+    """
+
+    try:
+        record = active_target_record()
+    except TargetRecordUnreadable:
+        return True
+    except TargetError:
+        return False
+    return record is not None and record.is_remote
 
 
 def active_target_record() -> ServerTarget | None:

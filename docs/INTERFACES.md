@@ -4830,6 +4830,14 @@ approved check such a worker started stays in its own process group).
   *, state=None, budget_seconds=20.0)` is one pass. Which long-lived client process keeps a drain
   per claimed workspace is the approach's choice. The service's own sweeper reads only its own state
   directory, so it never touches a client root.
+- `finishup.client.targets.active_root_may_be_remote() -> bool`: true for a root whose
+  `target.json` names a remote kind or cannot be read (`TargetRecordUnreadable`), false for every
+  local root and for a root that cannot be resolved at all (its own path reports that). On such a
+  root a hook pass's own outbox drain (`cli.observe_hooks._drain_connector`) and `finishup observe
+  drain` (`cli.observe._claim_bound_drain`, which then covers the named workspace or the current
+  folder's) connect with `workspace_locator=` so the connect seam claims it; a hook pass without a
+  workspace fails its drain connect retryably and its rows stay pending. Every local root and an
+  injected connector connect exactly as before.
 
 **Provenance.** Workspace evidence obtained through the hub is labelled `client_attested`
 (`domain.receipts.CLIENT_ATTESTED`). `domain.receipts.CLIENT_ATTESTED_WORKSPACE_LINE` is the one

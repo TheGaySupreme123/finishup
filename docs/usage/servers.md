@@ -205,7 +205,8 @@ give, the content you allow, the checks you approve and the observations waiting
 all live here, and `finishup observe …` changes them here whichever server you use. Each
 observation this computer delivers carries those settings with it; the server accepts them as
 your computer's own statement and does not check them itself. Receipts of such a task say so in
-one more line.
+one more line. With a server elsewhere, `finishup observe drain` delivers one project's waiting
+observations at a time: the one you name with `--workspace`, or the folder you run it in.
 
 For an SSH server you can run the service commands through SSH, from a terminal:
 

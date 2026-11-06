@@ -1214,7 +1214,10 @@ def observe_drain_cmd(
         str | None,
         typer.Option(
             "--workspace",
-            help="Restrict delivery to one workspace; default drains all pending commitments.",
+            help=(
+                "Restrict delivery to one workspace; default drains all pending commitments "
+                "(with a server elsewhere, the current folder's)."
+            ),
         ),
     ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
