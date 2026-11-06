@@ -61,8 +61,8 @@ def test_a_claim_bound_connection_reads_only_its_handle() -> None:
 
 
 def test_a_claim_bound_start_records_only_its_own_handle() -> None:
-    _require(_start(_HANDLE), _CLAIM)
-    for reference in (None, "/home/dev/project", "client:fedcba9876543210", "project"):
+    assert _require(_start(_HANDLE), _CLAIM) is None
+    for reference in ("/home/dev/project", "client:fedcba9876543210", "project"):
         with pytest.raises(PublicOperationError) as caught:
             _require(_start(reference), _CLAIM)
         error = caught.value
@@ -70,7 +70,7 @@ def test_a_claim_bound_start_records_only_its_own_handle() -> None:
         assert cast(dict[str, object], error.safe_details)["reason_code"] == (
             "workspace_ref_not_portable"
         )
-        assert reference is None or reference not in error.message
+        assert reference not in error.message
 
 
 def test_another_worktree_of_the_repository_is_another_workspace() -> None:
@@ -88,15 +88,41 @@ def test_another_worktree_of_the_repository_is_another_workspace() -> None:
     )
 
 
-def test_only_an_attach_to_an_existing_session_may_omit_the_handle() -> None:
-    attach = StartRequest.model_validate(
-        {
-            **_start(None).model_dump(mode="json", by_alias=True, exclude_none=True),
-            "mode": "attach",
-            "session_id": "ses_00000000-0000-4000-8000-000000051001",
-        }
+def _variant(**changes: object) -> StartRequest:
+    return StartRequest.model_validate(
+        {**_start(None).model_dump(mode="json", by_alias=True, exclude_none=True), **changes}
     )
-    _require(attach, _CLAIM)
+
+
+_SESSION = "ses_00000000-0000-4000-8000-000000051001"
+_NAMING_NONE = {
+    "create": {},
+    "create_or_attach": {"mode": "create_or_attach"},
+    "parent_registered": {"parent_session_id": _SESSION},
+    "attach": {"mode": "attach", "session_id": _SESSION},
+    "delegate": {"mode": "delegate", "session_id": _SESSION},
+}
+
+
+@pytest.mark.parametrize("changes", _NAMING_NONE.values(), ids=_NAMING_NONE.keys())
+def test_a_start_naming_no_workspace_opens_any_session_on_the_connections_handle(
+    changes: dict[str, object],
+) -> None:
+    # On one computer such a start reads the connection's own locator path. A claim names the
+    # same workspace, so any session the start opens records the handle and its receipts say
+    # so; a start that opens none (an attach, a delegation) never reads it.
+    assert _require(_variant(**changes), _CLAIM) == _HANDLE
+
+
+@pytest.mark.parametrize("changes", _NAMING_NONE.values(), ids=_NAMING_NONE.keys())
+def test_a_start_naming_no_workspace_is_unchanged_without_a_claim(
+    changes: dict[str, object],
+) -> None:
+    local = RepositoryPrivacyContext(
+        "hmac-sha256:" + "d" * 64, "git_common_root", WorkspaceLocator("/work/repo")
+    )
+    for context in (local, None):
+        assert _require(_variant(**changes), context) is None
 
 
 def test_a_connection_without_a_claim_cannot_record_a_handle() -> None:

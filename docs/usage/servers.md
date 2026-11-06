@@ -205,7 +205,8 @@ give, the content you allow, the checks you approve and the observations waiting
 all live here, and `finishup observe …` changes them here whichever server you use. Each
 observation this computer delivers carries those settings with it; the server accepts them as
 your computer's own statement and does not check them itself. Receipts of such a task say so in
-one more line.
+one more line. With a server elsewhere, `finishup observe drain` delivers one project's waiting
+observations at a time: the one you name with `--workspace`, or the folder you run it in.
 
 For an SSH server you can run the service commands through SSH, from a terminal:
 
@@ -239,7 +240,7 @@ repeated safely.
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |
 | `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
 | `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on the check list you approved and trusted on this computer. A receipt says so where the refusal kept the server from seeing your change. | Nothing to repair unless you meant to admit that folder or trust that check list. |
-| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path, or with no project at all. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it. |
+| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
 
 In the terminal interface, the header shows which server is in use, and `/server` lists your

@@ -801,9 +801,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_server_test",
         directive=(
-            "The selected FinishUP server could not be reached, so nothing was recorded. Run "
-            "'finishup server test' to see which step failed, then repeat this request under its "
-            "original identity rules."
+            "The selected FinishUP server could not be reached, or the connection to it ended. "
+            "Run 'finishup server test' to see which step failed, then repeat this request under "
+            "its original identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never fall back to another server or a local service for this request.",
@@ -811,9 +811,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_credential_repair",
         directive=(
-            "The selected FinishUP server refused this client's credentials, so nothing was "
-            "recorded. Ask the owner to run 'finishup server login' for an HTTPS server, or to "
-            "load the SSH key for an SSH server, then repeat this request."
+            "The selected FinishUP server refused this client's credentials. Ask the owner to run "
+            "'finishup server login' for an HTTPS server, or to load the SSH key for an SSH "
+            "server, then repeat this request under its original identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never paste a key or credential into chat or a request body.",
@@ -831,9 +831,9 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="remote_service_start_required",
         directive=(
-            "The selected server is reachable, but its FinishUP service is not running, so "
-            "nothing was recorded. Ask the owner to start it on the server host, then repeat "
-            "this request under its original identity rules."
+            "The selected server is reachable, but its FinishUP service is not running. Ask the "
+            "owner to start it on the server host, then repeat this request under its original "
+            "identity rules."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
         nudge="Never match a FinishUP process by name or path to stop or start it.",

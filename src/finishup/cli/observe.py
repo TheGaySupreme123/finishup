@@ -112,7 +112,7 @@ from finishup.domain.observation_settings import (
 )
 from finishup.domain.values import JsonObject, Timestamp, validate_sha256_digest
 from finishup.domain.values import JsonValue as DomainJsonValue
-from finishup.ports.control import ControlClientKind, ControlError
+from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 from finishup.ports.integrations import IntegrationScope, IntegrationTarget
 from finishup.ports.subject_state import SubjectStateCaptureCommand, SubjectStateFormat
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
@@ -1764,6 +1764,33 @@ async def _drain_pass(
     return resolved
 
 
+def _claim_bound_drain(
+    workspace: str | None, connect: DrainConnector
+) -> tuple[str | None, DrainConnector]:
+    """The workspace a drain covers and how it connects; claim-bound on a remote root (ADR-051).
+
+    A server on another machine accepts a row only when it is attested over a connection that
+    claims the row's workspace (decision 12), and one connection claims one workspace. So on such
+    a root (or one whose target record cannot be read, which may be one) the drain covers the
+    named workspace, or the current folder's, over a connection that names it: the connect seam
+    claims it and the path is never sent. The other workspaces' rows wait for their own drains.
+    Every local root drains exactly as before.
+    """
+
+    from finishup.client.targets import active_root_may_be_remote
+
+    if not active_root_may_be_remote():
+        return workspace, connect
+    covered = "." if workspace is None else workspace
+    locator = WorkspaceLocator(str(_resolve_workspace(covered)))
+    bound = cast(Callable[..., Awaitable[_DrainClient]], connect)
+
+    async def claim_bound(kind: ControlClientKind) -> _DrainClient:
+        return await bound(kind, workspace_locator=locator)
+
+    return covered, claim_bound
+
+
 async def _drain_observation_async(
     *,
     workspace: str | None,
@@ -1791,6 +1818,7 @@ async def _drain_observation_async(
     """
 
     store = LocalObservationStore(_state=_state)
+    workspace, connect = _claim_bound_drain(workspace, connect)
     if workspace is None:
         workspaces = store.pending_workspaces()
     else:

@@ -998,7 +998,7 @@ def _sleep_approval(timeout_seconds: float) -> tuple[ApprovedCheckApproval, str]
 
 
 def test_a_check_longer_than_its_call_ends_as_a_timeout_the_server_still_receives(
-    repository: Path, protected: Path
+    repository: Path, protected: Path, client_state: Path
 ) -> None:
     """A 300 s approval cannot outlast the transport's 300 s call: the run is cut, not lost."""
 
@@ -1007,6 +1007,7 @@ def test_a_check_longer_than_its_call_ends_as_a_timeout_the_server_still_receive
     approval, policy = _sleep_approval(300.0)
     (repository / ".finishup").mkdir()
     (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    # Only a policy this client's owner trusted runs at all (ADR-051 decision 12).
     _trust_policy(repository)
     handler = _handler(repository, protected)
     opened = _open(handler)

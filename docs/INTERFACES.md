@@ -4596,9 +4596,11 @@ output, an MCP frame or JSON output.
 - `workspace_reply` (client→server, a control-request branch): `kind`, `protocol_version: "1.0"`,
   `call_id`, `outcome: "ok"|"unavailable"|"refused"|"failed"`, `result` (JSON or `null`),
   `reason` (closed token or `null`).
-- On a claim-bound connection `start.workspace_ref` must equal the handle; an absolute path is
-  `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute `workspace_ref` to
-  the handle before sending.
+- On a claim-bound connection a `start` that names a workspace must name the handle; an absolute
+  path is `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute
+  `workspace_ref` to the handle before sending. A start that names no workspace is admitted where
+  it is on one computer, and any session it opens records the connection's handle in its opening
+  event (`execute_start(..., session_workspace_ref=)`, outside the request identity).
 
 **Workspace-agent operation catalog** (`ports/workspace_agent.py`, the single source of truth).
 Each operation fixes its argument and result codecs and an argument byte bound and a result byte
@@ -4684,9 +4686,10 @@ inline_wait_seconds=5.0, background_wait_seconds=30.0)` is the service's registr
 channels. The daemon registers a channel for each agent-declaring, claim-bound connection at
 handshake (`register(*, handle, declaration, service_instance_id, service_generation, writer,
 worktree=None)`) and unregisters it on close (`unregister(channel)`), which fails its pending calls
-at once. A claim on a locked service binds no handle and no agent. Every channel under one handle
-serves one worktree: `register` refuses a channel whose `worktree` digest differs from a live
-channel's under the same handle (`ValueError("workspace_agent_worktree_conflict")`; the daemon
+at once. A claim on a locked service binds no handle and no agent; the claim hello first re-opens
+a soft lock (idle, session lock, suspend) as a first request would, while a hard lock keys
+nothing. Every channel under one handle serves one worktree: `register` refuses a channel whose
+`worktree` digest differs from a live channel's under the same handle (`ValueError("workspace_agent_worktree_conflict")`; the daemon
 records that token and closes the connection), and a call for a handle with no channel fails
 `no_agent` rather than reaching another worktree's agent. `async call(handle, operation, arguments, *,
 timeout_seconds, background=None)` sends one `workspace_call` under the session's write lock and
@@ -4827,6 +4830,14 @@ approved check such a worker started stays in its own process group).
   *, state=None, budget_seconds=20.0)` is one pass. Which long-lived client process keeps a drain
   per claimed workspace is the approach's choice. The service's own sweeper reads only its own state
   directory, so it never touches a client root.
+- `finishup.client.targets.active_root_may_be_remote() -> bool`: true for a root whose
+  `target.json` names a remote kind or cannot be read (`TargetRecordUnreadable`), false for every
+  local root and for a root that cannot be resolved at all (its own path reports that). On such a
+  root a hook pass's own outbox drain (`cli.observe_hooks._drain_connector`) and `finishup observe
+  drain` (`cli.observe._claim_bound_drain`, which then covers the named workspace or the current
+  folder's) connect with `workspace_locator=` so the connect seam claims it; a hook pass without a
+  workspace fails its drain connect retryably and its rows stay pending. Every local root and an
+  injected connector connect exactly as before.
 
 **Provenance.** Workspace evidence obtained through the hub is labelled `client_attested`
 (`domain.receipts.CLIENT_ATTESTED`). `domain.receipts.CLIENT_ATTESTED_WORKSPACE_LINE` is the one
@@ -4835,9 +4846,10 @@ attested over the connection; the server did not read the repository itself." No
 user-controlled is ever rendered beside it.
 
 - Service side: the text and markdown receipt of a claim-bound task (its `SessionOpened`
-  `workspace_ref` is a `client:` handle; a child attached by its attach handle on a claim-bound
-  connection records that connection's handle there through `execute_start(...,
-  session_workspace_ref=)`, outside the request identity) ends with `client_attested_receipt_block(
+  `workspace_ref` is a `client:` handle; a start naming no workspace on a claim-bound connection
+  (a create, a parent-registered child, a child attached by its attach handle) records that
+  connection's handle there through `execute_start(..., session_workspace_ref=)`, outside the
+  request identity) ends with `client_attested_receipt_block(
   service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
   FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
   unchanged.
@@ -4899,7 +4911,7 @@ wait `unavailable`.
 | Token | Raised when | Recovery |
 |---|---|---|
 | `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
-| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, a handle other than the connection's, or none where it opens a session | send the connection's `workspace_handle` (the bridge and CLI rewrite the absolute root to it) |
+| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, or a handle other than the connection's | send the connection's `workspace_handle`, or no workspace (the bridge and CLI rewrite the absolute root to the handle) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |

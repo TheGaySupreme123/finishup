@@ -7,10 +7,12 @@ derived from the connection's workspace claim, so every start through the same c
 same workspace and attach finds the task again. A connection bound by a local path, or not bound
 at all, sends the request exactly as written, as does a ``workspace_ref`` that is no path.
 
-A claim-bound connection with no handle exists for one reason: the server's vault was not ready
-when the connection said hello, so the server could not key the claim. Its start is not sent; the
-refusal is the retryable ``vault_locked`` the server itself would give, so a caller discards that
-connection and the first call after the unlock opens a fresh one that gets a handle.
+A start that names no workspace goes as written too: the server opens it on the connection's
+handle. A claim-bound connection with no handle exists for one reason: the server's vault was not
+ready when the connection said hello, so the server could not key the claim. No start is sent on
+it, whatever its ``workspace_ref``; the refusal is the retryable ``vault_locked`` the server
+itself would give, so a caller discards that connection and the first call after the unlock opens
+a fresh one that gets a handle.
 """
 
 from __future__ import annotations
@@ -61,14 +63,16 @@ def portable_workspace_ref(
 
     if workspace_binding not in WORKSPACE_BINDINGS:
         raise ValueError("workspace_binding_invalid")
-    if workspace_binding != "client_claim" or workspace_ref is None:
-        return workspace_ref
-    if not workspace_ref.startswith("/"):
+    if workspace_binding != "client_claim":
         return workspace_ref
     if not workspace_handle_valid(workspace_handle):
         # The server could not key this connection's claim at hello: its vault was not ready.
-        # Nothing is sent, and the caller replaces the connection once the vault is unlocked.
+        # No start is sent, whether it names a path or no workspace at all (which the server
+        # opens on the handle it could not give), and the caller replaces the connection once
+        # the vault is unlocked.
         raise ControlError("vault_locked", retryable=True)
+    if workspace_ref is None or not workspace_ref.startswith("/"):
+        return workspace_ref
     return workspace_handle
 
 

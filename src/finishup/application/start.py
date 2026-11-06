@@ -1478,6 +1478,8 @@ async def _execute_self_registration(
     request: StartRequest,
     repository_privacy_commitment: str | None,
     input_capture: StartInputCapture | None = None,
+    *,
+    session_workspace_ref: str | None = None,
 ) -> StartInternalResult:
     lineage = _lineage_for(app)
     parent_session_id = request.parent_session_id
@@ -1530,6 +1532,7 @@ async def _execute_self_registration(
         lineage_snapshot=child,
         provision_mode=BundleProvisionMode.CREATED,
         input_capture=input_capture,
+        session_workspace_ref=session_workspace_ref,
     )
     await _merge_host_annotation(
         app,
@@ -2074,8 +2077,9 @@ async def execute_start(
 
     ``session_workspace_ref`` is the workspace a session opened by a start that names none
     records: on a claim-bound connection, the connection's ``client:`` handle (ADR-051), so a
-    child attached by its attach handle is durably claim-bound. It goes into the opening event
-    only, never into the request's identity; ``None`` everywhere else.
+    create, a parent-registered child and a child attached by its attach handle are durably
+    claim-bound. It goes into the opening event only, never into the request's identity; a
+    delegation opens no session and ignores it; ``None`` everywhere else.
     """
 
     if request.mode == "delegate":
@@ -2090,11 +2094,16 @@ async def execute_start(
         )
     if request.parent_session_id is not None:
         return await _execute_self_registration(
-            app, request, repository_privacy_commitment, input_capture
+            app,
+            request,
+            repository_privacy_commitment,
+            input_capture,
+            session_workspace_ref=session_workspace_ref,
         )
     return await _execute_standard_start(
         app,
         request,
         repository_privacy_commitment=repository_privacy_commitment,
         input_capture=input_capture,
+        session_workspace_ref=session_workspace_ref,
     )
