@@ -2052,7 +2052,11 @@ async def _connect_remote_on_demand(
     machine. A failure the connector names (a remote phase) ends the wait at once.
     """
 
-    from finishup.client.connector_status import connector_holder, spawn_connector
+    from finishup.client.connector_status import (
+        connector_holder,
+        spawn_connector,
+        stop_connector,
+    )
 
     async def attempt() -> ServiceClient:
         remaining = deadline - time.monotonic()
@@ -2071,7 +2075,17 @@ async def _connect_remote_on_demand(
     except ControlError as exc:
         if exc.reason != "service_unavailable" or exc.phase is not None:
             raise
-    if connector_holder(root) is None:
+    holder = connector_holder(root)
+    if holder is not None and (
+        holder.version != __version__
+        or holder.schema_manifest_digest != _manifest_digest_for_client()
+    ):
+        # A connector left by another release of this client (an in-place upgrade) is
+        # client-owned: replace it by its stamped pid. The remote service is never touched.
+        if not await asyncio.to_thread(stop_connector, root):
+            raise ControlError("service_unavailable", retryable=True)
+        holder = None
+    if holder is None:
         try:
             spawn_connector(root)
         except OSError as exc:

@@ -235,6 +235,41 @@ def test_a_server_of_another_release_is_remote_incompatible_never_superseded(
     )
 
 
+def test_a_connector_of_another_release_is_replaced_by_its_stamped_pid(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    lock = ConnectorLock(remote)
+    lock.acquire(version="0.0.1", schema_manifest_digest="sha256:" + "a" * 64)
+    stopped: list[Path] = []
+
+    def stop(root: Path, *, timeout_seconds: float = 5.0) -> bool:
+        del timeout_seconds
+        stopped.append(root)
+        lock.release()
+        return True
+
+    monkeypatch.setattr("finishup.client.connector_status.stop_connector", stop)
+
+    spawned: list[Path] = []
+    daemon = ScriptedDaemon()
+
+    async def exercise() -> None:
+        tasks = _fake_connector(monkeypatch, daemon.serve, spawned)
+        try:
+            client = await service_client.connect_service_on_demand(
+                ControlClientKind.CLI, timeout_seconds=10.0
+            )
+            await client.close()
+        finally:
+            _stop(tasks)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        lock.release()
+    assert stopped == [remote] and spawned == [remote]
+
+
 def test_the_latch_keys_on_the_connector_status_generation(remote: Path) -> None:
     assert service_client.service_holder_identity() is None
     lock = ConnectorLock(remote)
