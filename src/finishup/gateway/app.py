@@ -103,6 +103,8 @@ class _Answer:
     body: bytes = b""
     method: str | None = None
     location: str | None = None
+    # A closed token for the audit line when a 200 answer is itself a refusal (a scope gap).
+    reason: str | None = None
 
 
 class _Refused(Exception):
@@ -291,7 +293,7 @@ class GatewayApp:
                 status=answer.status,
                 key=key,
                 method=answer.method,
-                reason=reason,
+                reason=reason if reason is not None else answer.reason,
             )
             headers = {CORRELATION_HEADER: correlation_id, "Cache-Control": "no-store"}
             if answer.location is not None:
@@ -361,7 +363,9 @@ class GatewayApp:
         method_name = cast(str, frame["method"])
         method = ControlMethod(method_name)
         if not method_allowed(key.scope, method, claim_bound=session.claim_bound):
-            return _Answer(200, _forbidden_result(session, frame), method_name)
+            return _Answer(
+                200, _forbidden_result(session, frame), method_name, reason="method_forbidden"
+            )
         if session.delivered(rpc_id):
             raise _Refused("frame_invalid")
         if session.slot(rpc_id) is None:

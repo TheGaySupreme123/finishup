@@ -255,6 +255,14 @@ async def test_an_out_of_scope_call_is_a_synthesized_refusal_never_forwarded(
         "service_instance_id": SERVICE_ID,
     }
     assert len(gateway.daemon.received()) == 1  # the hello only
+    # The operator sees the scope refusal in the audit line, by its closed token.
+    refused = gateway.audit.records[-1]
+    assert (refused["route"], refused["method"], refused["status"], refused["reason"]) == (
+        "calls",
+        "service_lock",
+        200,
+        "method_forbidden",
+    )
     operator_sid = await _open(gateway, key=gateway.operator_key)
     allowed = await gateway.client.post(
         f"/v1/sessions/{operator_sid}/calls?wait_ms=5000",
