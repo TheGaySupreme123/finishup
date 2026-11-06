@@ -4816,8 +4816,8 @@ wait `unavailable`.
 
 | Token | Raised when | Recovery |
 |---|---|---|
-| `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator` | client defect; reconnect with one binding |
-| `workspace_ref_not_portable` | a claim-bound `start` names an absolute `workspace_ref` | send the connection's `workspace_handle` |
+| `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
+| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, a handle other than the connection's, or none where it opens a session | send the connection's `workspace_handle` (the bridge and CLI rewrite the absolute root to it) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
