@@ -506,9 +506,13 @@ SSH (owner-equivalent, no key)
   `FinishUP-Outcome: ok|error` and the service instance and generation as headers. A call addressed
   to an earlier generation answers `service_generation_changed`, as on the socket. A call still
   running after `wait_ms` (≤ 25 000) answers `202` and `/v1/operations/{id}` long-polls (`GET`) or
-  cancels (`DELETE`) it; a client-chosen `FinishUP-Operation-Id` is dispatched at most once and a
-  finished answer stays retrievable for 120 seconds. Each request, and each registered agent, holds
-  the daemon's idle shutdown like one open control connection.
+  cancels (`DELETE`) it; a client-chosen `FinishUP-Operation-Id` is dispatched at most once: it is
+  reserved before anything is awaited, so a concurrent duplicate waits for that admission and
+  answers with its operation. A finished answer is kept only as its encoded bytes and stays
+  retrievable for 120 seconds, at most 64 per key, 1024 in all and 64 MiB in all (the oldest go
+  first, also on the API's own sweep); an id whose answer was dropped stays spent for 15 minutes,
+  so a late duplicate answers `operation_unknown` instead of being dispatched again. Each request,
+  and each registered agent, holds the daemon's idle shutdown like one open control connection.
 - Workspace agents: `POST /v1/agents` (claim header required; body = the agent declaration) answers
   the agent id and the `client:` handle; `GET /v1/agents/{id}/work` long-polls queued
   `workspace_call` frames; `POST /v1/agents/{id}/replies` delivers one `workspace_reply`;

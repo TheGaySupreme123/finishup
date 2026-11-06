@@ -621,3 +621,142 @@ async def test_a_network_start_never_names_a_path_and_a_keyed_one_carries_its_cl
         accepted = await client.post("/v1/start", content=_start_body(mode="create"))
         assert accepted.status_code == 200
     assert [seen[2] for seen in owner.seen] == [None]
+
+
+@pytest.mark.anyio
+async def test_one_operation_id_sent_twice_at_once_is_dispatched_once(
+    keys: ApiKeyStore,
+) -> None:
+    # Two requests with the same id, the first still sending its body: the second waits for the
+    # first's admission and answers with that operation instead of dispatching again.
+    service = FakeService()
+    api = make_api(service, keys)
+    _record, token = keys.create("laptop", "agent")
+    operation_id = new_id(IdKind.CONTROL_RPC)
+    headers = {**_bearer(token), "finishup-operation-id": operation_id}
+    release = asyncio.Event()
+
+    async def slow_body() -> AsyncGenerator[bytes]:
+        await release.wait()
+        yield _STATUS_BODY
+
+    async with _client(api) as client:
+        first = asyncio.create_task(
+            client.post("/v1/service_status", headers=headers, content=slow_body())
+        )
+        second = asyncio.create_task(
+            client.post("/v1/service_status", headers=headers, content=_STATUS_BODY)
+        )
+        await asyncio.sleep(0)
+        release.set()
+        answers = await asyncio.gather(first, second)
+    assert [answer.status_code for answer in answers] == [200, 200]
+    assert answers[0].content == answers[1].content
+    assert len(service.seen) == 1
+
+
+@pytest.mark.anyio
+async def test_finished_answers_are_bounded_and_a_dropped_id_is_never_dispatched_again(
+    keys: ApiKeyStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.service.http_api as http_api
+
+    monkeypatch.setattr(http_api, "MAX_RETAINED_OPERATIONS_PER_KEY", 3)
+    now = [1_000.0]
+    service = FakeService()
+    api = make_api(service, keys, clock=lambda: now[0])
+    _record, token = keys.create("laptop", "agent")
+    ids = [new_id(IdKind.CONTROL_RPC) for _ in range(5)]
+    async with _client(api) as client:
+        for index, operation_id in enumerate(ids):
+            now[0] += 1
+            answer = await client.post(
+                "/v1/service_status",
+                headers={**_bearer(token), "finishup-operation-id": operation_id},
+                content=_STATUS_BODY,
+            )
+            assert answer.status_code == 200, index
+        retained = api._operations  # pyright: ignore[reportPrivateUsage]
+        # Only the newest three are kept, and only as their answer's bytes.
+        assert sorted(retained) == sorted(ids[2:])
+        assert all(item.task is None and item.request is None for item in retained.values())
+        for dropped in ids[:2]:
+            fetched = await client.get(f"/v1/operations/{dropped}", headers=_bearer(token))
+            assert (fetched.status_code, _reason(fetched)) == (404, "operation_unknown")
+            again = await client.post(
+                "/v1/service_status",
+                headers={**_bearer(token), "finishup-operation-id": dropped},
+                content=_STATUS_BODY,
+            )
+            assert (again.status_code, _reason(again)) == (404, "operation_unknown")
+        assert len(service.seen) == 5
+        kept = await client.get(f"/v1/operations/{ids[-1]}", headers=_bearer(token))
+        assert kept.status_code == 200
+        # Another key reusing a spent id is refused as before, never told about it.
+        _other, other_token = keys.create("other", "agent")
+        foreign = await client.post(
+            "/v1/service_status",
+            headers={**_bearer(other_token), "finishup-operation-id": ids[0]},
+            content=_STATUS_BODY,
+        )
+        assert (foreign.status_code, _reason(foreign)) == (400, "header_invalid")
+
+
+@pytest.mark.anyio
+async def test_retained_answers_are_bounded_in_bytes_and_in_all(
+    keys: ApiKeyStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.service.http_api as http_api
+
+    service = FakeService()
+    api = make_api(service, keys)
+    _record, token = keys.create("laptop", "agent")
+    _other, other_token = keys.create("other", "agent")
+
+    async def call(key: str) -> None:
+        answer = await client.post(
+            "/v1/service_status",
+            headers={**_bearer(key), "finishup-operation-id": new_id(IdKind.CONTROL_RPC)},
+            content=_STATUS_BODY,
+        )
+        assert answer.status_code == 200
+
+    async with _client(api) as client:
+        monkeypatch.setattr(http_api, "MAX_RETAINED_OPERATIONS", 3)
+        for key in (token, other_token, token, other_token, token):
+            await call(key)
+        assert len(api._operations) == 3  # pyright: ignore[reportPrivateUsage]
+        await call(token)
+        size = len(
+            cast(
+                bytes,
+                next(iter(api._operations.values())).answer.body,  # pyright: ignore[reportPrivateUsage, reportOptionalMemberAccess]
+            )
+        )
+        monkeypatch.setattr(http_api, "MAX_RETAINED_RESULT_BYTES", size * 2)
+        await call(other_token)
+        assert len(api._operations) == 2  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
+async def test_expired_answers_are_dropped_on_the_sweeper_too(
+    keys: ApiKeyStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.service.http_api as http_api
+
+    monkeypatch.setattr(http_api, "_SWEEP_SECONDS", 0.01)
+    now = [1_000.0]
+    api = make_api(FakeService(), keys, clock=lambda: now[0])
+    _record, token = keys.create("laptop", "agent")
+    async with _client(api) as client:
+        answer = await client.post(
+            "/v1/service_status", headers=_bearer(token), content=_STATUS_BODY
+        )
+        assert answer.status_code == 200
+    assert len(api._operations) == 1  # pyright: ignore[reportPrivateUsage]
+    # No further request arrives; the sweeper alone drops the answer once it expires.
+    now[0] += http_api.OPERATION_RESULT_SECONDS
+    async with asyncio.timeout(10):
+        while api._operations:  # pyright: ignore[reportPrivateUsage]
+            await asyncio.sleep(0.01)
+    await api.close()

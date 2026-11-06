@@ -143,6 +143,9 @@ __all__ = [
     "API_SOCKET_NAME",
     "MAX_AGENTS_PER_KEY",
     "MAX_PENDING_OPERATIONS_PER_KEY",
+    "MAX_RETAINED_OPERATIONS",
+    "MAX_RETAINED_OPERATIONS_PER_KEY",
+    "MAX_RETAINED_RESULT_BYTES",
     "MAX_TCP_CONNECTIONS",
     "MAX_TCP_CONNECTIONS_PER_PEER",
     "REQUEST_BODY_SECONDS",
@@ -158,6 +161,16 @@ MAX_AGENTS_PER_KEY: Final = 16
 # A finished operation's answer stays retrievable this long (an answer lost on the way can be
 # fetched again by its id); every request id is idempotent besides.
 OPERATION_RESULT_SECONDS: Final = 120.0
+# Finished answers are kept as their encoded bytes, at most this many per key and in all, and at
+# most this many bytes in all; past any bound the oldest go first (a later GET for them answers
+# ``operation_unknown``).
+MAX_RETAINED_OPERATIONS_PER_KEY: Final = 64
+MAX_RETAINED_OPERATIONS: Final = 1_024
+MAX_RETAINED_RESULT_BYTES: Final = 64 * 1024 * 1024
+# An operation id whose answer was dropped stays spent this long, so a late duplicate is refused
+# (``operation_unknown``) rather than dispatched again; at most this many are remembered.
+SPENT_OPERATION_SECONDS: Final = 900.0
+MAX_SPENT_OPERATIONS: Final = 16_384
 _AGENT_QUEUE_CAPACITY: Final = 64
 _MAX_CALLS_PER_POLL: Final = 16
 _SWEEP_SECONDS: Final = 5.0
@@ -255,14 +268,35 @@ class _Caller:
         return self.key_id if self.key_id is not None else OWNER_PRINCIPAL
 
 
+@dataclass(frozen=True, slots=True)
+class _Answer:
+    """A finished operation's answer, kept as the bytes it is sent as (``body`` None: unframable)."""
+
+    body: bytes | None
+    outcome: str
+    service_instance_id: str
+    service_generation: str
+
+
 @dataclass(slots=True)
 class _Operation:
+    """One admitted call: its task while it runs, then only its encoded answer."""
+
     operation_id: str
     owner_key: str
-    task: asyncio.Task[ControlResult]
-    request: ControlCallRequest
+    task: asyncio.Task[ControlResult] | None
+    request: ControlCallRequest | None
     workspace_handle: str | None
     finished_at: float | None = None
+    answer: _Answer | None = None
+
+
+@dataclass(slots=True)
+class _Admission:
+    """An operation id being admitted: a duplicate waits for it rather than dispatching again."""
+
+    owner_key: str
+    settled: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(slots=True)
@@ -364,6 +398,9 @@ class NetworkApi:
         self._clock = clock
         self._wall_clock = wall_clock or (lambda: datetime.now(UTC))
         self._operations: dict[str, _Operation] = {}
+        self._admitting: dict[str, _Admission] = {}
+        # Operation ids whose answer was dropped: id -> (owner key, until), oldest first.
+        self._spent: dict[str, tuple[str, float]] = {}
         self._agents: dict[str, _Agent] = {}
         self._closing = asyncio.Event()
         self._sweeper: asyncio.Task[None] | None = None
@@ -611,17 +648,61 @@ class NetworkApi:
             raise _Refusal("header_invalid") from None
         wait_ms = _wait_ms(request)
         operation_id = _single_header(request, HEADER_OPERATION_ID)
+        admission: _Admission | None = None
         if operation_id is not None:
             try:
                 validate_id(IdKind.CONTROL_RPC, operation_id)
             except (TypeError, ValueError):
                 raise _Refusal("header_invalid") from None
-            existing = self._operations.get(operation_id)
-            if existing is not None:
-                # At most once: an id already admitted answers with that operation, never anew.
-                if existing.owner_key != caller.owner_key:
+            while True:
+                existing = self._known_operation(operation_id, caller)
+                if existing is not None:
+                    # At most once: an id already admitted answers with that operation.
+                    return await self._answer(existing, wait_ms)
+                admitting = self._admitting.get(operation_id)
+                if admitting is None:
+                    break
+                if admitting.owner_key != caller.owner_key:
                     raise _Refusal("header_invalid")
-                return await self._answer(existing, wait_ms)
+                # The same id is being admitted on another request: its outcome decides.
+                await admitting.settled.wait()
+            # Reserved before anything is awaited, so a concurrent duplicate waits for it.
+            admission = _Admission(caller.owner_key)
+            self._admitting[operation_id] = admission
+        try:
+            operation = await self._admit(request, caller, method, client_kind, operation_id)
+        finally:
+            if admission is not None and operation_id is not None:
+                if self._admitting.get(operation_id) is admission:
+                    del self._admitting[operation_id]
+                admission.settled.set()
+        if isinstance(operation, Response):
+            return operation
+        return await self._answer(operation, wait_ms)
+
+    def _known_operation(self, operation_id: str, caller: _Caller) -> _Operation | None:
+        """The operation an id already names for this caller; a spent id is refused."""
+
+        existing = self._operations.get(operation_id)
+        spent = self._spent.get(operation_id)
+        owner = existing.owner_key if existing is not None else None if spent is None else spent[0]
+        if owner is not None and owner != caller.owner_key:
+            raise _Refusal("header_invalid")
+        if existing is None and spent is not None:
+            # Its answer was dropped: it is never dispatched again.
+            raise _Refusal("operation_unknown")
+        return existing
+
+    async def _admit(
+        self,
+        request: Request,
+        caller: _Caller,
+        method: ControlMethod,
+        client_kind: ControlClientKind,
+        operation_id: str | None,
+    ) -> _Operation | Response:
+        """Check, read and dispatch one call; a refusal before dispatch is answered at once."""
+
         binding, context = await self._claim(request, caller)
         handle = None if context is None else workspace_handle_for_commitment(context.commitment)
         addressed = self._generation(request)
@@ -646,20 +727,16 @@ class NetworkApi:
         pending = sum(
             1
             for item in self._operations.values()
-            if item.owner_key == caller.owner_key and not item.task.done()
+            if item.owner_key == caller.owner_key and item.answer is None
         )
         if pending >= MAX_PENDING_OPERATIONS_PER_KEY:
             raise _Refusal("operation_limit")
-        operation = _Operation(
-            call.rpc_id,
-            caller.owner_key,
-            asyncio.create_task(self._dispatch(client_kind, call, context)),
-            call,
-            handle,
-        )
-        operation.task.add_done_callback(lambda _task: self._finished(operation))
+        task = asyncio.create_task(self._dispatch(client_kind, call, context))
+        operation = _Operation(call.rpc_id, caller.owner_key, task, call, handle)
+        task.add_done_callback(lambda _task: self._finished(operation))
         self._operations[call.rpc_id] = operation
-        return await self._answer(operation, wait_ms)
+        self._ensure_sweeper()
+        return operation
 
     @staticmethod
     def _require_portable_start(
@@ -744,7 +821,63 @@ class NetworkApi:
         )
 
     def _finished(self, operation: _Operation) -> None:
+        """Keep only the finished call's encoded answer, then hold the retained answers' bounds."""
+
+        task, request = operation.task, operation.request
+        if operation.answer is not None or task is None or request is None or not task.done():
+            return
+        result = (
+            # Cancelled before its first step ran, the call never reached the daemon.
+            self._call_error(request, ControlError("request_cancelled", retryable=True))
+            if task.cancelled()
+            else task.result()
+        )
+        try:
+            body: bytes | None = _result_body(result)
+        except ControlProtocolError:
+            # A result this service cannot frame is its own defect; the socket would drop it too.
+            body = None
+        operation.answer = _Answer(
+            body, result.outcome, result.service_instance_id, result.service_generation
+        )
+        operation.task = None
+        operation.request = None
         operation.finished_at = self._clock()
+        self._retain()
+
+    def _drop_answer(self, operation_id: str, now: float) -> None:
+        operation = self._operations.pop(operation_id, None)
+        if operation is None:
+            return
+        self._spent.pop(operation_id, None)
+        self._spent[operation_id] = (operation.owner_key, now + SPENT_OPERATION_SECONDS)
+        while len(self._spent) > MAX_SPENT_OPERATIONS:
+            del self._spent[next(iter(self._spent))]
+
+    def _retain(self) -> None:
+        """Drop the oldest finished answers past the per-key, total and byte bounds."""
+
+        now = self._clock()
+        finished = sorted(
+            (item for item in self._operations.values() if item.answer is not None),
+            key=lambda item: cast(float, item.finished_at),
+        )
+        per_key: dict[str, int] = {}
+        for item in finished:
+            per_key[item.owner_key] = per_key.get(item.owner_key, 0) + 1
+        total = len(finished)
+        size = sum(len(cast(_Answer, item.answer).body or b"") for item in finished)
+        for item in finished:
+            if (
+                per_key[item.owner_key] <= MAX_RETAINED_OPERATIONS_PER_KEY
+                and total <= MAX_RETAINED_OPERATIONS
+                and size <= MAX_RETAINED_RESULT_BYTES
+            ):
+                continue
+            per_key[item.owner_key] -= 1
+            total -= 1
+            size -= len(cast(_Answer, item.answer).body or b"")
+            self._drop_answer(item.operation_id, now)
 
     def _purge(self) -> None:
         now = self._clock()
@@ -753,20 +886,27 @@ class NetworkApi:
                 operation.finished_at is not None
                 and now - operation.finished_at >= OPERATION_RESULT_SECONDS
             ):
-                del self._operations[operation_id]
+                self._drop_answer(operation_id, now)
+        for operation_id, (_owner, until) in tuple(self._spent.items()):
+            if until <= now:
+                del self._spent[operation_id]
 
     async def _answer(self, operation: _Operation, wait_ms: int) -> Response:
-        if not operation.task.done() and wait_ms > 0:
+        task = operation.task
+        if task is not None and not task.done() and wait_ms > 0:
             closing = asyncio.ensure_future(self._closing.wait())
             try:
                 await asyncio.wait(
-                    {operation.task, closing},
+                    {task, closing},
                     timeout=wait_ms / 1_000,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             finally:
                 closing.cancel()
-        if not operation.task.done():
+        # A task that just ended may not have run its done callback yet.
+        self._finished(operation)
+        answer = operation.answer
+        if answer is None:
             return Response(
                 canonical_encode(
                     {
@@ -783,14 +923,8 @@ class NetworkApi:
                     HEADER_OPERATION_ID: operation.operation_id,
                 },
             )
-        result = (
-            # Cancelled before its first step ran, the call never reached the daemon.
-            self._call_error(operation.request, ControlError("request_cancelled", retryable=True))
-            if operation.task.cancelled()
-            else operation.task.result()
-        )
-        return self._result_response(
-            result,
+        return self._answer_response(
+            answer,
             operation_id=operation.operation_id,
             workspace_handle=operation.workspace_handle,
         )
@@ -799,20 +933,33 @@ class NetworkApi:
         self, result: ControlResult, *, operation_id: str, workspace_handle: str | None
     ) -> Response:
         try:
-            body = _result_body(result)
+            body: bytes | None = _result_body(result)
         except ControlProtocolError:
+            body = None
+        answer = _Answer(
+            body, result.outcome, result.service_instance_id, result.service_generation
+        )
+        return self._answer_response(
+            answer, operation_id=operation_id, workspace_handle=workspace_handle
+        )
+
+    @staticmethod
+    def _answer_response(
+        answer: _Answer, *, operation_id: str, workspace_handle: str | None
+    ) -> Response:
+        if answer.body is None:
             # A result this service cannot frame is its own defect; the socket would drop it too.
-            raise _Refusal("service_unavailable") from None
+            raise _Refusal("service_unavailable")
         headers = {
             "cache-control": "no-store",
-            HEADER_OUTCOME: result.outcome,
+            HEADER_OUTCOME: answer.outcome,
             HEADER_OPERATION_ID: operation_id,
-            HEADER_SERVICE_INSTANCE: result.service_instance_id,
-            HEADER_SERVICE_GENERATION: result.service_generation,
+            HEADER_SERVICE_INSTANCE: answer.service_instance_id,
+            HEADER_SERVICE_GENERATION: answer.service_generation,
         }
         if workspace_handle is not None:
             headers[HEADER_WORKSPACE_HANDLE] = workspace_handle
-        return Response(body, media_type=_JSON, headers=headers)
+        return Response(answer.body, media_type=_JSON, headers=headers)
 
     def _owned_operation(self, request: Request) -> _Operation:
         caller = self._caller(request)
@@ -828,7 +975,7 @@ class NetworkApi:
 
     async def _cancel_operation(self, request: Request) -> Response:
         operation = self._owned_operation(request)
-        if not operation.task.done():
+        if operation.task is not None and not operation.task.done():
             operation.task.cancel(EXPLICIT_CONTROL_CANCEL)
         return Response(status_code=204, headers={"cache-control": "no-store"})
 
@@ -980,10 +1127,11 @@ class NetworkApi:
             self._sweeper = asyncio.create_task(self._sweep())
 
     async def _sweep(self) -> None:
-        """End agents whose lease ran out or whose key was revoked or expired."""
+        """Drop expired answers, and end agents whose lease ran out or whose key ended."""
 
-        while self._agents and not self._closing.is_set():
+        while (self._agents or self._operations or self._spent) and not self._closing.is_set():
             await asyncio.sleep(_SWEEP_SECONDS)
+            self._purge()
             await self.sweep_once()
 
     async def sweep_once(self) -> None:
@@ -1001,12 +1149,14 @@ class NetworkApi:
         """Answer every long-poll, cancel running calls, and end every registered agent."""
 
         self._closing.set()
-        for operation in tuple(self._operations.values()):
-            if not operation.task.done():
-                operation.task.cancel(EXPLICIT_CONTROL_CANCEL)
-        await asyncio.gather(
-            *(operation.task for operation in self._operations.values()), return_exceptions=True
-        )
+        running = [
+            operation.task
+            for operation in self._operations.values()
+            if operation.task is not None and not operation.task.done()
+        ]
+        for task in running:
+            task.cancel(EXPLICIT_CONTROL_CANCEL)
+        await asyncio.gather(*running, return_exceptions=True)
         for agent in tuple(self._agents.values()):
             with contextlib.suppress(Exception):
                 await self._unregister(agent, "service_stopping")

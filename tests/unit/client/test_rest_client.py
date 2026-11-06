@@ -151,9 +151,12 @@ async def test_a_deadline_times_out_and_cancels_the_operation(keys: ApiKeyStore)
         with pytest.raises(ControlError) as raised:
             await client.privacy_get_setup(JsonObject({"schema_version": "2.0.0"}), deadline_ms=100)
         assert (raised.value.reason, raised.value.retryable) == ("request_timeout", True)
-        await asyncio.sleep(0.05)
         (operation,) = api._operations.values()  # pyright: ignore[reportPrivateUsage]
-        assert operation.task.done()
+        # The cancelled call finished: only its answer is kept.
+        async with asyncio.timeout(10):
+            while operation.answer is None:
+                await asyncio.sleep(0.01)
+        assert operation.task is None
     finally:
         await client.close()
         await api.close()
