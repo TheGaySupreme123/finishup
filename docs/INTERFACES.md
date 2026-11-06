@@ -9866,7 +9866,9 @@ facade and are never MCP tools.
   `instance_service_running` 20 as `BUNDLE_BUSY`) and carries their remediation lines.
 - `cli/instance.py`: `finishup instance create|status|dispose` (ADR-028). `create_instance()`
   creates one owner-only root (parent must exist; same path-safety gate; socket path bound
-  `MAX_SOCKET_PATH_BYTES` = 100), seals the marker, and with `--bind-runtime` pins `sys.prefix`;
+  `MAX_SOCKET_PATH_BYTES` from `config/installation.py`, the platform's usable `sun_path` bytes:
+  107 on Linux, 103 on Darwin; `client/targets.py` checks `target_root_too_long` against the same
+  bound), seals the marker, and with `--bind-runtime` pins `sys.prefix`;
   it echoes the exact root once. Creation is whole or nothing: a refusal after the root exists
   (`runtime_pin_unwritable`, a pin conflict found at write time, a failed seal) first removes this
   call's own marker and the directories it created, each only when empty, so a retry after the

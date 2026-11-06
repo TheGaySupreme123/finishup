@@ -6,7 +6,7 @@ root under ``/tmp``), with every isolation-root variable unset and the selection
 
 A target root's longest endpoint must fit the ``sun_path`` bound the runtime enforces
 (``target_root_too_long``). CI isolates ``$HOME`` beneath a long job temp directory, where a root
-named after it cannot fit; the home is then the account's own passwd home, which is as private.
+named after it may not fit; the home is then the account's own passwd home, which is as private.
 """
 
 from __future__ import annotations
@@ -20,20 +20,19 @@ from pathlib import Path
 
 import pytest
 
+from finishup.config.installation import instance_root_fits
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, reset_selection_memo
 
 __all__ = ["ambient_home"]
 
 _PREFIX = ".yz-target-test-"
-# The runtime's bound (``finishup.client.targets``) and the longest path a test target root holds:
-# ``<home>/<prefix><8 random>/state/finishup/servers/t_<8 hex>/run/secret-ingress.sock``.
-_MAX_SOCKET_PATH_BYTES = 100
-_LONGEST_SUFFIX = Path("state", "finishup", "servers", "t_00000000", "run", "secret-ingress.sock")
+# The deepest root a test makes, ``<home>/<prefix><8 random>/state/finishup/servers/t_<8 hex>``:
+# a ``local`` target's, held to the runtime's own instance bound, the strictest a target meets.
+_DEEPEST_ROOT = Path("state", "finishup", "servers", "t_00000000")
 
 
 def _fits(base: Path) -> bool:
-    sample = base / f"{_PREFIX}00000000" / _LONGEST_SUFFIX
-    return len(os.fsencode(sample)) <= _MAX_SOCKET_PATH_BYTES
+    return instance_root_fits(base / f"{_PREFIX}00000000" / _DEEPEST_ROOT)
 
 
 def _test_home_base() -> Path:

@@ -41,7 +41,12 @@ from pathlib import Path
 from typing import Final, Literal, cast
 from urllib.parse import urlsplit
 
-from finishup.config.installation import format_rfc3339_ms, parse_rfc3339_ms
+from finishup.config.installation import (
+    format_rfc3339_ms,
+    instance_root_fits,
+    parse_rfc3339_ms,
+    socket_path_fits,
+)
 from finishup.config.paths import (
     SERVER_SELECTION_NAME,
     SERVER_SELECTION_SCHEMA,
@@ -122,9 +127,18 @@ _DNS_NAME: Final = re.compile(
 _URL_PATH: Final = re.compile(r"^(?:/[A-Za-z0-9._~-]+)*/?$", re.ASCII)
 _MAX_RECORD_BYTES: Final = 8_192
 _MAX_PATH_TEXT: Final = 1_024
-# ``sun_path`` bound (macOS 104 bytes with the terminator); the longest endpoint beneath a root.
-_MAX_SOCKET_PATH_BYTES: Final = 100
-_LONGEST_ENDPOINT: Final = Path("run") / "secret-ingress.sock"
+# The sockets a client may bind beneath a remote target root, each with the temporary suffix it
+# is bound under first. A remote root runs no service, so the service's endpoints (the instance
+# bound a ``local`` root is held to) never apply to it. OpenSSH binds its ControlMaster ``run/m``
+# at ``run/m.<16 random characters>`` and renames it into place, the longest of these; a relay or
+# forwarded socket (``run/control.sock``, ``run/upstream.sock``, ``run/api.sock``, as the
+# topology needs) binds directly. An HTTPS or ``local_port`` target may bind none.
+_REMOTE_CLIENT_SOCKETS: Final = (
+    (Path("run") / "m", 17),
+    (Path("run") / "control.sock", 0),
+    (Path("run") / "upstream.sock", 0),
+    (Path("run") / "api.sock", 0),
+)
 _REGISTRY_LOCK_NAME: Final = ".registry.lock"
 _COMMON_FIELDS: Final = frozenset({"schema", "target_id", "name", "kind", "created_at"})
 _REMOTE_FIELDS: Final = frozenset({"claim_salt", "authorized_at", "disclosure_version"})
@@ -583,8 +597,22 @@ def target_root(target_id: str) -> Path:
     return servers_dir() / target_id
 
 
-def _check_root_length(root: Path) -> None:
-    if len(os.fsencode(root / _LONGEST_ENDPOINT)) > _MAX_SOCKET_PATH_BYTES:
+def _check_root_length(root: Path, kind: TargetKind) -> None:
+    """Refuse a root whose longest socket would not fit this platform's ``sun_path`` bound.
+
+    A ``local`` root is an instance root, held to the service's own endpoints exactly as
+    ``finishup instance create`` holds it (``instance_root_too_long``); a remote root only to the
+    sockets a client binds there.
+    """
+
+    if kind in REMOTE_KINDS:
+        fits = all(
+            socket_path_fits(root / name, temporary_suffix_bytes=suffix)
+            for name, suffix in _REMOTE_CLIENT_SOCKETS
+        )
+    else:
+        fits = instance_root_fits(root)
+    if not fits:
         raise TargetError("target_root_too_long")
 
 
@@ -699,7 +727,7 @@ def new_local_target(name: str, *, now: str | None = None) -> tuple[ServerTarget
     directory = servers_dir()
     target_id = _new_target_id(directory)
     root = directory / target_id
-    _check_root_length(root)
+    _check_root_length(root, "local")
     try:
         create_instance(root=root, lifecycle="persistent")
     except InstanceIdentityError as error:
@@ -747,7 +775,7 @@ def new_remote_target(
     directory = servers_dir()
     target_id = _new_target_id(directory)
     root = directory / target_id
-    _check_root_length(root)
+    _check_root_length(root, kind)
     record = ServerTarget(
         target_id,
         name,

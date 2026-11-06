@@ -18,9 +18,10 @@ from pathlib import Path
 import pytest
 
 from builders.server_targets import ambient_home
+from finishup.cli import instance as instance_cli
 from finishup.client import targets
 from finishup.client.targets import ServerTarget, TargetError
-from finishup.config import paths
+from finishup.config import installation, paths
 from finishup.config.installation import write_runtime_pin
 from finishup.config.paths import (
     ISOLATED_ROOT_ENV_NAMES,
@@ -299,6 +300,68 @@ def test_a_root_too_deep_for_a_socket_path_is_refused_before_anything_is_made(
         _local_target()
     assert raised.value.reason == "target_root_too_long"
     assert not any((deep / "finishup" / "servers").glob("t_*"))
+
+
+@pytest.mark.parametrize(
+    ("platform", "usable"),
+    [("linux", 107), ("darwin", 103), ("freebsd14", 103)],
+)
+def test_the_socket_path_bound_is_the_platforms_own(platform: str, usable: int) -> None:
+    # ``sun_path`` less its terminating NUL: 108 bytes on Linux, 104 on Darwin and the BSDs.
+    assert installation.usable_socket_path_bytes(platform) == usable
+
+
+def test_one_bound_serves_the_instance_and_the_target_checks() -> None:
+    assert installation.MAX_SOCKET_PATH_BYTES == installation.usable_socket_path_bytes()
+    assert instance_cli.MAX_SOCKET_PATH_BYTES is installation.MAX_SOCKET_PATH_BYTES
+
+
+def _state_home_for_root_bytes(home: Path, root_bytes: int) -> Path:
+    """An ambient state folder whose target roots (``…/finishup/servers/t_<8 hex>``) are exact."""
+
+    suffix = len(os.fsencode(Path("/finishup/servers/t_00000000")))
+    padding = root_bytes - suffix - len(os.fsencode(home)) - 1
+    assert padding > 0
+    state = home / ("s" * padding)
+    state.mkdir(mode=0o700)
+    return state
+
+
+def _remote(name: str) -> tuple[ServerTarget, Path]:
+    with targets.registry_lock():
+        return targets.new_remote_target(
+            name, "ssh", user="owner", host="lab.example", port=22, remote_root="/srv/fu"
+        )
+
+
+def test_a_remote_root_is_held_to_the_sockets_a_client_binds_there(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # OpenSSH binds the master at ``run/m`` plus a 17-byte temporary suffix: 23 bytes beneath the
+    # root, one fewer than the service's ``run/secret-ingress.sock`` a remote root never holds.
+    bound = installation.MAX_SOCKET_PATH_BYTES
+    monkeypatch.setenv("XDG_STATE_HOME", str(_state_home_for_root_bytes(home, bound - 23)))
+
+    record, root = _remote("lab")
+    assert len(os.fsencode(root)) == bound - 23
+    assert record.kind == "ssh"
+    # The same root is one byte too deep for a named local server's own service endpoints.
+    with pytest.raises(TargetError) as local:
+        _local_target()
+    assert local.value.reason == "target_root_too_long"
+
+
+def test_a_remote_root_one_byte_too_deep_for_the_master_socket_is_refused(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = installation.MAX_SOCKET_PATH_BYTES
+    state = _state_home_for_root_bytes(home, bound - 22)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+
+    with pytest.raises(TargetError) as raised:
+        _remote("lab")
+    assert raised.value.reason == "target_root_too_long"
+    assert not any((state / "finishup" / "servers").glob("t_*"))
 
 
 def test_target_ids_and_record_files_are_owner_only(home: Path) -> None:

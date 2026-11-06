@@ -21,7 +21,7 @@ every instance has a fresh vault, config, ledger catalog, locks, endpoints, cach
   use (the script defaults to the interpreter running it).
 - A short, owner-private base directory outside every repository and outside shared temp, for
   example `~/.yz-instances`. Unix control sockets bind beneath each instance root, so the whole
-  path `<base>/<tag>/state/run/secret-ingress.sock` must stay under 100 bytes;
+  path `<base>/<tag>/state/run/secret-ingress.sock` must fit in 103 bytes on macOS (107 on Linux);
   `finishup instance create` refuses a longer root (`instance_root_too_long`). The root must not be a
   symlink, must be owned by you, and must not sit under `/tmp` (macOS resolves it through a
   symlink and the runtime refuses it as `path_contains_symlink`).
