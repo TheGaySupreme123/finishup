@@ -4070,8 +4070,13 @@ can retry; a fourth consecutive activation failure becomes terminal `unlock_fail
 The re-ready runs as one daemon-owned task: a caller that stops waiting (a claim hello at its
 5-second handshake deadline, a cancelled control call) never interrupts it, so it never leaves the
 lifecycle `unlocking` or turns a cancelled activation into `unlock_failed`; a caller that arrives
-meanwhile waits on the same attempt. Only shutdown cancels it, and the cancelled attempt locks the
-vault and returns to `locked` keeping its soft-lock reason.
+meanwhile waits on the same attempt. A lock outranks it: `SERVICE_LOCK`, a session lock, suspend or
+monitor loss cancels the attempt in flight and lets none start until the lock has applied, then
+records its own reason; shutdown cancels it too. The attempt also has its own 30-second deadline,
+the budget an on-demand client gives a cold start for the same unlock and activation, so a stalled
+keyring read or activation never holds the lifecycle `unlocking` or a lock waiting. A cancelled or
+expired attempt locks the vault and returns to `locked`; an expired one keeps its soft-lock reason,
+so the next request tries again.
 The resulting `VAULT_LOCKED` error is retryable only while this automatic recovery path remains
 eligible. `explicit_lock`, `monitor_lost`, and hard `auto_unlock_*` /
 `passphrase_required` reasons do not take that path. The trusted unlock helper may submit the scoped entry through the

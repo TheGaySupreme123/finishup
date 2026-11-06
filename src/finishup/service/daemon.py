@@ -379,6 +379,15 @@ _SOFT_LOCK_AUTO_READY_REASONS: Final = frozenset(
 # blip demoted a succeeded re-ready into a permanent LOCKED that nothing ever reconsidered
 # (#276). Credential-shaped failures are unaffected: they never reach this classification.
 _SOFT_REREADY_ACTIVATION_RETRY_LIMIT: Final = 3
+# One soft-lock re-ready attempt's own deadline, from taking the activation lock to READY. The
+# attempt repeats a cold start's work (the scoped auto-unlock read, the vault unlock and ready
+# activation), and an on-demand client allows a cold start 30 seconds (the client's service-start
+# budget) before giving up, with the endpoint published only once that activation finished. An
+# attempt still running then is stalled (a keyring read blocked on an unresponsive credential
+# service, a hung activation): it unwinds to LOCKED, keeps the soft-lock reason, and frees the
+# activation lock and UNLOCKING, and the next request tries again. The 5-second handshake deadline
+# would be too short: a slow but healthy activation could then never finish.
+_SOFT_REREADY_DEADLINE_SECONDS: Final = 30.0
 # Response-frame send must complete within this wall-clock window. A stalled peer that stops
 # reading cannot retain an in-flight entry in ``calls`` (and thus the inactive-session exemption)
 # indefinitely via write backpressure on sock_sendall.
@@ -905,6 +914,8 @@ class ServiceDaemon:
         # The one soft-lock re-ready in flight (``_soft_lock_auto_ready_owned``): owned here, so a
         # caller that stops waiting never interrupts it, and ``stop`` cancels and awaits it.
         self._soft_reready_task: asyncio.Task[bool] | None = None
+        # Locks in progress: a lock outranks an automatic re-ready, so none starts until it applied.
+        self._locks_pending = 0
         self._stop_event = asyncio.Event()
         # ``serve`` owns the accept loops; a daemon driven by ``start`` alone never serves and
         # must never wait on an event nothing will set.
@@ -1242,18 +1253,26 @@ class ServiceDaemon:
         if not self._started or self._closed:
             return
         lifecycle = self._composition.lifecycle
-        async with self._activation_lock:
-            if lifecycle.state is ServiceState.READY:
-                await lifecycle.request_lock(reason)
-            elif lifecycle.state is ServiceState.UNLOCKING:
-                await self._composition.vault.lock()
-                await lifecycle.transition(ServiceState.LOCKED)
-            await self._close_ready_locked()
-            self._state_reason = (
-                reason
-                if reason in _SOFT_LOCK_AUTO_READY_REASONS or reason == "explicit_lock"
-                else "explicit_lock"
-            )
+        # A lock outranks an automatic re-ready: the attempt in flight is cancelled first (it
+        # unwinds to LOCKED and releases the activation lock it holds), and none starts until
+        # this lock has applied, so a stalled attempt never holds an explicit or session lock.
+        self._locks_pending += 1
+        try:
+            await self._cancel_soft_reready()
+            async with self._activation_lock:
+                if lifecycle.state is ServiceState.READY:
+                    await lifecycle.request_lock(reason)
+                elif lifecycle.state is ServiceState.UNLOCKING:
+                    await self._composition.vault.lock()
+                    await lifecycle.transition(ServiceState.LOCKED)
+                await self._close_ready_locked()
+                self._state_reason = (
+                    reason
+                    if reason in _SOFT_LOCK_AUTO_READY_REASONS or reason == "explicit_lock"
+                    else "explicit_lock"
+                )
+        finally:
+            self._locks_pending -= 1
 
     async def stop(self, reason: str = "shutdown_requested") -> None:
         """Drain, unlink owned endpoints, release singleton authority, and stop serving."""
@@ -2864,12 +2883,13 @@ class ServiceDaemon:
         waiting, but the attempt it started runs to its end: cancelled part-way it would leave
         the lifecycle UNLOCKING, or record the terminal ``unlock_failed`` for a cancelled
         activation, and no later request could re-ready the service. Callers that arrive while
-        an attempt runs wait on that one; ``stop`` cancels and awaits it.
+        an attempt runs wait on that one. A lock and ``stop`` cancel and await it, and its own
+        deadline bounds it.
         """
 
         if self._application is not None or not self._started or self._closed or self._stopping:
             return self._application is not None
-        if self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS:
+        if self._locks_pending > 0 or self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS:
             return False
         task = self._soft_reready_task
         if task is None or task.done():
@@ -2883,7 +2903,7 @@ class ServiceDaemon:
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if task.cancelled() and current is not None and current.cancelling() == 0:
-                return False  # shutdown cancelled the attempt, not this caller
+                return False  # a lock or shutdown cancelled the attempt, not this caller
             raise
 
     async def _cancel_soft_reready(self) -> None:
@@ -2894,7 +2914,10 @@ class ServiceDaemon:
         await asyncio.gather(task, return_exceptions=True)
 
     async def _abandon_soft_reready(self, soft_lock_reason: str) -> None:
-        """Unwind a cancelled re-ready: vault locked, lifecycle LOCKED, the soft reason kept."""
+        """Unwind a cancelled re-ready: vault locked, lifecycle LOCKED, the soft reason kept.
+
+        A lock that cancelled the attempt then records its own reason, and so does ``stop``.
+        """
 
         with contextlib.suppress(Exception):
             await self._composition.vault.lock()
@@ -2904,7 +2927,8 @@ class ServiceDaemon:
     async def _try_soft_lock_auto_ready(self) -> bool:
         """Re-apply scoped auto-unlock after idle/session soft lock; never after explicit lock.
 
-        Run only as ``_soft_lock_auto_ready_owned``'s task, so only shutdown cancels it.
+        Run only as ``_soft_lock_auto_ready_owned``'s task, so only a lock or shutdown cancels
+        it, and its own deadline bounds how long it holds the activation lock and UNLOCKING.
         """
 
         if self._application is not None or not self._started or self._closed:
@@ -2918,81 +2942,98 @@ class ServiceDaemon:
             if self._application is not None:
                 return True
             if (
-                self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS
+                self._locks_pending > 0
+                or self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS
                 or lifecycle.state is not ServiceState.LOCKED
             ):
                 return False
-            soft_lock_reason = self._state_reason
-            vault = self._composition.vault
-            mode = getattr(vault.mode, "value", vault.mode)
+            deadline = _soft_reready_deadline()
             try:
-                await lifecycle.transition(ServiceState.UNLOCKING)
-            except LifecycleError:
-                return False
-            except asyncio.CancelledError:
-                await self._abandon_soft_reready(soft_lock_reason)
-                raise
-            unlocked = False
-            try:
-                if mode == "passphrase":
-                    unlocked = await self._soft_unlock_passphrase_locked()
-                elif mode == "os_keyring":
-                    await cast(VaultService, vault).retry_keyring(None)
-                    unlocked = vault.ready
-                    if not unlocked:
-                        self._state_reason = "keyring_locked"
-                else:
-                    unlocked = False
-                if not unlocked:
-                    await self._return_to_locked_after_soft_unlock()
-                    return False
-                await self._activate_ready_application_locked(
-                    lifecycle.instance.generation,
-                    vault.generation,
-                )
-            except asyncio.CancelledError:
-                # Shutdown only: lock what the unlock opened and return to LOCKED keeping the
-                # soft-lock reason, never the ``unlock_failed`` a cancelled activation records.
-                await self._abandon_soft_reready(soft_lock_reason)
-                raise
-            except Exception:
-                try:
-                    # Always best-effort lock: unlock may have left transient store state
-                    # even when ready is still false.
-                    await vault.lock()
-                except Exception:
-                    pass
-                await self._return_to_locked_after_soft_unlock()
-                if (
-                    unlocked
-                    and self._soft_reready_activation_failures
-                    < _SOFT_REREADY_ACTIVATION_RETRY_LIMIT
-                ):
-                    # The vault credential worked; only ready-application activation failed.
-                    # Restoring the soft-lock reason keeps auto-ready eligible, so the very
-                    # next dispatch retries instead of the service staying LOCKED until a
-                    # manual ceremony (#276).
-                    self._soft_reready_activation_failures += 1
-                    self._state_reason = soft_lock_reason
-                    get_logger("service.daemon").warning(
-                        "auto_unlock",
-                        outcome="failed",
-                        reason="activation_failed_retryable",
-                    )
-                    return False
+                async with deadline:
+                    return await self._soft_reready_locked(self._state_reason)
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
+                # Unwound like any cancel: the vault locked, LOCKED, the soft reason kept, so
+                # the next request tries again.
                 get_logger("service.daemon").warning(
                     "auto_unlock",
                     outcome="failed",
-                    reason="unlock_failed",
+                    reason="reready_deadline_exceeded",
                 )
-                if (
-                    self._state_reason in _SOFT_LOCK_AUTO_READY_REASONS
-                    or self._state_reason == "none"
-                ):
-                    self._state_reason = "unlock_failed"
                 return False
-            self._soft_reready_activation_failures = 0
-            return self._application is not None
+
+    async def _soft_reready_locked(self, soft_lock_reason: str) -> bool:
+        """One re-ready attempt under ``_activation_lock``: LOCKED to READY, or back to LOCKED."""
+
+        lifecycle = self._composition.lifecycle
+        vault = self._composition.vault
+        mode = getattr(vault.mode, "value", vault.mode)
+        try:
+            await lifecycle.transition(ServiceState.UNLOCKING)
+        except LifecycleError:
+            return False
+        except asyncio.CancelledError:
+            await self._abandon_soft_reready(soft_lock_reason)
+            raise
+        unlocked = False
+        try:
+            if mode == "passphrase":
+                unlocked = await self._soft_unlock_passphrase_locked()
+            elif mode == "os_keyring":
+                await cast(VaultService, vault).retry_keyring(None)
+                unlocked = vault.ready
+                if not unlocked:
+                    self._state_reason = "keyring_locked"
+            else:
+                unlocked = False
+            if not unlocked:
+                await self._return_to_locked_after_soft_unlock()
+                return False
+            await self._activate_ready_application_locked(
+                lifecycle.instance.generation,
+                vault.generation,
+            )
+        except asyncio.CancelledError:
+            # A lock, shutdown or the attempt's own deadline: lock what the unlock opened and
+            # return to LOCKED keeping the soft-lock reason, never the ``unlock_failed`` a
+            # cancelled activation records.
+            await self._abandon_soft_reready(soft_lock_reason)
+            raise
+        except Exception:
+            try:
+                # Always best-effort lock: unlock may have left transient store state
+                # even when ready is still false.
+                await vault.lock()
+            except Exception:
+                pass
+            await self._return_to_locked_after_soft_unlock()
+            if (
+                unlocked
+                and self._soft_reready_activation_failures < _SOFT_REREADY_ACTIVATION_RETRY_LIMIT
+            ):
+                # The vault credential worked; only ready-application activation failed.
+                # Restoring the soft-lock reason keeps auto-ready eligible, so the very
+                # next dispatch retries instead of the service staying LOCKED until a
+                # manual ceremony (#276).
+                self._soft_reready_activation_failures += 1
+                self._state_reason = soft_lock_reason
+                get_logger("service.daemon").warning(
+                    "auto_unlock",
+                    outcome="failed",
+                    reason="activation_failed_retryable",
+                )
+                return False
+            get_logger("service.daemon").warning(
+                "auto_unlock",
+                outcome="failed",
+                reason="unlock_failed",
+            )
+            if self._state_reason in _SOFT_LOCK_AUTO_READY_REASONS or self._state_reason == "none":
+                self._state_reason = "unlock_failed"
+            return False
+        self._soft_reready_activation_failures = 0
+        return self._application is not None
 
     async def _return_to_locked_after_soft_unlock(self) -> None:
         """Best-effort LOCKED transition after a failed soft auto-ready attempt."""
@@ -3182,6 +3223,12 @@ def _is_ready_application(value: object) -> bool:
         and callable(getattr(value, "project_result_for_client", None))
         and callable(getattr(value, "close", None))
     )
+
+
+def _soft_reready_deadline() -> asyncio.Timeout:
+    """A fresh ``_SOFT_REREADY_DEADLINE_SECONDS`` deadline for one soft-lock re-ready attempt."""
+
+    return asyncio.timeout(_SOFT_REREADY_DEADLINE_SECONDS)
 
 
 def _consume_task_outcome(task: asyncio.Task[bool]) -> None:

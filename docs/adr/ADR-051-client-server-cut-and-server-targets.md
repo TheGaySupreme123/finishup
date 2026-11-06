@@ -807,6 +807,12 @@ installation is never touched by a target operation.
   isolated root.
 - A human-passphrase vault on a server stays locked after a restart until the owner unlocks it on
   the server; auto-unlock custody (ADR-008, 2026-10-19) is the unattended path.
+- That custody also re-opens a soft lock (idle, session lock, suspend) when a request arrives,
+  a claim hello included (decision 4). The re-open is one service-owned attempt: a hello at its
+  5-second handshake deadline stops waiting for it but never interrupts it. A lock outranks it:
+  an explicit or session lock cancels the attempt first and records its own reason. The attempt's
+  own 30-second deadline, the on-demand cold-start budget for the same unlock and activation,
+  returns a stalled one to the soft lock for the next request to retry (2026-11-06, after review).
 - Out of scope: multi-user or team hosting; a FinishUP-operated cloud; ledger sync or migration
   between targets; an offline write queue; a plain-TCP control channel; unlock, consent or the
   owner view over the network; MCP over HTTP to hosts; native launchd or systemd installers;

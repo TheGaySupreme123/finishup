@@ -106,7 +106,7 @@ from finishup.service.control_protocol import (
     write_control_frame,
 )
 from finishup.service.daemon import ServiceComposition, ServiceDaemon
-from finishup.service.lifecycle import LifecycleError, ServiceLifecycle
+from finishup.service.lifecycle import LifecycleError, ServiceLifecycle, SessionSecurityEvent
 from finishup.service.session_routes import SessionRouteMemory
 from finishup.service.vault import VaultMode, VaultService
 
@@ -2538,19 +2538,35 @@ async def test_a_claim_hello_deadline_never_strands_the_soft_lock_reready(
     await daemon.close()
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("phase", ["unlock", "activation"])
-async def test_a_cancelled_soft_lock_reready_returns_to_the_soft_lock(
+def _soft_reready_deadlines(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.Timeout]:
+    """Give each re-ready attempt a deadline the test expires on cue, in the phase it chooses."""
+
+    deadlines: list[asyncio.Timeout] = []
+
+    def deadline() -> asyncio.Timeout:
+        timeout = asyncio.timeout(None)
+        deadlines.append(timeout)
+        return timeout
+
+    monkeypatch.setattr(daemon_module, "_soft_reready_deadline", deadline)
+    return deadlines
+
+
+def _gated_soft_lock_daemon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
-) -> None:
-    # Only shutdown cancels the daemon-owned attempt; it leaves the vault locked, the lifecycle
-    # LOCKED and the soft-lock reason, so auto-ready stays eligible.
+) -> tuple[ServiceDaemon, _GatedKeyedPassphraseVault, _Application, asyncio.Event, asyncio.Event]:
+    """A soft-lock daemon whose re-ready stalls in ``phase`` until the test opens its gates.
+
+    Returns the daemon, its vault (``vault.gate`` holds the unlock), the application, the event
+    set once an attempt reached ``phase``, and the gate holding activation.
+    """
+
     application = _Application()
     vault = _GatedKeyedPassphraseVault()
     secret = b"correct horse battery staple!!"
     vault.expect_secret(secret)
     activating = asyncio.Event()
-    never = asyncio.Event()
+    activation_gate = asyncio.Event()
     if phase == "unlock":
         reached = vault.entered
     else:
@@ -2560,11 +2576,26 @@ async def test_a_cancelled_soft_lock_reready_returns_to_the_soft_lock(
     async def factory(service_generation: int, vault_generation: int) -> _Application:
         del service_generation, vault_generation
         activating.set()
-        await never.wait()
+        await activation_gate.wait()
         return application
 
     _patch_auto_unlock_store(monkeypatch, secret)
     daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    return daemon, vault, application, reached, activation_gate
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["unlock", "activation"])
+async def test_a_soft_lock_reready_past_its_own_deadline_returns_to_the_soft_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    # Only shutdown ended a stalled attempt, which until then held the activation lock and
+    # UNLOCKING. Its own deadline now unwinds it: the vault locked, LOCKED and the soft-lock
+    # reason, so the waiting hello is answered and the next request tries again.
+    deadlines = _soft_reready_deadlines(monkeypatch)
+    daemon, vault, application, reached, activation_gate = _gated_soft_lock_daemon(
+        tmp_path, monkeypatch, phase
+    )
     await daemon.start()
     daemon._state_reason = "user_session_locked"  # pyright: ignore[reportPrivateUsage]
     waiting = asyncio.ensure_future(
@@ -2573,17 +2604,82 @@ async def test_a_cancelled_soft_lock_reready_returns_to_the_soft_lock(
     async with asyncio.timeout(_WAIT_SECONDS):
         await reached.wait()
 
-    await daemon._cancel_soft_reready()  # pyright: ignore[reportPrivateUsage]
+    deadlines[0].reschedule(asyncio.get_running_loop().time())
 
-    # The waiting hello was not itself cancelled: it is answered without a context.
     async with asyncio.timeout(_WAIT_SECONDS):
         assert await waiting is None
     assert vault.ready is False
     assert daemon.status().state is ServiceState.LOCKED
     assert daemon.status().state_reason == "user_session_locked"
     assert application.close_count == 0
+
+    vault.gate.set()
+    activation_gate.set()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+    assert context is not None
+    assert len(deadlines) == 2
+    assert vault.unlock_count == (1 if phase == "unlock" else 2)
+    assert daemon.status().state is ServiceState.READY
+    assert daemon.status().state_reason == "none"
     await daemon.close()
-    assert daemon.status().state_reason == "shutdown_requested"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["unlock", "activation"])
+@pytest.mark.parametrize("lock", ["explicit_lock", "user_session_locked"])
+async def test_a_lock_outranks_a_stalled_soft_lock_reready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, lock: str
+) -> None:
+    # The attempt held the activation lock until it ended on its own, so a SERVICE_LOCK or a
+    # session lock behind a stalled one waited without bound. A lock now cancels the attempt
+    # first, and the reason recorded is the lock's own.
+    daemon, vault, application, reached, activation_gate = _gated_soft_lock_daemon(
+        tmp_path, monkeypatch, phase
+    )
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+    await _hello_past_its_deadline(daemon, reached)
+
+    async def apply_lock() -> None:
+        if lock == "explicit_lock":
+            locked = await daemon.dispatch(
+                ControlClientKind.CLI,
+                _request(daemon, ControlMethod.SERVICE_LOCK, JsonObject({})),
+            )
+            assert locked.outcome == "ok"
+        else:
+            await daemon._on_session_event(  # pyright: ignore[reportPrivateUsage]
+                SessionSecurityEvent.USER_SESSION_LOCKED
+            )
+
+    async with asyncio.timeout(_WAIT_SECONDS):
+        locking = asyncio.ensure_future(apply_lock())
+        # A hello arriving while the lock applies starts no new attempt that the lock would then
+        # wait behind.
+        arriving = asyncio.ensure_future(
+            daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        )
+        await locking
+        await arriving
+    assert vault.ready is False
+    assert daemon.status().state is ServiceState.LOCKED
+    assert daemon.status().state_reason == lock
+    assert application.close_count == 0
+
+    # The lock's reason decides what follows: a session lock re-readies on the next hello, an
+    # explicit lock stays locked.
+    vault.gate.set()
+    activation_gate.set()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+    if lock == "explicit_lock":
+        assert context is None
+        assert daemon.status().state is ServiceState.LOCKED
+    else:
+        assert context is not None
+        assert daemon.status().state is ServiceState.READY
+    await daemon.close()
 
 
 @pytest.mark.anyio
