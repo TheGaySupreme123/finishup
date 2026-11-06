@@ -225,8 +225,9 @@ finishup service gateway key create --label my-laptop --scope agent --output-fil
 finishup service gateway run --listen 0.0.0.0:8443 --tls-cert server.pem --tls-key server-key.pem
 ```
 
-The key is shown only once (or written only to that new file, readable by its owner). Copy it to
-your computer as a file only you can read, then:
+The key is shown only once (or written only to that new file, readable by its owner). If it
+cannot be shown or written, FinishUP revokes it at once, so no key that nobody holds stays
+active. Copy it to your computer as a file only you can read, then:
 
 ```text
 finishup server add work https://finishup.example.com:8443 --ca-file ~/work-ca.pem
