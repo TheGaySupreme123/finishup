@@ -116,6 +116,8 @@ def run_gateway(
         log_level="warning",
         lifespan="on",
         timeout_keep_alive=30,
+        # A long-poll holds a request up to 25 s; shutdown does not wait for it to finish.
+        timeout_graceful_shutdown=5,
     )
     server = uvicorn.Server(config)
     server.run()
