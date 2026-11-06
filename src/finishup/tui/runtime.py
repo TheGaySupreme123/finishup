@@ -2074,6 +2074,14 @@ class FinishUpRuntime:
         try:
             await rotate_vault_passphrase()
         except HumanCeremonyCliError as error:
+            if error.reason == "credential_store_check_in_progress":
+                from finishup.cli.exits import remediation_message
+
+                # The vault is open and nothing changed: say why, and to try again in a moment.
+                raise RuntimeError_(
+                    error.reason,
+                    remediation_message(error.reason) or "the passphrase could not be changed",
+                ) from None
             raise RuntimeError_(error.reason, "the passphrase could not be changed")
 
     async def set_up_storage_automatically(self) -> tuple[bool, str | None, str]:
