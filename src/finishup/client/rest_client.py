@@ -49,7 +49,6 @@ from finishup.ports.control import (
     ControlResult,
     WorkspaceBinding,
     WorkspaceClaim,
-    WorkspaceLocator,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.schemas import schema_manifest_digest
@@ -369,6 +368,24 @@ def _request_body(request: ControlCallRequest) -> bytes:
     return canonical_encode(parsed["body"])
 
 
+def _refuse_workspace_path(body: bytes) -> None:
+    """Never send a path to a server on another machine (ADR-051).
+
+    The MCP bridge, the CLI and the hooks already name a claim-bound task's workspace by the
+    connection's handle (``client.workspace_ref``); a ``start`` that still names an absolute path
+    here is refused before anything is sent, with the same fixed refusal, which names no path.
+    """
+
+    from finishup.client.workspace_ref import WorkspaceRefNotPortable
+
+    parsed = strict_json_parse(body)
+    if type(parsed) is not dict:
+        return
+    workspace_ref = cast(dict[str, JsonValue], parsed).get("workspace_ref")
+    if type(workspace_ref) is str and workspace_ref.startswith("/"):
+        raise WorkspaceRefNotPortable()
+
+
 class RestServiceClient(ServiceClient):
     """One server target's network API behind the ``ServiceClient`` interface.
 
@@ -400,6 +417,13 @@ class RestServiceClient(ServiceClient):
         self._endpoint = endpoint
         self._claim = claim
         self._client_kind = client_kind
+        # The base class's socket-side members, never used here: this client serves no workspace
+        # calls (the target's workspace agent does) and owns no stream or receiver.
+        self._agent = None
+        self._agent_busy = 0
+        self._agent_calls = {}
+        self._agent_executor = None
+        self._transport = "ssh" if endpoint.kind == "ssh" else "https"
         self._pid = os.getpid()
         self._closed = False
         self._last_project_request = None
@@ -424,16 +448,6 @@ class RestServiceClient(ServiceClient):
         """The target kind this client reaches (a closed token, for "served by" lines)."""
 
         return self._endpoint.kind
-
-    @property
-    def workspace_binding(self) -> WorkspaceBinding:
-        return self._session.workspace_binding
-
-    @property
-    def workspace_handle(self) -> str | None:
-        """The ``client:`` handle the server derived from this client's claim, if any."""
-
-        return self._session.workspace_handle
 
     def owner_receipt_view_target(self, request: object) -> OwnerReceiptViewTarget:
         # The owner view is bound to a ceremony on the server host's own connection.
@@ -536,6 +550,8 @@ class RestServiceClient(ServiceClient):
         ):
             raise ControlError("service_unavailable", retryable=True)
         body = _request_body(request)
+        if request.method is ControlMethod.START:
+            _refuse_workspace_path(body)
         headers = self._headers(request, rpc_id=request.rpc_id)
         deadline = (
             None if request.deadline_ms is None else time.monotonic() + request.deadline_ms / 1_000
@@ -644,23 +660,21 @@ async def connect_rest_service(
     *,
     record: ServerTarget,
     root: Path,
-    workspace_locator: WorkspaceLocator | None = None,
+    claim: WorkspaceClaim | None = None,
     _transport: httpx.AsyncBaseTransport | None = None,
     _endpoint: RestEndpoint | None = None,
 ) -> RestServiceClient:
     """Connect to ``record``'s server through its network API.
 
-    A ``workspace_locator`` is never sent: when it can be claimed, the claim names it instead.
+    ``claim`` names the workspace (``service.client._remote_claim`` makes it from a locator, which
+    is never sent); every request carries it and the server answers with the workspace handle.
     ``_transport``/``_endpoint`` are test seams (an in-process ASGI app, a fixed credential).
     """
 
     if type(client_kind) is not ControlClientKind:
         raise TypeError("control_client_kind_invalid")
-    from finishup.client.remote_workspace import claim_for_workspace
-
-    claim = (
-        None if workspace_locator is None else await claim_for_workspace(record, workspace_locator)
-    )
+    if claim is not None and type(claim) is not WorkspaceClaim:
+        raise TypeError("workspace_claim_invalid")
     endpoint = _endpoint or rest_endpoint_for(record, root)
     http = _client(endpoint, transport=_transport)
     try:

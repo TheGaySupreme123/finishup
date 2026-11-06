@@ -32,6 +32,7 @@ from finishup.ports.control import (
 )
 from finishup.service import client as service_client
 from finishup.service.api_keys import ApiKeyStore
+from finishup.service.client import ClientWorkspaceBinding
 from finishup.service.http_api import NetworkApi
 
 _RECORD = ServerTarget(
@@ -208,24 +209,23 @@ async def test_a_claim_binds_the_client_and_names_its_handle(
     service = FakeService()
     api = make_api(service, keys, hub=FakeHub())
     _record, token = keys.create("laptop", "agent")
+    del monkeypatch
     workspace = claim("repo")
-
-    async def claim_for(record: ServerTarget, locator: WorkspaceLocator) -> object:
-        assert record is _RECORD and locator.path == "/home/me/repo"
-        return workspace
-
-    monkeypatch.setattr("finishup.client.remote_workspace.claim_for_workspace", claim_for)
     client = await connect_rest_service(
         ControlClientKind.CLI,
         record=_RECORD,
         root=Path("/x"),
-        workspace_locator=WorkspaceLocator("/home/me/repo"),
+        claim=workspace,
         _endpoint=_endpoint(api, token),
     )
     try:
         assert client.workspace_binding == "client_claim"
         handle = client.workspace_handle
         assert handle is not None and handle.startswith("client:")
+        # What client-side attribution reads (``client.attribution``): the answering service and
+        # this transport's closed token.
+        assert client.service_instance_id == INSTANCE_ID
+        assert client.transport == "https"
         await client.service_status()
     finally:
         await client.close()
@@ -251,10 +251,20 @@ async def test_connect_service_uses_the_api_for_a_remote_root_and_never_spawns(
     def ensure(_root: Path) -> bool:
         return True
 
+    bound: list[tuple[str, bool]] = []
+
+    async def binding_for(
+        locator: WorkspaceLocator | None, *, serve_workspace: bool
+    ) -> ClientWorkspaceBinding | None:
+        assert locator is not None
+        bound.append((locator.path, serve_workspace))
+        return ClientWorkspaceBinding(claim("repo"))
+
     monkeypatch.setattr(service_client, "_remote_target", lambda: (_RECORD, Path("/x/t")))
     monkeypatch.setattr(rest_client, "rest_endpoint_for", endpoint_for)
     monkeypatch.setattr("finishup.client.agent.note_workspace", note)
     monkeypatch.setattr("finishup.client.agent.ensure_agent", ensure)
+    monkeypatch.setattr("finishup.client.remote_binding.binding_for_active_root", binding_for)
 
     def no_spawn() -> object:
         raise AssertionError("a remote target never spawns a local service")
@@ -270,9 +280,14 @@ async def test_connect_service_uses_the_api_for_a_remote_root_and_never_spawns(
     finally:
         await plain.close()
         await on_demand.close()
-    # The workspace is noted for this target's agent; its path stays on this machine.
+    # The locator is bound at the connect seam (a claim only: the target's agent answers) and
+    # noted for this target's agent; its path stays on this machine.
+    assert bound == [("/home/me/repo", False)]
     assert noted == [(Path("/x/t"), "/home/me/repo")]
+    assert on_demand.workspace_binding == "client_claim"
+    assert plain.workspace_binding == "none"
     assert service.seen[-1][0] is ControlClientKind.UI
+    assert service.seen[-1][2] is not None
 
 
 def test_local_roots_keep_the_socket_path(monkeypatch: pytest.MonkeyPatch) -> None:

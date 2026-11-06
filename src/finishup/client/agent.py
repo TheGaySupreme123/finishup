@@ -8,10 +8,13 @@ long-lived, pull-based client of the server's network API, one per target root:
   and start the agent when none runs (``ensure_agent``).
 * For each noted workspace the agent claims it (a keyed digest, ``client.remote_workspace``),
   registers with ``POST /v1/agents``, long-polls ``GET /v1/agents/{id}/work`` for the server's
-  ``workspace_call`` frames, answers each in a worker thread with the local handler, and sends the
-  ``workspace_reply`` with ``POST /v1/agents/{id}/replies``. Inline calls (a check a client is
-  waiting on) and background calls (a review that runs on after the call returned) arrive the
-  same way.
+  ``workspace_call`` frames, answers each in a worker thread with ``WorkspaceAgentHandler`` (the
+  real local adapters and their fences), and sends the ``workspace_reply`` with
+  ``POST /v1/agents/{id}/replies``. Inline calls (a check a client is waiting on) and background
+  calls (a review that runs on after the call returned) arrive the same way.
+* For each noted workspace it also delivers what the hooks captured and could not deliver
+  themselves (``CapturedObservationDelivery``: the shared ``ClientObservationDrain`` over a
+  claim-bound connection, every row attested from this client's own store).
 * It holds ``<target root>/state/agent.lock`` (an exclusive lock stamped with its pid), ends a
   workspace 15 minutes after its last note, and exits after 15 minutes without workspaces or on
   ``SIGTERM`` (``stop_agent`` signals the stamped pid; nothing is killed by name).
@@ -35,12 +38,12 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 
 from finishup.client.remote_workspace import (
+    CapturedObservationDelivery,
     WorkspaceCallHandler,
     claim_for_workspace,
-    drain_captured_observations,
     handler_for_workspace,
 )
 from finishup.client.targets import ServerTarget, TargetError, read_target
@@ -336,9 +339,23 @@ class _AgentRetry(Exception):
         super().__init__(reason)
 
 
+class _Delivery(Protocol):
+    """Background delivery of one workspace's captured observation (``remote_workspace``)."""
+
+    async def deliver(self) -> object: ...
+
+    async def close(self) -> None: ...
+
+
 type _ClaimFactory = Callable[[ServerTarget, WorkspaceLocator], Awaitable[WorkspaceClaim | None]]
-type _HandlerFactory = Callable[[WorkspaceLocator], WorkspaceCallHandler | None]
-type _Drain = Callable[[ServerTarget, Path], Awaitable[None]]
+type _HandlerFactory = Callable[[WorkspaceLocator, Path], WorkspaceCallHandler | None]
+type _DeliveryFactory = Callable[[ServerTarget, Path, WorkspaceLocator, WorkspaceClaim], _Delivery]
+
+
+def _captured_observation_delivery(
+    record: ServerTarget, root: Path, locator: WorkspaceLocator, claim: WorkspaceClaim
+) -> _Delivery:
+    return CapturedObservationDelivery(record, root, locator, claim)
 
 
 @dataclass(slots=True)
@@ -359,7 +376,7 @@ class WorkspaceAgentLoop:
         headers: dict[str, str] | None = None,
         claim_factory: _ClaimFactory = claim_for_workspace,
         handler_factory: _HandlerFactory = handler_for_workspace,
-        drain: _Drain = drain_captured_observations,
+        delivery_factory: _DeliveryFactory = _captured_observation_delivery,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         scan_seconds: float = _SCAN_SECONDS,
@@ -371,7 +388,7 @@ class WorkspaceAgentLoop:
         self._headers = headers
         self._claim_factory = claim_factory
         self._handler_factory = handler_factory
-        self._drain = drain
+        self._delivery_factory = delivery_factory
         self._clock = clock
         self._wall_clock = wall_clock
         self._scan_seconds = scan_seconds
@@ -410,13 +427,6 @@ class WorkspaceAgentLoop:
                         )
                 if self._served:
                     idle_since = self._clock()
-                    try:
-                        # Background delivery of what this client captured for the target.
-                        await self._drain(self._record, self._root)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        _record("workspace_agent_drain", "drain_failed")
                 elif self._clock() - idle_since >= self._idle_exit_seconds:
                     _record("workspace_agent_exit", "idle")
                     break
@@ -441,13 +451,45 @@ class WorkspaceAgentLoop:
             await api.end(served.agent_id)
 
     async def _serve(self, api: _AgentApi, name: str, locator: WorkspaceLocator) -> None:
-        claim = await self._claim_factory(self._record, locator)
-        handler = None if claim is None else self._handler_factory(locator)
+        try:
+            claim = await self._claim_factory(self._record, locator)
+            handler = None if claim is None else self._handler_factory(locator, self._root)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            claim = handler = None
         if claim is None or handler is None:
-            # Nothing can answer for this workspace yet: the server's calls end typed.
+            # Nothing can answer for this workspace: the server's calls end typed.
             _record("workspace_agent_register", "workspace_agent_unavailable")
             await self._stopping.wait()
             return
+        delivery = self._delivery_factory(self._record, self._root, locator, claim)
+        delivering = asyncio.create_task(self._deliver(delivery))
+        try:
+            await self._register_and_poll(api, name, claim, handler)
+        finally:
+            delivering.cancel()
+            await asyncio.gather(delivering, return_exceptions=True)
+            with contextlib.suppress(Exception):
+                await delivery.close()
+
+    async def _deliver(self, delivery: _Delivery) -> None:
+        """Deliver this workspace's captured observation once per scan, until stopped."""
+
+        while not self._stopping.is_set():
+            try:
+                await delivery.deliver()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _record("workspace_agent_drain", "drain_failed")
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(self._scan_seconds):
+                    await self._stopping.wait()
+
+    async def _register_and_poll(
+        self, api: _AgentApi, name: str, claim: WorkspaceClaim, handler: WorkspaceCallHandler
+    ) -> None:
         attempt = 0
         while not self._stopping.is_set():
             try:

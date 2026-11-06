@@ -1132,15 +1132,16 @@ class ServiceDaemon:
                         await asyncio.gather(task, return_exceptions=True)
 
     def _network_api_bindings(self) -> NetworkApiBindings:
-        """What this daemon gives its network API: status, dispatch and idle-hold (ADR-051).
+        """What this daemon gives its network API (ADR-051).
 
-        INTEGRATION POINT — wired after split/client and split/server merge. Then
-        ``claim_resolver=self._resolve_claim_context`` keys a request's workspace claim (never a
-        path), ``agent_hub=self._composition.workspace_hub`` lets REST workspace agents register
-        their in-process channels, and ``dispatch`` runs inside
-        ``service.workspace_hub.live_call_scope()`` so a live call waits the shorter agent bound.
-        Until then a claim header is accepted but binds no repository, and agent registration
-        answers ``workspace_agent_unavailable``.
+        ``status``, ``dispatch`` and the idle-hold ``activity`` serve calls as the control socket
+        does. ``claim_resolver`` keys a request's workspace claim with the installation MAC
+        exactly as a claim-bound hello is keyed (never a path), so a REST call and the socket
+        bind the same ``client_claim`` identity. ``agent_hub`` is the same hub claim-bound
+        socket connections register with: a REST workspace agent registers an in-process
+        channel there, and the ready application's workspace routing reaches it the same way.
+        Each dispatch runs inside ``live_call_scope()``, so a workspace call made while the
+        caller waits gets the shorter agent bound, and work that outlives the call the longer.
         """
 
         from finishup.service.http_api import NetworkApiBindings
@@ -1152,12 +1153,13 @@ class ServiceDaemon:
         ) -> ControlResult:
             # Presentation facts never come from the network: the fail-safe machine-readable
             # projection, exactly as a hello without a presentation context gets.
-            return await self.dispatch(
-                client_kind,
-                request,
-                repository_privacy_context=context,
-                _defer_stop=True,
-            )
+            with live_call_scope():
+                return await self.dispatch(
+                    client_kind,
+                    request,
+                    repository_privacy_context=context,
+                    _defer_stop=True,
+                )
 
         @contextlib.asynccontextmanager
         async def activity() -> AsyncGenerator[None]:
@@ -1171,7 +1173,13 @@ class ServiceDaemon:
                 with contextlib.suppress(LifecycleError):
                     await lifecycle.client_disconnected()
 
-        return NetworkApiBindings(status=self.status, dispatch=dispatch, activity=activity)
+        return NetworkApiBindings(
+            status=self.status,
+            dispatch=dispatch,
+            activity=activity,
+            claim_resolver=self._resolve_claim_context,
+            agent_hub=self._composition.workspace_hub,
+        )
 
     async def dispatch(
         self,

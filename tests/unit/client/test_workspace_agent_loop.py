@@ -114,7 +114,7 @@ def _loop(
         http=http,
         headers={"authorization": f"Bearer {token}"},
         claim_factory=claim_for,
-        handler_factory=lambda _locator: handler,
+        handler_factory=lambda _locator, _root: handler,
         scan_seconds=0.02,
         **options,
     )
@@ -140,12 +140,25 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
         transport=httpx.ASGITransport(app=api.asgi("https")),  # type: ignore[arg-type]
         base_url="https://lab.example",
     )
-    drained: list[Path] = []
+    delivered: list[tuple[Path, WorkspaceLocator, WorkspaceClaim]] = []
+    closed: list[bool] = []
 
-    async def drain(_record: ServerTarget, drained_root: Path) -> None:
-        drained.append(drained_root)
+    class _Delivery:
+        async def deliver(self) -> None:
+            await asyncio.sleep(0)
 
-    loop = _loop(root, record, http, token, workspace=workspace, handler=handler, drain=drain)
+        async def close(self) -> None:
+            closed.append(True)
+
+    def delivery(
+        _record: ServerTarget, at: Path, locator: WorkspaceLocator, value: WorkspaceClaim
+    ) -> _Delivery:
+        delivered.append((at, locator, value))
+        return _Delivery()
+
+    loop = _loop(
+        root, record, http, token, workspace=workspace, handler=handler, delivery_factory=delivery
+    )
     running = asyncio.create_task(loop.run())
     try:
         inline = await hub.call(handle, "capture", {"workspace": handle})
@@ -158,8 +171,10 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
     # The handler ran off the event loop and answered for the handle the server named.
     assert handler.handles == [handle, handle]
     assert threading.get_ident() not in handler.threads
-    # While it serves a workspace, the agent delivers what this client captured in the background.
-    assert drained and set(drained) == {root}
+    # While it serves a workspace, the agent delivers what this client captured in the background,
+    # for that one workspace under its claim, and ends the delivery when the workspace ends.
+    assert delivered == [(root, _WORKSPACE, workspace)]
+    assert closed == [True]
     # Stopping ended the registration: the hub's channel closed and the idle hold released.
     assert all(channel.closed for channel in hub.channels)
     assert service.active == 0

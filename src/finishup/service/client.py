@@ -1997,25 +1997,63 @@ def _remote_target() -> tuple[ServerTarget, Path] | None:
     return record, root
 
 
+async def _remote_claim(
+    workspace_locator: WorkspaceLocator | None,
+    workspace_binding: ClientWorkspaceBinding | None,
+) -> WorkspaceClaim | None:
+    """The claim a remote target's requests carry; a locator is claimed here, never sent.
+
+    A caller's own binding gives its claim. A locator is bound with ``binding_for_active_root``
+    (claim only: on the network API the target's workspace agent answers the server's workspace
+    calls, never the calling connection). A locator the shared root rule cannot resolve gives no
+    claim, so the requests name no workspace at all, and a ``start`` naming a path is then refused
+    before it is sent (``WorkspaceRefNotPortable``).
+    """
+
+    if workspace_binding is not None:
+        return workspace_binding.claim
+    if workspace_locator is None:
+        return None
+    from finishup.adapters.workspace_root import RepositoryIdentityError
+    from finishup.client.remote_binding import binding_for_active_root
+    from finishup.client.targets import TargetError
+
+    try:
+        binding = await binding_for_active_root(workspace_locator, serve_workspace=False)
+    except RepositoryIdentityError:
+        return None
+    except TargetError as error:
+        # The record went unreadable after it was read: fail closed, never as a local root.
+        raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable") from (
+            error
+        )
+    return None if binding is None else binding.claim
+
+
 async def _connect_remote(
     client_kind: ControlClientKind,
     target: tuple[ServerTarget, Path],
     *,
     workspace_locator: WorkspaceLocator | None,
+    workspace_binding: ClientWorkspaceBinding | None,
     timeout_seconds: float,
     on_demand: bool,
 ) -> ServiceClient:
     """Connect to a remote target's network API (ADR-051); never spawn or supersede a service.
 
-    An on-demand caller also makes the target usable first (an SSH target's master), starts an
-    idle-stopped remote service once through the recorded launcher, and notes its workspace for
-    this target's workspace agent, starting that agent when none runs.
+    The workspace is named by its claim (``_remote_claim``), never by its path. A connection that
+    names a workspace by its locator also notes it for this target's workspace agent
+    (``finishup agent run``), starting that agent when none runs, so the server's workspace calls
+    for it are answered while this call is live and after it returns. An on-demand caller also
+    makes the target usable first (an SSH target's master) and starts an idle-stopped remote
+    service once through the recorded launcher.
     """
 
     from finishup.client.rest_client import connect_rest_service
 
     record, root = target
-    if workspace_locator is not None:
+    claim = await _remote_claim(workspace_locator, workspace_binding)
+    if workspace_locator is not None and claim is not None:
         from finishup.client.agent import ensure_agent, note_workspace
 
         note_workspace(root, workspace_locator)
@@ -2029,23 +2067,29 @@ async def _connect_remote(
         try:
             async with asyncio.timeout(remaining):
                 return await connect_rest_service(
-                    client_kind, record=record, root=root, workspace_locator=workspace_locator
+                    client_kind, record=record, root=root, claim=claim
                 )
         except TimeoutError as exc:
             raise ControlError(
                 "service_unavailable", retryable=True, phase="remote_unreachable"
             ) from exc
 
-    if not on_demand or record.kind != "ssh":
+    if record.kind != "ssh":
         return await attempt()
     from finishup.client.rest_runtime import SshTargetRuntime
     from finishup.client.target_runtime import TargetRuntimeError
 
     runtime = SshTargetRuntime()
     try:
+        # The master is this client's own transport, like opening a TCP connection: every
+        # connection makes sure it is up. Only an on-demand caller may start the remote service.
         await asyncio.to_thread(runtime.ensure_master, record, root)
     except TargetRuntimeError as error:
-        raise ControlError("service_unavailable", retryable=True, phase=error.reason) from None
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=_remote_phase(error.reason)
+        ) from None
+    if not on_demand:
+        return await attempt()
     try:
         return await attempt()
     except ControlError as error:
@@ -2055,8 +2099,18 @@ async def _connect_remote(
     try:
         await asyncio.to_thread(runtime.start_remote_service, record, root)
     except TargetRuntimeError as error:
-        raise ControlError("service_unavailable", retryable=True, phase=error.reason) from None
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=_remote_phase(error.reason)
+        ) from None
     return await attempt()
+
+
+def _remote_phase(reason: str) -> str:
+    """A target runtime's closed reason as a remote connection phase every surface knows."""
+
+    from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+    return reason if reason in REMOTE_CONNECTION_PHASES else "remote_unreachable"
 
 
 async def connect_service(
@@ -2091,6 +2145,7 @@ async def connect_service(
             client_kind,
             remote,
             workspace_locator=workspace_locator,
+            workspace_binding=workspace_binding,
             timeout_seconds=_CONNECT_HANDSHAKE_TIMEOUT_SECONDS,
             on_demand=False,
         )
@@ -2290,6 +2345,7 @@ async def connect_service_on_demand(
             client_kind,
             remote,
             workspace_locator=workspace_locator,
+            workspace_binding=workspace_binding,
             timeout_seconds=timeout_seconds,
             on_demand=True,
         )
