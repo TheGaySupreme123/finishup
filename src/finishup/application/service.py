@@ -259,19 +259,21 @@ def _require_portable_workspace_ref(
     """Refuse a start whose ``workspace_ref`` does not fit its connection's binding (ADR-051).
 
     On a claim-bound connection the service cannot read the client's paths, so the only
-    ``workspace_ref`` it records is the connection's own handle, and a start that opens a
-    session must name it: the handle in the session's opening event is the durable fact that
-    every workspace read of the task goes to the client's agent and that its receipts say so.
-    Only an attach to an existing session may omit it. A ``client:`` handle names a claim, so
-    a connection that carries no claim cannot record one. Every refusal comes before any
-    write and names no value.
+    ``workspace_ref`` it records is the connection's own handle: the handle in the session's
+    opening event is the durable fact that every workspace read of the task goes to the
+    client's agent and that its receipts say so. A start may still omit ``workspace_ref``, as
+    on a local connection: the task then records no workspace root, so nothing names a
+    directory the service could read, and its task base and check-time change come only
+    through this connection's claim. A ``client:`` handle names a claim, so a connection that
+    carries no claim cannot record one. Every refusal comes before any write and names no
+    value.
     """
 
     reference = request.workspace_ref
     claimed = context is not None and context.identity_kind == "client_claim"
     if claimed:
         assert context is not None
-        if reference is None and request.mode == "attach":
+        if reference is None:
             return
         if reference != workspace_handle_for_commitment(context.commitment):
             raise PublicOperationError(

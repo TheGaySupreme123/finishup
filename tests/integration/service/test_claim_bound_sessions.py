@@ -580,6 +580,42 @@ async def test_a_claim_bound_task_runs_its_whole_workflow_on_its_agent_alone(
         await client.close()
 
 
+async def test_a_minimal_start_on_a_claim_connection_takes_its_base_from_the_agent(
+    tmp_path: Path, spy: _Spy, service: _Service
+) -> None:
+    """A start naming no workspace works as on a local connection, and reads only the client."""
+
+    claimed = tmp_path / "work" / "repo"
+    _repository(claimed, "decoy.py", "print('decoy')\n")
+    client_repo = tmp_path / "client" / "repo"
+    client_head = _repository(client_repo, "app.py", "print('client')\n")
+    agent = FakeWorkspaceAgent(client_repo)
+    client = await service.connect(claim=_claim_for(claimed), agent=agent)
+    try:
+        started = (await _start(client, None)).root
+        assert started.ok is True, started
+        assert "read_task_base" in agent.operations
+        application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+        runtime = await application.runtime.route(
+            RouteCommand(
+                started.session_id,
+                started.writer_id,
+                RouteAccess.WRITE,
+                frozenset({RuntimeCapability.WRITE, RuntimeCapability.PAYLOAD_READ}),
+            )
+        )
+        try:
+            ref = await runtime.ledger.load_task_change_base()
+            assert ref is not None
+            chunks: list[bytes] = [chunk async for chunk in runtime.objects.open_verified(ref)]
+            assert decode_task_change_base(b"".join(chunks)).commit == client_head
+        finally:
+            await application.runtime.release(runtime)
+        assert all(str(claimed) not in entry for entry in spy.workspaces), spy.workspaces
+    finally:
+        await client.close()
+
+
 async def test_an_absolute_workspace_ref_on_a_claim_connection_is_refused_before_any_write(
     tmp_path: Path, service: _Service
 ) -> None:
