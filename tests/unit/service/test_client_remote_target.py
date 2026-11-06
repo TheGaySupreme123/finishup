@@ -166,12 +166,12 @@ def _closing_connector(root: Path, reason: str) -> object:
 
 
 @pytest.mark.parametrize(
-    ("reason", "retryable"),
+    "reason",
     [
-        ("remote_auth_failed", False),
-        ("remote_identity_changed", False),
-        ("remote_unreachable", True),
-        ("remote_service_not_running", True),
+        "remote_auth_failed",
+        "remote_identity_changed",
+        "remote_unreachable",
+        "remote_service_not_running",
     ],
 )
 def test_a_refused_connection_is_named_by_the_connector_status(
@@ -179,7 +179,6 @@ def test_a_refused_connection_is_named_by_the_connector_status(
     monkeypatch: pytest.MonkeyPatch,
     no_local_service: None,
     reason: str,
-    retryable: bool,
 ) -> None:
     spawned: list[Path] = []
 
@@ -195,11 +194,8 @@ def test_a_refused_connection_is_named_by_the_connector_status(
             _stop(tasks)
 
     error = asyncio.run(exercise())
-    assert (error.reason, error.phase, error.retryable) == (
-        "service_unavailable",
-        reason,
-        retryable,
-    )
+    # Every remote phase is retryable once its own repair is made (INTERFACES, ADR-051).
+    assert (error.reason, error.phase, error.retryable) == ("service_unavailable", reason, True)
     assert error.correlation_id == "err_00000000-0000-4000-8000-0000000000e1"
 
 
@@ -235,7 +231,7 @@ def test_a_server_of_another_release_is_remote_incompatible_never_superseded(
     assert (error.reason, error.phase, error.retryable) == (
         "service_unavailable",
         "remote_incompatible",
-        False,
+        True,
     )
 
 
@@ -279,7 +275,7 @@ def test_cli_and_mcp_render_a_remote_phase_with_its_directive_only(home: Path, p
 
     error = ControlError(
         "service_unavailable",
-        retryable=phase in {"remote_unreachable", "remote_service_not_running"},
+        retryable=True,
         phase=phase,
         correlation_id="err_00000000-0000-4000-8000-0000000000e2",
     )

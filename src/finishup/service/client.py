@@ -1698,13 +1698,6 @@ def _remote_workspace_binding(
     return None, None
 
 
-# A remote phase whose repair is not a retry of the same connection: a key, a host identity or
-# a release has to change first.
-_REMOTE_TERMINAL_PHASES: Final = frozenset(
-    {"remote_auth_failed", "remote_identity_changed", "remote_incompatible"}
-)
-
-
 def _remote_failure(root: Path) -> ControlError:
     """Name a remote target's refused connection from its connector's status file.
 
@@ -1719,9 +1712,11 @@ def _remote_failure(root: Path) -> ControlError:
     status = read_connector_status(root)
     if status is None or status.phase != "unavailable" or status.reason is None:
         return ControlError("service_unavailable", retryable=True)
+    # Every remote phase is retryable (INTERFACES, ADR-051): the same request succeeds once the
+    # phase's own repair (a key, a host identity, a release, the remote service) is made.
     return ControlError(
         "service_unavailable",
-        retryable=status.reason not in _REMOTE_TERMINAL_PHASES,
+        retryable=True,
         phase=status.reason,
         correlation_id=status.correlation_id,
     )
@@ -1802,7 +1797,9 @@ async def _connect_service_attempt(
         if remote_root is not None:
             if exc.reason in {"manifest_mismatch", "protocol_mismatch"}:
                 # The server runs another release; a client never replaces a remote service.
-                raise ControlError("service_unavailable", phase="remote_incompatible") from exc
+                raise ControlError(
+                    "service_unavailable", retryable=True, phase="remote_incompatible"
+                ) from exc
             if exc.reason == "handshake_rejected":
                 raise _remote_failure(remote_root) from exc
         if exc.reason == "handshake_rejected":
