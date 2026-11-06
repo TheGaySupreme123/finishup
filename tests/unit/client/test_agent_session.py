@@ -11,6 +11,7 @@ here; the end-to-end tests run them through the real transports.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -27,7 +28,9 @@ from finishup.client.agent_session import (
     run_foreground_agent,
     start_remote_background_work,
 )
-from finishup.config.paths import active_root, reset_selection_memo
+from finishup.client.server_folders import add_folder
+from finishup.client.workspace_agent import WorkspaceAgentHandler
+from finishup.config.paths import active_root, reset_selection_memo, selection_override
 from finishup.ports.control import ControlError, WorkspaceClaim, WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
 
@@ -75,6 +78,44 @@ def remote(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
             _record, root = targets.new_remote_target("lab", "https", base_url="https://fu.example")
         reset_selection_memo()
         yield root
+
+
+def _two_targets_with_folders(tmp_path: Path) -> tuple[tuple[Path, str], tuple[Path, str]]:
+    """Two remote targets, each with one folder its owner admitted; the first is selected.
+
+    Each pair is the target's root and the folder admitted for it alone (``server folders add``).
+    """
+
+    made: list[tuple[Path, str]] = []
+    with targets.registry_lock():
+        selected, selected_root = targets.new_remote_target(
+            "selected", "https", base_url="https://selected.example"
+        )
+        other, other_root = targets.new_remote_target(
+            "other", "ssh", user="owner", host="other.example", port=2222
+        )
+        targets.write_selection(selected)
+    for record, root in ((selected, selected_root), (other, other_root)):
+        folder = (tmp_path / f"folder-{record.name}").resolve()
+        folder.mkdir()
+        add_folder(root, record.target_id, os.fspath(folder))
+        made.append((root, os.fspath(folder)))
+    reset_selection_memo()
+    return made[0], made[1]
+
+
+def _workspace(tmp_path: Path) -> WorkspaceLocator:
+    directory = tmp_path / "workspace"
+    directory.mkdir()
+    return WorkspaceLocator(os.fspath(directory.resolve(strict=True)))
+
+
+def _admitted(binding: ClientWorkspaceBinding) -> tuple[str, ...]:
+    """The folders outside the workspace the binding's agent admits, read now."""
+
+    agent = binding.agent
+    assert type(agent) is WorkspaceAgentHandler
+    return agent._folders()  # pyright: ignore[reportPrivateUsage]
 
 
 # -- the foreground agent --------------------------------------------------------------------------
@@ -203,6 +244,50 @@ def test_the_foreground_agent_refuses_with_closed_reasons(
         )
     assert (raised.value.reason, raised.value.phase) == expected
     assert "/w/repo" not in str(raised.value)
+
+
+def test_the_foreground_agent_admits_the_folders_of_the_target_it_serves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``server connect NAME --agent`` serves NAME while this process's selection names another
+    target: its agent admits the folders the owner admitted for NAME alone, through the real
+    binding (``serving_workspace_binding``), and keeps them after the selection is back (ADR-051
+    decision 5)."""
+
+    with ambient_home(monkeypatch):
+        (selected_root, selected_folder), (served_root, served_folder) = _two_targets_with_folders(
+            tmp_path
+        )
+        assert active_root() == selected_root
+        workspace = _workspace(tmp_path)
+        bindings: list[ClientWorkspaceBinding] = []
+
+        async def exercise() -> tuple[str, ...]:
+            dialled = asyncio.Event()
+
+            async def dial(binding: ClientWorkspaceBinding) -> _Connection:
+                bindings.append(binding)
+                dialled.set()
+                return _Connection()
+
+            serving = asyncio.create_task(
+                run_foreground_agent(served_root, workspace, connect=dial)
+            )
+            try:
+                async with asyncio.timeout(30.0):
+                    await dialled.wait()
+                assert active_root() == served_root
+                return _admitted(bindings[0])
+            finally:
+                serving.cancel()
+                await asyncio.gather(serving, return_exceptions=True)
+
+        while_serving = asyncio.run(exercise())
+        assert while_serving == (served_folder,)
+        assert selected_folder not in while_serving
+        # The selection names the other target again; the agent's record is still its own.
+        assert active_root() == selected_root
+        assert _admitted(bindings[0]) == (served_folder,)
 
 
 # -- the bridge's background work ------------------------------------------------------------------
@@ -352,6 +437,47 @@ def test_a_workspace_switch_releases_the_connection_that_claims_the_earlier_work
     assert [bound_for[id(item)] for item in dialled] == [first, second]
     # Each workspace's rows went over the connection that claims that workspace.
     assert drained == [(first, id(dialled[0])), (second, id(dialled[1])), (second, id(dialled[1]))]
+
+
+def test_the_bridges_background_agent_admits_the_folders_of_the_bridges_own_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The background agent connection is bound through the real binding to the bridge's own
+    target: it admits that target's folders only, and still does while another target is probed
+    (``selection_override``, as the terminal's /server status does) or selected later (ADR-051
+    decision 5)."""
+
+    with ambient_home(monkeypatch):
+        (own_root, own_folder), (other_root, other_folder) = _two_targets_with_folders(tmp_path)
+        workspace = _workspace(tmp_path)
+        bindings: list[ClientWorkspaceBinding] = []
+
+        async def dial(binding: ClientWorkspaceBinding) -> _Connection:
+            bindings.append(binding)
+            return _Connection()
+
+        work = BridgeBackgroundWork(connect=dial, pending=lambda _workspace: False)
+
+        async def exercise() -> BackgroundPass:
+            work.note_activity(workspace)
+            try:
+                return await work.run_pass()
+            finally:
+                await work.aclose()
+
+        assert asyncio.run(exercise()).connected
+        assert active_root() == own_root
+        assert len(bindings) == 1 and _admitted(bindings[0]) == (own_folder,)
+        with selection_override(other_root):
+            assert _admitted(bindings[0]) == (own_folder,)
+        with targets.registry_lock():
+            other = targets.read_target(other_root)
+            assert other is not None
+            targets.write_selection(other)
+        reset_selection_memo()
+        assert active_root() == other_root
+        assert _admitted(bindings[0]) == (own_folder,)
+        assert other_folder not in _admitted(bindings[0])
 
 
 def test_a_server_that_is_away_is_dialled_again_only_after_a_back_off() -> None:
