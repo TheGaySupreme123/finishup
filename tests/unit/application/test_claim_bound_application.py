@@ -187,15 +187,18 @@ def test_an_unanswered_agent_is_a_closed_check_time_change_gap() -> None:
     )
 
 
-def test_a_refusal_names_the_owners_folder_step_and_not_only_the_workspace() -> None:
+def test_a_refusal_names_both_of_the_owners_ways_out_and_not_only_the_workspace() -> None:
     """ADR-051 decision 5: the usual refusal is a task input in a folder the owner has not let
     this server read, so the sentence never says the read was of the workspace, and it names the
-    one step only the owner can take."""
+    two steps only the owner can take: list the folder, or, for a server they trust, switch it
+    to mode local."""
 
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_refused"]
     assert "read of the workspace" not in sentence
     assert "input file in a folder" in sentence
     assert "Only the owner" in sentence and "`finishup server folders add`" in sentence
+    assert "for a server they trust" in sentence
+    assert "`finishup server folders mode NAME local`" in sentence
     assert "/" not in sentence
 
 

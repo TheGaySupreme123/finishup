@@ -598,16 +598,19 @@ class TestWorkspaceBindingAndServerTargetReasons:
         )
         assert error.safe_details == {"reason_code": reason, "continuation": token}
 
-    def test_a_refusal_points_the_user_to_the_folder_step_the_agent_never_takes(self) -> None:
+    def test_a_refusal_points_the_user_to_both_ways_out_the_agent_never_takes(self) -> None:
         """ADR-051 decision 5: the usual refusal is a task input in a folder the owner has not
-        let the server read; the agent tells the user, and never runs the command itself."""
+        let the server read. Only the user can list the folder or, for a server they trust,
+        switch it to mode local; the agent tells them, and never runs either command itself."""
 
         entry = directive_for("workspace_agent_refusal_review")
         assert entry is not None and entry.nudge is not None
         assert "'finishup server folders add'" in entry.directive
-        assert "Tell the user" in entry.directive
+        assert "'finishup server folders mode NAME local'" in entry.directive
+        assert "Tell the user only they can allow it" in entry.directive
         assert "outside the claimed workspace" not in entry.directive
-        assert entry.nudge.startswith("Do not run that command yourself")
+        assert entry.nudge.startswith("Do not run either command yourself")
+        assert "only for a server the user trusts" in entry.nudge
 
     def test_the_handle_directive_names_a_start_an_agent_can_send(self) -> None:
         # An agent cannot know the connection's handle; it can send the pair, and the FinishUP
