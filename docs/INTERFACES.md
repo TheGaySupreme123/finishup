@@ -4076,7 +4076,11 @@ records its own reason; shutdown cancels it too. The attempt also has its own 30
 the budget an on-demand client gives a cold start for the same unlock and activation, so a stalled
 keyring read or activation never holds the lifecycle `unlocking` or a lock waiting. A cancelled or
 expired attempt locks the vault and returns to `locked`; an expired one keeps its soft-lock reason,
-so the next request tries again.
+so the next request tries again. The attempt is background work: it starts in an empty context, so
+neither it nor the READY maintenance it starts carries the triggering call's live-call scope or
+agent channel. Scoped-entry candidates that a cancelled read returns afterwards from its worker
+thread are overwritten as they arrive. An unexpected failure of the attempt is recorded as
+`service.daemon` operation `soft_lock_reready`, whether or not a caller still waits on it.
 The resulting `VAULT_LOCKED` error is retryable only while this automatic recovery path remains
 eligible. `explicit_lock`, `monitor_lost`, and hard `auto_unlock_*` /
 `passphrase_required` reasons do not take that path. The trusted unlock helper may submit the scoped entry through the

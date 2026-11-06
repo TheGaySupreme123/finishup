@@ -5,6 +5,7 @@ import contextlib
 import gc
 import hmac
 import json
+import threading
 from collections.abc import Buffer, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -109,6 +110,7 @@ from finishup.service.daemon import ServiceComposition, ServiceDaemon
 from finishup.service.lifecycle import LifecycleError, ServiceLifecycle, SessionSecurityEvent
 from finishup.service.session_routes import SessionRouteMemory
 from finishup.service.vault import VaultMode, VaultService
+from finishup.service.workspace_hub import in_live_call, live_call_scope
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _UUID = "00000000-0000-4000-8000-000000000002"
@@ -2679,6 +2681,152 @@ async def test_a_lock_outranks_a_stalled_soft_lock_reready(
     else:
         assert context is not None
         assert daemon.status().state is ServiceState.READY
+    await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_an_unexpected_reready_failure_is_recorded_with_no_caller_waiting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An attempt's failure reached a hello or a control call only while one still waited. Once
+    # every caller had stopped waiting it was retrieved and dropped without any record.
+    recorded: list[tuple[str, object, object]] = []
+    seen = asyncio.Event()
+
+    def record(failure: BaseException, **fields: object) -> str:
+        recorded.append((type(failure).__name__, fields.get("component"), fields.get("operation")))
+        seen.set()
+        return new_id(IdKind.CORRELATION)
+
+    monkeypatch.setattr(daemon_module, "record_unexpected_exception_without_raising", record)
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return _Application()
+
+    _patch_auto_unlock_store(monkeypatch, b"correct horse battery staple!!")
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=_KeyedPassphraseVault())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def failing_attempt(soft_lock_reason: str) -> bool:
+        del soft_lock_reason
+        entered.set()
+        await release.wait()
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(daemon, "_soft_reready_locked", failing_attempt)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+    await _hello_past_its_deadline(daemon, entered)
+
+    release.set()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await seen.wait()
+    assert recorded == [("RuntimeError", "service.daemon", "soft_lock_reready")]
+    await daemon.close()
+
+
+class _BlockingAutoUnlockStore:
+    """A scoped auto-unlock entry whose read blocks in its worker thread until released."""
+
+    def __init__(self, secret: bytes) -> None:
+        self.candidate = bytearray(secret)
+        self.reading = threading.Event()
+        self.release = threading.Event()
+
+    def load_candidates_with_reason(self) -> tuple[tuple[tuple[bytearray, str], ...], str]:
+        self.reading.set()
+        self.release.wait(_WAIT_SECONDS)
+        return ((self.candidate, "active"),), "none"
+
+
+@pytest.mark.anyio
+async def test_a_cancelled_keyring_read_overwrites_the_passphrase_it_returns_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cancelling the attempt cannot stop the worker thread reading the scoped entry, and the
+    # passphrase it returned after the cancel was dropped without being overwritten.
+    secret = b"correct horse battery staple!!"
+    store = _BlockingAutoUnlockStore(secret)
+
+    def store_factory(bundle: Path) -> _BlockingAutoUnlockStore:
+        del bundle
+        return store
+
+    monkeypatch.setattr(daemon_module, "AutoUnlockPassphraseStore", store_factory)
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return _Application()
+
+    vault = _KeyedPassphraseVault()
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "user_session_locked"  # pyright: ignore[reportPrivateUsage]
+    try:
+        waiting = asyncio.ensure_future(
+            daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        )
+        assert await asyncio.to_thread(store.reading.wait, _WAIT_SECONDS)
+
+        # The read stalls; a lock still applies at once and cancels the attempt.
+        async with asyncio.timeout(_WAIT_SECONDS):
+            await daemon.lock("explicit_lock")
+            assert await waiting is None
+        store.release.set()
+
+        async with asyncio.timeout(_WAIT_SECONDS):
+            while any(store.candidate):
+                await asyncio.sleep(0)
+    finally:
+        store.release.set()
+    assert vault.unlock_count == 0
+    assert daemon.status().state is ServiceState.LOCKED
+    assert daemon.status().state_reason == "explicit_lock"
+    await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_soft_lock_reready_runs_outside_the_triggering_calls_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The attempt inherited the context of the call that started it, so it and the READY
+    # maintenance it starts ran under that call's live-call scope (its short agent wait and its
+    # agent channel) long after the call itself had gone.
+    seen: dict[str, bool] = {}
+    maintained = asyncio.Event()
+
+    class _MaintainedApplication(_Application):
+        async def recover_lineage(self) -> None:
+            seen["maintenance"] = in_live_call()
+            maintained.set()
+
+    application = _MaintainedApplication()
+    vault = _KeyedPassphraseVault()
+    secret = b"correct horse battery staple!!"
+    vault.expect_secret(secret)
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        seen["attempt"] = in_live_call()
+        return application
+
+    _patch_auto_unlock_store(monkeypatch, secret)
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+
+    with live_call_scope():
+        assert in_live_call()
+        result = await daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(daemon, ControlMethod.START, _start_body()),
+        )
+    assert result.outcome == "ok"
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await maintained.wait()
+    assert seen == {"attempt": False, "maintenance": False}
     await daemon.close()
 
 
