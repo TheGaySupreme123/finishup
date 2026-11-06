@@ -24,8 +24,10 @@ These confinements hold on top of the adapters':
   an outside root, or this client's own FinishUP directories at all, whatever the server lists
   as excluded.
 * **Ignore rules on the agent.** A file read inside the claimed workspace (a reviewer read or a
-  declared test) that Git says is ignored reads as nothing, as the server's own broker asks
-  first: a server that skips that question still never receives an ignored file's bytes.
+  declared test) returns bytes only where Git answers that the file is not ignored, as the
+  server's own broker asks first and requires: a server that skips that question never receives
+  an ignored file's bytes, nor those of a file Git cannot answer for (a linked worktree, a
+  submodule, no repository). A listing returns names only and is not asked about.
 
 An approved check runs only when the repository's own ``.finishup/checks.toml`` (read here, by
 the existing policy loader) approves exactly the argv the server asked for; anything else is
@@ -506,15 +508,16 @@ class WorkspaceAgentHandler:
             or any(folder_covers(folder, (root,)) for folder in folders)
         )
 
-    def _ignored(self, relative: str) -> bool:
-        """Whether Git says the claimed-workspace-relative path ``relative`` is ignored.
+    def _not_ignored(self, relative: str) -> bool:
+        """Whether Git answers that the claimed-workspace-relative path ``relative`` is not ignored.
 
         The rule the server's reviewer broker asks the agent first (``probe_requested_paths``,
-        with paths relative to the claimed root), applied here too, so a file Git ignores is never
-        returned to a server that skipped the question. Only Git's own yes refuses: where Git
-        cannot answer (no repository, a linked worktree whose ``.git`` file the change capture
-        refuses, no Git at all) the read is the local one, as before; the honest broker refuses
-        those reads itself.
+        with paths relative to the claimed root) and refuses on any answer but Git's own "not
+        ignored" (``ignored is not False``), applied here too, so a workspace file's bytes reach
+        only a server that could have read them honestly. Where Git cannot answer for the path
+        (no repository, a linked worktree whose ``.git`` file the change capture refuses, a path
+        inside a submodule, a home-private path, Git unavailable) the answer is no, exactly as the
+        broker, local or remote, refuses such a read itself.
         """
 
         try:
@@ -525,7 +528,7 @@ class WorkspaceAgentHandler:
             len(found) == 1
             and type(found[0]) is RequestedPathProbe
             and found[0].location == "inside"
-            and found[0].ignored is True
+            and found[0].ignored is False
         )
 
     def _claimed_relative(self, spellings: Sequence[str]) -> str | None:
@@ -687,9 +690,11 @@ class WorkspaceAgentHandler:
         A local service reads the test file its own agent declared, outside the workspace too
         (#1220). Here the server names the location and this agent cannot tell whether its agent
         declared it, so the location must lie strictly beneath the claimed root (named by its
-        handle or its absolute path), where Git must not report it ignored, or at or beneath a
-        folder this client's owner admitted for the server (ADR-051 decision 5); anything else is
-        ``root_not_admitted``, never read on the server's word. Both comparisons are made on the
+        handle or its absolute path), where Git must answer that it is not ignored (one Git
+        cannot answer for, in a linked worktree, a submodule or no repository, reads as a test
+        that could not be read), or at or beneath a folder this client's owner admitted for the
+        server (ADR-051 decision 5); anything else is ``root_not_admitted``, never read on the
+        server's word. Both comparisons are made on the
         spelling the local read walks too: a first component that is a link root owns (``/tmp``
         on macOS) counts as its target. They are exact otherwise: a differently cased spelling is
         refused, never let in. The read itself is the local one, with all its fences; one let in
@@ -707,8 +712,8 @@ class WorkspaceAgentHandler:
         spellings = (location,) if walked is None else (location, f"{walked[0]}/{walked[1]}")
         relative = self._claimed_relative(spellings)
         if relative is not None:
-            if self._ignored(relative):
-                return None  # Git ignores it: read as a test that could not be read
+            if not self._not_ignored(relative):
+                return None  # ignored, or Git cannot say: read as a test that could not be read
         else:
             folders = self._folders()
             if not any(folder_covers(spelling, folders) for spelling in spellings):
@@ -726,11 +731,13 @@ class WorkspaceAgentHandler:
             arguments.root, arguments.relative, arguments.excluded, call
         )
         if not arguments.root.startswith("/"):
-            # A workspace file Git ignores reads as nothing, as the broker's own rule has it.
+            # A workspace file reads only where Git answers that it is not ignored, as the
+            # broker's own rule has it: an ignored file, and one Git cannot answer for, read as
+            # nothing.
             relative = self._claimed_relative(
                 (posixpath.normpath(posixpath.join(root, arguments.relative)),)
             )
-            if relative is not None and self._ignored(relative):
+            if relative is None or not self._not_ignored(relative):
                 return None
         try:
             return read_text_beneath(
