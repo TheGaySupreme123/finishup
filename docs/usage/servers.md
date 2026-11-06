@@ -217,15 +217,21 @@ The workspace agent answers only a fixed list of questions, only about the proje
 session is working in and the folders outside it that you let that server read (`finishup server
 folders`), and only within the usual size limits. It runs only check commands from your project's
 approved check list. It reads files with the same safety checks FinishUP uses on one computer,
-does not return a file of your project that Git reports as ignored (in a linked Git worktree
-FinishUP cannot ask Git, so there this check does not apply), and never reads FinishUP's own
-folders on this computer — including the vault and settings of your everyday FinishUP — whichever
-server you use.
+returns a file of your project only when Git confirms that the file is not ignored, and never
+reads FinishUP's own folders on this computer — including the vault and settings of your everyday
+FinishUP — whichever server you use.
+
+Where Git cannot answer for a file, the workspace agent does not return it. This happens in a
+linked Git worktree, inside a Git submodule, and in a project folder that is not a Git repository.
+A reviewer cannot read such a file on one computer either. A test file your agent declared that
+Git ignores, or that lies in such a place, is not offered to the server's reviewer, although
+FinishUP on one computer offers it.
 
 The workspace agent cannot tell an honest question from any other. A server that does not follow
 FinishUP's own rules could ask it for any file in your project folder, or in a folder you let that
-server read, that passes these safety checks, not only the files a task names. It could also learn
-whether a file exists elsewhere on this computer, and its size and dates, but never its contents.
+server read, that passes these safety checks, not only the files a task names. It could also see
+the names of the files in those folders, ignored ones included, and learn whether a file exists
+elsewhere on this computer, and its size and dates, but never its contents.
 Use a server you trust with your project, and let it read only folders you would let it see.
 
 It runs inside your FinishUP clients while they are connected to the server, and keeps running

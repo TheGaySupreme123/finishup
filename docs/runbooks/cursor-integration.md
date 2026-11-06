@@ -659,6 +659,9 @@ default service.
   receipts carry the `client_attested` line. Outside the workspace root the agent reads only
   beneath a folder the owner admitted for the target on this machine (`finishup server folders
   add`, ADR-051 decision 5); the decision is the same for every host and changes no registration.
+  Inside it the agent returns a file only when Git answers that it is not ignored, so in a linked
+  worktree or a submodule a declared test is not offered to the server's reviewer, though a local
+  service offers it (ADR-051, a parity gap).
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the

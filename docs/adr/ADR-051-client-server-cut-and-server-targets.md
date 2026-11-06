@@ -339,16 +339,21 @@ answers bounded `workspace_call`s on a connection that declared it.
   asks the agent whether Git ignores a workspace path before it reads it; a server that skipped
   that question received an ignored file's bytes. The agent now asks Git itself before a
   workspace file read (`read_text_beneath` on the handle) and before a declared-test read inside
-  the claimed workspace, and a path Git reports ignored reads as nothing. Only Git's own answer
-  refuses: where Git cannot answer (no repository, or a linked worktree, whose `.git` file the
-  change capture refuses as `unsafe_root`) the read is the local one, as before, and the honest
-  broker refuses such a reviewer read itself. A declared test that the agent placed in a
-  Git-ignored path is therefore not offered on a remote target, though a local service reads it.
+  the claimed workspace, and returns bytes only when Git answers that the path is not ignored,
+  the very answer the broker requires (`ignored is not False` refuses, locally and remotely).
+  Where Git cannot answer for a path, the read is nothing too: a linked worktree, whose `.git`
+  file the change capture refuses as `unsafe_root`; a path inside a submodule, which the
+  repository's own Git does not answer for; no repository at all (`not_git`); a home-private
+  path. An honest reviewer read costs nothing, since the broker refuses those reads itself. A
+  declared test in such a place, or in a Git-ignored path, is therefore not offered on a remote
+  target, though a local service reads it (#1220): a parity gap that closes only when the
+  client's change capture can answer for linked worktrees and submodules. A listing
+  (`list_beneath`) returns names only and is not asked about; the broker filters its entries.
 - **Honest limit: what a server that breaks the protocol can still obtain.** The agent cannot tell
   an honest server's question from any other. Within the claimed worktree, such a server can
-  obtain any file the adapters' fences pass and Git does not report ignored, whether or not a task
-  names it: an ignored file too where Git cannot answer (a linked worktree), and the names, never
-  the bytes, of ignored entries in a directory listing. Beneath a folder the
+  obtain any file the adapters' fences pass and Git answers is not ignored, whether or not a task
+  names it, and the names, never the bytes, of every entry the fences pass in a directory
+  listing, ignored ones and those Git cannot answer for included. Beneath a folder the
   owner admitted for it, it can obtain any file that is not hidden, not credential-named and in no
   system or protected directory, and list the names in its directories. Anywhere on this machine,
   it can learn the metadata (existence, type, size and times, never content) of a path the local

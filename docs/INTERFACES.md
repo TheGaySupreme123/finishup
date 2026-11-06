@@ -4782,12 +4782,16 @@ confinement rules:
   volume, a bind mount) never reaches a file Git would report ignored.
 - A workspace file read (`read_text_beneath` on the handle, and `read_declared_test` inside the
   claimed root) first asks `probe_requested_paths` for that path, relative to the claimed root, as
-  the reviewer broker does; a path Git reports ignored reads as absent. Where Git cannot answer
-  (`not_git`, a linked worktree's `unsafe_root`, any other `ChangeCaptureUnavailable`) the read
-  proceeds as locally. `list_beneath` returns names only and does not ask.
+  the reviewer broker does, and reads only when the probe answers `ignored is False`, the
+  broker's own rule. Anything else reads as absent: a path Git reports ignored, and one Git
+  cannot answer for (`ignored` None for a path inside a submodule or a home-private path;
+  `not_git`, a linked worktree's `unsafe_root` or any other `ChangeCaptureUnavailable`), as well
+  as a handle read that names the claimed root itself. A declared test there is not pinned on a
+  remote target, though a local service pins it. `list_beneath` returns names only and does not
+  ask.
 - Honest limit: the agent cannot tell an honest server's question from any other, so a server
   that breaks the protocol can obtain any file in the claimed worktree that the fences pass and Git
-  does not report ignored (an ignored one where Git cannot answer), the names in its listings, any
+  answers is not ignored, the names in its listings (ignored entries included), any
   eligible file beneath an admitted folder (not hidden, not credential-named, in no system or
   protected directory) and its directories' names, and the `lstat` metadata of any path the
   outside-input candidate rule would look at.
