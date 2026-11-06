@@ -19,6 +19,7 @@ import pytest
 import finishup.service.daemon as daemon_module
 from builders.privacy_policies import INSTALLATION_ID, local_only_policy
 from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from finishup.adapters.privacy.catalog import encode_privacy_policy_json
 from finishup.application.observation_drain import ObservationDrainSummary
 from finishup.application.publish_work import PublishWorkInternalResult
@@ -108,6 +109,7 @@ from finishup.service.control_protocol import (
     write_control_frame,
 )
 from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.human_control import HumanControlError
 from finishup.service.lifecycle import LifecycleError, ServiceLifecycle, SessionSecurityEvent
 from finishup.service.session_routes import SessionRouteMemory
 from finishup.service.vault import VaultMode, VaultService
@@ -3037,6 +3039,259 @@ def test_a_staged_reconcile_that_never_answers_holds_no_attempt_and_pins_one_wor
             runner.run(scenario())
         finally:
             store.release.set()
+
+
+class _MemoryCredentialStore:
+    """One platform credential store, written by the service and the trusted helper alike."""
+
+    def __init__(self) -> None:
+        self.entries: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.entries.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.entries[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        del self.entries[(service, username)]
+
+
+class _ScopedEntries(AutoUnlockPassphraseStore):
+    """The real scoped-entry rules over that store; a gated view reads its report when let."""
+
+    def __init__(
+        self,
+        bundle: Path,
+        backend: _MemoryCredentialStore,
+        report_gate: threading.Event | None = None,
+    ) -> None:
+        super().__init__(bundle, backend=backend)
+        self._backend_id = "keyring.backends.macOS.Keyring"  # an allowlisted platform store
+        self._report_gate = report_gate
+
+    def slot_report(self) -> dict[str, str]:
+        if self._report_gate is not None:
+            self._report_gate.wait(_WAIT_SECONDS * 3)
+        return super().slot_report()
+
+
+class _RewrappingPassphraseVault(_KeyedPassphraseVault):
+    """After a rewrap, only the replacement opens the vault, as with the real envelope."""
+
+    async def rewrap_passphrase(self, secret: object) -> None:
+        assert self.ready
+        self.expect_secret(cast(bytes, secret))
+
+
+class _ConsumedProof:
+    def consume(self, *binding: object) -> None:
+        del binding
+
+
+@dataclass
+class _RotationScene:
+    """A soft re-ready whose staged-slot reconcile waits to read its slot report until let."""
+
+    daemon: ServiceDaemon
+    vault: _RewrappingPassphraseVault
+    helper: _ScopedEntries
+    report_gate: threading.Event
+    effects: Any
+    refusals: list[tuple[object, object]]
+    waiting: asyncio.Event
+    open_rotation: ClientOpenEnvelope
+
+    async def reconcile_returned(self) -> None:
+        reconcile = self.daemon.composition.staged_reconcile.current
+        if reconcile is not None:
+            async with asyncio.timeout(_WAIT_SECONDS):
+                await asyncio.wait((reconcile,))
+
+    async def stage_rewrap_and_promote(self, replacement: bytes) -> None:
+        # The interactive rotation after the open and reauthentication: the helper stages the
+        # replacement, submits it for the rewrap, and promotes it once the service reports it.
+        self.helper.stage_value_for_rotation(bytearray(replacement))
+        self.report_gate.set()  # a reconcile still running reads its slot report from here on
+        await self.reconcile_returned()
+        await self.effects.rotate_vault_passphrase(
+            self.open_rotation.target, cast(Any, replacement), cast(Any, _ConsumedProof()), 0.0
+        )
+        self.helper.promote_staged_rotation()
+
+    def slots(self) -> dict[str, str]:
+        return self.helper.slot_report()
+
+
+_ONLY_ACTIVE = {"active": "present", "staged_initialization": "absent", "staged_rotation": "absent"}
+
+
+async def _ready_beside_a_staged_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old: bytes
+) -> _RotationScene:
+    backend = _MemoryCredentialStore()
+    helper = _ScopedEntries(tmp_path, backend)  # the trusted helper, in its own process
+    helper.save(bytearray(old))
+    report_gate = threading.Event()
+
+    def service_entries(bundle: Path) -> _ScopedEntries:
+        return _ScopedEntries(bundle, backend, report_gate)
+
+    monkeypatch.setattr(daemon_module, "AutoUnlockPassphraseStore", service_entries)
+    refusals: list[tuple[object, object]] = []
+
+    class _RecordingLogger(StructuredLogger):
+        def warning(self, operation: str, **fields: object) -> None:
+            if operation == "vault_passphrase_rotate":
+                refusals.append((fields.get("outcome"), fields.get("reason")))
+            super().warning(operation, **fields)
+
+    monkeypatch.setattr(daemon_module, "get_logger", _RecordingLogger)
+    waiting = asyncio.Event()
+    returned_within = daemon_module._StagedReconcileTracker.returned_within  # pyright: ignore[reportPrivateUsage]
+
+    async def observed_returned_within(tracker: Any, seconds: float) -> bool:
+        waiting.set()  # the open has reached its wait for the reconcile
+        return await returned_within(tracker, seconds)
+
+    monkeypatch.setattr(
+        daemon_module._StagedReconcileTracker,  # pyright: ignore[reportPrivateUsage]
+        "returned_within",
+        observed_returned_within,
+    )
+    vault = _RewrappingPassphraseVault()
+    vault.expect_secret(old)
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return _Application()
+
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    effects = daemon_module._LockedHumanEffects(  # pyright: ignore[reportPrivateUsage]
+        daemon.composition.lifecycle,
+        cast(VaultService, vault),
+        daemon_module._PrivacyPolicyAppRelay(),  # pyright: ignore[reportPrivateUsage]
+        staged_reconcile=daemon.composition.staged_reconcile,
+    )
+    target = EmptyVaultTarget(expected_mode="passphrase")
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+    async with asyncio.timeout(_WAIT_SECONDS):
+        context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+    assert context is not None
+    # Ready, while the reconcile the re-ready started still waits to read its slot report.
+    assert daemon.status().state is ServiceState.READY
+    assert daemon.composition.staged_reconcile.outstanding()
+    return _RotationScene(
+        daemon,
+        vault,
+        helper,
+        report_gate,
+        effects,
+        refusals,
+        waiting,
+        ClientOpenEnvelope("e" * 64, HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE, target),
+    )
+
+
+@pytest.mark.anyio
+async def test_a_passphrase_rotation_waits_for_a_staged_reconcile_then_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The staged-slot reconcile runs beside activation, so the service is ready while it still
+    # waits on the credential store. A rotation that opened then had its staged replacement
+    # discarded by that reconcile (#492 review). The open now waits for it, and since a healthy
+    # one returns in moments, the rotation then goes through as asked.
+    old = b"correct horse battery staple!!"
+    new = b"a different vault passphrase!!"
+    scene = await _ready_beside_a_staged_reconcile(tmp_path, monkeypatch, old)
+    try:
+        opening = asyncio.create_task(scene.effects.prepare(scene.open_rotation))
+        async with asyncio.timeout(_WAIT_SECONDS):
+            await scene.waiting.wait()
+        assert not opening.done(), "the open waits while the reconcile runs"
+
+        scene.report_gate.set()  # the reconcile returns while the open waits
+        async with asyncio.timeout(_WAIT_SECONDS):
+            await opening
+        assert not scene.daemon.composition.staged_reconcile.outstanding()
+        assert scene.refusals == []
+
+        # No reconcile starts beside the open rotation: only an unlock starts one, after a
+        # lock that ends the ceremony. The staged replacement survives to its promotion.
+        await scene.stage_rewrap_and_promote(new)
+        assert scene.helper.load() == bytearray(new)
+        assert scene.slots() == _ONLY_ACTIVE
+
+        # The active entry is the one the envelope takes: the next soft lock re-opens with it.
+        await scene.daemon.lock("user_session_locked")
+        async with asyncio.timeout(_WAIT_SECONDS):
+            context = await scene.daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        assert context is not None
+        assert scene.daemon.status().state is ServiceState.READY
+        assert scene.vault.unlock_count == 2
+    finally:
+        scene.report_gate.set()
+        await scene.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_passphrase_rotation_whose_vault_locks_while_it_waits_is_refused_as_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = b"correct horse battery staple!!"
+    scene = await _ready_beside_a_staged_reconcile(tmp_path, monkeypatch, old)
+    try:
+        opening = asyncio.create_task(scene.effects.prepare(scene.open_rotation))
+        async with asyncio.timeout(_WAIT_SECONDS):
+            await scene.waiting.wait()
+        await scene.daemon.lock("user_session_locked")
+        scene.report_gate.set()
+
+        with pytest.raises(HumanControlError) as refused:
+            async with asyncio.timeout(_WAIT_SECONDS):
+                await opening
+        # Refused for the lock, which the owner's next unlock answers, not for the reconcile.
+        assert refused.value.reason == "state_forbidden"
+        assert scene.refusals == []
+        assert scene.slots() == _ONLY_ACTIVE
+    finally:
+        scene.report_gate.set()
+        await scene.daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_passphrase_rotation_is_refused_beside_a_staged_reconcile_past_its_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Opened beside the reconcile, the rotation lost its staged replacement: the reconcile read
+    # its slot report after the helper staged, discarded the entry, the rewrap went through, and
+    # the promotion failed with ``missing``, leaving the active entry on the old passphrase. A
+    # reconcile still running when the open's wait ends (here at once) refuses the open instead,
+    # before anything is staged, and the service records why.
+    old = b"correct horse battery staple!!"
+    new = b"a different vault passphrase!!"
+    scene = await _ready_beside_a_staged_reconcile(tmp_path, monkeypatch, old)
+    monkeypatch.setattr(daemon_module, "_ROTATION_RECONCILE_WAIT_SECONDS", 0.0)
+    try:
+        with pytest.raises(HumanControlError) as refused:
+            await scene.effects.prepare(scene.open_rotation)
+            await scene.stage_rewrap_and_promote(new)  # what the helper does once admitted
+        assert refused.value.reason == "state_forbidden"
+        assert scene.refusals == [("refused", "staged_reconcile_outstanding")]
+        assert scene.slots() == _ONLY_ACTIVE
+        assert scene.helper.load() == bytearray(old)
+
+        # Once the reconcile returned, a retry opens at once and rotates.
+        scene.report_gate.set()
+        await scene.reconcile_returned()
+        await scene.effects.prepare(scene.open_rotation)
+        await scene.stage_rewrap_and_promote(new)
+        assert scene.helper.load() == bytearray(new)
+        assert scene.slots() == _ONLY_ACTIVE
+    finally:
+        scene.report_gate.set()
+        await scene.daemon.close()
 
 
 @pytest.mark.anyio

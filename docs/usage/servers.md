@@ -280,7 +280,10 @@ exactly what could not be read; a check never passes because a read was missing.
   asking again, and until it comes, requests are refused as locked straight away. After a
   re-open, FinishUP also tidies the stored unlock secret in that credential store. The tidy-up
   never holds the re-open up or locks the server again; if the store stops answering it, the next
-  re-open waits for that answer in the same way. A re-open part-way through preparing FinishUP's
+  re-open waits for that answer in the same way. Changing the vault passphrase waits a few
+  seconds for the tidy-up to finish. If the store still has not answered by then,
+  `finishup service rotate-passphrase` stops with `credential_store_check_in_progress`: nothing
+  changed, and you can try again in a moment. A re-open part-way through preparing FinishUP's
   storage finishes that step before it stops, so a lock can take a moment longer then.
 - Those limits hold for a vault that FinishUP opens with a stored unlock secret for its passphrase
   (`finishup service status --json` shows `"vault_mode": "passphrase"`). If the vault key itself

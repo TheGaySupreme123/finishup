@@ -611,6 +611,8 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         # Another confirmation is open; a throttled confirmation (#1073).
         "ceremony_in_progress",
         "ceremony_retry_after_wait",
+        # A rotation refused while a credential-store check after the last unlock still runs.
+        "ceremony_retry_shortly",
         "ceremony_refusal_terminal",
         "ceremony_result_invalid",
         "config_correction_required",
