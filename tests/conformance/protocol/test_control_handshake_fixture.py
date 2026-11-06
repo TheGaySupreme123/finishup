@@ -79,6 +79,38 @@ def test_the_claim_vectors_are_new_in_2_10_and_the_locator_vector_is_not(
     assert result["workspace_handle"].startswith("client:")
 
 
+def test_a_workspace_handle_rides_only_a_client_claim_binding(
+    fixture_loader: FixtureLoader,
+) -> None:
+    fixture = cast(
+        dict[str, Any],
+        fixture_loader.load_json("canonical/control-hello-result-claim-2.10.case.json"),
+    )
+    result = cast(dict[str, JsonValue], fixture["input"]["frame"])
+    # The client rejects a handle on any other binding; so does the contract.
+    for binding in ("none", "local_path"):
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance(
+                "control-hello-result", "2.10.0", {**result, "workspace_binding": binding}
+            )
+    unbound = {key: value for key, value in result.items() if key != "workspace_binding"}
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-hello-result", "2.10.0", unbound)
+    # Admitted answers without a handle, and the manifest-mismatch answer, which keeps the frozen
+    # pre-2.10 shape with neither member, stay valid.
+    without_handle = {key: value for key, value in result.items() if key != "workspace_handle"}
+    for binding in ("none", "local_path", "client_claim"):
+        validate_schema_instance(
+            "control-hello-result", "2.10.0", {**without_handle, "workspace_binding": binding}
+        )
+    mismatch = {
+        key: value
+        for key, value in result.items()
+        if key not in {"workspace_binding", "workspace_handle"}
+    }
+    validate_schema_instance("control-hello-result", "2.10.0", mismatch)
+
+
 @pytest.mark.parametrize(("path", "fixture_id", "family"), _EXCHANGES)
 def test_each_family_exchange_decodes_through_the_catalog(
     fixture_loader: FixtureLoader, path: str, fixture_id: str, family: str

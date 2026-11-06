@@ -9994,7 +9994,10 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     operations the connection answers. ``control-hello-result`` gains ``workspace_binding`` and ``workspace_handle``; the
     binding is on every admitted session's answer and absent only from the manifest-mismatch
     answer, which keeps the frozen pre-2.10 shape so an older peer still reads it and names
-    ``manifest_mismatch`` (#436). ``control-result`` gains the server-to-client
+    ``manifest_mismatch`` (#436). A hello-result that carries ``workspace_handle`` must carry
+    ``workspace_binding: "client_claim"``, as the client's handshake requires; the schema cannot
+    tell an admitted answer from the mismatch answer, so the client, not the schema, requires the
+    binding on every admitted answer. ``control-result`` gains the server-to-client
     ``workspace_call`` frame and ``control-request`` the client-to-server ``workspace_reply``;
     their ``arguments`` and ``result`` are the catalog codecs of
     ``finishup.ports.workspace_agent``, which owns each operation's exact shape and byte bound.
@@ -10085,6 +10088,17 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             "minLength": 23,
             "pattern": "^client:[0-9a-f]{16}$",
             "type": "string",
+        }
+        # A handle names a claimed workspace, so it rides only a ``client_claim`` binding. The
+        # manifest-mismatch answer carries neither member and stays valid.
+        if "if" in document or "then" in document:
+            raise SchemaGenerationError(
+                "control_hello_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        document["if"] = {"required": ["workspace_handle"]}
+        document["then"] = {
+            "properties": {"workspace_binding": {"const": "client_claim"}},
+            "required": ["workspace_binding"],
         }
     elif entry.schema_name == "control-request":
         branches = document.get("oneOf")

@@ -4590,10 +4590,13 @@ output, an MCP frame or JSON output.
   `identity_kind ‖ digest`, giving `RepositoryPrivacyContext(identity_kind="client_claim",
   workspace_locator=None, workspace_handle=<handle>)`. No path is resolved for a claim-bound
   connection. Worktrees share a commitment (privacy authority and consent scope), not a handle.
-- Hello-result: required `workspace_binding: "none"|"local_path"|"client_claim"`; optional
+- Hello-result: required `workspace_binding: "none"|"local_path"|"client_claim"` on every
+  admitted answer (only the manifest-mismatch answer omits it, keeping the frozen pre-2.10 shape,
+  and the client requires it on every other); optional
   `workspace_handle` = `client:` + the first 16 hex of `SHA-256("yoetz/workspace-handle/v1\0" ‖
   commitment ‖ 0x00 ‖ worktree digest)` (`ports.workspace_agent.workspace_handle_for_claim(
-  commitment, worktree)`), one per claimed worktree. `ControlSession.workspace_worktree` keeps
+  commitment, worktree)`), one per claimed worktree, carried only with `workspace_binding:
+  "client_claim"` (the 2.10.0 schema enforces it). `ControlSession.workspace_worktree` keeps
   the claim's worktree digest on both sides.
 - `workspace_call` (server→client, a control-result branch): `kind`, `protocol_version: "1.0"`,
   `call_id`, `service_instance_id`, `service_generation`, `operation`, `arguments` (JSON object),
