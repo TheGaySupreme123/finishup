@@ -66,6 +66,7 @@ from finishup.application.observation_check_policy import (
 from finishup.config import paths as config_paths
 from finishup.domain.privacy import admitted_input_root_valid
 from finishup.observability.logging import (
+    record_bounded_event_without_raising,
     record_public_error_without_raising,
     record_unexpected_exception_without_raising,
 )
@@ -130,6 +131,12 @@ _MAX_OPEN_WORKSPACES: Final = 8
 # recomputes it, and nothing else can.
 _OPENED_HANDLE_DOMAIN: Final = b"yoetz/opened-workspace/v1\x00"
 _OPENED_HANDLE_KEY_BYTES: Final = 32
+# What an approved-check run keeps of its call's deadline: killing and reaping a check that
+# reached its time, redacting and encoding its output, and the reply frame. A run never goes past
+# the call's deadline less this, so its result, a timeout included, reaches the server in time.
+_APPROVED_CHECK_REPLY_RESERVE_SECONDS: Final = 15.0
+# The least run time an approval may ask for (``ApprovedCheckApproval``).
+_MIN_APPROVED_CHECK_SECONDS: Final = 0.1
 
 
 class _Outcome(Exception):
@@ -641,8 +648,14 @@ class WorkspaceAgentHandler:
             )
         )
 
-    def _run_approved_check(self, arguments: RunApprovedCheckArguments, _call: _Call) -> object:
-        """Run one argv only when this repository's own policy approves exactly it."""
+    def _run_approved_check(self, arguments: RunApprovedCheckArguments, call: _Call) -> object:
+        """Run one argv only when this repository's own policy approves exactly it.
+
+        The run ends within the call's deadline, less the time its result needs to reach the
+        server: an approval longer than that (the transport caps a call at 300 s) is cut there
+        and records ``timeout``, never a lost call. With too little time left to run at all, the
+        call is answered ``deadline_exceeded`` and nothing runs.
+        """
 
         workspace = self._opened_workspace(arguments.handle)
         try:
@@ -655,11 +668,22 @@ class WorkspaceAgentHandler:
         approval = arguments.approval
         if approval not in policy.checks:
             raise _Outcome("check_not_approved")
+        budget = call.remaining() - _APPROVED_CHECK_REPLY_RESERVE_SECONDS
+        if budget < _MIN_APPROVED_CHECK_SECONDS:
+            raise _Outcome("deadline_exceeded")
+        capped = budget < approval.timeout_seconds
+        if capped:
+            record_bounded_event_without_raising(
+                component=_COMPONENT,
+                operation="workspace_call_run_approved_check",
+                reason="run_capped_at_call_deadline",
+            )
         captured: list[tuple[bytes, bool]] = []
         runner = ApprovedCheckRunner(
             {approval.approval_commitment: approval},
             sandbox=self._sandbox,
             output_sink=lambda output, redacted: captured.append((output, redacted)),
+            run_seconds_cap=budget if capped else None,
         )
         result = runner.run(
             ApprovedCheckCommand(

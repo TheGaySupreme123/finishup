@@ -377,10 +377,23 @@ class ApprovedCheckRunner:
         *,
         sandbox: CheckSandboxPort | None = None,
         output_sink: Callable[[bytes, bool], None] | None = None,
+        run_seconds_cap: float | None = None,
     ) -> None:
+        """``run_seconds_cap`` ends a run sooner than its approval's own timeout.
+
+        A client workspace agent (ADR-051) sets it so a check's timeout result still reaches the
+        server within the call's deadline; the run then ends ``timeout`` at the cap. None, the
+        default, runs every check to its approval's timeout exactly as before.
+        """
+
+        if run_seconds_cap is not None and (
+            type(run_seconds_cap) is not float or not run_seconds_cap > 0.0
+        ):
+            raise ValueError("approved_check_run_cap_invalid")
         self._approvals = dict(approvals or {})
         self._sandbox = sandbox if sandbox is not None else default_check_sandbox()
         self._output_sink = output_sink
+        self._run_seconds_cap = run_seconds_cap
 
     def register(self, approval: ApprovedCheckApproval) -> None:
         self._approvals[approval.approval_commitment] = approval
@@ -500,7 +513,11 @@ class ApprovedCheckRunner:
             stdout, truncated = _bounded_communicate(
                 process,
                 stdout_limit=MAX_APPROVED_CHECK_OUTPUT_BYTES,
-                timeout_seconds=approval.timeout_seconds,
+                timeout_seconds=(
+                    approval.timeout_seconds
+                    if self._run_seconds_cap is None
+                    else min(approval.timeout_seconds, self._run_seconds_cap)
+                ),
             )
             _drain_completed_check_group(process, process_group_id)
             duration_ms = int((time.monotonic() - started) * 1000)

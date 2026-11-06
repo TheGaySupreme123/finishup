@@ -873,6 +873,60 @@ def test_an_approved_check_runs_as_the_local_runner_runs_it(
     assert stale.output is None
 
 
+_SLEEP = shutil.which("sleep", path=os.defpath) or "/bin/sleep"
+
+
+def _sleep_approval(timeout_seconds: float) -> tuple[ApprovedCheckApproval, str]:
+    argv = (_SLEEP, "30")
+    approval = ApprovedCheckApproval(
+        approval_id="long",
+        argv=argv,
+        allow_network=False,
+        timeout_seconds=timeout_seconds,
+        approval_commitment=approval_commitment("long", argv, allow_network=False),
+    )
+    policy = (
+        'format = "yoetz.approved-check-policy/1"\n\n'
+        "[[checks]]\n"
+        'id = "long"\n'
+        f'argv = ["{_SLEEP}", "30"]\n'
+        f"timeout_seconds = {int(timeout_seconds)}\n"
+        "network = false\n"
+    )
+    return approval, policy
+
+
+def test_a_check_longer_than_its_call_ends_as_a_timeout_the_server_still_receives(
+    repository: Path, protected: Path
+) -> None:
+    """A 300 s approval cannot outlast the transport's 300 s call: the run is cut, not lost."""
+
+    import time
+
+    approval, policy = _sleep_approval(300.0)
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    arguments = RunApprovedCheckArguments(opened, approval, digest, digest)
+    # The call leaves 1.5 s past the reply reserve for the run itself.
+    call = _call(WorkspaceOperation.RUN_APPROVED_CHECK, arguments, deadline_ms=16_500)
+    started = time.monotonic()
+    reply = handler.answer(call, workspace_handle=_HANDLE)
+    elapsed = time.monotonic() - started
+    assert (reply.outcome, reply.reason) == ("ok", None)
+    spec = operation_spec(WorkspaceOperation.RUN_APPROVED_CHECK)
+    assert spec is not None
+    run = spec.decode_result(reply.result)
+    assert run.result.status is ApprovedCheckStatus.TIMEOUT
+    assert elapsed < 16.5  # answered inside the call's own deadline
+    # With no time left past the reserve, nothing runs and the call says so.
+    starved = _call(WorkspaceOperation.RUN_APPROVED_CHECK, arguments, deadline_ms=10_000)
+    late = handler.answer(starved, workspace_handle=_HANDLE)
+    assert (late.outcome, late.reason) == ("unavailable", "deadline_exceeded")
+
+
 def test_a_check_the_repository_policy_does_not_approve_never_runs(
     repository: Path, protected: Path, tmp_path: Path
 ) -> None:

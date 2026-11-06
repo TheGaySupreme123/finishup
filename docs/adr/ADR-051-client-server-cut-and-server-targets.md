@@ -287,7 +287,12 @@ answers bounded `workspace_call`s on a connection that declared it.
   ran synchronously on the event loop — the reviewer broker's file reads, declared-test pinning,
   the observation verification steps and the post-run hash — move to a worker thread at their call
   sites, with no other behaviour change. A composition built without the hub fails a claim-bound
-  read as unavailable (`hub_unavailable`), never as a local read.
+  read as unavailable (`hub_unavailable`), never as a local read. A reviewer's agent reads and
+  its ignored-path probes keep the reviewer's own per-read budget, and a listing's probes go in
+  batches, so a remote review ends `deadline` exactly where a local one would. An approved check
+  run by the agent ends within its call's deadline less a reply reserve; the transport caps a
+  call at 300 s, so on a remote target an approval longer than about 285 s is cut there and
+  records `timeout` rather than losing its result.
 - **The client side.** A connection to a remote root sends a `ClientWorkspaceBinding` (the claim,
   and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local

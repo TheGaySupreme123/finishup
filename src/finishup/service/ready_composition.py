@@ -5189,16 +5189,32 @@ async def _reviewer_read_roots(
         )
     )
     statement = tuple(i.source_ref for i in case.items if i.section == "task_statement")
-    roots = [
-        ReadRoot(
-            "w1",
-            workspace_root,
-            excluded=protected,
-            subject_refs=evidence,
-            refuse=ignored if callable(probe) else (lambda _path: True),
-            reads=reads,
-        )
-    ]
+    if reads is not None:
+        # The agent answers the ignored-path rule in batches within the reviewer's read budget:
+        # a listing costs one round trip per batch, never one per entry (ADR-051).
+        batched = reads.refused_paths
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=lambda path: path in batched((path,)),
+                refuse_many=batched,
+                reads=reads,
+            )
+        ]
+    else:
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=ignored if callable(probe) else (lambda _path: True),
+                reads=reads,
+            )
+        ]
     # Issue #1220: the declared tests the packet lists, by ref, wherever they were declared;
     # each read is pinned to the digest the packet lists. Never FinishUP's own directories.
     pinned = tuple(

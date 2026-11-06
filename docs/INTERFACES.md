@@ -4650,7 +4650,11 @@ worker thread. Its confinement rules:
   readable.
 - `run_approved_check` runs only when the repository's own `.finishup/checks.toml` approves
   exactly the requested argv (`check_not_approved` otherwise). HOME decisions use this machine's
-  home directory, never the server's.
+  home directory, never the server's. The run ends within the call's deadline less a 15 s reserve
+  for reaping, redaction and the reply (`ApprovedCheckRunner(..., run_seconds_cap=)`), so its
+  result, a `timeout` included, reaches the server in time: the transport caps a call at 300 s,
+  so an approval longer than about 285 s is cut there and records `timeout` on a remote target.
+  With no time left past the reserve the call answers `deadline_exceeded` and nothing runs.
 - Unknown operations are refused; logs carry closed tokens only, never a path, argument or output.
 
 **Hub and routing (service side).** `service.workspace_hub.WorkspaceAgentHub(*,
@@ -4728,7 +4732,11 @@ injects. `WorkspaceRouting.compose(hub, local_capture)` gives `.change_capture`
 default), and `RoutedApprovedCheckRunner` runs approved checks. An absolute-path workspace goes to
 the unchanged local adapter; a `client:<16 hex>` handle (`client_bound(value)`) goes to the hub, and
 no local adapter is ever handed it. An agent answer that carries a change-capture reason raises the
-same `ChangeCaptureUnavailable` a local read would. The reviewer broker's file reads (and its
+same `ChangeCaptureUnavailable` a local read would. A reviewer's agent reads (`list_beneath`,
+`read_text_beneath`) and its ignored-path rule are bounded by the reviewer's own per-read budget
+(`LOCAL_READ_SECONDS` plus 1 s), so a slow agent ends the review `deadline` as a slow local read
+does; `ClientWorkspaceReads.refused_paths(paths)` answers that rule for a whole listing in
+batches of 64 (`ReadRoot.refuse_many`), and the broker checks the read's stop before probing. The reviewer broker's file reads (and its
 refusal probe), declared-test pinning, the observation verification steps and the post-run hash
 now run in `asyncio.to_thread`. `build_ready_application_factory(..., workspace_hub=)` and
 `provide_service_ready_context(..., workspace_hub=)` take the composition's one hub; without one, a

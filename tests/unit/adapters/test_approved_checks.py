@@ -157,6 +157,30 @@ def test_nonforking_timeout_is_deterministic(tmp_path: Path) -> None:
     assert elapsed < 4.0
 
 
+def test_a_run_cap_ends_a_run_before_its_approvals_own_timeout(tmp_path: Path) -> None:
+    """ADR-051: a client agent caps a run so its timeout result reaches the server in time."""
+
+    handle = open_inspect_workspace(tmp_path)
+    sleep = shutil.which("sleep") or "/bin/sleep"
+    approval = _approval((sleep, "8"), timeout_seconds=300.0)
+    runner = ApprovedCheckRunner(
+        {approval.approval_commitment: approval},
+        sandbox=_ReadyCheckSandbox(),
+        run_seconds_cap=0.3,
+    )
+    started = time.monotonic()
+    result = runner.run(
+        ApprovedCheckCommand(
+            workspace=handle, approval=approval, subject_state_digest="sha256:" + "e" * 64
+        )
+    )
+    assert result.status is ApprovedCheckStatus.TIMEOUT
+    assert time.monotonic() - started < 4.0
+    for invalid in (0.0, -1.0, 1, "1.0"):
+        with pytest.raises(ValueError, match="approved_check_run_cap_invalid"):
+            ApprovedCheckRunner(run_seconds_cap=cast(float, invalid))
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group reaping")
 def test_timeout_reaps_forked_descendant_before_result(tmp_path: Path) -> None:
     handle = open_inspect_workspace(tmp_path)

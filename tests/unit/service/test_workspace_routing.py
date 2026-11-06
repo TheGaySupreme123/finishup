@@ -193,6 +193,73 @@ def test_reviewer_reads_carry_the_handle_rooted_location_unchanged() -> None:
     assert arguments == ReadTextBeneathArguments(_HANDLE, "src/a.py", ("/srv/finishup/state",))
 
 
+def test_reviewer_reads_are_bounded_by_the_reviewers_own_read_budget() -> None:
+    """A slow agent ends a review ``deadline`` as a slow local read does, never past it."""
+
+    from finishup.application.reviewer_loop import LOCAL_READ_SECONDS
+
+    hub = _Hub(answer=None)
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
+    reads.list_beneath(_HANDLE, "", excluded=(), expired=lambda: False)
+    reads.read_text_beneath(_HANDLE, "a.py", excluded=(), expired=lambda: False)
+    reads.refused_paths(("a.py",))
+    assert [call[3] for call in hub.calls] == [LOCAL_READ_SECONDS + 1.0] * 3
+
+
+def test_a_listings_ignored_paths_are_probed_in_batches() -> None:
+    """One round trip per 64 entries, never one per listed entry (ADR-051)."""
+
+    from finishup.ports.change_capture import RequestedPathProbe
+    from finishup.ports.workspace_agent import ProbeRequestedPathsArguments
+
+    class _Probes(_Hub):
+        def call_blocking(
+            self,
+            handle: str,
+            operation: WorkspaceOperation,
+            arguments: object,
+            *,
+            timeout_seconds: float,
+        ) -> object:
+            self.calls.append((handle, operation, arguments, timeout_seconds))
+            values = cast(ProbeRequestedPathsArguments, arguments).values
+            return tuple(
+                RequestedPathProbe("inside", value, True, value.endswith(".log"))
+                for value in values
+            )
+
+    hub = _Probes()
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
+    names = tuple(f"src/f{index}.py" for index in range(127)) + ("build.log", "")
+    assert reads.refused_paths(names) == frozenset({"build.log"})
+    assert [len(cast(ProbeRequestedPathsArguments, call[2]).values) for call in hub.calls] == [
+        64,
+        64,
+    ]
+    assert all(call[1] is WorkspaceOperation.PROBE_REQUESTED_PATHS for call in hub.calls)
+    assert reads.refused_paths(("",)) == frozenset() and len(hub.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "refused"),
+    (
+        (WorkspaceAgentUnavailable("agent_unavailable", "not_git"), True),
+        (WorkspaceAgentUnavailable("agent_refused", "workspace_not_claimed"), True),
+        (ChangeCaptureUnavailable("not_git"), True),
+        (WorkspaceAgentUnavailable("agent_disconnected"), None),
+    ),
+)
+def test_an_unanswered_ignore_probe_refuses_the_batch_and_a_lost_agent_raises(
+    error: Exception, refused: bool | None
+) -> None:
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, _Hub(error=error)), _HANDLE)
+    if refused is None:
+        with pytest.raises(WorkspaceAgentUnavailable):
+            reads.refused_paths(("a.py", "b.py"))
+    else:
+        assert reads.refused_paths(("a.py", "b.py")) == frozenset({"a.py", "b.py"})
+
+
 def test_only_a_claim_handle_routes_to_the_agent() -> None:
     routing = WorkspaceRouting.compose(None, cast(Any, _Local()))
     assert routing.reads_for("/work/repo") is None
