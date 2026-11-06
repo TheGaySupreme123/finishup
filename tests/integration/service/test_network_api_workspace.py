@@ -62,6 +62,7 @@ from finishup.ports.control import (
     WorkspaceReply,
 )
 from finishup.ports.runtime import RouteAccess, RouteCommand, RuntimeCapability
+from finishup.ports.workspace_agent import ReadTextBeneathArguments, WorkspaceOperation
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -84,6 +85,7 @@ from integration.service.test_claim_bound_observation import (  # noqa: F401 - f
 from integration.service.test_claim_bound_sessions import (  # noqa: F401 - fixtures
     _COMMON,  # pyright: ignore[reportPrivateUsage]
     _frontier,  # pyright: ignore[reportPrivateUsage]
+    _git,  # pyright: ignore[reportPrivateUsage]
     _publish_batches,  # pyright: ignore[reportPrivateUsage]
     _repository,  # pyright: ignore[reportPrivateUsage]
     _reviewed_repository,  # pyright: ignore[reportPrivateUsage]
@@ -341,6 +343,24 @@ async def _status(client: RestServiceClient, started: Any, view: str = "compact"
     return status
 
 
+async def _task_base_ref(service: _Service, started: Any) -> Any:  # noqa: F811, ANN401
+    """The task's recorded change-base reference, or None when its base could not be read."""
+
+    application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+    runtime = await application.runtime.route(
+        RouteCommand(
+            started.session_id,
+            started.writer_id,
+            RouteAccess.WRITE,
+            frozenset({RuntimeCapability.WRITE, RuntimeCapability.PAYLOAD_READ}),
+        )
+    )
+    try:
+        return await runtime.ledger.load_task_change_base()
+    finally:
+        await application.runtime.release(runtime)
+
+
 async def _task_base_commit(service: _Service, started: Any) -> str:  # noqa: F811, ANN401
     application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
     runtime = await application.runtime.route(
@@ -506,6 +526,149 @@ async def test_a_start_naming_a_path_is_never_sent_to_a_remote_server(
     finally:
         await client.close()
     remote.assert_no_path_sent(path)
+
+
+# --- linked worktrees: one repository, one target, one handle and one agent per worktree --------
+
+
+async def _published_and_checked(client: RestServiceClient, started: Any) -> Any:  # noqa: ANN401
+    frontier = started.frontier
+    for request_id, drafts in _publish_batches():
+        published = (
+            await client.publish_work(
+                PublishWorkRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": request_id,
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "expected_frontier": _frontier(frontier),
+                        "event_drafts": drafts,
+                    }
+                )
+            )
+        ).root
+        assert published.ok is True, published
+        frontier = published.result_frontier
+    checked: Any = (
+        await client.check(
+            CheckRequest.model_validate(
+                {
+                    **_COMMON,
+                    "request_id": new_id(IdKind.REQUEST),
+                    "session_id": started.session_id,
+                    "writer_id": started.writer_id,
+                    "expected_frontier": _frontier(frontier),
+                    "mode": "deterministic_only",
+                    "max_findings": "3",
+                }
+            )
+        )
+    ).root
+    assert checked.ok is True, checked
+    assert not any("workspace_agent" in gap for gap in checked.coverage.known_gaps), (
+        checked.coverage.known_gaps
+    )
+    return checked
+
+
+async def test_linked_worktrees_on_one_target_each_get_their_own_handle_agent_and_evidence(
+    tmp_path: Path,
+    spy: _Spy,  # noqa: F811
+    service: _Service,  # noqa: F811
+    remote: _Remote,
+    network: NetworkApiServer,
+) -> None:
+    """Two linked worktrees of one repository, one remote target, the daemon's own API.
+
+    Both worktrees claim the same repository, so their tasks share its commitment (privacy
+    authority and consent scope); each claim also carries its own worktree digest in the
+    ``X-FinishUP-Workspace-Claim`` header, so the service derives one handle per worktree, the one
+    pull agent registers each worktree under its own handle, and every workspace call for a task
+    is answered from that task's own worktree alone.
+
+    The main checkout's task base is its HEAD. The linked worktree's base is that worktree's own
+    answer: the local Git capture refuses a checkout whose ``.git`` is a file (``unsafe_root``),
+    on one computer exactly as here, so its task records the gap and never the main HEAD.
+    """
+
+    del network
+    main = tmp_path / "client" / "repo"
+    main_head = _repository(main, "app.py", "print('main')\n")
+    linked = tmp_path / "client" / "feature"
+    _git(main, "worktree", "add", "-q", "-b", "feature", str(linked))
+    (linked / "feature.py").write_text("print('feature')\n")
+    _git(linked, "add", "feature.py")
+    _git(linked, "commit", "-q", "-m", "feature")
+    assert _git(linked, "rev-parse", "HEAD") != main_head
+    (main / "app.py").write_text("print('main, edited')\n")
+    (linked / "feature.py").write_text("print('feature, edited')\n")
+    main_path, linked_path = str(main.resolve()), str(linked.resolve())
+    remote.start_agent()
+    main_client = await _connect(main_path, ControlClientKind.MCP_BRIDGE)
+    linked_client = await _connect(linked_path, ControlClientKind.MCP_BRIDGE)
+    try:
+        main_handle = main_client.workspace_handle
+        linked_handle = linked_client.workspace_handle
+        assert main_handle is not None and linked_handle is not None
+        assert main_handle != linked_handle
+        main_started = await _started(main_client, main_path, service.hub)
+        linked_started = await _started(linked_client, linked_path, service.hub)
+        main_agent, linked_agent = remote.agents[main_path], remote.agents[linked_path]
+        # Each task's base was asked of its own worktree's agent, once.
+        assert main_agent.operations.count("read_task_base") == 1, main_agent.operations
+        assert linked_agent.operations.count("read_task_base") == 1, linked_agent.operations
+        assert await _task_base_commit(service, main_started) == main_head
+        assert await _task_base_ref(service, linked_started) is None
+
+        # A reviewer's read of one task's file is answered from that task's worktree.
+        async def read(handle: str, relative: str) -> bytes | None:
+            answer = await service.hub.call(
+                handle,
+                WorkspaceOperation.READ_TEXT_BENEATH,
+                ReadTextBeneathArguments(handle, relative),
+                timeout_seconds=_DEADLINE_SECONDS,
+            )
+            return None if answer is None else cast(tuple[bytes, int], answer)[0]
+
+        assert await read(main_handle, "app.py") == b"print('main, edited')\n"
+        assert await read(linked_handle, "app.py") == b"print('main')\n"
+        assert await read(linked_handle, "feature.py") == b"print('feature, edited')\n"
+        assert not await read(main_handle, "feature.py")
+
+        # A check's workspace calls go to its own worktree's agent and to no other.
+        main_count, linked_count = len(main_agent.operations), len(linked_agent.operations)
+        await _published_and_checked(main_client, main_started)
+        assert "capture_metadata" in main_agent.operations[main_count:], main_agent.operations
+        assert len(linked_agent.operations) == linked_count, linked_agent.operations
+        main_count = len(main_agent.operations)
+        await _published_and_checked(linked_client, linked_started)
+        assert len(linked_agent.operations) > linked_count, linked_agent.operations
+        assert len(main_agent.operations) == main_count, main_agent.operations
+
+        # One repository: both tasks share its commitment.
+        application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+        routes = [
+            await application.start_catalog.task_route(main_started.task_id),
+            await application.start_catalog.task_route(linked_started.task_id),
+        ]
+        commitments = {route.repository_privacy_commitment for route in routes}
+        assert len(commitments) == 1 and None not in commitments
+        # The claim header carried two digests and never a path; one repository digest, two
+        # worktree digests. The server's own readers saw neither worktree.
+        claims = {
+            line.split(b": ", 1)[1]
+            for item in remote.sent
+            for line in item.split(b"\n")
+            if line.lower().startswith(b"x-finishup-workspace-claim: ")
+        }
+        assert len(claims) == 2, claims
+        assert len({claim.rsplit(b":sha256:", 1)[0] for claim in claims}) == 1
+        remote.assert_no_path_sent(main_path, linked_path)
+        assert spy.workspaces == []
+    finally:
+        await main_client.close()
+        await linked_client.close()
 
 
 # --- AI-powered review: the reviewer's reads go to the REST agent, and its loss is typed ------

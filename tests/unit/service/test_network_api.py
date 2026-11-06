@@ -425,6 +425,9 @@ async def test_agent_routes_carry_calls_and_replies_through_the_hub(keys: ApiKey
         assert service.active == 1  # a registered agent holds idle shutdown like a connection
         (channel,) = hub.channels
         assert channel.handle == registration.workspace_handle
+        # The hub learns the claim's worktree digest, so it never admits another worktree's agent
+        # under this handle.
+        assert channel.worktree == claim("w").worktree
         call = asyncio.create_task(hub.call(channel.handle, "inspect", {"x": 1}))
         work = await client.get(
             f"/v1/agents/{registration.agent_id}/work?wait_ms=2000", headers=_bearer(token)

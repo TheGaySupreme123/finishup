@@ -149,14 +149,32 @@ def test_api_key_tokens_have_one_spelling() -> None:
 
 def test_claim_headers_round_trip_and_refuse_paths() -> None:
     workspace = claim("x")
-    assert parse_claim_header(encode_claim_header(workspace)) == workspace
-    for raw in ("/home/me/repo", "git_common_root:" + "0" * 64, "repo:sha256:" + "0" * 64):
+    header = encode_claim_header(workspace)
+    assert header == f"git_common_root:{workspace.digest}:{workspace.worktree}"
+    assert parse_claim_header(header) == workspace
+    digest = "sha256:" + "0" * 64
+    for raw in (
+        "/home/me/repo",
+        "git_common_root:" + "0" * 64,
+        "repo:sha256:" + "0" * 64,
+        # A claim without its worktree digest (the first 2.10.0 cut) names no one worktree.
+        "git_common_root:" + digest,
+        f"git_common_root:{digest}:{digest}:{digest}",
+        f"git_common_root:{digest}:/home/me/repo",
+    ):
         with pytest.raises(ValueError):
             parse_claim_header(raw)
     first = claim_principal_digest(workspace, "p_" + "1" * 16)
     assert first == claim_principal_digest(workspace, "p_" + "1" * 16)
     assert first != claim_principal_digest(workspace, "p_" + "2" * 16)
     assert first.identity_kind == workspace.identity_kind and first.digest != workspace.digest
+    # Only the repository digest is keyed by the principal; the worktree digest is kept, so two
+    # worktrees of one repository stay apart under one principal and alike across its keys.
+    assert first.worktree == workspace.worktree
+    sibling = claim("x", worktree="feature")
+    keyed = claim_principal_digest(sibling, "p_" + "1" * 16)
+    assert (keyed.digest, keyed.worktree) == (first.digest, sibling.worktree)
+    assert keyed.worktree != first.worktree
 
 
 def test_documents_round_trip_strictly() -> None:

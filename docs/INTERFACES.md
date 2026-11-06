@@ -5013,7 +5013,9 @@ configuration cannot be read; `server add` then refuses with `remote_incompatibl
 `yoetz/repository-claim/v1`, applied after the principal keying) and
 `agent_hub=ServiceComposition.workspace_hub`, the same hub claim-bound socket connections and the
 ready application's workspace routing use. A `POST /v1/agents` registration is one
-`WorkspaceAgentHub.register` channel whose writer queues calls for the agent's next poll.
+`WorkspaceAgentHub.register(..., worktree=<the claim's worktree digest>)` channel whose writer
+queues calls for the agent's next poll; each linked worktree of one repository registers under its
+own handle, and the hub never admits another worktree's agent under a live one.
 
 **Client.** `connect_service` and `connect_service_on_demand` return
 `client.rest_client.RestServiceClient` (a `ServiceClient` subclass with the same methods and

@@ -603,8 +603,10 @@ SSH (owner-equivalent, no key)
   the agent id and the `client:` handle; `GET /v1/agents/{id}/work` long-polls queued
   `workspace_call` frames; `POST /v1/agents/{id}/replies` delivers one `workspace_reply`;
   `DELETE /v1/agents/{id}` ends it. Each registration is one in-process channel of the workspace hub
-  whose writer queues calls for the next poll. A lease of 60 seconds without a poll, or a revoked or
-  expired key, ends the agent and fails its pending calls typed.
+  whose writer queues calls for the next poll, registered with the claim's worktree digest, so one
+  agent process serves each linked worktree under that worktree's own handle. A lease of 60
+  seconds without a poll, or a revoked or expired key, ends the agent and fails its pending calls
+  typed.
 - Refusals: `rest-error` reasons (`api_key_invalid|revoked|expired`, `origin_forbidden`,
   `header_invalid`, `frame_invalid`, `frame_too_large`, `route_unknown`, `operation_unknown`,
   `agent_unknown`, `method_not_allowed`, `operation_limit`, `agent_limit`,
@@ -746,9 +748,11 @@ stack the service cannot drive fails the start with `network_listener_unavailabl
   the client-attested lines (with a decoy repository at the claimed path on the server's own
   filesystem, whose commit is never the recorded task base), the reviewer's `read_file`, the agent lost mid-review (typed
   `workspace_agent_unavailable`), a hook row attested and verified through the agent, background
-  delivery, and the server lost (`remote_unreachable`, never a local service). Spies show the
-  server's own readers never see the workspace, and a recording transport shows no request
-  carried the repository's path.
+  delivery, and the server lost (`remote_unreachable`, never a local service). Two real linked
+  worktrees of one repository on one target get two handles under one repository commitment, and
+  every workspace call for each task (its base, its check, a reviewer's read) is answered by its
+  own worktree's registration alone. Spies show the server's own readers never see the workspace,
+  and a recording transport shows no request carried the repository's path.
 - *Limits.* The MCP bridge's availability latch has no service stamp to watch on a remote root; a
   retryable remote phase clears through its quiet handshake as locally, and a non-retryable one
   (`remote_auth_failed`, `remote_identity_changed`, `remote_incompatible`) stays latched for new
