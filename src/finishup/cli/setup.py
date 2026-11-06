@@ -95,6 +95,7 @@ from finishup.protocol.ids import IdKind, new_id
 
 if TYPE_CHECKING:
     from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli.policy_server import PendingProposal, PolicyServer
 
 __all__ = [
     "SETUP_MARKER_SCHEMA",
@@ -3147,26 +3148,49 @@ def _semantic_openai_extra_state() -> str:
     return "present (importable; wire dispatch not demonstrated)"
 
 
-def _policy_server_suffix() -> str:
+def _setup_policy_server() -> PolicyServer | None:
+    """The remote server whose policy this setup run's privacy step changes (ADR-051 decision 8).
+
+    Read once, before the provider and privacy steps, and kept for the summary: the owner may
+    switch servers during the privacy step (the zero-network choice offers it), and the change
+    stays that server's. ``None`` for this computer's everyday FinishUP.
+    """
+
+    from finishup.cli.policy_server import selected_policy_server
+
+    return selected_policy_server()
+
+
+def _policy_server_suffix(policy_server: PolicyServer | None) -> str:
     """Names the remote server whose policy the privacy step changes (ADR-051 decision 8).
 
     Empty for this computer's everyday FinishUP: the summary's privacy line keeps its text.
     """
 
-    from finishup.cli.policy_server import selected_policy_server
-
-    server = selected_policy_server()
-    return "" if server is None else server.summary_suffix()
+    return "" if policy_server is None else policy_server.summary_suffix()
 
 
-def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
+def _pending_proposal(result: object) -> PendingProposal | None:
+    """The proposal a privacy step left waiting on a remote server's host, or ``None``."""
+
+    from finishup.cli.command_scope import REQUIRES_SERVER_HOST
+    from finishup.cli.policy_server import PendingProposal
+
+    if getattr(result, "reason", None) != REQUIRES_SERVER_HOST:
+        return None
+    return PendingProposal.from_report(result)
+
+
+def _emit_provider_setup_layer_report(
+    *, privacy_outcome: str, policy_server: PolicyServer | None = None
+) -> None:
     """Honestly separate binding/credential storage from undemonstrated runtime layers."""
 
     typer.echo("Provider binding and vault credential storage succeeded; that layer is supported.")
     typer.echo("Other layers (ready vs not demonstrated by this path):")
     typer.echo(f"  SDK extra (semantic-openai): {_semantic_openai_extra_state()}")
     typer.echo("  Reviewer configuration: reloaded; live AI-powered review not demonstrated")
-    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
+    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix(policy_server)}")
     typer.echo("  Transport probe: not demonstrated")
     typer.echo("  Installed artifact evidence: not demonstrated")
     typer.echo(
@@ -3175,18 +3199,35 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
 
 
 def _emit_privacy_incomplete(
-    *, reason: object, privacy_outcome: str, api_key_unstored: bool
+    *,
+    reason: object,
+    privacy_outcome: str,
+    api_key_unstored: bool,
+    policy_server: PolicyServer | None = None,
+    pending: PendingProposal | None = None,
 ) -> None:
-    """Name a declined or failed privacy step after the provider binding, and what is left."""
+    """Name a declined or failed privacy step after the provider binding, and what is left.
+
+    On a remote server ``finishup --privacy`` and ``finishup --set`` run only on its host, so
+    the next steps name that server's continuation instead: a proposal left waiting there is
+    decided there with its id before it expires, or setup runs here again (ADR-051 decision 8).
+    """
 
     typer.echo(f"Reason: {_privacy_block_reason(reason)}")
-    typer.echo(f"Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
-    typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
+    typer.echo(f"Privacy policy: {privacy_outcome}{_policy_server_suffix(policy_server)}")
+    if policy_server is None:
+        typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
+        if api_key_unstored:
+            typer.echo(_NEXT_CREDENTIAL_AFTER_PRIVACY)
+        return
+    typer.echo(f"Next: {policy_server.privacy_next_step(pending)}; the provider binding is kept.")
     if api_key_unstored:
-        typer.echo(_NEXT_CREDENTIAL_AFTER_PRIVACY)
+        typer.echo(policy_server.credential_next_step())
 
 
-def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
+def _emit_codex_subscription_layer_report(
+    *, privacy_outcome: str, policy_server: PolicyServer | None = None
+) -> None:
     """The Codex-subscription route's own layers: no API key and no vault credential exist."""
 
     typer.echo(
@@ -3194,7 +3235,7 @@ def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
         "evaluator home; FinishUP never reads it."
     )
     typer.echo("Other layers (ready vs not demonstrated by this path):")
-    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
+    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix(policy_server)}")
     typer.echo("  Live AI-powered review: not demonstrated")
     typer.echo("The binding and the sign-in are not proof that an AI-powered review ran.")
 
@@ -3374,9 +3415,13 @@ async def run_provider_setup(
     # The disclosure policy this run chose: ``failed`` when the privacy step raised, and
     # ``not_attempted`` only when the provider step stopped before reaching it.
     privacy_outcome = "not_attempted"
+    # ADR-051 decision 8: the remote server whose policy the privacy step changes, read before it
+    # runs, and the proposal it left waiting on that server's host.
+    policy_server = _setup_policy_server()
+    privacy_pending: PendingProposal | None = None
 
     async def authorize_provider_channel(api_key: bool | None = None) -> str | None:
-        nonlocal privacy_outcome
+        nonlocal privacy_outcome, privacy_pending
         from finishup.cli.privacy_setup import adds_ai_review, run_privacy_setup
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
@@ -3418,6 +3463,7 @@ async def run_provider_setup(
             return _privacy_block_reason(getattr(error, "reason", None))
         outcome = getattr(privacy_result, "outcome", "failed")
         privacy_outcome = outcome if type(outcome) is str else "failed"
+        privacy_pending = _pending_proposal(privacy_result)
         if privacy_outcome in _PRIVACY_READY:
             return None
         return _privacy_block_reason(getattr(privacy_result, "reason", None))
@@ -3477,6 +3523,8 @@ async def run_provider_setup(
                 privacy_outcome=privacy_outcome,
                 api_key_unstored=credential != "external_runtime_oauth"
                 and not _provider_credential_ready(provider_report),
+                policy_server=policy_server,
+                pending=privacy_pending,
             )
             return 20
         reason = provider_report.get("credential_reason")
@@ -3503,9 +3551,13 @@ async def run_provider_setup(
             )
             return 20
     if credential == "external_runtime_oauth":
-        _emit_codex_subscription_layer_report(privacy_outcome=privacy_outcome)
+        _emit_codex_subscription_layer_report(
+            privacy_outcome=privacy_outcome, policy_server=policy_server
+        )
     else:
-        _emit_provider_setup_layer_report(privacy_outcome=privacy_outcome)
+        _emit_provider_setup_layer_report(
+            privacy_outcome=privacy_outcome, policy_server=policy_server
+        )
     typer.echo(
         "AI-powered review configuration changed: start a fresh agent session so it uses it."
     )
@@ -4006,10 +4058,14 @@ async def _run_setup_wizard(
         "reason": None,
     }
     semantic_status: dict[str, JsonValue] | None = None
+    # ADR-051 decision 8: the remote server whose policy the privacy step changes, read before it
+    # runs and kept for the summary, and the proposal the step left waiting on that server's host.
+    policy_server = _setup_policy_server()
+    privacy_pending: PendingProposal | None = None
     if interactive and review_mode == "semantic":
 
         async def authorize_provider_channel(api_key: bool | None = None) -> str | None:
-            nonlocal privacy
+            nonlocal privacy, privacy_pending
             from finishup.cli.privacy_setup import run_privacy_setup
             from finishup.cli.unlock import HumanCeremonyCliError
             from finishup.ports.control import ControlError
@@ -4068,6 +4124,7 @@ async def _run_setup_wizard(
                 "migration_state": getattr(privacy_result, "migration_state", None),
                 "reason": privacy_result.reason,
             }
+            privacy_pending = _pending_proposal(privacy_result)
             if privacy_result.outcome in {"configured", "unchanged"}:
                 return None
             return _privacy_block_reason(privacy_result.reason)
@@ -4134,6 +4191,7 @@ async def _run_setup_wizard(
                     "migration_state": getattr(privacy_result, "migration_state", None),
                     "reason": privacy_result.reason,
                 }
+                privacy_pending = _pending_proposal(privacy_result)
             except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
                 privacy = {
                     "outcome": "failed",
@@ -4225,6 +4283,11 @@ async def _run_setup_wizard(
         # The closing block names the privacy step and, when no API key was stored, the
         # credential step, in that order; the summary list leaves them out so each prints once.
         next_steps = [step for step in next_steps if step not in {_NEXT_PRIVACY, _NEXT_CREDENTIAL}]
+    if policy_server is not None:
+        # 'finishup --privacy' runs only on a remote server's host (ADR-051 decision 8): name
+        # that server's continuation instead, with a waiting proposal's id and expiry.
+        remote_privacy_step = policy_server.privacy_next_step(privacy_pending)
+        next_steps = [remote_privacy_step if step == _NEXT_PRIVACY else step for step in next_steps]
     setup_complete = (
         not interactive
         or (review_mode == "local_only" and privacy.get("outcome") in {"configured", "unchanged"})
@@ -4318,7 +4381,7 @@ async def _run_setup_wizard(
         "review_mode": review_mode,
     }
     if interactive:
-        _emit_human_report(report)
+        _emit_human_report(report, policy_server=policy_server)
         if privacy_incomplete:
             typer.echo("")
             _emit_privacy_incomplete(
@@ -4326,6 +4389,8 @@ async def _run_setup_wizard(
                 privacy_outcome=str(privacy.get("outcome")),
                 api_key_unstored=provider.get("credential") != "external_runtime_oauth"
                 and not _provider_credential_ready(provider),
+                policy_server=policy_server,
+                pending=privacy_pending,
             )
             return 20
         if (
@@ -4334,13 +4399,19 @@ async def _run_setup_wizard(
             and privacy.get("outcome") in _PRIVACY_READY
         ):
             typer.echo("")
-            _emit_codex_subscription_layer_report(privacy_outcome=str(privacy.get("outcome")))
+            _emit_codex_subscription_layer_report(
+                privacy_outcome=str(privacy.get("outcome")), policy_server=policy_server
+            )
     else:
         _emit(report, json_output=json_output)
     return 0
 
 
-def _emit_human_report(report: dict[str, JsonValue]) -> None:
+def _emit_human_report(
+    report: dict[str, JsonValue], *, policy_server: PolicyServer | None = None
+) -> None:
+    """The setup summary; ``policy_server`` is the remote server the privacy step changed."""
+
     registration = report["registration"]
     service = report["service"]
     provider = report["provider"]
@@ -4490,7 +4561,7 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
             line += f"; repository grant: {grant_state}"
         if privacy.get("reason"):
             line += f"; reason: {privacy.get('reason')}"
-        typer.echo(line + _policy_server_suffix())
+        typer.echo(line + _policy_server_suffix(policy_server))
     steps = report["next_steps"]
     if isinstance(steps, list) and steps:
         typer.echo("Next steps:")
