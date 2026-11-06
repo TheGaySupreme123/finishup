@@ -1313,12 +1313,17 @@ class ServiceClient(ControlClientPort):
                 work.set_result(encoded)
 
         def run() -> None:
-            encoded = answer()
+            # ``_answer_in_worker`` answers every exception itself; anything that escapes it still
+            # frees the slot with a closed failure.
+            encoded = _encoded_workspace_reply(call.call_id, "internal_error")
             try:
-                loop.call_soon_threadsafe(deliver, encoded)
-            except RuntimeError:
-                # The loop already closed: the connection, and its answer, are gone.
-                return
+                encoded = answer()
+            finally:
+                try:
+                    loop.call_soon_threadsafe(deliver, encoded)
+                except RuntimeError:
+                    # The loop already closed: the connection, and its answer, are gone.
+                    pass
 
         self._agent_busy += 1
         work.add_done_callback(self._release_workspace_slot)
