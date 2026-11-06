@@ -436,7 +436,19 @@ answers bounded `workspace_call`s on a connection that declared it.
     child attached by its attach handle — opens with that connection's handle too, recorded in the
     opening event only, never in the request's identity) with a "Workspace evidence" section:
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
-    client_claim).` The stored receipt document and JSON receipts are unchanged.
+    client_claim).` The stored receipt document and JSON receipts are unchanged. The service
+    finds the opening event by its schema name and reads it before the receipt stages or appends
+    anything, so a read it cannot finish refuses the receipt with no write and the section is
+    never dropped: a read that fails, or an opening event whose envelope says `present` but that
+    comes back without its payload (a recovering ledger keeps a payload object it could not read
+    that way), is a retryable `STORAGE_UNSAFE`, and a malformed record is `STORAGE_CORRUPT`. An
+    opening event that is redacted, whose key is unavailable, or whose version the service
+    cannot read cannot say whether the task is claim-bound, and no retry changes that. Refusing
+    every receipt of such a task for good would be a one-way door, so the receipt is built and
+    its "Workspace evidence" section holds one fixed line instead: "Where this task's workspace
+    evidence was read is unknown: the record that opened its session is redacted or unreadable
+    here, so this receipt cannot say whether the server read the repository itself or a client's
+    workspace agent attested it."
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
