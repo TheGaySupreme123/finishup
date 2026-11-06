@@ -2831,31 +2831,82 @@ async def test_a_soft_lock_reready_runs_outside_the_triggering_calls_context(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["unlock", "activation"])
+@pytest.mark.parametrize("hello", ["past_its_deadline", "waiting"])
 async def test_shutdown_cancels_and_awaits_an_inflight_soft_lock_reready(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, hello: str
 ) -> None:
-    application = _Application()
-    vault = _GatedKeyedPassphraseVault()
-    secret = b"correct horse battery staple!!"
-    vault.expect_secret(secret)
-    _patch_auto_unlock_store(monkeypatch, secret)
-
-    async def factory(service_generation: int, vault_generation: int) -> _Application:
-        del service_generation, vault_generation
-        return application
-
-    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    # The attempt never finishes on its own; shutdown must not wait on it. A hello still waiting
+    # on it is answered without a context rather than failing with the shutdown's cancel.
+    daemon, vault, application, reached, _activation_gate = _gated_soft_lock_daemon(
+        tmp_path, monkeypatch, phase
+    )
     await daemon.start()
     daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
-    await _hello_past_its_deadline(daemon, vault.entered)
+    waiting: asyncio.Future[RepositoryPrivacyContext | None] | None = None
+    if hello == "past_its_deadline":
+        await _hello_past_its_deadline(daemon, reached)
+    else:
+        waiting = asyncio.ensure_future(
+            daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        )
+        async with asyncio.timeout(_WAIT_SECONDS):
+            await reached.wait()
 
-    # The unlock never finishes on its own; shutdown must not wait on it.
     async with asyncio.timeout(_WAIT_SECONDS):
         await daemon.close()
+        if waiting is not None:
+            assert await waiting is None
     assert vault.ready is False
-    assert vault.unlock_count == 0
+    assert vault.unlock_count == (0 if phase == "unlock" else 1)
     assert application.close_count == 0
+    assert daemon.status().state is ServiceState.DRAINING
     assert daemon.status().state_reason == "shutdown_requested"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["unlock", "activation"])
+async def test_a_cancelled_control_call_never_strands_the_soft_lock_reready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    # The control call and the re-ready it started shared one task, so cancelling the call
+    # cancelled the attempt. The attempt is the service's own: it runs on to READY by itself.
+    daemon, vault, application, reached, activation_gate = _gated_soft_lock_daemon(
+        tmp_path, monkeypatch, phase
+    )
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+    call = asyncio.ensure_future(
+        daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(daemon, ControlMethod.START, _start_body()),
+        )
+    )
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await reached.wait()
+
+    call.cancel()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        cancelled = await call
+    assert cancelled.outcome == "error"
+    assert isinstance(cancelled.body, ControlError)
+    assert cancelled.body.reason == "request_cancelled"
+
+    vault.gate.set()
+    activation_gate.set()
+    async with asyncio.timeout(_WAIT_SECONDS):
+        while daemon.status().state is not ServiceState.READY:
+            await asyncio.sleep(0)
+    assert daemon.status().state_reason == "none"
+    async with asyncio.timeout(_WAIT_SECONDS):
+        result = await daemon.dispatch(
+            ControlClientKind.MCP_BRIDGE,
+            _request(daemon, ControlMethod.START, _start_body()),
+        )
+    assert result.outcome == "ok"
+    assert vault.unlock_count == 1
+    assert application.start_calls == 1
+    await daemon.close()
 
 
 @pytest.mark.anyio
