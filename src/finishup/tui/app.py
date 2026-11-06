@@ -876,7 +876,9 @@ class FinishUpTui(App[int]):
             return False
         except RuntimeError_ as error:
             self._report(error)
+            self._say_policy_server(None)
             return False
+        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.UNPROVEN,
@@ -885,6 +887,19 @@ class FinishUpTui(App[int]):
             )
 
         return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
+
+    def _say_policy_server(self, report: object | None) -> None:
+        """Name the remote server whose privacy policy the questionnaire changed (ADR-051).
+
+        With a server on another machine, a port or the web selected, the questionnaire changes
+        that server's policy, not this computer's (decision 8). It said so on the handed-over
+        terminal; this says it again here, by generated id and closed kind only. ``report`` is
+        ``None`` when the questionnaire raised. Nothing is said for this computer's server.
+        """
+
+        line = self.runtime.policy_server_line(report)
+        if line is not None:
+            self.say(Level.ACTIVE, "Privacy policy of the selected FinishUP server", (line,))
 
     async def _choose_harnesses(
         self,
@@ -2218,7 +2233,9 @@ class FinishUpTui(App[int]):
                 "Privacy setup did not complete",
                 (f"Reason: {error.reason}",),
             )
+            self._say_policy_server(None)
             return
+        self._say_policy_server(report)
         outcome = getattr(report, "outcome", "failed")
         if outcome in {"configured", "unchanged"}:
             await self._refresh_header()
@@ -2449,6 +2466,7 @@ class FinishUpTui(App[int]):
         except (SuspendNotSupported, RuntimeError_) as error:
             if isinstance(error, RuntimeError_):
                 self._report(error)
+                self._say_policy_server(None)
             else:
                 self.say(
                     Level.UNPROVEN,
@@ -2456,6 +2474,7 @@ class FinishUpTui(App[int]):
                     ("Run 'finishup privacy setup' from your shell.",),
                 )
             return
+        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.BLOCKED,
@@ -2844,7 +2863,9 @@ class FinishUpTui(App[int]):
             return
         except RuntimeError_ as error:
             self._report(error)
+            self._say_policy_server(None)
             return
+        self._say_policy_server(report)
         if getattr(report, "outcome", "failed") not in {"configured", "unchanged"}:
             self.say(
                 Level.BLOCKED,

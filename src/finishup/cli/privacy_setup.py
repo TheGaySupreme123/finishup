@@ -1772,6 +1772,55 @@ async def run_privacy_setup(
             "unknown",
             reason="local_terminal_required",
         )
+    from finishup.cli.policy_server import selected_policy_server
+
+    # ADR-051 decision 8: with a remote server selected this is that server's policy; it is named
+    # before anything is read or sent and again in the result.
+    server = selected_policy_server()
+    if server is not None:
+        typer.echo(server.before_line())
+    try:
+        report = await _privacy_setup_questionnaire(
+            recipe_hint=recipe_hint,
+            offer_recommended=offer_recommended,
+            credential_probe_authorized=credential_probe_authorized,
+            update_checks_override=update_checks_override,
+            workspace_locator=workspace_locator,
+            credential_heuristic=credential_heuristic,
+            conversation_review=conversation_review,
+            ai_review_add_on=ai_review_add_on,
+            ai_review_add_on_when_hybrid=ai_review_add_on_when_hybrid,
+            decide_here=server is None,
+        )
+    except BaseException:
+        if server is not None:
+            typer.echo(server.unconfirmed_line())
+        raise
+    if server is not None:
+        typer.echo(server.report_line(report.outcome, report.reason))
+    return report
+
+
+async def _privacy_setup_questionnaire(
+    *,
+    recipe_hint: PrivacyRecipe | None,
+    offer_recommended: bool,
+    credential_probe_authorized: bool,
+    update_checks_override: bool | None,
+    workspace_locator: Path | None,
+    credential_heuristic: CredentialHeuristic | None,
+    conversation_review: ConversationReview | None,
+    ai_review_add_on: bool,
+    ai_review_add_on_when_hybrid: bool,
+    decide_here: bool,
+) -> PrivacySetupReport:
+    """``run_privacy_setup`` on an interactive terminal.
+
+    ``decide_here`` is False on a remote server: its trusted decision runs only on its own host
+    (ADR-051 decisions 7 and 11), so a widening's proposal is left waiting there and reported
+    with ``requires_server_host`` instead of opening a ceremony this computer cannot reach.
+    """
+
     locator = Path.cwd() if workspace_locator is None else workspace_locator
     snapshot = await get_privacy_setup_snapshot(locator)
     current = snapshot.composed_policy
@@ -1835,6 +1884,17 @@ async def run_privacy_setup(
             candidate.profile.value,
             grant_state="granted",
             migration_state=snapshot.migration_state,
+        )
+    if not decide_here:
+        from finishup.cli.command_scope import REQUIRES_SERVER_HOST
+
+        return PrivacySetupReport(
+            "cancelled",
+            current.profile.value,
+            proposal_id,
+            REQUIRES_SERVER_HOST,
+            snapshot.grant_state,
+            snapshot.migration_state,
         )
     typer.echo("")
     typer.echo("Final widening decision (trusted local ceremony)")
