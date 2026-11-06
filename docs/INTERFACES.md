@@ -5047,7 +5047,9 @@ or that the gateway answered itself, is answered `202` and dropped (the result i
 that arrived before its call is held (at most 32 per session, 60 seconds) and sent right after it.
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
-expires after 120 seconds idle, and one key holds at most 64 sessions. A session whose hello
+expires after 120 seconds idle, and one key holds at most 64 sessions. An open whose hello the
+daemon has not answered within 5 seconds (`HELLO_RESULT_SECONDS`) is refused with `503`
+`service_unavailable`; its upstream is closed and the key's place given back. A session whose hello
 declared `workspace_agent` also ends once no `GET …/frames` long-poll has begun for 40 seconds
 (`AGENT_POLL_GRACE_SECONDS`, the 25-second wait plus a margin), so a client that died without
 `DELETE` stops being the agent the daemon routes workspace calls to. The gateway starts an
