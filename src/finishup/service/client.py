@@ -72,6 +72,8 @@ from finishup.ports.control import (
     ProjectionRenderMode,
     ServiceStatus,
     ServiceStopResult,
+    WorkspaceAgentDeclaration,
+    WorkspaceClaim,
     WorkspaceLocator,
 )
 from finishup.ports.privacy import (
@@ -1679,6 +1681,52 @@ def _remote_target_root() -> Path | None:
     return root if record is not None and record.is_remote else None
 
 
+def _remote_workspace_binding(
+    workspace_locator: WorkspaceLocator | None,
+) -> tuple[WorkspaceClaim | None, WorkspaceAgentDeclaration | None]:
+    """The claim (and agent offer) a remote root's hello carries instead of a path.
+
+    Integration point — wired after split/client and split/server merge: split/client computes
+    the claim from ``workspace_locator`` with the target's ``claim_salt``
+    (``finishup.client.workspace_claim``) and, for a connection constructed with a workspace
+    agent, its ``workspace_agent`` declaration. Until then a remote hello names no workspace: a
+    path on this machine is never sent to a server on another one (the connector also refuses a
+    hello that carries one).
+    """
+
+    del workspace_locator
+    return None, None
+
+
+# A remote phase whose repair is not a retry of the same connection: a key, a host identity or
+# a release has to change first.
+_REMOTE_TERMINAL_PHASES: Final = frozenset(
+    {"remote_auth_failed", "remote_identity_changed", "remote_incompatible"}
+)
+
+
+def _remote_failure(root: Path) -> ControlError:
+    """Name a remote target's refused connection from its connector's status file.
+
+    Called only after the connector accepted the connection and closed it unanswered: it writes
+    the closed remote phase before it closes a connection it could not relay, so the status read
+    here describes this failure. No host, path or remote text is in it; the correlation id
+    resolves the connector's own diagnostic record.
+    """
+
+    from finishup.client.connector_status import read_connector_status
+
+    status = read_connector_status(root)
+    if status is None or status.phase != "unavailable" or status.reason is None:
+        return ControlError("service_unavailable", retryable=True)
+    return ControlError(
+        "service_unavailable",
+        retryable=status.reason not in _REMOTE_TERMINAL_PHASES,
+        phase=status.reason,
+        correlation_id=status.correlation_id,
+    )
+
+
 async def _connect_service_attempt(
     client_kind: ControlClientKind,
     *,
@@ -1687,10 +1735,21 @@ async def _connect_service_attempt(
     output_is_controlling_tty: bool,
     timeout_seconds: float,
 ) -> ServiceClient:
-    """Connect and handshake within one attempt budget, preserving accepted-socket identity."""
+    """Connect and handshake within one attempt budget, preserving accepted-socket identity.
+
+    For a remote target root (ADR-051) the hello carries no path, and a connection the root's
+    connector accepted but closed unanswered is named by the connector's status, never by the
+    local service singleton's stamp.
+    """
 
     stream: AuthenticatedUnixStream | None = None
     deadline = time.monotonic() + timeout_seconds
+    remote_root = _remote_target_root()
+    workspace_claim: WorkspaceClaim | None = None
+    workspace_agent: WorkspaceAgentDeclaration | None = None
+    if remote_root is not None:
+        workspace_claim, workspace_agent = _remote_workspace_binding(workspace_locator)
+        workspace_locator = None
     try:
         async with asyncio.timeout(timeout_seconds):
             stream = await connect_control()
@@ -1703,6 +1762,8 @@ async def _connect_service_attempt(
                 client_kind,
                 __version__,
                 workspace_locator=workspace_locator,
+                workspace_claim=workspace_claim,
+                workspace_agent=workspace_agent,
                 projection_render_mode=projection_render_mode,
                 output_is_controlling_tty=output_is_controlling_tty,
             )
@@ -1724,7 +1785,9 @@ async def _connect_service_attempt(
         if stream is not None:
             await _best_effort_close_stream(stream)
         error: ControlError
-        if accepted:
+        if accepted and remote_root is not None:
+            error = _remote_failure(remote_root)
+        elif accepted:
             error = _AcceptedServiceUnresponsive()
         else:
             error = ControlError("service_unavailable", retryable=True)
@@ -1736,6 +1799,12 @@ async def _connect_service_attempt(
     except ControlProtocolError as exc:
         if stream is not None:
             await _best_effort_close_stream(stream)
+        if remote_root is not None:
+            if exc.reason in {"manifest_mismatch", "protocol_mismatch"}:
+                # The server runs another release; a client never replaces a remote service.
+                raise ControlError("service_unavailable", phase="remote_incompatible") from exc
+            if exc.reason == "handshake_rejected":
+                raise _remote_failure(remote_root) from exc
         if exc.reason == "handshake_rejected":
             raise _unanswered_hello(workspace_locator) from exc
         raise _protocol_error(exc) from exc
@@ -1786,8 +1855,26 @@ def service_holder_identity() -> SingletonHolder | None:
     stopped, or replaced, and must not infer health from it.
     """
 
-    from finishup.service.lifecycle import probe_singleton_holder_identity
+    from finishup.service.lifecycle import SingletonHolder, probe_singleton_holder_identity
 
+    remote_root = _remote_target_root()
+    if remote_root is not None:
+        # A remote target's endpoint belongs to its connector (ADR-051): the holder is the live
+        # stamped connector, and its status generation moves when a repair changes the
+        # connection, so a latched outage clears. It is never superseded: its identity is this
+        # installation's own.
+        from finishup.client.connector_status import connector_holder, read_connector_status
+
+        holder = connector_holder(remote_root)
+        status = read_connector_status(remote_root)
+        if holder is None or status is None or status.pid != holder.pid:
+            return None
+        return SingletonHolder(
+            holder.pid,
+            f"connector-{status.generation}",
+            _manifest_digest_for_client(),
+            __version__,
+        )
     try:
         return probe_singleton_holder_identity(_singleton_lock_path())
     except Exception:
@@ -1954,6 +2041,56 @@ async def ensure_service_running(
     raise ControlError("service_unavailable", retryable=True)
 
 
+async def _connect_remote_on_demand(
+    root: Path,
+    client_kind: ControlClientKind,
+    *,
+    workspace_locator: WorkspaceLocator | None,
+    deadline: float,
+) -> ServiceClient:
+    """Connect to a remote target root, starting its connector (never a service) when absent.
+
+    The connector is client-owned and vault-less, so starting one is always safe; a running
+    connector is never replaced here, and a service on the server is never superseded from this
+    machine. A failure the connector names (a remote phase) ends the wait at once.
+    """
+
+    from finishup.client.connector_status import connector_holder, spawn_connector
+
+    async def attempt() -> ServiceClient:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True)
+        return await _connect_service_attempt(
+            client_kind,
+            workspace_locator=workspace_locator,
+            projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
+            output_is_controlling_tty=False,
+            timeout_seconds=min(_CONNECT_HANDSHAKE_TIMEOUT_SECONDS, remaining),
+        )
+
+    try:
+        return await attempt()
+    except ControlError as exc:
+        if exc.reason != "service_unavailable" or exc.phase is not None:
+            raise
+    if connector_holder(root) is None:
+        try:
+            spawn_connector(root)
+        except OSError as exc:
+            raise ControlError("service_unavailable", retryable=True) from exc
+    last_error: ControlError | None = None
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(_SERVICE_START_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        try:
+            return await attempt()
+        except ControlError as exc:
+            last_error = exc
+            if exc.reason != "service_unavailable" or exc.phase is not None:
+                raise
+    raise ControlError("service_unavailable", retryable=True) from last_error
+
+
 async def connect_service_on_demand(
     client_kind: ControlClientKind,
     *,
@@ -1988,6 +2125,11 @@ async def connect_service_on_demand(
     if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
         raise ValueError("service_start_timeout_invalid")
     deadline = time.monotonic() + timeout_seconds
+    remote_root = _remote_target_root()
+    if remote_root is not None:
+        return await _connect_remote_on_demand(
+            remote_root, client_kind, workspace_locator=workspace_locator, deadline=deadline
+        )
 
     async def connect_with_remaining_budget() -> ServiceClient:
         remaining = deadline - time.monotonic()

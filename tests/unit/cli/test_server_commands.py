@@ -63,8 +63,37 @@ def authorized(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     def confirm(name: str, kind: str) -> None:
         confirmations.append((name, kind))
 
+    def ssh_endpoint(
+        _user: str | None,
+        _host: str,
+        _port: int,
+        remote_root: str | None,
+        remote_launcher: str | None,
+    ) -> tuple[str, str]:
+        # The server's own ``service endpoint --json`` answer, without an ssh round trip.
+        endpoint = (
+            f"{remote_root}/run/control.sock"
+            if remote_root is not None
+            else "/run/user/1000/finishup/control.sock"
+        )
+        return remote_launcher or "/opt/finishup/bin/finishup", endpoint
+
+    def unreachable(_self: object, _root: Path | None) -> object:
+        from finishup.client.target_runtime import ProbeResult
+
+        return ProbeResult("unavailable", reason="remote_unreachable")
+
     monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: False)
     monkeypatch.setattr(server_cli, "_confirm_on_trusted_console", confirm)
+    monkeypatch.setattr(server_cli, "_probe_ssh_endpoint", ssh_endpoint)
+    def key_accepted(_record: targets.ServerTarget, _secret: str) -> None:
+        return None
+
+    monkeypatch.setattr(server_cli, "_check_https_key", key_accepted)
+    # Approach A: a remote target's probe goes through its connector; no connector is started.
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", unreachable
+    )
     return confirmations
 
 
@@ -235,11 +264,11 @@ def test_remote_add_and_use_record_the_owner_authorization(
     authorization = cast(dict[str, JsonValue], target["authorization"])
     assert authorization["current"] is True
     probe = cast(dict[str, JsonValue], status["probe"])
-    # The foundation registers no remote runtime: a closed token, never a local fallback.
+    # The connector runtime's probe: a closed token, never a local fallback.
     assert (probe["outcome"], probe["reason"], probe["phase"]) == (
         "unavailable",
         "remote_unreachable",
-        "runtime_unavailable",
+        None,
     )
     assert "claim_salt" not in json.dumps(status)
 
@@ -366,15 +395,62 @@ def test_ssh_targets_take_no_api_key(home: Path, authorized: list[tuple[str, str
     assert _invoke("logout", "lab").stderr.startswith("credential_not_applicable:")
 
 
-def test_remote_connect_without_a_runtime_is_a_typed_refusal(
-    home: Path, authorized: list[tuple[str, str]]
+def test_remote_connect_and_disconnect_dispatch_to_the_connector_runtime(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    calls: list[tuple[str, Path | None]] = []
+
+    def ensure_ready(_self: object, root: Path | None) -> None:
+        calls.append(("ensure_ready", root))
+
+    def stop(_self: object, root: Path | None) -> None:
+        calls.append(("stop", root))
+
+    runtime = "finishup.client.connector_runtime.ConnectorTargetRuntime"
+    monkeypatch.setattr(f"{runtime}.ensure_ready", ensure_ready)
+    monkeypatch.setattr(f"{runtime}.stop", stop)
+    assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    (record,) = targets.list_targets()
+    assert record.remote_endpoint == "/run/user/1000/finishup/control.sock"
+    assert record.remote_launcher == "/opt/finishup/bin/finishup"
+    root = targets.target_root(record.target_id)
+    assert _invoke("connect", "lab").exit_code == 0
+    assert _invoke("disconnect", "lab").exit_code == 0
+    assert calls == [("ensure_ready", root), ("stop", root)]
+
+
+def test_a_remote_kind_without_a_runtime_is_a_typed_refusal(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client import target_runtime
+
+    loaders = dict(target_runtime._RUNTIME_LOADERS)  # pyright: ignore[reportPrivateUsage]
+    del loaders["ssh"]
+    monkeypatch.setattr(target_runtime, "_RUNTIME_LOADERS", loaders)
     assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
     for command in ("connect", "disconnect"):
         result = _invoke(command, "lab")
         assert result.exit_code == 20
         assert result.stderr.startswith("runtime_unavailable:")
         assert "remote_unreachable, phase runtime_unavailable" in result.stderr
+
+
+def test_a_connector_refusal_names_the_remote_phase_only(
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    def refuse(_self: object, _root: Path | None) -> None:
+        raise TargetRuntimeError("remote_auth_failed")
+
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.ensure_ready", refuse
+    )
+    assert _invoke("add", "lab", "ssh://owner@lab.example").exit_code == 0
+    result = _invoke("connect", "lab")
+    assert result.exit_code == 20
+    assert result.stderr.startswith("remote_auth_failed:")
+    assert "lab.example" not in result.stderr and "owner" not in result.stderr
 
 
 def test_connect_and_disconnect_dispatch_to_the_local_runtime(

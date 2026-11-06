@@ -1,0 +1,309 @@
+"""A remote target root in ``service.client`` (ADR-051, approach A).
+
+A selected remote target is reached through its connector: on demand the client starts the
+connector (never ``service run``) and never supersedes anything; the hello names no path; a
+connection the connector closed is named by the connector's status (a closed remote phase),
+never by the local service stamp; a lockstep mismatch is ``remote_incompatible``; and the MCP
+availability latch keys on the connector's status generation. Local roots are untouched. The
+CLI and the MCP bridge render a remote phase with its recovery directive, with no host, name or
+local-service remedy.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from collections.abc import Iterator
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+from builders.control_relay import ScriptedDaemon, service_status
+from builders.server_targets import ambient_home
+from finishup.adapters.control.unix_socket import (
+    AuthenticatedUnixStream,
+    UnixEndpointListener,
+    bind_control_listener,
+)
+from finishup.client import targets
+from finishup.client.connector_status import (
+    ConnectorLock,
+    new_status,
+    now_stamp,
+    write_connector_status,
+)
+from finishup.config.paths import reset_selection_memo
+from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
+from finishup.protocol.canonical import JsonValue
+from finishup.service import client as service_client
+from finishup.service.control_protocol import (
+    encode_control_frame,
+    read_control_frame,
+)
+
+
+@pytest.fixture
+def home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    with ambient_home(monkeypatch) as root:
+        yield root
+
+
+@pytest.fixture
+def remote(home: Path) -> Path:
+    with targets.registry_lock():
+        record, root = targets.new_remote_target(
+            "lab", "ssh", host="lab.example", port=22, remote_launcher="/opt/fu/bin/finishup"
+        )
+        targets.write_selection(record)
+    reset_selection_memo()
+    return root
+
+
+@pytest.fixture
+def no_local_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a remote root never starts or supersedes a local service")
+
+    monkeypatch.setattr(service_client, "_spawn_service_process", refuse)
+    monkeypatch.setattr(service_client, "supersede_incompatible_service", refuse)
+
+
+async def _serve(listener: UnixEndpointListener, handle: object) -> None:
+    try:
+        while True:
+            stream = await listener.accept()
+            asyncio.get_running_loop().create_task(handle(stream))  # type: ignore[operator]
+    except Exception:
+        return
+
+
+def _fake_connector(
+    monkeypatch: pytest.MonkeyPatch, handle: object, spawned: list[Path]
+) -> list[asyncio.Task[None]]:
+    """``spawn_connector`` binds the root's endpoint in-process and serves it with ``handle``."""
+
+    tasks: list[asyncio.Task[None]] = []
+
+    def spawn(root: Path) -> object:
+        spawned.append(root)
+
+        async def run() -> None:
+            listener = await bind_control_listener()
+            try:
+                await _serve(listener, handle)
+            finally:
+                await listener.aclose()
+
+        tasks.append(asyncio.get_running_loop().create_task(run()))
+        return None
+
+    monkeypatch.setattr("finishup.client.connector_status.spawn_connector", spawn)
+    return tasks
+
+
+def _stop(tasks: list[asyncio.Task[None]]) -> None:
+    for task in tasks:
+        task.cancel()
+
+
+def test_local_roots_keep_todays_path(home: Path) -> None:
+    assert service_client._remote_target_root() is None  # pyright: ignore[reportPrivateUsage]
+    with targets.registry_lock():
+        record, _root = targets.new_local_target("work")
+        targets.write_selection(record)
+    reset_selection_memo()
+    assert service_client._remote_target_root() is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_on_demand_starts_the_connector_and_sends_no_path(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    daemon = ScriptedDaemon()
+    spawned: list[Path] = []
+
+    async def exercise() -> None:
+        tasks = _fake_connector(monkeypatch, daemon.serve, spawned)
+        try:
+            client = await service_client.connect_service_on_demand(
+                ControlClientKind.CLI,
+                workspace_locator=WorkspaceLocator(path=str(remote.parent / "repo")),
+                timeout_seconds=10.0,
+            )
+            try:
+                status = await client.service_status()
+            finally:
+                await client.close()
+        finally:
+            _stop(tasks)
+        assert status.service_instance_id == service_status().service_instance_id
+
+    asyncio.run(exercise())
+    assert spawned == [remote]
+    hello = json.loads(daemon.received(0)[0])
+    assert "workspace_locator" not in hello and "workspace_claim" not in hello
+
+
+def _closing_connector(root: Path, reason: str) -> object:
+    async def handle(stream: AuthenticatedUnixStream) -> None:
+        await read_control_frame(stream)
+        status = new_status(None, "unavailable", reason, started_at=now_stamp())
+        write_connector_status(
+            root,
+            type(status)(
+                status.generation,
+                status.phase,
+                status.reason,
+                "err_00000000-0000-4000-8000-0000000000e1",
+                status.pid,
+                status.started_at,
+            ),
+        )
+        await stream.aclose()
+
+    return handle
+
+
+@pytest.mark.parametrize(
+    ("reason", "retryable"),
+    [
+        ("remote_auth_failed", False),
+        ("remote_identity_changed", False),
+        ("remote_unreachable", True),
+        ("remote_service_not_running", True),
+    ],
+)
+def test_a_refused_connection_is_named_by_the_connector_status(
+    remote: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_local_service: None,
+    reason: str,
+    retryable: bool,
+) -> None:
+    spawned: list[Path] = []
+
+    async def exercise() -> ControlError:
+        tasks = _fake_connector(monkeypatch, _closing_connector(remote, reason), spawned)
+        try:
+            with pytest.raises(ControlError) as raised:
+                await service_client.connect_service_on_demand(
+                    ControlClientKind.MCP_BRIDGE, timeout_seconds=10.0
+                )
+            return raised.value
+        finally:
+            _stop(tasks)
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.phase, error.retryable) == (
+        "service_unavailable",
+        reason,
+        retryable,
+    )
+    assert error.correlation_id == "err_00000000-0000-4000-8000-0000000000e1"
+
+
+def test_a_server_of_another_release_is_remote_incompatible_never_superseded(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    async def other_release(stream: AuthenticatedUnixStream) -> None:
+        from finishup.service import control_protocol
+
+        await read_control_frame(stream)
+        answer = control_protocol._hello_result_wire(  # pyright: ignore[reportPrivateUsage]
+            service_status(),
+            control_protocol._allowed_for(ControlClientKind.CLI),  # pyright: ignore[reportPrivateUsage]
+        )
+        answer["schema_manifest_digest"] = "sha256:" + "0" * 64
+        await stream.send_all(encode_control_frame(answer))
+        await stream.aclose()
+
+    spawned: list[Path] = []
+
+    async def exercise() -> ControlError:
+        tasks = _fake_connector(monkeypatch, other_release, spawned)
+        try:
+            with pytest.raises(ControlError) as raised:
+                await service_client.connect_service_on_demand(
+                    ControlClientKind.CLI, timeout_seconds=10.0
+                )
+            return raised.value
+        finally:
+            _stop(tasks)
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.phase, error.retryable) == (
+        "service_unavailable",
+        "remote_incompatible",
+        False,
+    )
+
+
+def test_the_latch_keys_on_the_connector_status_generation(remote: Path) -> None:
+    assert service_client.service_holder_identity() is None
+    lock = ConnectorLock(remote)
+    lock.acquire(version="0.1.0", schema_manifest_digest="sha256:" + "a" * 64)
+    try:
+        assert service_client.service_holder_identity() is None  # no status yet
+        down = new_status(None, "unavailable", "remote_unreachable", started_at=now_stamp())
+        write_connector_status(remote, down)
+        first = service_client.service_holder_identity()
+        assert first is not None and first.pid == os.getpid()
+        assert first.instance_id == f"connector-{down.generation}"
+        repaired = new_status(down, "ready", None, started_at=down.started_at)
+        write_connector_status(remote, repaired)
+        second = service_client.service_holder_identity()
+        assert second is not None and second.instance_id != first.instance_id
+        # The connector carries this installation's identity: never a supersede candidate.
+        assert service_client._stamp_identity(second) == "same"  # pyright: ignore[reportPrivateUsage]
+    finally:
+        lock.release()
+    assert service_client.service_holder_identity() is None
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "remote_auth_failed",
+        "remote_identity_changed",
+        "remote_incompatible",
+        "remote_service_not_running",
+        "remote_unreachable",
+    ],
+)
+def test_cli_and_mcp_render_a_remote_phase_with_its_directive_only(home: Path, phase: str) -> None:
+    from finishup.cli.bootstrap import control_failure
+    from finishup.mcp import server as bridge
+    from finishup.protocol.errors import REASON_CODE_CONTINUATIONS
+    from finishup.protocol.recovery import RECOVERY_DIRECTIVES
+
+    error = ControlError(
+        "service_unavailable",
+        retryable=phase in {"remote_unreachable", "remote_service_not_running"},
+        phase=phase,
+        correlation_id="err_00000000-0000-4000-8000-0000000000e2",
+    )
+    lines: list[str] = []
+    documents: list[JsonValue] = []
+    control_failure(
+        error, json_output=True, stderr_writer=lines.append, stdout_writer=documents.append
+    )
+    directive = RECOVERY_DIRECTIVES[REASON_CODE_CONTINUATIONS[phase]]
+    text = "\n".join(lines)
+    assert phase in text and directive.directive in text
+    assert "local" not in lines[0].splitlines()[0]
+    for forbidden in ("local terminal", "service restart", "service diagnostics", "lab.example"):
+        assert forbidden not in text
+    (document,) = documents
+    assert cast(dict[str, JsonValue], document)["phase"] == phase
+
+    result = bridge._control_error_result(  # pyright: ignore[reportPrivateUsage]
+        error, request_id=None, operation="start"
+    )
+    structured = cast(dict[str, object], result.structuredContent)
+    public = cast(dict[str, object], structured["error"])
+    assert public["message"] == directive.directive
+    details = cast(dict[str, object], public["safe_details"])
+    assert details["reason_code"] == phase
+    assert details["continuation"] == REASON_CODE_CONTINUATIONS[phase]
+    assert "local" not in cast(str, public["message"]).lower()

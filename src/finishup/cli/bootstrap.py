@@ -30,7 +30,11 @@ from finishup.ports.control import (
     WorkspaceLocator,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
-from finishup.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode
+from finishup.protocol.errors import (
+    REMOTE_CONNECTION_PHASES,
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+)
 from finishup.service.control_protocol import public_error_code_for_control_reason
 
 if TYPE_CHECKING:
@@ -513,6 +517,34 @@ def control_failure(
             holder = _holder_identity_json()
             if holder is not None:
                 payload["holder"] = holder
+            stdout_writer(payload)
+        return exit_code_for(code)
+    if error.reason == "service_unavailable" and error.phase in REMOTE_CONNECTION_PHASES:
+        # The selected server is on another machine (ADR-051): name the closed remote phase and
+        # its directive, never a local-service remedy. No host or name is in either.
+        from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
+        from finishup.protocol.recovery import continuation_for_reason, directive_for
+
+        remote_directive = directive_for(continuation_for_reason(error.phase))
+        lines = [
+            f"service_unavailable: {error.phase}: the selected FinishUP server could not serve "
+            "this connection, and nothing was recorded"
+        ]
+        if remote_directive is not None:
+            lines.extend(render_recovery_directive_lines(remote_directive))
+        stderr_writer(_with_correlation("\n".join(lines), error))
+        if json_output:
+            payload = {
+                "ok": False,
+                "public_code": code.value,
+                "reason": "service_unavailable",
+                "phase": error.phase,
+                "retryable": error.retryable,
+            }
+            if error.correlation_id is not None:
+                payload["correlation_id"] = error.correlation_id
+            if remote_directive is not None:
+                payload["recovery"] = recovery_directive_json(remote_directive)
             stdout_writer(payload)
         return exit_code_for(code)
     from finishup.service.client import accepted_but_unresponsive, handshake_failure

@@ -21,6 +21,7 @@ that would change or use the selection is refused with ``selection_overridden``.
 from __future__ import annotations
 
 import functools
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -179,6 +180,33 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     ),
     "usage": (
         "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
+        _USAGE,
+    ),
+    "remote_unreachable": (
+        "the server could not be reached; check the address and your network, then retry",
+        _UNAVAILABLE,
+    ),
+    "remote_auth_failed": (
+        "the server refused this login: load your SSH key (ssh-add) for an SSH server, or give "
+        "a valid API key for an HTTPS server",
+        _UNAVAILABLE,
+    ),
+    "remote_identity_changed": (
+        "the server's host key or certificate was not accepted; verify it another way first",
+        _UNAVAILABLE,
+    ),
+    "remote_incompatible": (
+        "this client and the server run different FinishUP releases; install the same release "
+        "on both",
+        _UNAVAILABLE,
+    ),
+    "remote_service_not_running": (
+        "the server's FinishUP gateway answers but its service does not; its operator starts it",
+        _UNAVAILABLE,
+    ),
+    "remote_launcher_unknown": (
+        "no absolute finishup launcher could be found on the server; pass --remote-launcher "
+        "with the absolute path of the server's finishup",
         _USAGE,
     ),
 }
@@ -393,6 +421,122 @@ def _warn_open_sessions() -> None:
     )
 
 
+_RELEASE: Final = re.compile(r"^[0-9][0-9A-Za-z.+-]{0,63}$", re.ASCII)
+_SSH_PROBE_SECONDS: Final = 180.0
+
+
+def _release_detail(server_release: object) -> str:
+    """Both releases for a lockstep refusal; a server value that is not a release is withheld."""
+
+    shown = (
+        server_release if type(server_release) is str and _RELEASE.match(server_release) else "?"
+    )
+    return f"client {__version__}, server {shown}"
+
+
+def _probe_ssh_endpoint(
+    user: str | None,
+    host: str,
+    port: int,
+    remote_root: str | None,
+    remote_launcher: str | None,
+) -> tuple[str, str]:
+    """Ask the server's own ``finishup service endpoint --json`` over one interactive ``ssh``.
+
+    OpenSSH asks the owner, on this terminal, to confirm a host key it does not know yet; that
+    confirmation is the host-key pin every later ``BatchMode`` connection checks. Returns the
+    server's absolute launcher (the one given, or the single absolute launcher the server
+    reports for itself, never a bare ``finishup``) and its control endpoint, after checking that
+    both sides run the same release. Nothing is written when this fails.
+    """
+
+    import json
+    import subprocess
+
+    from finishup.client.ssh_upstream import (
+        UpstreamUnavailable,
+        probe_argv,
+        remote_command_line,
+        resolve_ssh,
+    )
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    try:
+        ssh = resolve_ssh()
+    except UpstreamUnavailable as error:
+        raise ServerCommandRefused(error.reason) from None
+    command = remote_command_line(
+        remote_launcher or "finishup", remote_root, "service", "endpoint", "--json"
+    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv; the owner's own terminal
+            probe_argv(ssh, user=user, host=host, port=port, command=command),
+            stdout=subprocess.PIPE,
+            timeout=_SSH_PROBE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ServerCommandRefused("remote_unreachable") from None
+    if completed.returncode != 0:
+        if completed.returncode == 127 and remote_launcher is None:
+            raise ServerCommandRefused("remote_launcher_unknown")
+        raise ServerCommandRefused("remote_unreachable")
+    try:
+        report = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise ServerCommandRefused("remote_incompatible") from None
+    if not isinstance(report, dict):
+        raise ServerCommandRefused("remote_incompatible")
+    fields = cast(dict[str, object], report)
+    endpoint = fields.get("endpoint")
+    if (
+        fields.get("schema") != "yoetz.service-endpoint/1"
+        or type(endpoint) is not str
+        or not endpoint.startswith("/")
+    ):
+        raise ServerCommandRefused("remote_incompatible")
+    if fields.get("schema_manifest_digest") != schema_manifest_digest():
+        raise ServerCommandRefused(
+            "remote_incompatible", detail=_release_detail(fields.get("release"))
+        )
+    launcher = remote_launcher
+    if launcher is None:
+        reported = fields.get("launcher")
+        if (
+            not isinstance(reported, list)
+            or len(cast(list[object], reported)) != 1
+            or type(cast(list[object], reported)[0]) is not str
+            or not cast(str, cast(list[object], reported)[0]).startswith("/")
+        ):
+            raise ServerCommandRefused("remote_launcher_unknown")
+        launcher = cast(str, cast(list[object], reported)[0])
+    return launcher, endpoint
+
+
+def _check_https_key(record: ServerTarget, secret: str) -> None:
+    """``GET /v1/server`` with the new key before it is stored: authenticated, same release."""
+
+    import asyncio
+
+    from finishup.client.https_upstream import HttpsUpstream
+    from finishup.client.ssh_upstream import UpstreamUnavailable
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    async def check() -> dict[str, JsonValue]:
+        upstream = HttpsUpstream(record, lambda: secret)
+        try:
+            return await upstream.server_info()
+        finally:
+            await upstream.aclose()
+
+    try:
+        info = asyncio.run(check())
+    except UpstreamUnavailable as error:
+        raise ServerCommandRefused(error.reason) from None
+    if info.get("schema_manifest_digest") != schema_manifest_digest():
+        raise ServerCommandRefused("remote_incompatible", detail=_release_detail(info["release"]))
+
+
 @server_app.command("add")
 @_cli
 def server_add(
@@ -473,6 +617,11 @@ def server_add(
         raise ServerCommandRefused("target_name_taken")
     if kind != "local":
         _authorize_remote(name, kind)
+    remote_endpoint: str | None = None
+    if kind == "ssh":
+        remote_launcher, remote_endpoint = _probe_ssh_endpoint(
+            user, cast(str, host), cast(int, ssh_port), remote_root, remote_launcher
+        )
     try:
         with registry_lock():
             if kind == "local":
@@ -494,6 +643,9 @@ def server_add(
                     remote_root=remote_root,
                     remote_launcher=remote_launcher,
                 )
+                if remote_endpoint is not None and record.remote_endpoint != remote_endpoint:
+                    record = replace(record, remote_endpoint=remote_endpoint)
+                    write_target(target_root(record.target_id), record)
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     typer.echo(f"Added server target {record.name} ({record.target_id}, {record.kind}).")
@@ -907,6 +1059,7 @@ def server_login(
         raise ServerCommandRefused("credential_not_applicable")
     try:
         secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
+        _check_https_key(record, secret)
         root = target_root(record.target_id)
         location = KeyringOrFileCredential(
             record.target_id, root, recorded=record.credential

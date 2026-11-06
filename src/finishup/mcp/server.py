@@ -126,6 +126,8 @@ from finishup.ports.integrations import FINISHUP_MCP_TOOL_NAMES
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.consent import CONSENT_PENDING_TTL_SECONDS
 from finishup.protocol.errors import (
+    REASON_CODE_CONTINUATIONS,
+    REMOTE_CONNECTION_PHASES,
     SERVICE_STARTUP_PHASES,
     PublicErrorCode,
     PublicOperationError,
@@ -161,6 +163,7 @@ from finishup.protocol.models import (
 from finishup.protocol.recovery import (
     READ_ONLY_CHECK_MODES,
     REASON_REMEDIES,
+    RECOVERY_DIRECTIVES,
     WRITE_OPERATIONS,
     continuation_for_reason,
     timeout_operation_kind,
@@ -2082,6 +2085,25 @@ def _control_error_result(
             retryable=True,
             host_profile=host_profile,
             safe_details={"reason_code": "service_draining"},
+        )
+    if error.reason == "service_unavailable" and error.phase in REMOTE_CONNECTION_PHASES:
+        # The selected FinishUP server is on another machine (ADR-051). The closed remote phase
+        # selects its recovery directive; no host, name or local-service remedy is in the text.
+        remote_continuation = REASON_CODE_CONTINUATIONS[error.phase]
+        remote_directive = RECOVERY_DIRECTIVES[remote_continuation]
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.SERVICE_UNAVAILABLE,
+            message=remote_directive.directive,
+            retryable=error.retryable,
+            host_profile=host_profile,
+            safe_details={
+                "reason_code": error.phase,
+                "continuation": remote_continuation,
+            },
+            diagnostic_reason=error.phase,
         )
     if error.reason == "service_unavailable":
         startup = None
