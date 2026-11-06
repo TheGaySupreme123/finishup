@@ -16,12 +16,17 @@ import binascii
 from collections.abc import Sequence
 from typing import cast
 
-from finishup.client.targets import TargetError, active_target_record
+from finishup.client.targets import ServerTarget, TargetError, active_target_record
 from finishup.client.workspace_claim import workspace_claim
 from finishup.ports.control import WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
 
-__all__ = ["binding_for_active_root", "is_remote_active_root", "remote_workspace_binding"]
+__all__ = [
+    "binding_for_active_root",
+    "binding_for_target",
+    "is_remote_active_root",
+    "remote_workspace_binding",
+]
 
 
 async def remote_workspace_binding(
@@ -80,8 +85,25 @@ async def binding_for_active_root(
     record = active_target_record()
     if record is None or not record.is_remote or locator is None:
         return None
+    return await binding_for_target(record, locator, serve_workspace=serve_workspace)
+
+
+async def binding_for_target(
+    target: ServerTarget, locator: WorkspaceLocator, *, serve_workspace: bool
+) -> ClientWorkspaceBinding:
+    """The binding of a connection to the remote ``target``: its claim on ``locator``, and agent.
+
+    For a caller that already holds the target record it dials (a transport chosen from the
+    active root, say), so the claim's salt and the dial always belong to the same target. A
+    record whose ``claim_salt`` is missing or malformed raises ``TargetError``
+    (``target_record_invalid``); a locator the shared root rule cannot resolve raises
+    ``RepositoryIdentityError``.
+    """
+
+    if not target.is_remote:
+        raise TargetError("target_record_invalid")
     try:
-        salt = base64.b64decode(cast(str, record.claim_salt), validate=True)
+        salt = base64.b64decode(cast(str, target.claim_salt), validate=True)
     except (TypeError, ValueError, binascii.Error):
         raise TargetError("target_record_invalid") from None
     return await remote_workspace_binding(locator, salt, serve_workspace=serve_workspace)

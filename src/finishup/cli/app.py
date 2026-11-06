@@ -94,7 +94,7 @@ from finishup.protocol.models import (
     public_model_to_wire,
 )
 from finishup.protocol.schemas import schema_document_for
-from finishup.service.client import ServiceClient, connect_service
+from finishup.service.client import ServiceClient, connect_service, serving_workspace_binding
 from finishup.version import ResourceIntegrityError
 
 if TYPE_CHECKING:
@@ -491,6 +491,10 @@ async def build_service_client(
 
     Ordinary CLI work is repository-bound by default. Passing ``None`` explicitly remains the
     narrow escape hatch for callers whose operation genuinely has no workspace authority.
+
+    For a FinishUP server on another machine the connection claims the workspace instead of
+    naming its path, and this process answers the server's workspace calls while it is connected
+    (ADR-051): a ``check`` run here captures this machine's change through it.
     """
 
     locator = (
@@ -498,6 +502,14 @@ async def build_service_client(
         if workspace_locator is _WORKSPACE_LOCATOR_DEFAULT
         else resolve_cli_workspace_locator(cast(WorkspaceLocator | None, workspace_locator))
     )
+    binding = await serving_workspace_binding(locator)
+    if binding is not None:
+        return await connect_service(
+            client_kind,
+            workspace_binding=binding,
+            projection_render_mode=projection_render_mode,
+            output_is_controlling_tty=output_is_controlling_tty,
+        )
     return await connect_service(
         client_kind,
         workspace_locator=locator,

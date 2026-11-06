@@ -336,3 +336,47 @@ def test_remote_root_paths_stay_beneath_the_target_root(remote: ServerTarget) ->
     root = targets.target_root(remote.target_id)
     assert runtime_dir() == root / "run"
     assert Path(root / "run").is_dir()
+
+
+def test_a_serving_binding_claims_the_workspace_and_offers_the_agent(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    taps: list[TapStream] = []
+
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        tap = TapStream(server_end)
+        taps.append(tap)
+        asyncio.get_running_loop().create_task(_serve(tap))
+        return client_end
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> tuple[bool, str]:
+        binding = await client_module.serving_workspace_binding(WorkspaceLocator(str(tmp_path)))
+        assert binding is not None and binding.agent is not None
+        client = await client_module.connect_service(
+            ControlClientKind.MCP_BRIDGE, workspace_binding=binding
+        )
+        try:
+            await client.connect()
+        finally:
+            await client.close()
+        return binding.agent is not None, client.workspace_binding
+
+    assert asyncio.run(exercise()) == (True, "client_claim")
+    (tap,) = taps
+    assert b'"workspace_claim"' in tap.received
+    assert b'"workspace_agent"' in tap.received
+    assert os.fsencode(tmp_path) not in tap.received
+
+
+def test_a_local_root_has_no_serving_binding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with ambient_home(monkeypatch):
+        binding = asyncio.run(
+            client_module.serving_workspace_binding(WorkspaceLocator(str(tmp_path)))
+        )
+    assert binding is None
+    assert asyncio.run(client_module.serving_workspace_binding(None)) is None

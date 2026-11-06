@@ -124,6 +124,7 @@ from finishup.service.control_protocol import (
 )
 
 if TYPE_CHECKING:
+    from finishup.client.targets import ServerTarget
     from finishup.client.transports import ControlTransport
     from finishup.service.confidential_protocol import OwnerReceiptViewTarget
     from finishup.service.lifecycle import SingletonHolder
@@ -146,6 +147,7 @@ __all__ = [
     "holder_version_order",
     "path_refusal_reason",
     "prepare_project_request",
+    "serving_workspace_binding",
     "service_holder_identity",
     "supersede_incompatible_service",
     "wait_for_singleton_release",
@@ -1143,6 +1145,20 @@ class ServiceClient(ControlClientPort):
         return self._session.service_instance_id
 
     @property
+    def closed(self) -> bool:
+        """Whether this connection has ended (closed here, or failed or closed by the service)."""
+
+        return self._closed
+
+    async def wait_closed(self) -> None:
+        """Return once this connection has ended; a long-lived agent connection waits on this.
+
+        Cancelling the wait leaves the connection open.
+        """
+
+        await asyncio.wait((self._receiver,))
+
+    @property
     def transport(self) -> ConnectionTransport:
         """How this connection reaches its service, a closed token (``finishup.client.attribution``).
 
@@ -1947,8 +1963,8 @@ async def _connect_remote_attempt(
     The hello never carries a locator: no path crosses to another machine. A caller that serves
     the workspace passes its ``workspace_binding`` (``binding_for_active_root`` with
     ``serve_workspace=True``); any other connection that names a workspace is bound by its claim
-    alone (``_remote_claim_binding``), so a short-lived process such as a hook is claim-bound
-    without offering an agent. Every transport failure is a retryable ``service_unavailable``
+    alone (``_target_binding`` without an agent), so a short-lived process such as a hook is
+    claim-bound without offering an agent. Every transport failure is a retryable ``service_unavailable``
     whose ``phase`` is one closed remote phase; nothing local is probed, spawned or superseded.
     """
 
@@ -1963,7 +1979,9 @@ async def _connect_remote_attempt(
         async with asyncio.timeout(timeout_seconds):
             binding = workspace_binding
             if binding is None and workspace_locator is not None:
-                binding = await _remote_claim_binding(workspace_locator)
+                # Claim-bound without an agent: such a connection (a hook, say) is short-lived
+                # and must never become the agent a server calls after it exits.
+                binding = await _target_binding(target, workspace_locator, serve_workspace=False)
             agent = None if binding is None else binding.agent
             stream = await transport.connect()
             session = await client_handshake(
@@ -1997,30 +2015,48 @@ async def _connect_remote_attempt(
     raise ControlError("service_unavailable", retryable=True, phase=phase)
 
 
-async def _remote_claim_binding(workspace_locator: WorkspaceLocator) -> ClientWorkspaceBinding:
-    """The claim-only binding of a remote connection that named a workspace but no binding.
+async def _target_binding(
+    target: ServerTarget, workspace_locator: WorkspaceLocator, *, serve_workspace: bool
+) -> ClientWorkspaceBinding:
+    """The binding a connection to the remote ``target`` sends for ``workspace_locator``.
 
-    The workspace is claimed under the active target's salt and no agent is offered: a hook or
-    probe gets the claim's handle (so its observation rows are attested, ADR-051 decision 12)
-    without becoming the agent a server would call after it exits. A record that cannot be read
+    The workspace is claimed under the target's own salt; with ``serve_workspace`` the hello
+    also offers the workspace agent that answers for it. A record whose salt cannot be read
     refuses as the transport choice does; a workspace the shared root rule cannot resolve fails
     the handshake as a local service's own resolution failure does. The locator is never sent.
     """
 
     from finishup.adapters.workspace_root import RepositoryIdentityError
-    from finishup.client.remote_binding import binding_for_active_root
+    from finishup.client.remote_binding import binding_for_target
     from finishup.client.targets import TargetError
 
     try:
-        binding = await binding_for_active_root(workspace_locator, serve_workspace=False)
+        return await binding_for_target(target, workspace_locator, serve_workspace=serve_workspace)
     except TargetError as exc:
         raise _EndpointRootRefused("isolation_root_invalid") from exc
     except RepositoryIdentityError as exc:
         raise _unclaimable_workspace(exc.reason) from None
-    if binding is None:
-        # The selection moved off this remote root between choosing its transport and now.
-        raise _EndpointRootRefused("isolation_root_invalid")
-    return binding
+
+
+async def serving_workspace_binding(
+    workspace_locator: WorkspaceLocator | None,
+) -> ClientWorkspaceBinding | None:
+    """The binding of a connection that also serves its workspace's calls (ADR-051).
+
+    For a remote active root: the claim on ``workspace_locator`` and the workspace agent that
+    answers the server's calls on that connection. A process whose calls need the workspace while
+    they run (a CLI workflow command, the MCP bridge, the terminal interface) connects with
+    ``workspace_binding=`` this instead of the locator. ``None`` for a local root (connect with
+    the locator exactly as before) and for no workspace. Any other connection that names a
+    workspace to a remote root is claim-bound without an agent (a hook, say).
+    """
+
+    if workspace_locator is None:
+        return None
+    target = _control_transport().target
+    if target is None:
+        return None
+    return await _target_binding(target, workspace_locator, serve_workspace=True)
 
 
 def _unclaimable_workspace(reason: str) -> ControlError:

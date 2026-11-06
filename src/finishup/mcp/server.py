@@ -180,6 +180,7 @@ from finishup.service.client import (
     holder_version_order,
     path_refusal_reason,
     service_holder_identity,
+    serving_workspace_binding,
     start_timed_out,
 )
 
@@ -1087,18 +1088,34 @@ async def _ensure_service_client(
                 continue
             connected_attempt: ServiceClient | None = None
             try:
-                connected_attempt = (
-                    await connect_service_on_demand(
-                        ControlClientKind.MCP_BRIDGE,
-                        workspace_locator=workspace_locator,
+                binding = await serving_workspace_binding(workspace_locator)
+                if binding is not None:
+                    # A server on another machine: claim the workspace and serve its calls on
+                    # this long-lived connection, for this session's background work too.
+                    connected_attempt = (
+                        await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE, workspace_binding=binding
+                        )
+                        if start_timeout_seconds is None
+                        else await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_binding=binding,
+                            timeout_seconds=start_timeout_seconds,
+                        )
                     )
-                    if start_timeout_seconds is None
-                    else await connect_service_on_demand(
-                        ControlClientKind.MCP_BRIDGE,
-                        workspace_locator=workspace_locator,
-                        timeout_seconds=start_timeout_seconds,
+                else:
+                    connected_attempt = (
+                        await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_locator=workspace_locator,
+                        )
+                        if start_timeout_seconds is None
+                        else await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_locator=workspace_locator,
+                            timeout_seconds=start_timeout_seconds,
+                        )
                     )
-                )
                 await connected_attempt.connect()
             except BaseException as exc:
                 if connected_attempt is not None:
@@ -2498,8 +2515,13 @@ async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
     if workspace_locator is None:
         return None
     try:
-        client = await connect_service(
-            ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator
+        binding = await serving_workspace_binding(workspace_locator)
+        client = (
+            await connect_service(ControlClientKind.MCP_BRIDGE, workspace_binding=binding)
+            if binding is not None
+            else await connect_service(
+                ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator
+            )
         )
     except Exception:
         return None
