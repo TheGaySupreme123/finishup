@@ -43,6 +43,11 @@ from finishup.ports.control import (
 )
 from finishup.ports.runtime import RouteAccess, RouteCommand, RuntimeCapability
 from finishup.ports.secret_memory import SecretPurpose
+from finishup.ports.workspace_agent import (
+    WorkspaceAgentUnavailable,
+    WorkspaceOnlyArguments,
+    WorkspaceOperation,
+)
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -224,12 +229,20 @@ def _repository(path: Path, name: str, text: str) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def _claim_for(path: Path) -> WorkspaceClaim:
-    """The client's keyed claim on ``path``, as its own machine would compute it."""
+def _claim_for(path: Path, *, repository: Path | None = None) -> WorkspaceClaim:
+    """The client's keyed claim on ``path``, as its own machine would compute it.
 
-    preimage = b"yoetz/workspace-claim/v1\x00" + b"git_common_root\x00" + bytes(path)
+    ``repository`` stands for the Git common directory a linked worktree shares with its main
+    checkout: the claim is over it, the worktree digest over ``path`` itself.
+    """
+
+    common = path if repository is None else repository
+    preimage = b"yoetz/workspace-claim/v1\x00" + b"git_common_root\x00" + bytes(common)
     digest = hmac.new(b"s" * 32, preimage, hashlib.sha256).hexdigest()
-    return WorkspaceClaim("git_common_root", "sha256:" + digest)
+    worktree = hmac.new(
+        b"s" * 32, b"yoetz/workspace-worktree/v1\x00" + bytes(path), hashlib.sha256
+    ).hexdigest()
+    return WorkspaceClaim("git_common_root", "sha256:" + digest, "sha256:" + worktree)
 
 
 @dataclass
@@ -444,6 +457,106 @@ async def _start(client: _ClaimClient, workspace_ref: str | None) -> Any:  # noq
         body["workspace_ref"] = workspace_ref
         body["external_ref"] = "claim-bound-task"
     return await client.call(ControlMethod.START, StartRequest.model_validate(body))
+
+
+async def test_linked_worktrees_of_one_repository_are_answered_by_their_own_agents(
+    tmp_path: Path, spy: _Spy, service: _Service
+) -> None:
+    """ADR-051: worktrees share the repository's claim, never a handle or an agent."""
+
+    repository = tmp_path / "client" / "repo" / ".git"
+    main = tmp_path / "client" / "repo"
+    linked = tmp_path / "client" / "linked"
+    _repository(main, "app.py", "print('main')\n")
+    _repository(linked, "app.py", "print('linked')\n")
+    main_agent, linked_agent = FakeWorkspaceAgent(main), FakeWorkspaceAgent(linked)
+    main_client = await service.connect(
+        claim=_claim_for(main, repository=repository), agent=main_agent
+    )
+    # The linked worktree's agent connects after the main one: newest, but not the main's.
+    linked_client = await service.connect(
+        claim=_claim_for(linked, repository=repository), agent=linked_agent
+    )
+    try:
+        main_handle = main_client.session.workspace_handle
+        linked_handle = linked_client.session.workspace_handle
+        assert main_handle is not None and linked_handle is not None
+        assert main_handle != linked_handle
+
+        started = (await _start(main_client, main_handle)).root
+        assert started.ok is True, started
+        # The main worktree's task base came from its own agent alone.
+        assert "read_task_base" in main_agent.operations
+        assert linked_agent.operations == []
+        # The other worktree's handle is not this connection's workspace.
+        refused = (await _start(main_client, linked_handle)).root
+        assert refused.ok is False
+        sibling = (await _start(linked_client, linked_handle)).root
+        assert sibling.ok is True, sibling
+        assert main_agent.operations.count("read_task_base") == 1
+        assert linked_agent.operations.count("read_task_base") == 1
+        # Both tasks share the repository's commitment (privacy authority and consent scope).
+        application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+        routes = [
+            await application.start_catalog.task_route(started.task_id),
+            await application.start_catalog.task_route(sibling.task_id),
+        ]
+        commitments = {route.repository_privacy_commitment for route in routes}
+        assert len(commitments) == 1 and None not in commitments
+
+        # With the main worktree's agent gone, its handle has no agent: the linked worktree's
+        # live agent never answers for it.
+        await main_client.close()
+        with pytest.raises(WorkspaceAgentUnavailable) as caught:
+            await service.hub.call(
+                main_handle,
+                WorkspaceOperation.READ_TASK_BASE,
+                WorkspaceOnlyArguments(main_handle),
+                timeout_seconds=1.0,
+            )
+        assert caught.value.reason == "no_agent"
+        assert linked_agent.operations.count("read_task_base") == 1
+    finally:
+        await main_client.close()
+        await linked_client.close()
+    assert spy.workspaces == []
+
+
+async def test_an_agent_for_another_worktree_is_never_admitted_under_a_live_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: _Service
+) -> None:
+    """Defense in depth: were two worktrees ever to meet under one handle, the second is shut."""
+
+    import finishup.adapters.repository_identity as identity_module
+
+    def one_handle(commitment: str, worktree: str) -> str:
+        del commitment, worktree
+        return "client:00000000000000aa"
+
+    monkeypatch.setattr(identity_module, "workspace_handle_for_claim", one_handle)
+    first, second = tmp_path / "client" / "first", tmp_path / "client" / "second"
+    _repository(first, "app.py", "print('first')\n")
+    _repository(second, "app.py", "print('second')\n")
+    first_agent, second_agent = FakeWorkspaceAgent(first), FakeWorkspaceAgent(second)
+    first_client = await service.connect(claim=_claim_for(first), agent=first_agent)
+    second_client = await service.connect(claim=_claim_for(second), agent=second_agent)
+    try:
+        assert first_client.session.workspace_handle == second_client.session.workspace_handle
+        assert second_client.reader is not None
+        # The service closed the second connection instead of admitting its agent.
+        await asyncio.wait_for(second_client.reader, 5.0)
+        handle = "client:00000000000000aa"
+        await service.hub.call(
+            handle,
+            WorkspaceOperation.READ_TASK_BASE,
+            WorkspaceOnlyArguments(handle),
+            timeout_seconds=5.0,
+        )
+        assert first_agent.operations == ["read_task_base"]
+        assert second_agent.operations == []
+    finally:
+        await first_client.close()
+        await second_client.close()
 
 
 async def test_a_claim_bound_task_runs_its_whole_workflow_on_its_agent_alone(
@@ -896,7 +1009,6 @@ async def test_a_pending_workspace_call_keeps_an_idle_agent_connection_open(
     import time
 
     import finishup.service.daemon as daemon_module
-    from finishup.ports.workspace_agent import WorkspaceOnlyArguments, WorkspaceOperation
 
     class SlowAgent(FakeWorkspaceAgent):
         def answer(self, call: Any) -> Any:  # noqa: ANN401

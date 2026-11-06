@@ -56,7 +56,7 @@ from finishup.ports.workspace_agent import (
     WorkspaceOnlyArguments,
     WorkspaceOperation,
     outcome_for_reason,
-    workspace_handle_for_commitment,
+    workspace_handle_for_claim,
 )
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.service.control_protocol import (
@@ -74,8 +74,9 @@ _SERVICE_INSTANCE_ID: Final = "svc_00000000-0000-4000-8000-000000000210"
 _MANIFEST_DIGEST: Final = "sha256:" + "5" * 64
 _NONCE: Final = "1f" * 32
 _CLAIM_DIGEST: Final = "sha256:" + "c1a1" * 16
+_WORKTREE_DIGEST: Final = "sha256:" + "d2b2" * 16
 _COMMITMENT: Final = "hmac-sha256:" + "0a1b2c3d4e5f6071" + "8" * 48
-_HANDLE: Final = workspace_handle_for_commitment(_COMMITMENT)
+_HANDLE: Final = workspace_handle_for_claim(_COMMITMENT, _WORKTREE_DIGEST)
 _REMOTE: Final = "rws_" + "2" * 32
 _SHA_STATE: Final = "sha256:" + "3" * 64
 _CONTROLS: Final = {
@@ -420,10 +421,14 @@ def _fixtures() -> tuple[tuple[str, str, dict[str, Any]], ...]:
                         "digest": _CLAIM_DIGEST,
                         "identity_kind": "git_common_root",
                         "schema_version": "1.0.0",
+                        "worktree": _WORKTREE_DIGEST,
                     },
                 ),
                 "ADR-051:workspace-claim-hello",
-                "A hello names its workspace by a keyed claim, never a path, and offers an agent.",
+                (
+                    "A hello names its workspace by a keyed claim and its worktree by a keyed "
+                    "digest, never a path, and offers an agent."
+                ),
             ),
         ),
         (
@@ -434,7 +439,7 @@ def _fixtures() -> tuple[tuple[str, str, dict[str, Any]], ...]:
                 "control-hello-result",
                 _hello_result(),
                 "ADR-051:claim-hello-result",
-                "A claim-bound session's answer names its binding and its commitment handle.",
+                "A claim-bound session's answer names its binding and its worktree's handle.",
             ),
         ),
         (

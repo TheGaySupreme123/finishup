@@ -30,6 +30,7 @@ from finishup.ports.control import (
     WorkspaceLocator,
     WorkspaceReply,
 )
+from finishup.ports.workspace_agent import workspace_handle_for_claim
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.schemas import (
@@ -937,11 +938,16 @@ def test_transport_failed_is_a_retryable_public_service_code() -> None:
 # --- ADR-051: workspace claims, the session binding, and workspace-agent frames -------------
 
 _COMMITMENT = "hmac-sha256:" + "0123456789abcdef" + "e" * 48
-_CLAIM_HANDLE = "client:0123456789abcdef"
+_WORKTREE = "sha256:" + "d" * 64
+_CLAIM_HANDLE = workspace_handle_for_claim(_COMMITMENT, _WORKTREE)
 
 
 def _claim() -> WorkspaceClaim:
-    return WorkspaceClaim("git_common_root", "sha256:" + "c" * 64)
+    return WorkspaceClaim("git_common_root", "sha256:" + "c" * 64, _WORKTREE)
+
+
+def _claim_context() -> RepositoryPrivacyContext:
+    return RepositoryPrivacyContext(_COMMITMENT, "client_claim", workspace_handle=_CLAIM_HANDLE)
 
 
 def _agent() -> WorkspaceAgentDeclaration:
@@ -955,7 +961,7 @@ def test_a_claim_bound_handshake_records_binding_handle_and_agent_without_a_path
 
         async def resolve_claim(claim: WorkspaceClaim) -> RepositoryPrivacyContext:
             seen.append(claim)
-            return RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+            return _claim_context()
 
         async def no_locator(_locator: WorkspaceLocator) -> RepositoryPrivacyContext:
             raise AssertionError("a claim-bound hello must never resolve a path")
@@ -981,12 +987,12 @@ def test_a_claim_bound_handshake_records_binding_handle_and_agent_without_a_path
             assert session.workspace_binding == "client_claim"
             assert session.workspace_handle == _CLAIM_HANDLE
             assert session.workspace_agent == _agent()
-            assert "c" * 64 not in repr(session)
-        assert server_session.repository_privacy_context == RepositoryPrivacyContext(
-            _COMMITMENT, "client_claim"
-        )
+            # The worktree digest rides beside the claim; neither is ever rendered.
+            assert session.workspace_worktree == _WORKTREE
+            assert "c" * 64 not in repr(session) and "d" * 64 not in repr(session)
+        assert server_session.repository_privacy_context == _claim_context()
         assert client_session.repository_privacy_context is None
-        assert "c" * 64 not in repr(_claim())
+        assert "c" * 64 not in repr(_claim()) and "d" * 64 not in repr(_claim())
 
     asyncio.run(exercise())
 
@@ -1072,6 +1078,7 @@ def test_a_hello_with_both_a_locator_and_a_claim_is_refused_before_any_binding()
                     "schema_version": "1.0.0",
                     "identity_kind": "directory",
                     "digest": "sha256:" + "d" * 64,
+                    "worktree": _WORKTREE,
                 },
             },
             {
@@ -1193,7 +1200,7 @@ def test_session_binding_facts_are_validated_together() -> None:
         "peer_identity": object(),
         "connection_nonce": "1" * 64,
     }
-    claim_context = RepositoryPrivacyContext(_COMMITMENT, "client_claim")
+    claim_context = _claim_context()
     path_context = RepositoryPrivacyContext(_COMMITMENT, "git_common_root")
     ControlSession(**base, workspace_binding="local_path", repository_privacy_context=path_context)
     ControlSession(
@@ -1216,14 +1223,33 @@ def test_session_binding_facts_are_validated_together() -> None:
             "workspace_handle": "client:ffffffffffffffff",
         },
         {"workspace_binding": "local_path", "workspace_agent": _agent()},
+        {"workspace_binding": "local_path", "workspace_worktree": _WORKTREE},
+        {"workspace_binding": "client_claim", "workspace_worktree": "sha256:" + "D" * 64},
+        {
+            # The handle of another worktree of the same repository is not this session's.
+            "workspace_binding": "client_claim",
+            "repository_privacy_context": claim_context,
+            "workspace_handle": workspace_handle_for_claim(_COMMITMENT, "sha256:" + "f" * 64),
+        },
     )
     for invalid in invalid_cases:
         with pytest.raises(ValueError):
             ControlSession(**base, **invalid)
     with pytest.raises(ValueError, match="repository_identity_kind_invalid"):
         RepositoryPrivacyContext(
-            _COMMITMENT, "client_claim", WorkspaceLocator("/private/raw-repository")
+            _COMMITMENT,
+            "client_claim",
+            WorkspaceLocator("/private/raw-repository"),
+            workspace_handle=_CLAIM_HANDLE,
         )
+    # A claim-bound identity always names its worktree's handle, and only it does.
+    for kind, handle in (
+        ("client_claim", None),
+        ("client_claim", "client:XYZ"),
+        ("git_common_root", _CLAIM_HANDLE),
+    ):
+        with pytest.raises(ValueError, match="workspace_handle_invalid"):
+            RepositoryPrivacyContext(_COMMITMENT, cast(Any, kind), workspace_handle=handle)
 
 
 def _workspace_call(arguments: dict[str, JsonValue] | None = None) -> WorkspaceCall:
@@ -1395,6 +1421,8 @@ def test_the_workspace_agent_declaration_is_closed_and_sorted() -> None:
             WorkspaceAgentDeclaration(operations, size)
     for digest in ("sha256:" + "C" * 64, "hmac-sha256:" + "c" * 64, ""):
         with pytest.raises(ValueError, match="workspace_claim_digest_invalid"):
-            WorkspaceClaim("directory", digest)
+            WorkspaceClaim("directory", digest, _WORKTREE)
+        with pytest.raises(ValueError, match="workspace_claim_worktree_invalid"):
+            WorkspaceClaim("directory", "sha256:" + "c" * 64, digest)
     with pytest.raises(ValueError, match="workspace_claim_identity_kind_invalid"):
-        WorkspaceClaim(cast(Any, "client_claim"), "sha256:" + "c" * 64)
+        WorkspaceClaim(cast(Any, "client_claim"), "sha256:" + "c" * 64, _WORKTREE)

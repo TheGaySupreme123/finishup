@@ -183,15 +183,21 @@ resource ripple.
 
 - **Claim or locator, never both.** The hello gains an optional `workspace_claim`
   `{schema_version: "1.0.0", identity_kind: "git_common_root" | "directory", digest:
-  "sha256:<64 hex>"}`. A hello carries either it or `workspace_locator`; both is
-  `workspace_binding_conflict`. The client computes the digest as `HMAC-SHA256(claim_salt,
-  "yoetz/workspace-claim/v1\0" ‖ kind ‖ 0x00 ‖ canonical root)`, where the canonical root comes
-  from the one shared rule in `adapters/workspace_root.py` and `claim_salt` is 32 random bytes
-  kept per target in `target.json`. No path crosses the wire for a remote target.
+  "sha256:<64 hex>", worktree: "sha256:<64 hex>"}`. A hello carries either it or
+  `workspace_locator`; both is `workspace_binding_conflict`. The client computes the digest as
+  `HMAC-SHA256(claim_salt, "yoetz/workspace-claim/v1\0" ‖ kind ‖ 0x00 ‖ canonical root)`, where
+  the canonical root comes from the one shared rule in `adapters/workspace_root.py` and
+  `claim_salt` is 32 random bytes kept per target in `target.json`. Every linked worktree of one
+  repository therefore claims the same digest. The `worktree` digest tells them apart:
+  `HMAC-SHA256(claim_salt, "yoetz/workspace-worktree/v1\0" ‖ worktree top level)`, over the one
+  directory the connection's agent serves (its locator). No path crosses the wire for a remote
+  target. (Amended 2026-11-06, before 2.10.0 shipped: the first cut had no `worktree`, so linked
+  worktrees shared one handle and one worktree's agent could answer another's task.)
 - **The server derives, it does not trust.** The daemon commits the claim with the installation MAC
   under the new domain `yoetz/repository-claim/v1` over `kind ‖ digest`, producing
-  `RepositoryPrivacyContext(identity_kind="client_claim", workspace_locator=None)`. The repository
-  fence works on that commitment unchanged. The server never resolves a filesystem path for a
+  `RepositoryPrivacyContext(identity_kind="client_claim", workspace_locator=None,
+  workspace_handle=...)`. The repository fence, the privacy authority and the consent scope work
+  on that commitment unchanged, so linked worktrees share a commitment, as they do locally. The server never resolves a filesystem path for a
   claim-bound connection. The composition flag `ServiceComposition.refuse_workspace_locators`
   (off by default) lets a network edge close any hello that names a locator. A claim on a locked
   service binds no handle and no agent.
@@ -199,9 +205,12 @@ resource ripple.
   operations: [...], max_reply_bytes: <int>}`: this connection answers workspace calls for its
   claimed workspace.
 - **Hello-result.** It gains a required `workspace_binding: "none" | "local_path" |
-  "client_claim"` and an optional `workspace_handle` (`client:<16 hex>`, the first 16 hex of the
-  claim commitment). Coverage decisions are derived from `workspace_binding`, never from the
-  client's word.
+  "client_claim"` and an optional `workspace_handle` (`client:<16 hex>`, the first 16 hex of
+  `SHA-256("yoetz/workspace-handle/v1\0" ‖ claim commitment ‖ 0x00 ‖ worktree digest)`). Worktrees
+  share a commitment, not a handle: a task records its own worktree's handle as its
+  `workspace_ref`, so every later read of that task, in a live call or in background work after a
+  reconnect, reaches only that worktree's agent. Coverage decisions are derived from
+  `workspace_binding`, never from the client's word.
 - **New frames.** `workspace_call` (server→client, a new `oneOf` branch of the control result:
   `kind`, `protocol_version: "1.0"`, `call_id`, `service_instance_id`, `service_generation`,
   `operation`, `arguments`, `deadline_ms`) and `workspace_reply` (client→server, a new branch of
@@ -246,7 +255,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   maps them to its own root and refuses any other handle (`workspace_not_claimed`). An outside read
   never enters the claimed workspace through an outside root, nor the client's protected
   directories — its own FinishUP directories and the everyday installation's under both
-  application names — whatever the server excludes. The agent refuses unknown operations and
+  application names — whatever the server excludes. Where a local service's own caller narrowed
+  an operation, the agent narrows it itself: `inspect` excerpts only the workspace's own changed
+  paths (never an ignored, unchanged, `.git` or credential-named file), and `lstat_candidates`
+  answers only for a candidate the local outside-input rule would look at (no hidden,
+  credential-named or system path, and beneath a path an owner may admit). The agent refuses unknown operations and
   never runs a command that did not come from the repository's owner-approved
   `.finishup/checks.toml` (`check_not_approved`). HOME decisions are made by the agent on the
   client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,
@@ -258,16 +271,32 @@ answers bounded `workspace_call`s on a connection that declared it.
   it waits a bounded time for one — 5 seconds inside a live control call, 30 seconds for
   background work such as the detached review and recovered jobs — then raises the typed
   `WorkspaceAgentUnavailable`, whose reason is closed. Each call is bounded by the catalog's call
-  deadline, a channel serves at most four calls at once, and pending argument bytes are bounded. A
-  dropped channel fails its pending calls; a pending call keeps its connection out of idle close;
-  a reply on a connection that declared no agent closes it. The hub logs closed tokens only.
+  deadline, and by the deadline of the control call it serves, whose cancellation or timeout
+  cancels it at once (a call blocked in a worker thread included); the agent is told only the
+  time left once the call holds a slot, and the reply is awaited that long after the frame is
+  written. A frame is never cut off part-way: the write is shielded, and a connection whose write
+  a timeout or cancellation interrupted is ended rather than written on again. A channel serves
+  at most four calls at once, and pending argument bytes are bounded. A dropped channel fails its
+  pending calls, except that a read whose channel dropped is sent once
+  more to another live channel of the same handle (never an approved check, which may already have
+  run); a pending call keeps its connection out of idle close; a reply on a connection that
+  declared no agent closes it. The hub logs closed tokens only. Every channel under one handle
+  serves the same worktree: a connection whose claim names another worktree is closed rather than
+  admitted under a handle that already has a live channel (`workspace_agent_worktree_conflict`),
+  and a live control call prefers the agent its own connection offered. With no channel for a
+  task's handle the call fails `no_agent`; another worktree's agent never answers it.
 - **Routing.** `service/workspace_routing.py` wraps every workspace port and callable the service
   composes. An absolute-path workspace goes to the existing local adapter unchanged; a
   `client:<16 hex>` handle goes to the hub, and no local adapter is ever handed it. Callers that
   ran synchronously on the event loop — the reviewer broker's file reads, declared-test pinning,
   the observation verification steps and the post-run hash — move to a worker thread at their call
   sites, with no other behaviour change. A composition built without the hub fails a claim-bound
-  read as unavailable (`hub_unavailable`), never as a local read.
+  read as unavailable (`hub_unavailable`), never as a local read. A reviewer's agent reads and
+  its ignored-path probes keep the reviewer's own per-read budget, and a listing's probes go in
+  batches, so a remote review ends `deadline` exactly where a local one would. An approved check
+  run by the agent ends within its call's deadline less a reply reserve; the transport caps a
+  call at 300 s, so on a remote target an approval longer than about 285 s is cut there and
+  records `timeout` rather than losing its result.
 - **The client side.** A connection to a remote root sends a `ClientWorkspaceBinding` (the claim,
   and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
@@ -414,11 +443,14 @@ the rows were captured there. The server holds none of it and must not borrow it
 - **Accepted as `client_attested`, never verified.** The server cannot recompute a commitment made
   under the client's key, so on a claim-bound connection it accepts the envelope's session
   commitment and the attested consent, profiles, fence, trust and route as client-attested. It
-  records them keyed to the claim in a separate claim store, `<state dir>/observation-claims/<16
-  hex of the handle>/` (an ordinary observation store and lifecycle-mapping directory holding only
-  that claim's workspace, under a key the server generates), and runs the unchanged observation
-  coordinator over it with the claim's handle as the workspace. Its own observation store,
-  mappings and consent are never read or written for a claim.
+  records them keyed to the claimed worktree in a separate claim store, `<state
+  dir>/observation-claims/<16 hex of the handle>/` (an ordinary observation store and
+  lifecycle-mapping directory holding only that worktree's workspace, under a key the server
+  generates), and runs the unchanged observation coordinator over it with the handle as the
+  workspace. The handle names one worktree, so linked worktrees of one repository keep separate
+  consent, revocation, content fence and approved-check trust, as the client keeps them: consent
+  for one worktree never covers another. Its own observation store, mappings and consent are
+  never read or written for a claim.
 - **What the server still decides.** Only the connection's own claim is touched. The attested
   route must name a task whose route was opened on a connection carrying the same claim (its
   route commitment is the claim commitment); any other route is refused with `consent_missing`

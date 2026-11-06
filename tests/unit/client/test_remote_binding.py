@@ -12,6 +12,7 @@ import base64
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -103,6 +104,57 @@ async def test_a_remote_root_claims_under_its_own_salt_with_its_agent(
     protected = binding.agent._protected  # pyright: ignore[reportPrivateUsage]
     for directory in paths.ambient_installation_dirs():
         assert os.fspath(directory) in protected
+
+
+@pytest.mark.anyio
+async def test_every_agent_of_a_target_keys_its_opened_workspaces_alike(
+    home: Path, workspace: WorkspaceLocator
+) -> None:
+    """Any agent of the client for one worktree answers a handle another one opened."""
+
+    import subprocess
+
+    from finishup.client.remote_binding import remote_workspace_binding
+    from finishup.domain.values import JsonObject
+    from finishup.ports.control import WorkspaceCall
+    from finishup.ports.workspace_agent import (
+        OpenWorkspaceArguments,
+        WorkspaceOperation,
+        operation_spec,
+    )
+    from finishup.protocol.ids import IdKind, new_id
+
+    del home
+    subprocess.run(
+        ("git", "init", "-q", workspace.path),
+        check=True,
+        env={"PATH": os.defpath, "HOME": workspace.path, "GIT_CONFIG_NOSYSTEM": "1"},
+    )
+    salt = bytes(range(32))
+    first = await remote_workspace_binding(workspace, salt, protected=("/nonexistent",))
+    second = await remote_workspace_binding(workspace, salt, protected=("/nonexistent",))
+    other_target = await remote_workspace_binding(
+        workspace, bytes(range(32, 64)), protected=("/nonexistent",)
+    )
+    spec = operation_spec(WorkspaceOperation.OPEN_WORKSPACE)
+    assert spec is not None
+    handle = "client:0123456789abcdef"
+
+    def opened(binding: object) -> object:
+        agent = cast(WorkspaceAgentHandler, getattr(binding, "agent"))
+        call = WorkspaceCall(
+            "workspace_call",
+            "1.0",
+            new_id(IdKind.CONTROL_RPC),
+            "svc_00000000-0000-4000-8000-000000000001",
+            "1",
+            "open_workspace",
+            JsonObject(spec.encode_arguments(OpenWorkspaceArguments(handle))),
+            10_000,
+        )
+        return agent.answer(call, workspace_handle=handle).result
+
+    assert opened(first) == opened(second) != opened(other_target)
 
 
 @pytest.mark.anyio

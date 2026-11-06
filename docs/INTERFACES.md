@@ -4562,16 +4562,24 @@ output, an MCP frame or JSON output.
 **Control envelopes 2.10.0.** All four control envelopes move together.
 
 - Hello: optional `workspace_claim` `{schema_version: "1.0.0", identity_kind:
-  "git_common_root"|"directory", digest: "sha256:<64 hex>"}`, mutually exclusive with
-  `workspace_locator` (`workspace_binding_conflict`); optional `workspace_agent`
-  `{schema_version: "1.0.0", operations: [<operation>...], max_reply_bytes: <int>}`.
+  "git_common_root"|"directory", digest: "sha256:<64 hex>", worktree: "sha256:<64 hex>"}`,
+  mutually exclusive with `workspace_locator` (`workspace_binding_conflict`); optional
+  `workspace_agent` `{schema_version: "1.0.0", operations: [<operation>...], max_reply_bytes:
+  <int>}`.
 - Client claim: `HMAC-SHA256(claim_salt, "yoetz/workspace-claim/v1\0" ‖ identity_kind ‖ 0x00 ‖
-  canonical root)`, the canonical root from `adapters/workspace_root.py`.
+  canonical root)`, the canonical root from `adapters/workspace_root.py`; every linked worktree of
+  one repository claims the same digest. Worktree digest: `HMAC-SHA256(claim_salt,
+  "yoetz/workspace-worktree/v1\0" ‖ worktree top level)`, over the directory the connection's
+  agent serves (its locator).
 - Server commitment: the installation MAC under domain `yoetz/repository-claim/v1` over
   `identity_kind ‖ digest`, giving `RepositoryPrivacyContext(identity_kind="client_claim",
-  workspace_locator=None)`. No path is resolved for a claim-bound connection.
+  workspace_locator=None, workspace_handle=<handle>)`. No path is resolved for a claim-bound
+  connection. Worktrees share a commitment (privacy authority and consent scope), not a handle.
 - Hello-result: required `workspace_binding: "none"|"local_path"|"client_claim"`; optional
-  `workspace_handle` = `client:` + the first 16 hex of the commitment.
+  `workspace_handle` = `client:` + the first 16 hex of `SHA-256("yoetz/workspace-handle/v1\0" ‖
+  commitment ‖ 0x00 ‖ worktree digest)` (`ports.workspace_agent.workspace_handle_for_claim(
+  commitment, worktree)`), one per claimed worktree. `ControlSession.workspace_worktree` keeps
+  the claim's worktree digest on both sides.
 - `workspace_call` (server→client, a control-result branch): `kind`, `protocol_version: "1.0"`,
   `call_id`, `service_instance_id`, `service_generation`, `operation`, `arguments` (JSON object),
   `deadline_ms`. Sent only to a connection whose hello carried `workspace_agent`.
@@ -4621,7 +4629,8 @@ root)` maps them on the client (`client_location_valid(value, *, relative=True)`
 Outside-input roots and `lstat` candidates stay absolute.
 
 **Workspace agent (client side).** `finishup.client.workspace_agent.WorkspaceAgentHandler(workspace,
-*, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None)` answers the
+*, protected=None, operations=None, max_reply_bytes=6291456, check_sandbox=None,
+opened_handle_key=None)` answers the
 catalog against the real local adapters with their existing fences: Git hardening and ownership
 checks, ignore rules, credential-named and hidden-path refusals, byte and time bounds, and the
 network-denying check sandbox. `answer(call, *, workspace_handle)` is synchronous and runs in a
@@ -4634,6 +4643,15 @@ worker thread. Its confinement rules:
   and never enter a protected directory, whatever the server lists as excluded; an `lstat`
   candidate inside either is reported as not found. An exclusion naming a directory this user
   cannot examine does not empty the read.
+- `lstat_candidates` answers only for a candidate the local outside-input rule
+  (`outside_input_candidates`) would look at: no hidden component, not credential-named, in no
+  system directory, at or beneath a path an owner may admit. Any other candidate is reported as
+  not found, so a server learns nothing of it; an honest server never asks about one.
+- `inspect` excerpts only the workspace's own changed paths: the agent takes
+  `list_changed_relative_paths` itself and inspects only paths in it (no Git-ignored, unchanged
+  or `.git` file), never a credential-named path, nor one in the home directory's private state
+  when the workspace is the home directory. A path left out is `path_out_of_scope` (`partial`, or
+  `rejected` when none is left) and its bytes are never read.
 - `protected` defaults to `client_protected_directories()`: this process's isolation root and its
   bundle, config, cache, state, log and runtime directories, then
   `config.paths.ambient_installation_dirs()` — the everyday installation's directories under both
@@ -4641,15 +4659,23 @@ worker thread. Its confinement rules:
   readable.
 - `run_approved_check` runs only when the repository's own `.finishup/checks.toml` approves
   exactly the requested argv (`check_not_approved` otherwise). HOME decisions use this machine's
-  home directory, never the server's.
+  home directory, never the server's. The run ends within the call's deadline less a 15 s reserve
+  for reaping, redaction and the reply (`ApprovedCheckRunner(..., run_seconds_cap=)`), so its
+  result, a `timeout` included, reaches the server in time: the transport caps a call at 300 s,
+  so an approval longer than about 285 s is cut there and records `timeout` on a remote target.
+  With no time left past the reserve the call answers `deadline_exceeded` and nothing runs.
 - Unknown operations are refused; logs carry closed tokens only, never a path, argument or output.
 
 **Hub and routing (service side).** `service.workspace_hub.WorkspaceAgentHub(*,
 inline_wait_seconds=5.0, background_wait_seconds=30.0)` is the service's registry of agent
 channels. The daemon registers a channel for each agent-declaring, claim-bound connection at
-handshake (`register(*, handle, declaration, service_instance_id, service_generation, writer)`)
-and unregisters it on close (`unregister(channel)`), which fails its pending calls at once. A claim
-on a locked service binds no handle and no agent. `async call(handle, operation, arguments, *,
+handshake (`register(*, handle, declaration, service_instance_id, service_generation, writer,
+worktree=None)`) and unregisters it on close (`unregister(channel)`), which fails its pending calls
+at once. A claim on a locked service binds no handle and no agent. Every channel under one handle
+serves one worktree: `register` refuses a channel whose `worktree` digest differs from a live
+channel's under the same handle (`ValueError("workspace_agent_worktree_conflict")`; the daemon
+records that token and closes the connection), and a call for a handle with no channel fails
+`no_agent` rather than reaching another worktree's agent. `async call(handle, operation, arguments, *,
 timeout_seconds, background=None)` sends one `workspace_call` under the session's write lock and
 awaits the correlated reply (`deliver(channel, reply)`); `call_blocking(...)` is the same call from
 a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(loop=None)` and
@@ -4658,17 +4684,50 @@ a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(
 - **Wait bounds.** With no channel for the handle, a call waits for one:
   `INLINE_AGENT_WAIT_SECONDS = 5.0` inside a live control call and
   `BACKGROUND_AGENT_WAIT_SECONDS = 30.0` for background work (the detached review, verification,
-  sweeps, recovered jobs). The daemon marks each dispatched call with `live_call_scope()`
-  (`in_live_call()` reads it). Each call is then bounded by the catalog's call deadline.
+  sweeps, recovered jobs). The daemon marks each dispatched call with
+  `live_call_scope(channel=None)` (`in_live_call()` reads it), naming the agent the serving
+  connection itself offered: a live call for that channel's handle goes to it first. Each call is
+  then bounded by the catalog's call deadline.
+- **The control call bounds its workspace calls.** The daemon runs each ready handler inside
+  `workspace_call_deadline(deadline_at=None)` (the handler's own deadline on the loop clock, or
+  none). A workspace call made there never waits past that deadline and is not sent when no time
+  is left (`deadline_exceeded`); when the handler is cancelled or times out, every workspace call
+  it left in flight is cancelled at once, a blocking one in a worker thread included, which then
+  fails `call_cancelled` and frees its worker thread and agent slot. Work the handler started that
+  outlives it (a task that copied its context) is no longer bounded or cancelled by it.
+- **Deadlines and whole frames.** The slot wait and the frame write share a call's
+  `timeout_seconds`; the agent is told what is left of it as `deadline_ms`, and the reply is
+  awaited that long after the frame is fully written, plus a 1 s grace, so an answer given in the
+  agent's own time is never dropped as late. The frame write is shielded: a caller that stops
+  waiting never cuts a frame off part-way. The daemon writes every frame of a connection (control
+  results and workspace calls) one at a time, and a write that a timeout, a cancellation or a
+  transport failure interrupts leaves the connection out of step: its write side is shut, so the
+  peer reads the end of the stream rather than a spliced frame, and no later frame is written on
+  it.
 - **Channel bounds.** A channel serves `MAX_CALLS_PER_CHANNEL = 4` calls at once with at most
   `MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL` argument bytes in flight. A pending call keeps its
   connection out of idle close, and a `workspace_reply` on a connection that declared no agent
   closes that connection.
+- **Several connections per worktree.** A live call goes first to the agent its own connection
+  offered, otherwise to the newest live channel for the handle that declares its operation; every
+  channel under one handle serves the same worktree. When that channel drops before answering and
+  another live channel for the same handle declares the operation, a read (every operation but
+  `run_approved_check`, which may already have run) is sent once more to that channel; otherwise
+  the call fails `agent_disconnected` at once.
+- **Opened workspaces.** An agent built with an `opened_handle_key` answers `open_workspace` with
+  a keyed handle (`rws_` + the first 32 hex of `HMAC-SHA256(key, "yoetz/opened-workspace/v1\0" ‖
+  admitted-HOME flag ‖ 0x00 ‖ its root)`), so any agent of the same client for the same worktree
+  recomputes and answers it; `remote_workspace_binding` derives that key from the target's claim
+  salt (`HMAC-SHA256(claim_salt, "yoetz/opened-workspace-key/v1")`), which the server never sees.
+  An agent without a key keeps random handles in a bounded table. As a backstop, the routing
+  (`RoutedObservationWorkspace` and its subject-state, inspect, changed-path and approved-check
+  calls) reopens a workspace whose handle the answering agent reports `handle_unknown`, keeps the
+  new handle and retries the call once; nothing else is retried there.
 - **Typed loss.** Every failure is `ports.workspace_agent.WorkspaceAgentUnavailable(reason,
   agent_reason=None)`, `reason` in `WORKSPACE_AGENT_UNAVAILABLE_REASONS`: `no_agent`,
   `agent_disconnected`, `deadline_exceeded`, `agent_busy`, `operation_not_declared`,
   `reply_invalid`, `agent_unavailable`, `agent_refused`, `agent_failed` (the last three carry the
-  agent's own closed `agent_reason`), `arguments_invalid` or `hub_unavailable`. `.refused` is true
+  agent's own closed `agent_reason`), `arguments_invalid`, `hub_unavailable` or `call_cancelled`. `.refused` is true
   for `agent_refused`, whose public token is `workspace_agent_refused`. The hub logs closed tokens
   only and records each delivered answer under the `client_attested` label.
 
@@ -4682,7 +4741,11 @@ injects. `WorkspaceRouting.compose(hub, local_capture)` gives `.change_capture`
 default), and `RoutedApprovedCheckRunner` runs approved checks. An absolute-path workspace goes to
 the unchanged local adapter; a `client:<16 hex>` handle (`client_bound(value)`) goes to the hub, and
 no local adapter is ever handed it. An agent answer that carries a change-capture reason raises the
-same `ChangeCaptureUnavailable` a local read would. The reviewer broker's file reads (and its
+same `ChangeCaptureUnavailable` a local read would. A reviewer's agent reads (`list_beneath`,
+`read_text_beneath`) and its ignored-path rule are bounded by the reviewer's own per-read budget
+(`LOCAL_READ_SECONDS` plus 1 s), so a slow agent ends the review `deadline` as a slow local read
+does; `ClientWorkspaceReads.refused_paths(paths)` answers that rule for a whole listing in
+batches of 64 (`ReadRoot.refuse_many`), and the broker checks the read's stop before probing. The reviewer broker's file reads (and its
 refusal probe), declared-test pinning, the observation verification steps and the post-run hash
 now run in `asyncio.to_thread`. `build_ready_application_factory(..., workspace_hub=)` and
 `provide_service_ready_context(..., workspace_hub=)` take the composition's one hub; without one, a
@@ -4715,8 +4778,10 @@ reply-too-large and internal-error cases with closed reasons; a client without o
 `workspace_call` as `frame_invalid`.
 
 - `finishup.client.workspace_claim`: `workspace_claim(locator, salt)` (awaitable) and
-  `workspace_claim_for_root(root, salt)` compute the claim; `new_claim_salt()` mints a salt of
-  `WORKSPACE_CLAIM_SALT_BYTES = 32`. The salt is checked before anything on disk is read.
+  `workspace_claim_for_root(root, salt, worktree)` compute the claim with its worktree digest
+  (`worktree_digest(worktree, salt)`, over `locator.path` in normal form); `new_claim_salt()`
+  mints a salt of `WORKSPACE_CLAIM_SALT_BYTES = 32`. The salt is checked before anything on disk
+  is read.
 - `finishup.client.remote_binding`: `remote_workspace_binding(workspace, claim_salt, *,
   serve_workspace=True, protected=None)` composes the binding (the agent's adapters load only when
   `serve_workspace`). `binding_for_active_root(locator, *, serve_workspace)` decides from the active
@@ -4786,10 +4851,12 @@ golden vector CTL-2106), built by `finishup.client.observation_attestation` when
 
 Workspace-locator content in the row is replaced by the connection's `client:` handle. The service
 (`application.observation_claims.ClaimObservationRouter`) accepts the envelope's session
-commitment and the attestation as `client_attested`, records them in the claim's own store
-`<state dir>/observation-claims/<16 hex>/` (`ClientAttestedObservationStore`, an observation
-store and lifecycle-mapping directory under a key the service generates) and runs the unchanged
-coordinator over it with `client_workspace_handle` set. A route whose task was not opened under
+commitment and the attestation as `client_attested`, records them in the claimed worktree's own
+store `<state dir>/observation-claims/<16 hex of the handle>/` (`ClientAttestedObservationStore`,
+an observation store and lifecycle-mapping directory under a key the service generates) and runs
+the unchanged coordinator over it with `client_workspace_handle` set. The handle names one
+worktree, so linked worktrees of one repository never share consent, revocation, content fence or
+approved-check trust here either. A route whose task was not opened under
 the same claim, and a claim-bound row without an attestation, are refused `consent_missing` before
 any write; an attestation on a connection without a claim is `frame_invalid`. Text and markdown
 receipts of a claim-bound task with hook-observed evidence add `CLIENT_ATTESTED_OBSERVATION_LINE`

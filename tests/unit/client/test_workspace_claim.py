@@ -20,9 +20,11 @@ from finishup.adapters.workspace_root import (
 from finishup.client.workspace_claim import (
     WORKSPACE_CLAIM_DOMAIN,
     WORKSPACE_CLAIM_SALT_BYTES,
+    WORKSPACE_WORKTREE_DOMAIN,
     new_claim_salt,
     workspace_claim,
     workspace_claim_for_root,
+    worktree_digest,
 )
 from finishup.ports.control import WorkspaceClaim, WorkspaceLocator
 
@@ -64,41 +66,66 @@ def _repository(path: Path) -> Path:
 
 def test_the_digest_is_the_domain_separated_hmac_of_the_shared_preimage(tmp_path: Path) -> None:
     root = CanonicalWorkspaceRoot("directory", tmp_path)
-    claim = workspace_claim_for_root(root, _SALT_A)
+    claim = workspace_claim_for_root(root, _SALT_A, os.fspath(tmp_path))
     expected = hmac.new(
         _SALT_A,
         b"yoetz/workspace-claim/v1\x00directory\x00" + os.fsencode(tmp_path),
         hashlib.sha256,
     ).hexdigest()
-    assert claim == WorkspaceClaim(identity_kind="directory", digest="sha256:" + expected)
+    worktree = hmac.new(
+        _SALT_A, b"yoetz/workspace-worktree/v1\x00" + os.fsencode(tmp_path), hashlib.sha256
+    ).hexdigest()
+    assert claim == WorkspaceClaim(
+        identity_kind="directory", digest="sha256:" + expected, worktree="sha256:" + worktree
+    )
     assert WORKSPACE_CLAIM_DOMAIN + workspace_identity_preimage(root) == (
         b"yoetz/workspace-claim/v1\x00directory\x00" + os.fsencode(tmp_path)
     )
+    assert WORKSPACE_WORKTREE_DOMAIN == b"yoetz/workspace-worktree/v1\x00"
+    assert claim.worktree != claim.digest  # its own domain, even over the same directory
+
+
+def test_the_worktree_digest_names_only_a_normal_absolute_directory(tmp_path: Path) -> None:
+    assert worktree_digest(os.fspath(tmp_path), _SALT_A) != worktree_digest(
+        os.fspath(tmp_path), _SALT_B
+    )
+    for invalid in ("relative/dir", os.fspath(tmp_path) + "/", os.fspath(tmp_path) + "/./x"):
+        with pytest.raises(ValueError, match="workspace_worktree_invalid"):
+            worktree_digest(invalid, _SALT_A)
+    with pytest.raises(ValueError, match="workspace_claim_salt_invalid"):
+        worktree_digest(os.fspath(tmp_path), b"short")
 
 
 def test_two_machines_claim_the_same_path_with_unrelated_digests(tmp_path: Path) -> None:
     root = CanonicalWorkspaceRoot("git_common_root", tmp_path / ".git")
-    first = workspace_claim_for_root(root, _SALT_A)
-    second = workspace_claim_for_root(root, _SALT_B)
+    first = workspace_claim_for_root(root, _SALT_A, os.fspath(tmp_path))
+    second = workspace_claim_for_root(root, _SALT_B, os.fspath(tmp_path))
     assert first.identity_kind == second.identity_kind == "git_common_root"
-    assert first.digest != second.digest
+    assert first.digest != second.digest and first.worktree != second.worktree
     # The same salt and path always give the same claim: a target reaches its own tasks again.
-    assert workspace_claim_for_root(root, _SALT_A) == first
+    assert workspace_claim_for_root(root, _SALT_A, os.fspath(tmp_path)) == first
 
 
 def test_the_kind_is_part_of_the_claim(tmp_path: Path) -> None:
-    directory = workspace_claim_for_root(CanonicalWorkspaceRoot("directory", tmp_path), _SALT_A)
-    common = workspace_claim_for_root(CanonicalWorkspaceRoot("git_common_root", tmp_path), _SALT_A)
+    here = os.fspath(tmp_path)
+    directory = workspace_claim_for_root(
+        CanonicalWorkspaceRoot("directory", tmp_path), _SALT_A, here
+    )
+    common = workspace_claim_for_root(
+        CanonicalWorkspaceRoot("git_common_root", tmp_path), _SALT_A, here
+    )
     assert directory.digest != common.digest
 
 
 def test_no_path_reaches_any_representation_of_the_claim(tmp_path: Path) -> None:
     secret_dir = tmp_path / "private-project-name"
     secret_dir.mkdir()
-    claim = workspace_claim_for_root(CanonicalWorkspaceRoot("directory", secret_dir), _SALT_A)
+    claim = workspace_claim_for_root(
+        CanonicalWorkspaceRoot("directory", secret_dir), _SALT_A, os.fspath(secret_dir)
+    )
     assert "private-project-name" not in repr(claim)
-    assert claim.digest not in repr(claim)
-    assert "private-project-name" not in claim.digest
+    assert claim.digest not in repr(claim) and claim.worktree not in repr(claim)
+    assert "private-project-name" not in claim.digest + claim.worktree
 
 
 @pytest.mark.parametrize(
@@ -107,12 +134,14 @@ def test_no_path_reaches_any_representation_of_the_claim(tmp_path: Path) -> None
 )
 def test_a_salt_is_exactly_thirty_two_bytes(tmp_path: Path, salt: object) -> None:
     with pytest.raises(ValueError, match="workspace_claim_salt_invalid"):
-        workspace_claim_for_root(CanonicalWorkspaceRoot("directory", tmp_path), cast(bytes, salt))
+        workspace_claim_for_root(
+            CanonicalWorkspaceRoot("directory", tmp_path), cast(bytes, salt), os.fspath(tmp_path)
+        )
 
 
 def test_a_root_must_be_the_shared_rule_value(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="workspace_root_invalid"):
-        workspace_claim_for_root(cast(CanonicalWorkspaceRoot, tmp_path), _SALT_A)
+        workspace_claim_for_root(cast(CanonicalWorkspaceRoot, tmp_path), _SALT_A, "/")
 
 
 def test_new_salts_are_fresh_and_sized() -> None:
@@ -122,7 +151,11 @@ def test_new_salts_are_fresh_and_sized() -> None:
 
 
 @pytest.mark.anyio
-async def test_any_directory_of_a_repository_claims_the_same_workspace(tmp_path: Path) -> None:
+async def test_every_worktree_of_a_repository_claims_it_and_names_its_own_worktree(
+    tmp_path: Path,
+) -> None:
+    """One repository is one claim; each worktree the agent serves has its own digest."""
+
     repository = _repository(tmp_path / "repository")
     nested = repository / "src" / "deep"
     nested.mkdir(parents=True)
@@ -131,14 +164,18 @@ async def test_any_directory_of_a_repository_claims_the_same_workspace(tmp_path:
     _git("-C", os.fspath(repository), "worktree", "add", os.fspath(linked), "other")
 
     claims = {
-        await workspace_claim(WorkspaceLocator(os.fspath(path)), _SALT_A)
+        path: await workspace_claim(WorkspaceLocator(os.fspath(path)), _SALT_A)
         for path in (repository, nested, linked)
     }
-    assert len(claims) == 1
-    (claim,) = claims
+    assert len({(claim.identity_kind, claim.digest) for claim in claims.values()}) == 1
+    claim = claims[repository]
     root = await canonical_workspace_root(WorkspaceLocator(os.fspath(repository)))
-    assert claim == workspace_claim_for_root(root, _SALT_A)
+    assert claim == workspace_claim_for_root(root, _SALT_A, os.fspath(repository))
     assert claim.identity_kind == "git_common_root"
+    # The worktree digest is over the very directory each agent serves.
+    for path, each in claims.items():
+        assert each.worktree == worktree_digest(os.fspath(path), _SALT_A)
+    assert claims[linked].worktree != claim.worktree
     other_machine = await workspace_claim(WorkspaceLocator(os.fspath(repository)), _SALT_B)
     assert other_machine.digest != claim.digest
 
@@ -149,7 +186,7 @@ async def test_a_plain_directory_claims_its_resolved_self(tmp_path: Path) -> Non
     plain.mkdir()
     claim = await workspace_claim(WorkspaceLocator(os.fspath(plain)), _SALT_A)
     root = CanonicalWorkspaceRoot("directory", plain.resolve())
-    assert claim == workspace_claim_for_root(root, _SALT_A)
+    assert claim == workspace_claim_for_root(root, _SALT_A, os.fspath(plain))
 
 
 @pytest.mark.anyio

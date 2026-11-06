@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 import secrets
 import struct
 from collections.abc import Awaitable, Buffer, Callable, Mapping
@@ -39,7 +40,7 @@ from finishup.ports.control import (
     WorkspaceLocator,
     WorkspaceReply,
 )
-from finishup.ports.workspace_agent import workspace_handle_for_commitment, workspace_handle_valid
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, SafeDetailValue
 from finishup.protocol.models import (
@@ -122,6 +123,7 @@ _CONTROL_RESULT_SCHEMA_VERSION: Final = _CONTROL_SCHEMA_VERSION
 _CONTROL_REQUEST_SCHEMA_VERSION: Final = _CONTROL_SCHEMA_VERSION
 _SCHEMA_VERSION: Final = "1.0.0"
 _MAX_IMPORT_SOURCE_BYTES: Final = 4 * 1024 * 1024
+_WORKTREE_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 _ERROR_REASONS: Final = frozenset(
     {
         "correlation_mismatch",
@@ -265,13 +267,15 @@ class ControlSession:
     # How the hello bound this connection to a workspace (ADR-051): ``local_path`` for a
     # locator the service resolves on its own disk, ``client_claim`` for a client's claim it never
     # resolves to a path, ``none`` for neither. ``workspace_handle`` is the ``client:`` handle the
-    # service derived from a claim's commitment, when it could derive one, and
-    # ``workspace_agent`` the agent the claim-bound client offered.
+    # service derived from a claim's commitment and worktree digest, when it could derive one,
+    # ``workspace_agent`` the agent the claim-bound client offered, and ``workspace_worktree``
+    # the claim's keyed worktree digest (one handle never serves two worktrees).
     workspace_binding: WorkspaceBinding = field(default="none", repr=False, compare=False)
     workspace_handle: str | None = field(default=None, repr=False, compare=False)
     workspace_agent: WorkspaceAgentDeclaration | None = field(
         default=None, repr=False, compare=False
     )
+    workspace_worktree: str | None = field(default=None, repr=False, compare=False)
     _active: dict[str, _PendingCall] = field(
         default_factory=_new_pending_calls, init=False, repr=False, compare=False
     )
@@ -334,13 +338,19 @@ class ControlSession:
         if (
             context is not None
             and self.workspace_handle is not None
-            and workspace_handle_for_commitment(context.commitment) != self.workspace_handle
+            and context.workspace_handle != self.workspace_handle
         ):
             raise ValueError("workspace_handle_invalid")
         if self.workspace_agent is not None and (
             type(self.workspace_agent) is not WorkspaceAgentDeclaration or not claim_bound
         ):
             raise ValueError("workspace_agent_invalid")
+        if self.workspace_worktree is not None and (
+            not claim_bound
+            or type(self.workspace_worktree) is not str
+            or _WORKTREE_DIGEST.fullmatch(self.workspace_worktree) is None
+        ):
+            raise ValueError("workspace_worktree_invalid")
 
     @property
     def active_request_count(self) -> int:
@@ -980,6 +990,7 @@ def _workspace_claim_from_wire(value: object) -> WorkspaceClaim:
         return WorkspaceClaim(
             identity_kind=cast(Literal["git_common_root", "directory"], source["identity_kind"]),
             digest=cast(str, source["digest"]),
+            worktree=cast(str, source["worktree"]),
             schema_version=cast(Literal["1.0.0"], source["schema_version"]),
         )
     except (KeyError, TypeError, ValueError):
@@ -1119,6 +1130,7 @@ async def client_handshake(
             "schema_version": workspace_claim.schema_version,
             "identity_kind": workspace_claim.identity_kind,
             "digest": workspace_claim.digest,
+            "worktree": workspace_claim.worktree,
         }
     if workspace_agent is not None:
         hello["workspace_agent"] = {
@@ -1185,6 +1197,7 @@ async def client_handshake(
             workspace_binding=expected_binding,
             workspace_handle=cast(str | None, raw_handle),
             workspace_agent=workspace_agent,
+            workspace_worktree=None if workspace_claim is None else workspace_claim.worktree,
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
@@ -1257,8 +1270,10 @@ async def server_handshake(
         )
         workspace_handle: str | None = None
         workspace_agent: WorkspaceAgentDeclaration | None = None
+        workspace_worktree: str | None = None
         if raw_claim is not None:
             claim = _workspace_claim_from_wire(raw_claim)
+            workspace_worktree = claim.worktree
             if raw_agent is not None:
                 workspace_agent = _workspace_agent_from_wire(raw_agent)
             if claim_context_resolver is not None:
@@ -1270,9 +1285,8 @@ async def server_handshake(
                         or repository_context.workspace_locator is not None
                     ):
                         _fail("protocol_mismatch")
-                    workspace_handle = workspace_handle_for_commitment(
-                        repository_context.commitment
-                    )
+                    # One handle per claimed worktree: the commitment is the repository's.
+                    workspace_handle = repository_context.workspace_handle
         if raw_locator is not None and repository_context_resolver is not None:
             if not isinstance(raw_locator, Mapping):
                 _fail("protocol_mismatch")
@@ -1312,6 +1326,7 @@ async def server_handshake(
             workspace_binding=workspace_binding,
             workspace_handle=workspace_handle,
             workspace_agent=workspace_agent,
+            workspace_worktree=workspace_worktree,
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):

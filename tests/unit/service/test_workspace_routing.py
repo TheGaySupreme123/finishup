@@ -193,6 +193,73 @@ def test_reviewer_reads_carry_the_handle_rooted_location_unchanged() -> None:
     assert arguments == ReadTextBeneathArguments(_HANDLE, "src/a.py", ("/srv/finishup/state",))
 
 
+def test_reviewer_reads_are_bounded_by_the_reviewers_own_read_budget() -> None:
+    """A slow agent ends a review ``deadline`` as a slow local read does, never past it."""
+
+    from finishup.application.reviewer_loop import LOCAL_READ_SECONDS
+
+    hub = _Hub(answer=None)
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
+    reads.list_beneath(_HANDLE, "", excluded=(), expired=lambda: False)
+    reads.read_text_beneath(_HANDLE, "a.py", excluded=(), expired=lambda: False)
+    reads.refused_paths(("a.py",))
+    assert [call[3] for call in hub.calls] == [LOCAL_READ_SECONDS + 1.0] * 3
+
+
+def test_a_listings_ignored_paths_are_probed_in_batches() -> None:
+    """One round trip per 64 entries, never one per listed entry (ADR-051)."""
+
+    from finishup.ports.change_capture import RequestedPathProbe
+    from finishup.ports.workspace_agent import ProbeRequestedPathsArguments
+
+    class _Probes(_Hub):
+        def call_blocking(
+            self,
+            handle: str,
+            operation: WorkspaceOperation,
+            arguments: object,
+            *,
+            timeout_seconds: float,
+        ) -> object:
+            self.calls.append((handle, operation, arguments, timeout_seconds))
+            values = cast(ProbeRequestedPathsArguments, arguments).values
+            return tuple(
+                RequestedPathProbe("inside", value, True, value.endswith(".log"))
+                for value in values
+            )
+
+    hub = _Probes()
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
+    names = tuple(f"src/f{index}.py" for index in range(127)) + ("build.log", "")
+    assert reads.refused_paths(names) == frozenset({"build.log"})
+    assert [len(cast(ProbeRequestedPathsArguments, call[2]).values) for call in hub.calls] == [
+        64,
+        64,
+    ]
+    assert all(call[1] is WorkspaceOperation.PROBE_REQUESTED_PATHS for call in hub.calls)
+    assert reads.refused_paths(("",)) == frozenset() and len(hub.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "refused"),
+    (
+        (WorkspaceAgentUnavailable("agent_unavailable", "not_git"), True),
+        (WorkspaceAgentUnavailable("agent_refused", "workspace_not_claimed"), True),
+        (ChangeCaptureUnavailable("not_git"), True),
+        (WorkspaceAgentUnavailable("agent_disconnected"), None),
+    ),
+)
+def test_an_unanswered_ignore_probe_refuses_the_batch_and_a_lost_agent_raises(
+    error: Exception, refused: bool | None
+) -> None:
+    reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, _Hub(error=error)), _HANDLE)
+    if refused is None:
+        with pytest.raises(WorkspaceAgentUnavailable):
+            reads.refused_paths(("a.py", "b.py"))
+    else:
+        assert reads.refused_paths(("a.py", "b.py")) == frozenset({"a.py", "b.py"})
+
+
 def test_only_a_claim_handle_routes_to_the_agent() -> None:
     routing = WorkspaceRouting.compose(None, cast(Any, _Local()))
     assert routing.reads_for("/work/repo") is None
@@ -348,6 +415,86 @@ def test_a_claimed_workspace_is_opened_hashed_and_listed_by_its_agent() -> None:
             SubjectStateCaptureArguments(_OPENED, SubjectStateFormat.GIT_STRUCTURAL_V1),
         ),
         (_HANDLE, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(_OPENED)),
+    ]
+
+
+def test_a_workspace_the_answering_agent_forgot_is_reopened_once_and_kept() -> None:
+    """Another connection of the same client now serves the claim: it opens the workspace anew."""
+
+    from finishup.domain.values import SubjectStateRef
+    from finishup.ports.subject_state import SubjectStateCaptureResult, SubjectStateStatus
+
+    state = SubjectStateCaptureResult(
+        SubjectStateStatus.CAPTURED,
+        SubjectStateRef("sha256:" + "1" * 64, "sha256:" + "2" * 64, "git_structural_v1"),
+        SubjectStateFormat.GIT_STRUCTURAL_V1,
+        (),
+        10,
+        1,
+    )
+    reopened = "rws_" + "1" * 32
+
+    class _ForgettingHub(_Hub):
+        """The first agent opened ``_OPENED``; the agent answering now knows only its own."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.opens = 0
+
+        def call_blocking(
+            self,
+            handle: str,
+            operation: WorkspaceOperation,
+            arguments: object,
+            *,
+            timeout_seconds: float,
+        ) -> object:
+            self.calls.append((handle, operation, arguments, timeout_seconds))
+            if operation is WorkspaceOperation.OPEN_WORKSPACE:
+                self.opens += 1
+                return _OPENED if self.opens == 1 else reopened
+            if operation is WorkspaceOperation.SUBJECT_STATE_CAPTURE:
+                if cast(SubjectStateCaptureArguments, arguments).handle != reopened:
+                    raise WorkspaceAgentUnavailable("agent_unavailable", "handle_unknown")
+                return state
+            if cast(ListChangedPathsArguments, arguments).handle != reopened:
+                raise WorkspaceAgentUnavailable("agent_unavailable", "handle_unknown")
+            return ("src/app.py",)
+
+    hub = _ForgettingHub()
+    access = _observation(hub)
+    handle = access.open(_HANDLE)
+    command = SubjectStateCaptureCommand(handle, SubjectStateFormat.GIT_STRUCTURAL_V1)
+    assert access.subject_state().capture(command) == state
+    # The new handle is kept: the next call names it at once.
+    assert access.list_changed(handle) == ("src/app.py",)
+    assert [call[1] for call in hub.calls] == [
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.SUBJECT_STATE_CAPTURE,
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.SUBJECT_STATE_CAPTURE,
+        WorkspaceOperation.LIST_CHANGED_PATHS,
+    ]
+    assert hub.calls[2][2] == OpenWorkspaceArguments(_HANDLE, True)
+    assert repr(handle) == "LocalWorkspaceHandle(<redacted>)"
+
+
+def test_any_other_agent_answer_is_never_retried() -> None:
+    hub = _ScriptedHub(
+        {
+            WorkspaceOperation.OPEN_WORKSPACE: _OPENED,
+            WorkspaceOperation.LIST_CHANGED_PATHS: WorkspaceAgentUnavailable(
+                "agent_unavailable", "workspace_not_claimed"
+            ),
+        }
+    )
+    access = _observation(hub)
+    handle = access.open(_HANDLE)
+    with pytest.raises(WorkspaceAgentUnavailable):
+        access.list_changed(handle)
+    assert [call[1] for call in hub.calls] == [
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.LIST_CHANGED_PATHS,
     ]
 
 
