@@ -4192,6 +4192,12 @@ async def _run_setup_wizard(
             "run 'finishup integrate codex mcp preview' and explicitly accept re-registration "
             "if you want the policy route to permit configured AI-powered review",
         )
+    from finishup.cli.zero_network_selection import find_zero_network_selection_async
+
+    # ADR-051 decision 8: a remote server still selected while this computer forbids network use.
+    zero_network = await find_zero_network_selection_async()
+    if zero_network is not None:
+        _append_next_step(next_steps, zero_network.next_step())
 
     mutating_run = interactive or accept
     # A privacy step this run attempted for AI-powered review and that was declined or failed
@@ -4565,6 +4571,12 @@ async def setup_status(*, json_output: bool) -> int:
         # The released report (setup status 2.0.0) has no field for this, so stdout keeps its
         # shape and the refusal goes to stderr with the exit code it carries (ADR-048).
         return _report_folder_refusal(folder_refusal)
+    from finishup.cli.zero_network_selection import find_zero_network_selection_async
+
+    # ADR-051 decision 8, likewise on stderr: the released report has no field for it either.
+    zero_network = await find_zero_network_selection_async()
+    if zero_network is not None:
+        typer.echo(zero_network.line(), err=True)
     return 0
 
 

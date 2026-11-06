@@ -2076,6 +2076,8 @@ async def _call_support(
         finally:
             await client.close()
         _human_or_json(result, json_output=json_output)
+        if method in _POLICY_CHANGE_METHODS and result.get("outcome") == "tightening_applied":
+            await _surface_zero_network_selection(json_output)
         if method == "privacy_get_effective" and not json_output and sys.stdout.isatty():
             plain = _plain_json(result)
             for line in (
@@ -2090,6 +2092,25 @@ async def _call_support(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
+
+
+_POLICY_CHANGE_METHODS: Final = frozenset({"privacy_propose_policy", "privacy_tighten_policy"})
+
+
+async def _surface_zero_network_selection(json_output: bool) -> None:
+    """After a policy change: a remote server still selected while network use is forbidden.
+
+    ADR-051 decision 8 (maintainer decision, 2026-11-06). A human terminal gets the choice to
+    switch to this computer's everyday FinishUP or keep the server; a machine-readable answer
+    keeps stdout's shape and gets the facts and the command on stderr. Nothing switches unasked.
+    """
+
+    from finishup.cli.zero_network_selection import (
+        interactive_terminal,
+        surface_after_policy_change_async,
+    )
+
+    await surface_after_policy_change_async(interactive=not json_output and interactive_terminal())
 
 
 def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
@@ -5794,19 +5815,29 @@ def _privacy_decision_command(kind: str) -> Callable[..., None]:
         module = importlib.import_module("finishup.cli.privacy_control")
         operation = cast(Callable[[str], Awaitable[object]], getattr(module, f"decide_{kind}"))
 
+        decided: list[object] = []
+
         async def run_decision() -> object:
             if kind != "policy":
                 return await operation(pending_id)
             passphrase = _auto_unlock_store().load()
             if passphrase is None:
-                return await operation(pending_id)
+                decided.append(await operation(pending_id))
+                return decided[-1]
             auto_operation = cast(
                 Callable[[str, bytearray], Awaitable[object]],
                 getattr(module, "decide_policy_with_local_reauthentication"),
             )
-            return await auto_operation(pending_id, passphrase)
+            decided.append(await auto_operation(pending_id, passphrase))
+            return decided[-1]
 
-        _finish(run_async(lambda: _trusted_call(run_decision, json_output)))
+        async def decide() -> int:
+            code = await _trusted_call(run_decision, json_output)
+            if code == 0 and decided and getattr(decided[-1], "status", None) == "committed":
+                await _surface_zero_network_selection(json_output)
+            return code
+
+        _finish(run_async(decide))
 
     return command
 

@@ -143,6 +143,28 @@ def _fresh_server_selection() -> Iterator[None]:  # pyright: ignore[reportUnused
 
 
 @pytest.fixture(autouse=True)
+def _no_real_server_selection_read(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the zero-network item from reading the developer's real server selection (ADR-051).
+
+    After a privacy policy change, and on the setup, server, menu and terminal surfaces, FinishUP
+    reads the owner-only selection file and, when it names a remote server, asks this computer's
+    running service for its policy. A test that builds no ambient home of its own would read the
+    machine's real selection and could reach a live service, so the read answers "no selection"
+    unless a test puts ``read_selection_on_disk`` back (the zero-network tests do, in their own
+    ambient home). The import is inside the fixture for the dependency-free collection reason
+    above.
+    """
+
+    try:
+        import finishup.cli.zero_network_selection as zero_network_module
+    except ImportError:
+        return
+    monkeypatch.setattr(zero_network_module, "_selection_on_disk", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

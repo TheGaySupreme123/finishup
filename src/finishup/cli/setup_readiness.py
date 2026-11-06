@@ -106,6 +106,45 @@ def _background_advice() -> dict[str, JsonValue] | None:
         return None
 
 
+def _zero_network_selection() -> dict[str, JsonValue] | None:
+    """The zero-network item (ADR-051 decision 8) as a readiness fact, with its continuation.
+
+    A remote server still selected while this computer's policy forbids network use: every
+    readiness operation reports it, because hooks and agent sessions keep sending work there.
+    """
+
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    item = find_zero_network_selection()
+    if item is None:
+        return None
+    fact = item.fact()
+    fact["next_command"] = continuation(["server", "use", "local"])
+    return fact
+
+
+def _server_selection_line(fact: JsonValue) -> str | None:
+    from finishup.cli.zero_network_selection import REMOTE_SELECTED
+
+    if not isinstance(fact, dict):
+        return None
+    if fact.get("reason") == REMOTE_SELECTED:
+        what = (
+            "this computer forbids all network use, but work still goes to the selected server "
+            f"{fact.get('target_id')} ({fact.get('kind')}); that setting does not stop it"
+        )
+    else:
+        what = (
+            "this computer forbids all network use, and the server selection could not be read "
+            f"({fact.get('detail')}), so whether a server on another machine is still selected "
+            "is not known"
+        )
+    return (
+        f"{what}. To switch to this computer's everyday FinishUP, run "
+        f"{fact.get('next_command')}, then restart open agent sessions"
+    )
+
+
 def setup_next(
     *,
     operation: SetupOperation,
@@ -170,6 +209,9 @@ def _setup_next(
         advice = _background_advice()
         if advice is not None:
             facts["background_advice"] = advice
+    zero_network = _zero_network_selection()
+    if zero_network is not None:
+        facts["server_selection"] = zero_network
     arguments = cast(list[str] | None, facts.pop("arguments", None))
     reason = cast(SetupReadinessReason, str(facts.pop("reason", "ready")))
     selected_home: str | None = None
@@ -232,12 +274,14 @@ def _setup_next(
     from finishup.cli.provider_status import background_advice_human_line
 
     advice_line = background_advice_human_line(facts.get("background_advice"))
+    server_line = _server_selection_line(facts.get("server_selection"))
     typer.echo(
         report.model_dump_json(by_alias=True)
         if json_output
         else (
             reason.replace("_", " ")
             + ("" if advice_line is None else "\nBackground AI-powered advice: " + advice_line)
+            + ("" if server_line is None else "\nServer: " + server_line)
             + (
                 "\nNext: " + report.next_command
                 if report.next_command
