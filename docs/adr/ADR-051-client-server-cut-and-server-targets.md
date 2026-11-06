@@ -229,16 +229,23 @@ resource ripple.
   the control request: `kind`, `protocol_version: "1.0"`, `call_id`, `outcome: "ok" |
   "unavailable" | "refused" | "failed"`, `result`, `reason`). The daemon sends server→client
   frames only to connections whose hello declared `workspace_agent`.
-- **Claim-bound start.** On a claim-bound connection `start.workspace_ref` must equal the
-  connection's handle; an absolute path, or no `workspace_ref` on a start that opens a session
-  (only `mode: attach` may omit it), is refused with `workspace_ref_not_portable`, and a handle sent
-  on a connection without a claim is `workspace_binding_conflict`. Without this rule the reviewer's
-  workspace root would be a server directory that happens to share the path. The MCP bridge, the
-  CLI and the SessionStart auto-attach rewrite an absolute `workspace_ref` to the handle before
-  sending. A claim-bound connection with no handle exists only because the server's vault was not
-  ready at hello: it sends no start and no observation row (never a path) and answers the
-  retryable `vault_locked`, so the client replaces the connection and the first call after the
-  unlock gets a handle.
+- **Claim-bound start.** On a claim-bound connection a `start` that names a workspace must name
+  the connection's handle; an absolute path or any other value is refused with
+  `workspace_ref_not_portable`, and a handle sent on a connection without a claim is
+  `workspace_binding_conflict`. Without this rule the reviewer's workspace root would be a server
+  directory that happens to share the path. The MCP bridge, the CLI and the SessionStart
+  auto-attach rewrite an absolute `workspace_ref` to the handle before sending. A start may also
+  name no workspace, in every mode where it may on one computer (there it reads the connection's
+  own locator path; `workspace_ref` and `external_ref` are both or neither, so a client cannot add
+  the handle alone). The claim names that same workspace, so any session such a start opens — a
+  create, a parent-registered child, a child attached by its attach handle — records the
+  connection's handle in its opening event only, and its receipts carry the client-attested block;
+  the request's identity is unchanged. (Amended 2026-11-06, before release: the first cut refused
+  such a start, and the real-environment runs of all three approaches failed on the first MCP
+  `start`.) A claim-bound connection with no handle exists only because the server's vault was not
+  ready at hello: it sends no start, whatever its `workspace_ref`, and no observation row (never a
+  path) and answers the retryable `vault_locked`, so the client replaces the connection and the
+  first call after the unlock gets a handle.
 - **What stays identical.** Framing (6 MiB frames, 1 MiB ordinary), all 32 methods and their
   bodies, `rpc_id` multiplexing and cancel, the client-kind gate and the client's exact-set check,
   and idempotency by `(installation_id, request_id)`. The YZH1 human-control and YZS1 secret
@@ -335,9 +342,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   FinishUP workspace agent and attested over the connection; the server did not read the
   repository itself." Two renderers carry it, and neither puts anything user-controlled beside it:
   - The service ends the text and markdown receipt of a claim-bound task (its session opened with
-    a `client:` handle, a durable fact a replay reads alike; a delegated child attached by its
-    attach handle on a claim-bound connection opens with that connection's handle too, recorded
-    in the opening event only, never in the request's identity) with a "Workspace evidence" section:
+    a `client:` handle, a durable fact a replay reads alike; a session opened on a claim-bound
+    connection by a start naming no workspace — a create, a parent-registered child, a delegated
+    child attached by its attach handle — opens with that connection's handle too, recorded in the
+    opening event only, never in the request's identity) with a "Workspace evidence" section:
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
     client_claim).` The stored receipt document and JSON receipts are unchanged.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI

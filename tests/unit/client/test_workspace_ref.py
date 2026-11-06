@@ -97,16 +97,25 @@ def test_the_rewritten_request_differs_only_in_its_workspace_ref() -> None:
 
 
 @pytest.mark.parametrize("handle", [None, "client:XYZ", "/home/dev/private-project"])
+@pytest.mark.parametrize("workspace_ref", [_PATH, None, "label"])
 def test_no_handle_means_nothing_is_sent_and_the_locked_vault_is_named(
-    handle: str | None,
+    handle: str | None, workspace_ref: str | None
 ) -> None:
-    """ADR-051: the server keys a claim only while its vault is ready; with no handle the path is
-    never sent and the refusal is the server's own retryable ``vault_locked``."""
+    """ADR-051: the server keys a claim only while its vault is ready; with no handle no start
+    is sent, whether it names a path or no workspace at all (which the server would open on the
+    handle it could not give), and the refusal is the server's own retryable ``vault_locked``."""
 
     with pytest.raises(ControlError) as raised:
-        portable_workspace_ref(_PATH, workspace_binding="client_claim", workspace_handle=handle)
+        portable_workspace_ref(
+            workspace_ref, workspace_binding="client_claim", workspace_handle=handle
+        )
     assert (raised.value.reason, raised.value.retryable) == ("vault_locked", True)
     assert "private-project" not in repr(raised.value)
+    with pytest.raises(ControlError) as raised:
+        portable_start_request(
+            _start(workspace_ref), workspace_binding="client_claim", workspace_handle=handle
+        )
+    assert raised.value.reason == "vault_locked"
 
 
 def test_the_not_portable_refusal_keeps_its_fixed_shape() -> None:

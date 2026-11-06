@@ -258,14 +258,18 @@ def _require_portable_workspace_ref(
     """Refuse a start whose ``workspace_ref`` does not fit its connection's binding (ADR-051).
 
     On a claim-bound connection the service cannot read the client's paths, so the only
-    ``workspace_ref`` it records is the connection's own handle, and a start that opens a
-    session must name it: the handle in the session's opening event is the durable fact that
-    every workspace read of the task goes to the client's agent and that its receipts say so.
-    Only an attach may omit it. An attach by a child's attach handle still opens the child's
-    first session, so the handle is returned for that opening event alone (the request's
-    identity is unchanged); every other start returns None. A ``client:`` handle names a claim,
-    so a connection that carries no claim cannot record one. Every refusal comes before any
-    write and names no value.
+    ``workspace_ref`` it records is the connection's own handle: the handle in a session's
+    opening event is the durable fact that every workspace read of the task goes to the
+    client's agent and that its receipts say so. A start that names a workspace must name that
+    handle. A start may also name none, in every mode where it may on one computer (where it
+    then reads the connection's own locator path); here the connection's claim names that same
+    workspace, so the handle is returned and any session the start opens (a create, a
+    parent-registered child, a child attached by its attach handle) records it in its opening
+    event alone. The request's identity is unchanged, and a start that opens no session (an
+    attach to an existing one, a delegation) records nothing. A start that names the handle
+    returns None, as does every start on a connection without a claim. A ``client:`` handle
+    names a claim, so a connection that carries no claim cannot record one. Every refusal
+    comes before any write and names no value.
     """
 
     reference = request.workspace_ref
@@ -273,8 +277,8 @@ def _require_portable_workspace_ref(
     if claimed:
         assert context is not None
         handle = context.workspace_handle
-        if reference is None and request.mode == "attach":
-            return handle if request.attach_handle is not None else None
+        if handle is not None and reference is None:
+            return handle
         if handle is None or reference != handle:
             raise PublicOperationError(
                 PublicErrorCode.INVALID_REQUEST,
@@ -1272,6 +1276,7 @@ class Application:
                             else repository_privacy_context.commitment
                         ),
                         input_capture=capture,
+                        session_workspace_ref=session_workspace_ref,
                     )
             else:
                 result = await execute_start(

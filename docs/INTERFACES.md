@@ -4596,9 +4596,11 @@ output, an MCP frame or JSON output.
 - `workspace_reply` (client→server, a control-request branch): `kind`, `protocol_version: "1.0"`,
   `call_id`, `outcome: "ok"|"unavailable"|"refused"|"failed"`, `result` (JSON or `null`),
   `reason` (closed token or `null`).
-- On a claim-bound connection `start.workspace_ref` must equal the handle; an absolute path is
-  `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute `workspace_ref` to
-  the handle before sending.
+- On a claim-bound connection a `start` that names a workspace must name the handle; an absolute
+  path is `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute
+  `workspace_ref` to the handle before sending. A start that names no workspace is admitted where
+  it is on one computer, and any session it opens records the connection's handle in its opening
+  event (`execute_start(..., session_workspace_ref=)`, outside the request identity).
 
 **Workspace-agent operation catalog** (`ports/workspace_agent.py`, the single source of truth).
 Each operation fixes its argument and result codecs and an argument byte bound and a result byte
@@ -4835,9 +4837,10 @@ attested over the connection; the server did not read the repository itself." No
 user-controlled is ever rendered beside it.
 
 - Service side: the text and markdown receipt of a claim-bound task (its `SessionOpened`
-  `workspace_ref` is a `client:` handle; a child attached by its attach handle on a claim-bound
-  connection records that connection's handle there through `execute_start(...,
-  session_workspace_ref=)`, outside the request identity) ends with `client_attested_receipt_block(
+  `workspace_ref` is a `client:` handle; a start naming no workspace on a claim-bound connection
+  (a create, a parent-registered child, a child attached by its attach handle) records that
+  connection's handle there through `execute_start(..., session_workspace_ref=)`, outside the
+  request identity) ends with `client_attested_receipt_block(
   service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
   FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
   unchanged.
@@ -4899,7 +4902,7 @@ wait `unavailable`.
 | Token | Raised when | Recovery |
 |---|---|---|
 | `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
-| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, a handle other than the connection's, or none where it opens a session | send the connection's `workspace_handle` (the bridge and CLI rewrite the absolute root to it) |
+| `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, or a handle other than the connection's | send the connection's `workspace_handle`, or no workspace (the bridge and CLI rewrite the absolute root to the handle) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
