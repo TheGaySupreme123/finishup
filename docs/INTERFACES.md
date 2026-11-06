@@ -4670,13 +4670,17 @@ confinement rules:
   `client.workspace_claim.workspace_claim` refuses it with `repository_locator_invalid`, so a
   connection started at `/` names no workspace.
 - Outside admission is this client's own record (`client.server_folders`, ADR-051 decision 5).
-  `outside_folders` answers the admitted folders on each call. By default the handler is bound,
-  when it is built, to the record of the remote target this process uses then
-  (`folders_reader()`); `remote_workspace_binding` binds it with `folders_reader(claim_salt=...)`,
-  so the target must also be the one whose salt the claim was made under. A later change of the
-  process's selection (`server use`, a `selection_override` probe of another target) never
-  switches an agent to another target's record. A local root, a mismatched salt, or a record that
-  cannot be read admits nothing. Every read root must pass `admitted_input_root_valid` (the shape
+  `outside_folders` answers the admitted folders on each call; it is bound, when the handler is
+  built, to the record of the target the connection's claim was made for:
+  `folders_reader(root)` for a caller that holds the target's root, or
+  `folders_reader(claim_salt=...)` (as `remote_workspace_binding` does) for the target this
+  process uses then, which must be the one whose salt the claim was made under. A handler built
+  with no `outside_folders` admits no folder, and `folders_reader()` with neither argument binds
+  a reader that admits nothing: the process's selection alone may name another server. A later
+  change of the process's selection (`server use`, a `selection_override` probe of another
+  target) never switches an agent to another target's record. A local root, a mismatched salt,
+  or a record that cannot be read admits nothing. Every read root must pass
+  `admitted_input_root_valid` (the shape
   an owner may admit), and what it reaches must lie inside the claimed worktree or at or beneath
   an admitted folder (`folder_covers`, exact spelling); the record narrows the server's roots,
   never widens them:

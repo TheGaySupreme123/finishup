@@ -201,23 +201,42 @@ def test_the_active_target_record_admits_and_fails_closed(
     remote: tuple[targets.ServerTarget, Path], folder: str, home: Path
 ) -> None:
     record, root = remote
+    salt = base64.b64decode(record.claim_salt or "", validate=True)
     add_folder(root, record.target_id, folder)
     # Not selected: this process uses the everyday installation, which admits nothing here.
-    assert folders_reader()() == ()
+    assert folders_reader(claim_salt=salt)() == ()
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    assert folders_reader()() == (folder,)
+    assert folders_reader(claim_salt=salt)() == (folder,)
     folders_path(root).chmod(0o644)  # an unreadable record admits nothing
-    assert folders_reader()() == ()
+    assert folders_reader(claim_salt=salt)() == ()
     folders_path(root).chmod(0o600)
     # A named local server reads with its own service: no folder record applies to it.
     with targets.registry_lock():
         local, _local_root = targets.new_local_target("bench")
         targets.write_selection(local)
     reset_selection_memo()
-    assert folders_reader()() == ()
+    assert folders_reader(claim_salt=salt)() == ()
     del home
+
+
+def test_the_selection_alone_never_binds_a_reader(
+    remote: tuple[targets.ServerTarget, Path], folder: str, home: Path
+) -> None:
+    """An agent may serve another server than the one this process selects (a background agent
+    for one target, started by a process whose selection names another): with neither the
+    target's root nor the claim's salt there is no telling which record is its own, so the reader
+    admits nothing, even while the selected target admits a folder."""
+
+    del home
+    record, root = remote
+    add_folder(root, record.target_id, folder)
+    with targets.registry_lock():
+        targets.write_selection(record)
+    reset_selection_memo()
+    assert folders_reader(root)() == (folder,)
+    assert folders_reader()() == ()
 
 
 def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
@@ -228,19 +247,12 @@ def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
     with targets.registry_lock():
         targets.write_selection(record)
     reset_selection_memo()
-    by_selection = folders_reader()
     by_root = folders_reader(root)
     salt = base64.b64decode(record.claim_salt or "", validate=True)
     by_salt = folders_reader(claim_salt=salt)
-    assert by_selection() == by_root() == by_salt() == ()
+    assert by_root() == by_salt() == ()
     add_folder(root, record.target_id, folder)  # read at the next call, never cached
-    assert (
-        by_selection()
-        == by_root()
-        == by_salt()
-        == (folder,)
-        == target_folders(root, record.target_id)
-    )
+    assert by_root() == by_salt() == (folder,) == target_folders(root, record.target_id)
     # Bound when built: another selection later changes nothing for these readers.
     with targets.registry_lock():
         other, other_root = targets.new_remote_target(
@@ -248,8 +260,7 @@ def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
         )
         targets.write_selection(other)
     reset_selection_memo()
-    assert by_selection() == (folder,)
-    assert folders_reader()() == ()
+    assert by_root() == by_salt() == (folder,)
     # A salt that is not the selected target's, a local root and a missing root admit nothing.
     assert folders_reader(claim_salt=salt)() == ()
     assert folders_reader(other_root, claim_salt=salt)() == ()
