@@ -1357,11 +1357,14 @@ def _result_text(
 _ATTRIBUTED_OPERATIONS: Final = frozenset({"status", "receipt"})
 
 
-def _attributed_text(text: str, attribution: ServiceAttribution | None) -> str:
+def _attributed_text(
+    text: str, attribution: ServiceAttribution | None, *, receipt_page: bool = False
+) -> str:
     """``text`` followed by a claim-bound connection's provenance lines (ADR-051), unchanged for
-    any other connection. A line the text already carries is not repeated."""
+    any other connection. A line the text already carries is not repeated, and a page of a paged
+    receipt names only the producing service (``attribution_lines``)."""
 
-    lines = attribution_lines(attribution, shown=text)
+    lines = attribution_lines(attribution, shown=text, receipt_page=receipt_page)
     if not lines:
         return text
     return "\n".join((text, *lines) if text else lines)
@@ -1379,13 +1382,19 @@ def result_from_public_model(
 
     ``attribution`` is set for a claim-bound connection's status and receipt (ADR-051): the
     text, and its canonical fallback, then end with the fixed workspace-evidence line and the
-    producing service. The structured result never carries it.
+    producing service. A delivery page of a receipt, whether ``receipt`` or a ``status``
+    continuation returned it, ends with the producing service only: the receipt's own
+    "Workspace evidence" section is on at most one page. The structured result never carries it.
     """
 
     wire = public_model_to_wire(result)
+    receipt_page = (
+        wire.get("state") == "delivery_page" and wire.get("source_operation") == "receipt"
+    )
     rendered = _attributed_text(
         _result_text(wire, host_profile=host_profile, request_id=request_id, operation=operation),
         attribution,
+        receipt_page=receipt_page,
     )
     # The service budgets canonical text plus structured content. A small result's prose can
     # repeat several fields more often: fall back to that complete canonical text if needed.
@@ -1393,7 +1402,9 @@ def result_from_public_model(
     # the canonical copy can be the longer channel, and a fallback must never enlarge a result.
     rendered_bytes = mcp_delivery_bytes(wire, text=rendered)
     if rendered_bytes > HOST_RESULT_BUDGET_BYTES:
-        canonical = _attributed_text(canonical_encode(wire).decode("utf-8"), attribution)
+        canonical = _attributed_text(
+            canonical_encode(wire).decode("utf-8"), attribution, receipt_page=receipt_page
+        )
         if mcp_delivery_bytes(wire, text=canonical) < rendered_bytes:
             rendered = canonical
     return types.CallToolResult(

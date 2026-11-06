@@ -5,10 +5,15 @@ A connection to a FinishUP server on another machine binds its workspace by clai
 server holds came from this client's workspace agent. The human status and receipt renderings of
 such a connection — CLI text, MCP text and the terminal interface — end with the fixed
 provenance line, then name the producing service by the instance id its hello-result carried and
-by how this client reached it; a receipt whose service text says the provenance is unknown keeps
-only the second line. Nothing user-controlled joins either line: no target name, host,
-address or path. JSON output stays unattributed. A connection that is not claim-bound renders
-nothing here, so local output keeps its exact bytes.
+by how this client reached it. A receipt whose service text says the provenance is unknown, and
+every page of a receipt delivered in pages, keep only the second line. Nothing user-controlled
+joins either line: no target name, host, address or path. JSON output stays unattributed. A
+connection that is not claim-bound renders nothing here, so local output keeps its exact bytes.
+
+The client reads a receipt's provenance only from the rendered text it is given; no field of the
+result carries it. A JSON receipt, or one whose text the service withheld, has no "Workspace
+evidence" section to read, so its rendering keeps both lines even when the service could not
+establish the task's provenance; only a text or markdown receipt can say that.
 
 Transport tokens (closed; whoever builds the connection supplies one, ``unix`` by default):
 
@@ -91,7 +96,7 @@ def connection_attribution(connection: object) -> ServiceAttribution | None:
 
 
 def attribution_lines(
-    attribution: ServiceAttribution | None, *, shown: str = ""
+    attribution: ServiceAttribution | None, *, shown: str = "", receipt_page: bool = False
 ) -> tuple[str, ...]:
     """The lines a status or receipt rendering ends with; none without an attribution.
 
@@ -100,13 +105,20 @@ def attribution_lines(
     carries the service's provenance-unknown line instead, the task's own opening record could not
     say where its workspace evidence was read, so the connection's fixed provenance line, which
     would say the opposite, is left out too and only the producing service is named (ADR-051).
+
+    ``receipt_page`` marks ``shown`` as one delivery page of a receipt the service paged. The
+    receipt's "Workspace evidence" section is cut into fragments with the rest of its text and
+    lands on at most one page, possibly split across two, so no page can tell whether it says the
+    evidence was client-attested or that this is unknown. Every such page, the first and each
+    continuation, names only the producing service; the section itself is part of the text the
+    agent must read before the set is actionable-complete.
     """
 
     if attribution is None:
         return ()
-    unknown = WORKSPACE_PROVENANCE_UNKNOWN_LINE in shown
+    withheld = receipt_page or WORKSPACE_PROVENANCE_UNKNOWN_LINE in shown
     return tuple(
         line
         for line in attribution.lines()
-        if line not in shown and not (unknown and line == CLIENT_ATTESTED_WORKSPACE_LINE)
+        if line not in shown and not (withheld and line == CLIENT_ATTESTED_WORKSPACE_LINE)
     )

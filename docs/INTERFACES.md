@@ -5064,10 +5064,16 @@ user-controlled is ever rendered beside it.
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with
   malformed facts raises `service_attribution_invalid` instead of dropping its provenance.
   `ServiceAttribution(service_instance_id, transport).lines()` is the fixed line plus `This client
-  reached FinishUP service <svc_…> (transport: <token>).`; `attribution_lines(attribution, shown=)`
-  omits a line the rendered text already carries, and omits `CLIENT_ATTESTED_WORKSPACE_LINE` when
-  that text carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE`, so a receipt of unknown provenance gains
-  only the `This client reached …` line. `render_human_status` and
+  reached FinishUP service <svc_…> (transport: <token>).`; `attribution_lines(attribution, shown=,
+  receipt_page=)` omits a line the rendered text already carries, and omits
+  `CLIENT_ATTESTED_WORKSPACE_LINE` when that text carries `WORKSPACE_PROVENANCE_UNKNOWN_LINE` or
+  `receipt_page` is set, so a receipt of unknown provenance gains only the `This client reached …`
+  line. `result_from_public_model` sets `receipt_page` for every `delivery_page` whose
+  `source_operation` is `receipt`, the first page from `receipt` and each `status` continuation
+  alike: the receipt's "Workspace evidence" section is fragmented with the rest of `human_text`
+  and lands on at most one page. No result field carries provenance, so a JSON receipt or one
+  whose `human_text` is an omission has no section to read, and its human rendering keeps both
+  lines even when the service could not establish the provenance. `render_human_status` and
   `render_human_receipt` (CLI), `result_from_public_model(..., attribution=)` for the MCP `status`
   and `receipt` text and its canonical fallback, and the terminal interface's task views and
   receipt (through `FinishUpRuntime`) end with these lines. Structured MCP content, CLI JSON and
