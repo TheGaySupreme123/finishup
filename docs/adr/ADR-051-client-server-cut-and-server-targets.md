@@ -313,7 +313,8 @@ answers bounded `workspace_call`s on a connection that declared it.
     adapters' fences and the agent's own exclusions below still hold, and there is no client
     folder check, so an input beneath a root the server's policy names is never refused on the
     client. A refusal happens only where a local service would refuse too (a root of a shape no
-    owner could admit, or one in FinishUP's own directories).
+    owner could admit). A read rooted in FinishUP's own directories is not refused but answers
+    nothing, as a local service's read, which excludes those directories, answers nothing there.
   - **`listed`**: the server reads outside the worktree only beneath folders the owner listed
     for that target, as described below; anything else is refused.
 
@@ -363,7 +364,13 @@ answers bounded `workspace_call`s on a connection that declared it.
   closed to `listed` with no folder, whatever the kind's default; `remove NAME --all` replaces it
   with an empty record in `listed` mode, the state it already stood for, so clearing it never
   widens what the server reads. In both modes a read root the server names must have the shape an
-  owner may admit and must not lie in FinishUP's own directories. In `listed` mode what the read
+  owner may admit, and nothing in FinishUP's own directories is ever read: every outside read
+  excludes them. In `local` mode that exclusion is all, as for a local service, so a read rooted
+  there answers nothing and is not refused. In `listed` mode a reviewer read or listing rooted
+  there is `root_not_admitted` even beneath a listed folder, a deliberate stricter-than-local rule
+  for reviewer reads alone that changes nothing the server sees, since a refused reviewer read
+  reads as absent there (below); a task-input root there is excluded, not refused, once the
+  listed-folder rule admits its paths. In `listed` mode what the read
   reaches must also lie inside the claimed worktree or at or beneath a listed folder; otherwise
   the read is `root_not_admitted`. For a single-root read
   (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it the read names.

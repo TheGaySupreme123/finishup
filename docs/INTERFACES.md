@@ -4904,11 +4904,17 @@ confinement rules:
   target) never switches an agent to another target's record. A local root, a mismatched salt,
   a record that cannot be read, and an answer that fails or is not an `OutsideReads` are `listed`
   with no folder. Every read root must pass `admitted_input_root_valid` (the shape an owner may
-  admit) and lie outside the protected directories. In mode `local` that is all: reads are
-  answered as the local adapters answer them, task-input reads walk every named root, and a
-  declared test outside the claimed root is read as a local service reads it. In mode `listed`
-  what a read reaches must lie inside the claimed worktree or at or beneath a listed folder
-  (`folder_covers`, exact spelling); the record narrows the server's roots, never widens them:
+  admit), or the call is `root_not_admitted`. In mode `local` that is all: reads are answered as
+  the local adapters answer them, with the protected directories excluded as a local service
+  excludes them, so a read rooted in one answers nothing (`None`, or no input) and is not
+  refused; task-input reads walk every named root, and a declared test outside the claimed root
+  is read as a local service reads it. In mode `listed` what a read reaches must lie inside the
+  claimed worktree or at or beneath a listed folder (`folder_covers`, exact spelling); the record
+  narrows the server's roots, never widens them:
+  - `read_text_beneath` and `list_beneath` on an absolute root in a protected directory are
+    `root_not_admitted` even beneath a listed folder: a deliberate stricter-than-local rule for
+    reviewer reads in mode `listed` alone, invisible to the server, where a refused reviewer read
+    reads as `None`. Task-input roots there are excluded, not refused.
   - `read_text_beneath` and `list_beneath` on an absolute root are admitted when the root lies
     inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
     `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a
