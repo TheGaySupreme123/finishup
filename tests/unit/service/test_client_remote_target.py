@@ -468,6 +468,86 @@ def test_an_outage_the_connector_never_named_is_remote_unreachable(
     assert started == [remote]
 
 
+def _earlier_failure(root: Path, reason: str) -> None:
+    """A phase an earlier connection recorded (and the owner has since repaired)."""
+
+    write_connector_status(root, new_status(None, "unavailable", reason, started_at=now_stamp()))
+
+
+def test_a_slow_answer_is_waited_for_never_named_by_an_earlier_phase(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    """The owner loaded the SSH key after a refusal; the connector is now restarting its master,
+    slower than one handshake attempt. The earlier ``remote_auth_failed`` must not end the
+    wait."""
+
+    _earlier_failure(remote, "remote_auth_failed")
+    monkeypatch.setattr(service_client, "_CONNECT_HANDSHAKE_TIMEOUT_SECONDS", 0.3)
+    daemon = ScriptedDaemon()
+    held: list[AuthenticatedUnixStream] = []
+
+    async def handle(stream: AuthenticatedUnixStream) -> None:
+        if not held:
+            held.append(stream)  # the first connection waits on the master: no answer yet
+            return
+        await daemon.serve(stream)
+
+    spawned: list[Path] = []
+
+    async def exercise() -> None:
+        tasks = _fake_connector(monkeypatch, handle, spawned)
+        try:
+            client = await service_client.connect_service_on_demand(
+                ControlClientKind.CLI, timeout_seconds=10.0
+            )
+            await client.close()
+        finally:
+            for stream in held:
+                await stream.aclose()
+            _stop(tasks)
+
+    asyncio.run(exercise())
+    assert held and daemon.connections == 1
+
+
+def test_a_wait_that_ran_out_names_only_a_phase_recorded_during_it(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    _earlier_failure(remote, "remote_auth_failed")
+    monkeypatch.setattr(service_client, "_CONNECT_HANDSHAKE_TIMEOUT_SECONDS", 0.2)
+    held: list[AuthenticatedUnixStream] = []
+    record_during_wait: list[str] = []
+
+    async def handle(stream: AuthenticatedUnixStream) -> None:
+        held.append(stream)  # accepted, never answered
+        if record_during_wait:
+            write_connector_status(
+                remote,
+                new_status(None, "unavailable", record_during_wait[0], started_at=now_stamp()),
+            )
+
+    async def exercise() -> ControlError:
+        spawned: list[Path] = []
+        tasks = _fake_connector(monkeypatch, handle, spawned)
+        try:
+            with pytest.raises(ControlError) as raised:
+                await service_client.connect_service_on_demand(
+                    ControlClientKind.CLI, timeout_seconds=1.0
+                )
+            return raised.value
+        finally:
+            for stream in held:
+                await stream.aclose()
+            held.clear()
+            _stop(tasks)
+
+    stale = asyncio.run(exercise())
+    assert (stale.reason, stale.phase) == ("service_unavailable", "remote_unreachable")
+    record_during_wait.append("remote_identity_changed")
+    fresh = asyncio.run(exercise())
+    assert (fresh.reason, fresh.phase) == ("service_unavailable", "remote_identity_changed")
+
+
 def test_a_relay_lost_mid_session_names_the_remote_phase(
     remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
 ) -> None:

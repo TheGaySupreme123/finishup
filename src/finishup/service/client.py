@@ -2088,7 +2088,10 @@ async def _connect_service_attempt(
             await _best_effort_close_stream(stream)
         error: ControlError
         if accepted and remote_root is not None:
-            error = _remote_failure(remote_root)
+            # The connector accepted and is still working (a master or remote service start):
+            # whatever phase it recorded earlier does not describe this attempt, so none is
+            # named and an on-demand caller keeps waiting.
+            error = ControlError("service_unavailable", retryable=True)
         elif accepted:
             error = _AcceptedServiceUnresponsive()
         else:
@@ -2457,6 +2460,9 @@ async def _connect_remote_on_demand(
     phase) ends the wait at once; every ``service_unavailable`` raised here names a remote phase.
     """
 
+    from finishup.client.connector_status import read_connector_status
+
+    before = read_connector_status(root)
     try:
         return await _connect_remote_attempts(
             root,
@@ -2467,10 +2473,19 @@ async def _connect_remote_on_demand(
             output_is_controlling_tty=output_is_controlling_tty,
         )
     except ControlError as exc:
-        named = _remote_phase_failure(exc)
-        if named is exc:
+        if exc.reason != "service_unavailable" or exc.phase is not None:
             raise
-        raise named from exc
+        # Nothing answered in time. A phase the connector recorded during this wait names the
+        # outage; one recorded before it began (an earlier failure, since repaired) never does.
+        named = _remote_failure(root)
+        if named.phase is not None and read_connector_status(root) != before:
+            raise named from exc
+        raise ControlError(
+            "service_unavailable",
+            retryable=True,
+            phase="remote_unreachable",
+            correlation_id=exc.correlation_id,
+        ) from exc
 
 
 async def _connect_remote_attempts(

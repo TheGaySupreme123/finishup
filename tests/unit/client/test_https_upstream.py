@@ -176,6 +176,58 @@ def test_a_network_blip_on_a_poll_cancel_or_reply_does_not_end_the_connection(
         asyncio.run(exercise())
 
 
+@pytest.mark.parametrize(
+    ("status_code", "location", "reason"),
+    [
+        (429, None, "remote_unreachable"),
+        (404, None, "remote_unreachable"),
+        (400, None, "remote_incompatible"),
+        (201, "/v1/sessions/not-a-session-id", "remote_incompatible"),
+    ],
+)
+def test_every_refused_session_is_named_before_the_stream_closes(
+    home: Path, status_code: int, location: str | None, reason: str
+) -> None:
+    """The client names a closed connection from the connector's status, so a refusal that
+    recorded nothing would be reported as whatever phase an earlier failure left there."""
+
+    def refusing(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        class _Refusing(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                if request.method == "POST" and request.url.path == "/v1/sessions":
+                    headers = {} if location is None else {"Location": location}
+                    return httpx.Response(status_code, headers=headers, content=b"{}")
+                return await inner.handle_async_request(request)
+
+        return _Refusing()
+
+    _state, connector, _daemon, _key, root, _transport = _setup(home, transport_wrapper=refusing)
+
+    async def exercise() -> None:
+        client, local = _pair()
+        relay = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
+        await client.send_all(
+            encode_control_frame(
+                {
+                    "protocol_version": "1.0",
+                    "client_kind": "cli",
+                    "client_version": "0.1.0",
+                    "connection_nonce": "7f" * 32,
+                    "schema_manifest_digest": load_schema_catalog().manifest_digest,
+                }
+            )
+        )
+        async with asyncio.timeout(5):
+            assert await client.receive(65_536) == b""
+            await relay
+        status = read_connector_status(root)
+        assert status is not None
+        assert (status.phase, status.reason) == ("unavailable", reason)
+
+    with selection_override(root):
+        asyncio.run(exercise())
+
+
 def test_a_refused_key_is_recorded_and_forgotten(home: Path) -> None:
     _state, connector, _daemon, key, root, _transport = _setup(home)
 

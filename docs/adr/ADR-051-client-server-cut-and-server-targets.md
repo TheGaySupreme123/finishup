@@ -501,7 +501,10 @@ through the same relay; human-control and secret channels never leave the server
   minutes. It writes `<troot>/state/connector-status.json` (`yoetz.connector-status/1`:
   `generation`, `phase` of `starting|ready|unavailable|stopped`, a closed `reason`, a
   `correlation_id`, `pid`, `started_at`). A client whose connection the connector accepted and
-  closed reads that status and raises `service_unavailable` with the remote phase as `phase`; the
+  closed reads that status and raises `service_unavailable` with the remote phase as `phase` (the
+  connector records a phase before it closes any connection it could not relay). A connection
+  accepted but not yet answered is waited for, never named; when the wait runs out, only a phase
+  recorded during it names the outage, and otherwise it is `remote_unreachable`. The
   MCP availability latch keys on the status generation, which moves on every change of phase or
   reason, so a repaired connection clears it.
 - **SSH.** One OpenSSH master per target with the fixed, secret-free argv `-M -S <troot>/run/m -N

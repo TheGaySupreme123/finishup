@@ -325,12 +325,25 @@ class _Relay:
             await self._write(response.content)
             return False
         if response.status_code != 201:
+            # Every refusal is named before the local stream closes, so the client never reads
+            # an earlier phase for it: the gateway refused what this client sent (another
+            # binding or release), or it could not open a session now (no such route, a full
+            # session table).
+            await self._on_unavailable(
+                "remote_incompatible"
+                if response.status_code in {400, 403, 413}
+                else "remote_unreachable"
+            )
             return False
         location = response.headers.get("Location", "")
         sid = location.rsplit("/", 1)[-1]
-        if not location.startswith("/") or not SESSION_ID_PATTERN.match(sid):
+        try:
+            if not location.startswith("/") or not SESSION_ID_PATTERN.match(sid):
+                raise ControlProtocolError("frame_invalid")
+            decode_control_frame(struct.pack(">I", len(response.content)) + response.content)
+        except ControlProtocolError:
+            await self._on_unavailable("remote_incompatible")
             return False
-        decode_control_frame(struct.pack(">I", len(response.content)) + response.content)
         self._sid = sid
         await self._write(response.content)
         return True
