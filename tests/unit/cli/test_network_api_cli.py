@@ -159,5 +159,23 @@ def test_endpoint_reports_the_api_socket_only_when_configured(home: Path) -> Non
     }
     path.write_text('[network]\nlisten = ["10.0.0.1:443"]\n', encoding="utf-8")
     broken = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
-    assert broken.exit_code == 2
+    # The diagnostic still prints when the configuration is broken; the reason is on stderr and
+    # ``server add`` reads the server's configuration as unusable, not as no API socket.
+    assert broken.exit_code == 0, broken.output
     assert broken.stderr.startswith("config_invalid: network_tls_required")
+    report = json.loads(broken.stdout)
+    assert report["network"] == "config_invalid"
+    assert str(report["endpoint"]).endswith("/control.sock")
+
+
+def test_endpoint_reports_the_rest_of_a_broken_plain_install(home: Path) -> None:
+    # A local install with no [network] table and an unrelated configuration error.
+    path = config_file_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("unknown_key = 1\n", encoding="utf-8")
+    result = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
+    assert result.exit_code == 0, result.output
+    assert result.stderr.startswith("config_invalid: ")
+    report = json.loads(result.stdout)
+    assert report["schema"] == "yoetz.service-endpoint/1"
+    assert report["network"] == "config_invalid"

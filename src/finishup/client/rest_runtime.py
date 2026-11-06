@@ -335,6 +335,9 @@ def discover_ssh_endpoint(
     if document.get("schema") != "yoetz.service-endpoint/1":
         raise TargetRuntimeError("remote_incompatible", phase="endpoint_report_invalid")
     network = document.get("network")
+    if network == "config_invalid":
+        # The server's own configuration cannot be read there; its owner repairs it.
+        raise TargetRuntimeError("remote_incompatible", phase="server_config_invalid")
     if type(network) is not dict:
         raise TargetRuntimeError("remote_incompatible", phase="api_socket_unconfigured")
     api_socket = cast(dict[str, JsonValue], network).get("api_socket")

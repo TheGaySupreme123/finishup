@@ -166,6 +166,11 @@ def test_discovery_reads_the_api_socket_and_the_launcher_that_answered(
             "api_socket_unconfigured",
         ),
         ((0, b"not json", b""), "remote_incompatible", "endpoint_report_invalid"),
+        (
+            (0, b'{"network":"config_invalid","schema":"yoetz.service-endpoint/1"}', b""),
+            "remote_incompatible",
+            "server_config_invalid",
+        ),
     ],
 )
 def test_discovery_failures_are_closed_reasons(

@@ -4887,7 +4887,10 @@ writes a new 0600 file), `list [--json]` (`yoetz.api-key-list/1`) never shows on
 is the reverse; all three are `server_host`. Failures are `ApiKeyError` reasons
 (`api_key_label_invalid`, `api_key_scope_invalid`, `api_key_expiry_invalid`, `api_key_unknown`,
 `api_key_limit`, `api_keys_unsafe`, `api_keys_damaged`). `finishup service endpoint --json` adds
-`network: {api_socket, listen, tls}` only when `[network]` is configured.
+`network: {api_socket, listen, tls}` only when `[network]` is configured, and `network:
+"config_invalid"` (the reason on stderr, exit 0, the rest of the report unchanged) when the
+configuration cannot be read; `server add` then refuses with `remote_incompatible` in phase
+`server_config_invalid`.
 
 **Server bindings.** `ServiceDaemon._network_api_bindings() -> NetworkApiBindings` gives the API
 `status`, a `dispatch` that runs `ServiceDaemon.dispatch` inside

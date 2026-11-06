@@ -2692,7 +2692,9 @@ def _configured_network_endpoint(runtime: Path) -> JsonValue:
     """The network API this service host's configuration asks for, or ``None`` (ADR-051).
 
     An SSH client forwards to ``api_socket``; ``listen`` are the TCP addresses and ``tls`` says
-    whether they speak TLS. A configuration that cannot be read fails closed with its reason.
+    whether they speak TLS. A configuration that cannot be read is reported as
+    ``"config_invalid"`` (its closed reason on stderr) while the rest of the report still prints:
+    this is the diagnostic an operator reaches for when the installation is broken.
     """
 
     from finishup.config.load import load_config
@@ -2703,7 +2705,7 @@ def _configured_network_endpoint(runtime: Path) -> JsonValue:
         config = load_config({}, os.environ, None)
     except ConfigError as error:
         _stderr(f"config_invalid: {error.reason_code}")
-        raise typer.Exit(2) from None
+        return "config_invalid"
     network = config.network
     if network is None:
         return None
