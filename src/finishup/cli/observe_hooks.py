@@ -502,6 +502,38 @@ class _HookDrainClient(Protocol):
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
 
 
+def _drain_connector(
+    connect: ServiceConnector | None, workspace_locator: str | None
+) -> HookDrainConnector | None:
+    """The connector this hook's own outbox drain uses (ADR-051).
+
+    An injected ``connect`` is used as given, and a local root keeps today's unbound drain
+    connection (``None``: the default connector). A server on another machine keeps no
+    observation consent of its own for a client's workspace and accepts a client's attested rows
+    only on a claim-bound connection; an unbound drain there was refused (``method_forbidden``
+    from an HTTPS gateway) or had its rows quarantined as ``consent_missing`` (SSH). So on a remote
+    root the drain claims the hook's canonical workspace: the hello carries the claim, never the
+    path. A pass that knows no workspace keeps the unbound connection, and the connector's own
+    drain delivers its rows.
+    """
+
+    if connect is not None or workspace_locator is None:
+        return cast(HookDrainConnector | None, connect)
+    from finishup.client.targets import active_target_is_remote
+
+    if not active_target_is_remote():
+        return None
+    from finishup.ports.control import WorkspaceLocator
+
+    locator = WorkspaceLocator(workspace_locator)
+
+    async def connect_claimed(kind: ControlClientKind) -> _HookDrainClient:
+        connector = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
+        return await connector(kind, workspace_locator=locator)
+
+    return connect_claimed
+
+
 class _StartClient(Protocol):
     async def start(self, request: object, *, deadline_ms: int | None = None) -> object: ...
 
@@ -6490,7 +6522,7 @@ def handle_observe(
                         codex_session_id=codex_session_id,
                         content_by_source_identity=content_map,
                         content_capture_profile=service_content_profile,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(connect, workspace_locator),
                         event_name=resolved_event,
                         _state=_state,
                         budget_seconds=native_content_drain_budget,
@@ -6561,7 +6593,7 @@ def handle_observe(
                     codex_session_id=codex_session_id,
                     content_by_source_identity=content_map,
                     content_capture_profile=service_content_profile,
-                    connect=cast(HookDrainConnector | None, connect),
+                    connect=_drain_connector(connect, workspace_locator),
                     event_name=resolved_event,
                     _state=_state,
                     budget_seconds=(
@@ -6596,7 +6628,7 @@ def handle_observe(
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
                         finishup_session_id=stop_mapping.finishup_session_id,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(connect, workspace_locator),
                         _state=_state,
                         deadline=stop_drain_deadline,
                         monotonic=_monotonic,
