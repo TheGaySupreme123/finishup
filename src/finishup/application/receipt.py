@@ -21,6 +21,7 @@ from finishup.domain.events import (
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
+    SessionOpenedPayload,
     encode_payload,
     media_type_for,
 )
@@ -29,6 +30,7 @@ from finishup.domain.receipts import (
     ReceiptDocument,
     ReceiptSectionKey,
     ReceiptVersionSlice,
+    client_attested_receipt_block,
     live_receipt_gap_codes,
     receipt_document_from_json,
     receipt_document_to_json,
@@ -73,6 +75,7 @@ from finishup.ports.objects import (
     StagedObject,
 )
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -493,13 +496,21 @@ def _internal_result(
     receipt_ref: ObjectRef,
     digest: str,
     result_frontier: Frontier,
+    attested_by: str | None = None,
 ) -> ReceiptInternalResult:
+    """The result of one receipt; ``attested_by`` is the serving service's instance id when the
+    task is claim-bound, so its text and markdown renderings end with the fixed client-attested
+    workspace-evidence block (ADR-051). The stored document never carries it."""
+
     document_json = cast(JsonValue, receipt_document_to_json(document))
+    markdown = request.format is ReceiptFormat.MARKDOWN
     human = (
         None
         if request.format is ReceiptFormat.JSON
-        else render_receipt_human(document, markdown=request.format is ReceiptFormat.MARKDOWN)
+        else render_receipt_human(document, markdown=markdown)
     )
+    if human is not None and attested_by is not None:
+        human = human + "\n\n" + client_attested_receipt_block(attested_by, markdown=markdown)
     return ReceiptInternalResult(
         "0.1",
         document.schema_version,
@@ -596,7 +607,27 @@ async def read_recorded_receipt(
         receipt_ref,
         digest,
         Frontier(record.ledger.ingestion_sequence, record.entry_digest),
+        await _attested_by(runtime),
     )
+
+
+async def _attested_by(runtime: TaskRuntime) -> str | None:
+    """The serving service's instance id when the task is claim-bound, else None (ADR-051).
+
+    A claim-bound task's session opened with its connection's ``client:`` handle, so every piece
+    of workspace evidence it holds came from the client's workspace agent. Read from the
+    session's own opening event, a durable fact, so a replay renders the same block.
+    """
+
+    try:
+        async for record in runtime.ledger.load_events(runtime.session_id):
+            if isinstance(record.payload, SessionOpenedPayload):
+                if workspace_handle_valid(record.payload.workspace_ref):
+                    return runtime.fence.service_instance_id
+                return None
+    except Exception:
+        return None
+    return None
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.
@@ -780,7 +811,14 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             # cancellation from here on leaves an ambiguous commit outcome and must not abandon.
             await _abandon_preappend_objects(runtime, staged_objects, request_id=request.request_id)
             raise
-        return _internal_result(request, document, receipt_ref, digest, result.result_frontier)
+        return _internal_result(
+            request,
+            document,
+            receipt_ref,
+            digest,
+            result.result_frontier,
+            await _attested_by(runtime),
+        )
     except ProtocolValueError as exc:
         raise _error(
             PublicErrorCode.INVALID_REQUEST,

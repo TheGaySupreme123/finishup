@@ -533,6 +533,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "check_time_change_unavailable_repository_mismatch",
             "check_time_change_unavailable_unsafe_root",
             "check_time_change_unavailable_unsupported_repository",
+            "check_time_change_unavailable_workspace_agent_unavailable",
         ),
     ),
     _Family(
@@ -858,6 +859,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "check_time_change_unavailable_repository_mismatch",
         "check_time_change_unavailable_unsafe_root",
         "check_time_change_unavailable_unsupported_repository",
+        "check_time_change_unavailable_workspace_agent_unavailable",
         "content_redacted",
         "content_unselected",
         "declared_output_content_moved",
