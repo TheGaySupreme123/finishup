@@ -8,9 +8,10 @@ after the client's ``workspace_reply`` — runs over:
 * a real ``AuthenticatedUnixStream`` pair over ``socket.socketpair`` (the local Unix transport);
 * ``SshTransport`` with its production argv, where a stand-in for ``ssh`` honours ``-W`` by
   relaying to a real Unix socket;
-* ``HttpsTransport`` through HTTPS binding v1 against an in-test gateway (``httpx.ASGITransport``),
-  including the ``202`` → results long-poll for the cancelled call and the frames long-poll that
-  carries the ``workspace_call``.
+* ``HttpsTransport`` through HTTPS binding v1 against the real gateway (``finishup service
+  gateway``, in process over ``httpx.ASGITransport``, with a real key and mounted under the
+  target's base path), including the ``202`` → results long-poll for the cancelled call and the
+  frames long-poll that carries the ``workspace_call``.
 
 A wire tap on each side records every byte; the frames each side sent and received must be
 identical to the baseline, so server-to-client and client-to-server frames both flow end to end
@@ -33,7 +34,7 @@ import pytest
 from builders.direct_dial import (
     RELAY_SOURCE,
     WORKSPACE_REPLY,
-    FakeBindingGateway,
+    RecordingGateway,
     ServerTranscript,
     StaticCredential,
     TapStream,
@@ -41,10 +42,12 @@ from builders.direct_dial import (
     https_target,
     memory_pair,
     pinned_nonce,
+    real_gateway,
     scripted_client,
     scripted_server,
     ssh_target,
 )
+from builders.server_targets import ambient_home
 from finishup.adapters.control.unix_socket import AuthenticatedUnixStream, authenticate_peer
 from finishup.client.transports import HttpsTransport, SshTransport, ssh_stdio_argv
 from finishup.service.control_protocol import ControlStream
@@ -122,7 +125,7 @@ async def _over_ssh_relay(directory: Path) -> tuple[_Observation, list[str]]:
     return observation, logged
 
 
-async def _over_https() -> tuple[_Observation, FakeBindingGateway]:
+async def _over_https(keys: Path) -> tuple[_Observation, RecordingGateway]:
     servers: list[tuple[TapStream, asyncio.Task[ServerTranscript]]] = []
 
     async def upstream() -> ControlStream:
@@ -131,11 +134,11 @@ async def _over_https() -> tuple[_Observation, FakeBindingGateway]:
         servers.append((tap, asyncio.create_task(scripted_server(tap, tap.peer_identity))))
         return gateway_end
 
-    gateway = FakeBindingGateway(upstream)
+    gateway = real_gateway(keys, upstream)
     transport = HttpsTransport(
         https_target(),
         Path("/nonexistent"),
-        credential=StaticCredential(),
+        credential=StaticCredential(gateway.key),
         http_transport=httpx.ASGITransport(app=gateway),
     )
     client = TapStream(await transport.connect())
@@ -143,6 +146,7 @@ async def _over_https() -> tuple[_Observation, FakeBindingGateway]:
     await client.aclose()
     ((server, serving),) = servers
     transcript = await asyncio.wait_for(serving, 5)
+    await gateway.state.sessions.close_all()
     return _observe(client, server, kinds, transcript), gateway
 
 
@@ -173,7 +177,8 @@ def test_one_session_is_byte_identical_over_every_transport(
         )
         assert logged == [" ".join(expected)]
 
-        over_https, gateway = asyncio.run(_over_https())
+        with ambient_home(monkeypatch) as home:
+            over_https, gateway = asyncio.run(_over_https(home / "gateway"))
         assert over_https == baseline
 
     paths = [(method, path) for method, path, _headers in gateway.requests]

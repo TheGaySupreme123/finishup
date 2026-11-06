@@ -7,10 +7,13 @@
   hello that declares a workspace agent, two calls, a cancel, and a server operation that sends a
   ``workspace_call`` and waits for its ``workspace_reply`` before answering. With the hello nonce
   pinned (``pinned_nonce``) every frame is byte-identical on every transport.
-* ``FakeBindingGateway`` — an in-test ASGI app speaking HTTPS binding v1 exactly as
-  ``docs/INTERFACES.md`` specifies it, relaying each session to one upstream ``ControlStream``
-  (as the real gateway relays to the daemon's Unix socket). Waits are capped so the ``202`` and
-  long-poll paths run in milliseconds.
+* ``real_gateway`` — the real ``finishup service gateway`` application (approach A's gateway,
+  shared by approach B) with a real key, mounted under the target's base path behind a request
+  recorder, relaying each session to one upstream ``ControlStream`` (as it relays to the daemon's
+  Unix socket in production). The parity and end-to-end tests run against it.
+* ``FakeBindingGateway`` — a unit fixture only: a small ASGI app speaking HTTPS binding v1 whose
+  answers a test can override one request at a time (an expired session, a lost response, a
+  refused status), which the real gateway cannot be made to produce on demand.
 * ``RELAY_SOURCE`` — a stand-in for ``ssh`` that honours ``-W <unix socket>`` by relaying its
   standard input and output to that socket, so ``SshTransport`` runs its real argv against a
   local endpoint.
@@ -25,6 +28,7 @@ import json
 import struct
 from collections.abc import Awaitable, Buffer, Callable, Generator, MutableMapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Final, cast
 from urllib.parse import parse_qs
 
@@ -388,6 +392,72 @@ type _Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
 
 
 @dataclass
+class RecordingGateway:
+    """The real gateway behind a recorder of every request's method, path and header names."""
+
+    state: Any
+    inner: Any
+    key: str
+    requests: list[tuple[str, str, frozenset[str]]] = field(
+        default_factory=list[tuple[str, str, frozenset[str]]]
+    )
+
+    async def __call__(
+        self,
+        scope: MutableMapping[str, Any],
+        receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
+        send: _Send,
+    ) -> None:
+        if scope["type"] == "http":
+            names = frozenset(
+                bytes(name).decode("latin-1").lower() for name, _value in scope["headers"]
+            )
+            self.requests.append((cast(str, scope["method"]), cast(str, scope["path"]), names))
+        await self.inner(scope, receive, send)
+
+
+def real_gateway(
+    keys_directory: Path,
+    upstream: Callable[[], Awaitable[ControlStream]],
+    *,
+    scope: str = "agent",
+    mount: str = "/base",
+    idle_seconds: float | None = None,
+) -> RecordingGateway:
+    """The real gateway with one fresh key of ``scope``, served under ``mount`` (the base path)."""
+
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    from finishup.gateway.app import build_gateway_app
+    from finishup.gateway.keys import create_key
+
+    _record, key = create_key(keys_directory, label="direct-dial", scope=scope)  # type: ignore[arg-type]
+
+    class _Audit:
+        def write(self, record: dict[str, Any]) -> None:
+            # Audit lines carry closed tokens only; none names the session's peer or a body.
+            assert set(record) <= {
+                "event",
+                "correlation_id",
+                "route",
+                "key_id",
+                "method",
+                "status",
+                "reason",
+            }
+
+    state, application = build_gateway_app(
+        keys_directory=keys_directory,
+        connect_upstream=upstream,
+        audit=_Audit(),
+        idle_seconds=idle_seconds,
+    )
+    inner = Starlette(routes=[Mount(mount, app=application)]) if mount else application
+    return RecordingGateway(state, inner, key)
+
+
+@dataclass
 class _Session:
     upstream: ControlStream
     results: dict[str, bytes] = field(default_factory=dict[str, bytes])
@@ -507,9 +577,12 @@ class FakeBindingGateway:
             return await self._error(send, override, reason)
         if (method, route) == ("GET", "/v1/server"):
             info = {
+                "bindings": ["1.0"],
+                "key_id": "0123456789ab",
                 "release": __version__,
                 "schema_manifest_digest": self.digest,
                 "schema_version": "1.0.0",
+                "scope": "agent",
             }
             return await self._reply(send, 200, json.dumps(info).encode("ascii"))
         if (method, route) == ("POST", "/v1/sessions"):
@@ -518,7 +591,7 @@ class FakeBindingGateway:
             upstream = await self.upstream()
             await upstream.send_all(struct.pack(">I", len(body)) + body)
             hello_result = await _read_frame_payload(upstream)
-            sid = f"s{len(self.sessions):031d}"
+            sid = f"s{len(self.sessions):042d}"
             session = _Session(upstream)
             session.reader = asyncio.create_task(self._route_upstream(session))
             self.sessions[sid] = session

@@ -424,7 +424,11 @@ async def _tls_info(target_for: Callable[[int], object], cert: Path, key: Path) 
         received.append(data)
         if data:
             body = json.dumps(
-                {"release": "0.3.0", "schema_manifest_digest": schema_manifest_digest()}
+                {
+                    "bindings": ["1.0"],
+                    "release": "0.3.0",
+                    "schema_manifest_digest": schema_manifest_digest(),
+                }
             ).encode()
             writer.write(
                 b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"

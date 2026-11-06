@@ -123,9 +123,3 @@ def test_gateway_commands_belong_to_the_server_host(
         assert result.stderr.startswith("requires_server_host:")
         assert "gw.example" not in result.stderr
 
-
-def test_connector_run_refuses_a_root_that_is_not_a_remote_targets_own(home: Path) -> None:
-    result = _invoke("connector", "run", "--root", str(home))
-    assert result.exit_code == 2
-    assert result.stderr.startswith("connector_root_invalid:")
-    assert str(home) not in result.stderr

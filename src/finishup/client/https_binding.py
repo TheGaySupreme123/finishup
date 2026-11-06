@@ -6,11 +6,13 @@ the binding the server's gateway speaks (``docs/INTERFACES.md``, *HTTPS binding 
 
 * the hello → ``POST /v1/sessions`` (``201`` hello-result and ``Location``; ``409`` the daemon's
   hello-result on a manifest mismatch, which the handshake names);
-* a call → ``POST …/calls?wait_ms=``; a ``202`` is followed by ``GET …/results/{rpc_id}?wait_ms=``
-  until the result arrives. A call is never posted twice: after an ambiguous failure the adapter
-  only asks for the result (at most once);
-* a cancel → ``POST …/cancel``, sent only once the call it names was posted, so it never
-  overtakes that call; any other client frame (``workspace_reply``) → ``POST …/frames``;
+* a call → ``POST …/calls?wait_ms=`` with a short first wait (``CALL_WAIT_MS``); a ``202`` is
+  followed by ``GET …/results/{rpc_id}?wait_ms=`` long-polls until the result arrives. A call is
+  never posted twice: after an ambiguous failure the adapter only asks for the result (at most
+  once);
+* a cancel → ``POST …/cancel``, sent only once the gateway answered the call it names, so it never
+  overtakes that call (the short first wait bounds how long a cancel waits); any other client
+  frame (``workspace_reply``) → ``POST …/frames``;
 * server frames (``workspace_call``) → a long-poll on ``GET …/frames?wait_ms=`` (``200`` one frame,
   ``204`` none yet), run only for a session whose hello declared a workspace agent;
 * close → ``DELETE /v1/sessions/{sid}`` (best effort; the gateway also expires idle sessions).
@@ -60,7 +62,9 @@ from finishup.service.control_protocol import MAX_CONTROL_FRAME_BYTES
 __all__ = [
     "BINDING_HEADER",
     "BINDING_VERSION",
+    "CALL_WAIT_MS",
     "LONG_POLL_WAIT_MS",
+    "SESSION_ID_PATTERN",
     "SESSION_IDLE_CHECK_SECONDS",
     "BindingControlStream",
     "ServerInfo",
@@ -78,6 +82,10 @@ BINDING_HEADER: Final = "FinishUP-Binding"
 BINDING_VERSION: Final = "1.0"
 # The binding caps a long-poll at 25 s, under the 60 s idle cut of common proxies.
 LONG_POLL_WAIT_MS: Final = 25_000
+# A call's own post waits this long for its result. A quick call (a hook's ingest, a status read)
+# is answered in that one round trip; a longer one answers ``202`` and its result is long-polled.
+# It also bounds how long a cancel waits for the gateway to have its call (see ``_dispatch``).
+CALL_WAIT_MS: Final = 2_000
 # Under the gateway's 120 s idle expiry, with room for a slow round trip.
 SESSION_IDLE_CHECK_SECONDS: Final = 90.0
 _CONNECT_SECONDS: Final = 10.0
@@ -86,7 +94,8 @@ _POLL_MARGIN_SECONDS: Final = 15.0
 _DELETE_SECONDS: Final = 1.0
 _MAX_RECEIVE_BYTES: Final = 65_536
 _MAX_SERVER_INFO_BYTES: Final = 65_536
-_SESSION_ID: Final = re.compile(r"^[A-Za-z0-9_-]{16,128}$", re.ASCII)
+# A session id is 32 random bytes, base64url without padding (the gateway's ``sid``).
+SESSION_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9_-]{43}$", re.ASCII)
 _RELEASE: Final = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$", re.ASCII)
 _DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 _JSON: Final = {"Content-Type": "application/json"}
@@ -291,7 +300,7 @@ def _session_id(location: str | None) -> str | None:
     except ValueError:
         return None
     head, _separator, sid = path.rpartition("/")
-    if not head.endswith("/v1/sessions") or not _SESSION_ID.match(sid):
+    if not head.endswith("/v1/sessions") or not SESSION_ID_PATTERN.match(sid):
         return None
     return sid
 
@@ -494,7 +503,7 @@ class BindingControlStream:
         status: int | None
         try:
             status, _headers, body = await self._request(
-                "POST", f"{path}/calls", content=payload, wait_ms=LONG_POLL_WAIT_MS
+                "POST", f"{path}/calls", content=payload, wait_ms=CALL_WAIT_MS
             )
         except TransportError:
             # The call may have reached the gateway: never post it again, only ask for its result.
@@ -615,6 +624,10 @@ async def fetch_server_info(
     document = cast(Mapping[str, JsonValue], parsed)
     release = document.get("release")
     digest = document.get("schema_manifest_digest")
+    bindings = document.get("bindings")
+    if not isinstance(bindings, list) or BINDING_VERSION not in bindings:
+        # The gateway does not speak this client's binding version.
+        raise TransportError("remote_incompatible")
     info = ServerInfo(
         release if type(release) is str and _RELEASE.match(release) else None,
         digest if type(digest) is str and _DIGEST.match(digest) else None,
