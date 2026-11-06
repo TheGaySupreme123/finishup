@@ -18,7 +18,12 @@ import hmac
 from collections.abc import Sequence
 from typing import Final, cast
 
-from finishup.client.targets import ServerTarget, TargetError, active_target_record
+from finishup.client.targets import (
+    ServerTarget,
+    TargetError,
+    active_target_record,
+    require_current_authorization,
+)
 from finishup.client.workspace_claim import workspace_claim
 from finishup.ports.control import WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
@@ -69,10 +74,13 @@ def is_remote_active_root() -> bool:
     True when the selected (or explicitly isolated) root's ``target.json`` names a remote kind:
     ``local_port``, ``ssh`` or ``https``. False for the everyday installation, an isolated root
     that is not a target, and a named local server. A root or record that cannot be read fails
-    closed with its closed ``TargetError``; it never reads as local.
+    closed with its closed ``TargetError``; it never reads as local. A remote target the owner
+    authorized under an older disclosure raises ``target_reauthorization_required``: nothing may be
+    sent to it until the owner confirms the current disclosure (``finishup server use NAME``).
     """
 
     record = active_target_record()
+    require_current_authorization(record)
     return record is not None and record.is_remote
 
 
@@ -88,12 +96,14 @@ async def binding_for_active_root(
     (``locator`` None) has nothing to claim and also returns None, so the connection sends
     neither. A path is never sent to a remote root either way.
 
-    Fails closed: a root or record that cannot be read raises its ``TargetError``, and a locator
-    the shared root rule cannot resolve raises ``RepositoryIdentityError``; the caller must not
-    fall back to sending the locator.
+    Fails closed: a root or record that cannot be read raises its ``TargetError``, a remote
+    target authorized under an older disclosure raises ``target_reauthorization_required`` (with
+    or without a workspace), and a locator the shared root rule cannot resolve raises
+    ``RepositoryIdentityError``; the caller must not fall back to sending the locator.
     """
 
     record = active_target_record()
+    require_current_authorization(record)
     if record is None or not record.is_remote or locator is None:
         return None
     return await binding_for_target(record, locator, serve_workspace=serve_workspace)

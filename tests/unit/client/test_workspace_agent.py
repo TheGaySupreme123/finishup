@@ -9,6 +9,7 @@ checks only from the repository's own policy, and closed reasons for everything 
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -16,7 +17,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -77,7 +78,11 @@ from finishup.ports.workspace_agent import (
     operation_spec,
     remote_workspace_handle_valid,
 )
-from finishup.ports.workspace_inspect import WorkspaceInspectCommand
+from finishup.ports.workspace_inspect import (
+    WorkspaceInspectCommand,
+    WorkspaceInspectLimitation,
+    WorkspaceInspectStatus,
+)
 from finishup.protocol.ids import IdKind, new_id
 
 _HANDLE = "client:0123456789abcdef"
@@ -598,6 +603,36 @@ def test_lstat_reports_only_outside_candidates(
     assert stat.S_ISREG(facts[0].mode)
 
 
+def test_lstat_never_reports_what_the_local_candidate_rule_would_not_look_at(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    """A server learns nothing of hidden, credential-named or system paths (ADR-051)."""
+
+    handler = _handler(repository, protected)
+    (shared / ".ssh").mkdir()
+    (shared / ".ssh" / "id_ed25519").write_text("KEY\n", encoding="utf-8")
+    (shared / "credentials").write_text("SECRET\n", encoding="utf-8")
+    (shared / "deploy.pem").write_text("PEM\n", encoding="utf-8")
+    refused = (
+        f"{shared}/.ssh",
+        f"{shared}/.ssh/id_ed25519",
+        f"{shared}/credentials",
+        f"{shared}/deploy.pem",
+        "/proc/self/status",
+        "/etc/hostname",
+        "/",
+    )
+    for path in refused[:4]:
+        assert os.path.lexists(path)
+    facts = _ok(
+        handler,
+        WorkspaceOperation.LSTAT_CANDIDATES,
+        LstatCandidatesArguments((*refused, f"{shared}/spec.md")),
+    )
+    assert facts[:-1] == (None,) * len(refused)
+    assert facts[-1] == LstatFacts.from_stat_result(os.lstat(f"{shared}/spec.md"))
+
+
 def test_a_spent_deadline_ends_a_metadata_read(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -649,6 +684,50 @@ def test_observation_operations_equal_the_local_adapters(repository: Path, prote
     )
 
 
+def test_inspect_reads_only_the_workspaces_own_changed_paths(
+    repository: Path, protected: Path
+) -> None:
+    """A server cannot pick secrets to excerpt: ignored, unchanged and Git files stay unread."""
+
+    (repository / ".gitignore").write_text("ignored.log\n.env\n*.key\n", encoding="utf-8")
+    _git(repository, "add", ".gitignore")
+    _git(repository, "commit", "--quiet", "-m", "ignore secrets")
+    (repository / "deploy.pem").write_text("TRACKED_PEM\n", encoding="utf-8")
+    _git(repository, "add", "deploy.pem")
+    _git(repository, "commit", "--quiet", "-m", "track a pem")
+    _git(repository, "config", "remote.origin.url", "https://user:TOKEN123@example.invalid/r")
+    _change(repository)
+    (repository / ".env").write_text("AWS_SECRET=SUPERSECRET_ENV\n", encoding="utf-8")
+    (repository / "config").mkdir()
+    (repository / "config" / "master.key").write_text("MASTERKEY_SECRET\n", encoding="utf-8")
+    (repository / "deploy.pem").write_text("CHANGED_PEM_SECRET\n", encoding="utf-8")
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+
+    secrets = (".env", "config/master.key", ".git/config", "deploy.pem", "tracked.txt.orig")
+    rejected = _ok(handler, WorkspaceOperation.INSPECT, InspectArguments(opened, secrets))
+    assert rejected.status is WorkspaceInspectStatus.REJECTED
+    assert rejected.artifacts == ()
+    assert rejected.limitations == (WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE,)
+
+    mixed = _ok(
+        handler, WorkspaceOperation.INSPECT, InspectArguments(opened, ("new.py", ".env", "README"))
+    )
+    assert mixed.status is WorkspaceInspectStatus.PARTIAL
+    assert [artifact.relative_path for artifact in mixed.artifacts] == ["new.py"]
+    assert WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE in mixed.limitations
+    for result in (rejected, mixed):
+        for marker in (b"SUPERSECRET", b"MASTERKEY", b"TOKEN123", b"PEM_SECRET"):
+            assert all(marker not in artifact.excerpt for artifact in result.artifacts)
+    # The workspace's own changed paths are inspected exactly as the local adapter does.
+    changed = ("new.py", "tracked.txt")
+    assert _ok(
+        handler, WorkspaceOperation.INSPECT, InspectArguments(opened, changed)
+    ) == LocalWorkspaceInspectAdapter().inspect(
+        WorkspaceInspectCommand(workspace=open_local_workspace(repository), relative_paths=changed)
+    )
+
+
 def test_opened_workspaces_are_bounded_and_unknown_handles_are_reported(
     repository: Path, protected: Path
 ) -> None:
@@ -673,7 +752,7 @@ def _keyed_handler(repository: Path, protected: Path, key: bytes) -> WorkspaceAg
 def test_a_keyed_opened_handle_is_answered_by_another_agent_of_the_client(
     repository: Path, protected: Path
 ) -> None:
-    """ADR-051 approach B: each process serves its own connection; any of them answers a handle."""
+    """Several connections of one client serve a worktree; any of them answers its handle."""
 
     _change(repository)
     key = b"k" * 32
@@ -699,6 +778,71 @@ def test_a_keyed_opened_handle_is_answered_by_another_agent_of_the_client(
     assert _refused(
         fresh, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(forged)
     ) == ("unavailable", "handle_unknown")
+
+
+def test_a_keyed_handle_in_use_is_never_forgotten(repository: Path, protected: Path) -> None:
+    """A verification keeps its handle while ingests open the workspace again and again."""
+
+    _change(repository)
+    handler = _keyed_handler(repository, protected, b"k" * 32)
+    opened = _open(handler)
+    for admitted_home_project in (True, False) * 8:
+        _ok(
+            handler,
+            WorkspaceOperation.OPEN_WORKSPACE,
+            OpenWorkspaceArguments(_HANDLE, admitted_home_project),
+        )
+    changed = _ok(handler, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened))
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
+
+
+def test_a_handle_opened_on_one_connection_is_answered_on_a_newer_one(
+    repository: Path, protected: Path
+) -> None:
+    """The hub routes a later call to the newest channel; that agent answers the handle."""
+
+    import asyncio
+
+    from finishup.service.workspace_hub import WorkspaceAgentHub, live_call_scope
+    from finishup.service.workspace_routing import RoutedObservationWorkspace
+
+    _change(repository)
+    key = b"k" * 32
+    older, newer = (_keyed_handler(repository, protected, key) for _ in range(2))
+    answered: list[str] = []
+
+    async def exercise() -> tuple[str, ...]:
+        hub = WorkspaceAgentHub(inline_wait_seconds=1.0, background_wait_seconds=1.0)
+
+        async def register(handler: WorkspaceAgentHandler, name: str) -> object:
+            holder: list[Any] = []
+
+            async def writer(call: WorkspaceCall) -> None:
+                answered.append(name)
+                reply = await asyncio.to_thread(handler.answer, call, workspace_handle=_HANDLE)
+                hub.deliver(holder[0], reply)
+
+            channel = await hub.register(
+                handle=_HANDLE,
+                declaration=handler.declaration,
+                service_instance_id=_SERVICE,
+                service_generation="1",
+                writer=writer,
+            )
+            holder.append(channel)
+            return channel
+
+        first = await register(older, "older")
+        await register(newer, "newer")
+        access = RoutedObservationWorkspace(hub)
+        with live_call_scope(cast(Any, first)):
+            opened = await asyncio.to_thread(access.open, _HANDLE)
+        # Background work later: the newest channel answers the handle the older one opened.
+        return await asyncio.to_thread(access.list_changed, opened)
+
+    changed = asyncio.run(exercise())
+    assert answered == ["older", "newer"]
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
 
 
 def test_an_opened_handle_key_must_be_32_bytes(repository: Path, protected: Path) -> None:
@@ -757,11 +901,33 @@ def _echo_approval() -> ApprovedCheckApproval:
     )
 
 
+def _trust_policy(repository: Path) -> None:
+    """``finishup observe checks trust`` on this client: trust the policy's exact raw digest."""
+
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.observation_check_policy import load_observation_check_policy
+
+    policy, _raw = load_observation_check_policy(repository)
+    store = LocalObservationStore()
+    store.trust_policy_digest(store.workspace_commitment(os.fspath(repository)), policy.raw_digest)
+
+
+@pytest.fixture
+def client_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This client's own state (its observation store) in a private folder for the test."""
+
+    state = tmp_path / "client-state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_STATE_HOME", os.fspath(state))
+    return state
+
+
 def test_an_approved_check_runs_as_the_local_runner_runs_it(
-    repository: Path, protected: Path
+    repository: Path, protected: Path, client_state: Path
 ) -> None:
     (repository / ".finishup").mkdir()
     (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    _trust_policy(repository)
     handler = _handler(repository, protected)
     opened = _open(handler)
     approval = _echo_approval()
@@ -808,6 +974,62 @@ def test_an_approved_check_runs_as_the_local_runner_runs_it(
     assert stale.output is None
 
 
+_SLEEP = shutil.which("sleep", path=os.defpath) or "/bin/sleep"
+
+
+def _sleep_approval(timeout_seconds: float) -> tuple[ApprovedCheckApproval, str]:
+    argv = (_SLEEP, "30")
+    approval = ApprovedCheckApproval(
+        approval_id="long",
+        argv=argv,
+        allow_network=False,
+        timeout_seconds=timeout_seconds,
+        approval_commitment=approval_commitment("long", argv, allow_network=False),
+    )
+    policy = (
+        'format = "yoetz.approved-check-policy/1"\n\n'
+        "[[checks]]\n"
+        'id = "long"\n'
+        f'argv = ["{_SLEEP}", "30"]\n'
+        f"timeout_seconds = {int(timeout_seconds)}\n"
+        "network = false\n"
+    )
+    return approval, policy
+
+
+def test_a_check_longer_than_its_call_ends_as_a_timeout_the_server_still_receives(
+    repository: Path, protected: Path, client_state: Path
+) -> None:
+    """A 300 s approval cannot outlast the transport's 300 s call: the run is cut, not lost."""
+
+    import time
+
+    approval, policy = _sleep_approval(300.0)
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    # Only a policy this client's owner trusted runs at all (ADR-051 decision 12).
+    _trust_policy(repository)
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    arguments = RunApprovedCheckArguments(opened, approval, digest, digest)
+    # The call leaves 1.5 s past the reply reserve for the run itself.
+    call = _call(WorkspaceOperation.RUN_APPROVED_CHECK, arguments, deadline_ms=16_500)
+    started = time.monotonic()
+    reply = handler.answer(call, workspace_handle=_HANDLE)
+    elapsed = time.monotonic() - started
+    assert (reply.outcome, reply.reason) == ("ok", None)
+    spec = operation_spec(WorkspaceOperation.RUN_APPROVED_CHECK)
+    assert spec is not None
+    run = spec.decode_result(reply.result)
+    assert run.result.status is ApprovedCheckStatus.TIMEOUT
+    assert elapsed < 16.5  # answered inside the call's own deadline
+    # With no time left past the reserve, nothing runs and the call says so.
+    starved = _call(WorkspaceOperation.RUN_APPROVED_CHECK, arguments, deadline_ms=10_000)
+    late = handler.answer(starved, workspace_handle=_HANDLE)
+    assert (late.outcome, late.reason) == ("unavailable", "deadline_exceeded")
+
+
 def test_a_check_the_repository_policy_does_not_approve_never_runs(
     repository: Path, protected: Path, tmp_path: Path
 ) -> None:
@@ -838,6 +1060,51 @@ def test_a_check_the_repository_policy_does_not_approve_never_runs(
         WorkspaceOperation.RUN_APPROVED_CHECK,
         RunApprovedCheckArguments(opened, forged, digest),
     ) == ("refused", "check_not_approved")
+    assert not marker.exists()
+
+
+def test_a_policy_the_owner_did_not_trust_here_runs_nothing(
+    repository: Path, protected: Path, tmp_path: Path, client_state: Path
+) -> None:
+    """ADR-051 decision 12: the client's own trust decides, whatever a server asks."""
+
+    marker = tmp_path / "ran"
+    touch = shutil.which("touch", path=os.defpath) or "/usr/bin/touch"
+    argv = (touch, os.fspath(marker))
+    approval = ApprovedCheckApproval(
+        approval_id="mark",
+        argv=argv,
+        allow_network=False,
+        timeout_seconds=10.0,
+        approval_commitment=approval_commitment("mark", argv, allow_network=False),
+    )
+    policy = (
+        'format = "yoetz.approved-check-policy/1"\n\n'
+        "[[checks]]\n"
+        'id = "mark"\n'
+        f"argv = [{json.dumps(touch)}, {json.dumps(os.fspath(marker))}]\n"
+        "network = false\n"
+    )
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    run = RunApprovedCheckArguments(opened, approval, digest, digest)
+
+    # The repository's policy approves the argv, but nobody trusted it on this client.
+    assert _refused(handler, WorkspaceOperation.RUN_APPROVED_CHECK, run) == (
+        "refused",
+        "check_not_approved",
+    )
+    # Trust recorded for an earlier policy does not carry over to an edited one.
+    (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    _trust_policy(repository)
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    assert _refused(handler, WorkspaceOperation.RUN_APPROVED_CHECK, run) == (
+        "refused",
+        "check_not_approved",
+    )
     assert not marker.exists()
 
 
@@ -933,3 +1200,33 @@ def test_an_exclusion_closed_to_this_account_is_dropped_and_the_rest_kept(
         ),
     )
     assert seen == [(os.fspath(repository), "/srv/kept", os.fspath(protected))]
+
+
+def test_an_injected_trust_source_is_asked_for_the_exact_policy_digest(
+    repository: Path, protected: Path
+) -> None:
+    from finishup.application.observation_check_policy import load_observation_check_policy
+
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    asked: list[str] = []
+
+    def untrusted(digest: str) -> bool:
+        asked.append(digest)
+        return False
+
+    handler = WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        check_sandbox=_ReadySandbox(),
+        check_policy_trust=untrusted,
+    )
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    assert _refused(
+        handler,
+        WorkspaceOperation.RUN_APPROVED_CHECK,
+        RunApprovedCheckArguments(opened, _echo_approval(), digest, digest),
+    ) == ("refused", "check_not_approved")
+    policy, _raw = load_observation_check_policy(repository)
+    assert asked == [policy.raw_digest]

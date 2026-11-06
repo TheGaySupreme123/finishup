@@ -82,7 +82,7 @@ from finishup.ports.workspace_agent import (
     operation_spec,
     outcome_for_reason,
     remote_workspace_handle_valid,
-    workspace_handle_for_commitment,
+    workspace_handle_for_claim,
     workspace_handle_valid,
 )
 from finishup.ports.workspace_inspect import (
@@ -816,14 +816,24 @@ def test_operation_lookup_is_closed() -> None:
         assert operation_spec(unknown) is None
 
 
-def test_workspace_handles_come_from_the_commitment_only() -> None:
+def test_workspace_handles_come_from_the_commitment_and_the_worktree() -> None:
     commitment = "hmac-sha256:" + "0123456789abcdef" + "f" * 48
-    assert workspace_handle_for_commitment(commitment) == _HANDLE
-    assert workspace_handle_valid(_HANDLE)
+    worktree = "sha256:" + "1" * 64
+    expected = hashlib.sha256(
+        b"yoetz/workspace-handle/v1\x00" + commitment.encode() + b"\x00" + worktree.encode()
+    ).hexdigest()[:16]
+    handle = workspace_handle_for_claim(commitment, worktree)
+    assert handle == "client:" + expected
+    assert workspace_handle_valid(handle) and workspace_handle_valid(_HANDLE)
+    # Linked worktrees of one repository share the commitment, never a handle.
+    assert workspace_handle_for_claim(commitment, "sha256:" + "2" * 64) != handle
+    assert workspace_handle_for_claim("hmac-sha256:" + "e" * 64, worktree) != handle
     for invalid in ("client:0123456789ABCDEF", "client:", "/home/dev/repo", None):
         assert not workspace_handle_valid(invalid)
-    with pytest.raises(ValueError):
-        workspace_handle_for_commitment("sha256:" + "0" * 64)
+    with pytest.raises(ValueError, match="workspace_commitment_invalid"):
+        workspace_handle_for_claim("sha256:" + "0" * 64, worktree)
+    with pytest.raises(ValueError, match="workspace_worktree_invalid"):
+        workspace_handle_for_claim(commitment, "/home/dev/repo")
     first, second = new_remote_workspace_handle(), new_remote_workspace_handle()
     assert first != second
     assert remote_workspace_handle_valid(first) and remote_workspace_handle_valid(second)

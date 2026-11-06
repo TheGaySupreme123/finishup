@@ -69,7 +69,9 @@ SERVICE_ID: Final = "svc_00000000-0000-4000-8000-0000000000b1"
 CALL_ID: Final = "rpc_00000000-0000-4000-8000-0000000000c1"
 COMMITMENT: Final = "hmac-sha256:" + "1" * 64
 HANDLE: Final = "client:" + "1" * 16
-CLAIM: Final = WorkspaceClaim(identity_kind="git_common_root", digest="sha256:" + "2" * 64)
+CLAIM: Final = WorkspaceClaim(
+    identity_kind="git_common_root", digest="sha256:" + "2" * 64, worktree="sha256:" + "3" * 64
+)
 AGENT: Final = WorkspaceAgentDeclaration(("list_beneath", "read_task_base"), 1_048_576)
 API_KEY: Final = "fuk_0123456789ab_" + "B" * 43
 BASE_URL: Final = "https://gateway.test/base"
@@ -293,7 +295,7 @@ async def scripted_server(stream: ControlStream, peer: object) -> ServerTranscri
     """Serve the scripted session: answer calls 1, 2 (after its cancel) and 4 (after the reply)."""
 
     async def resolve(_claim: WorkspaceClaim) -> RepositoryPrivacyContext:
-        return RepositoryPrivacyContext(COMMITMENT, "client_claim")
+        return RepositoryPrivacyContext(COMMITMENT, "client_claim", workspace_handle=HANDLE)
 
     transcript = ServerTranscript()
     session = await server_handshake(stream, peer, service_status(), claim_context_resolver=resolve)

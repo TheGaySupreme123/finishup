@@ -57,6 +57,7 @@ from finishup.ports.control import (
     RepositoryPrivacyContext,
     ServiceState,
     WorkspaceClaim,
+    WorkspaceLocator,
 )
 from finishup.ports.ledger import CheckAdmissionStage, check_admission_refused
 from finishup.protocol.canonical import canonical_digest
@@ -2392,7 +2393,7 @@ class _KeyedPassphraseVault(_PassphraseVault):
         return _InstallationMac()
 
 
-_CLAIM = WorkspaceClaim("git_common_root", "sha256:" + "c" * 64)
+_CLAIM = WorkspaceClaim("git_common_root", "sha256:" + "c" * 64, "sha256:" + "d" * 64)
 
 
 @pytest.mark.anyio
@@ -2401,7 +2402,7 @@ async def test_a_claim_hello_reopens_a_soft_lock_and_keys_the_claim(
 ) -> None:
     # ADR-051: a claim-bound connection's handle is fixed by its hello, so the hello re-opens a
     # soft lock exactly as the connection's first request would; otherwise the connection could
-    # never name its workspace.
+    # never name its workspace, register its agent or route a hook row.
     application = _Application()
     vault = _KeyedPassphraseVault()
     secret = b"correct horse battery staple!!"
@@ -2421,6 +2422,8 @@ async def test_a_claim_hello_reopens_a_soft_lock_and_keys_the_claim(
     assert context is not None
     assert context.identity_kind == "client_claim"
     assert context.workspace_locator is None
+    assert context.workspace_handle is not None
+    assert context.workspace_handle.startswith("client:")
     assert vault.unlock_count == 1
     assert daemon.status().state is ServiceState.READY
     await daemon.close()
@@ -2448,6 +2451,33 @@ async def test_a_claim_hello_leaves_a_hard_lock_locked_and_keys_nothing(
     assert vault.unlock_count == 0
     assert daemon.status().state is ServiceState.LOCKED
     assert daemon.status().state_reason == "explicit_lock"
+    await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_locator_hello_still_resolves_nothing_under_a_soft_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local connections keep their exact behavior: a locator hello never unlocks the vault.
+    application = _Application()
+    vault = _KeyedPassphraseVault()
+    _patch_auto_unlock_store(monkeypatch, b"correct horse battery staple!!")
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return application
+
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+
+    context = await daemon._resolve_repository_context(  # pyright: ignore[reportPrivateUsage]
+        WorkspaceLocator(str(tmp_path))
+    )
+
+    assert context is None
+    assert vault.unlock_count == 0
+    assert daemon.status().state is ServiceState.LOCKED
     await daemon.close()
 
 

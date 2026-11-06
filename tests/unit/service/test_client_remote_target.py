@@ -9,11 +9,13 @@ through its recorded launcher. A damaged target record refuses before any dial.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import os
 from collections.abc import Awaitable, Buffer, Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -22,6 +24,7 @@ from builders.server_targets import ambient_home
 from finishup.client import targets, transports
 from finishup.client.targets import ServerTarget
 from finishup.client.transports import TransportError
+from finishup.client.workspace_claim import worktree_digest
 from finishup.config.paths import reset_selection_memo
 from finishup.ports.control import (
     ControlClientKind,
@@ -102,8 +105,16 @@ def _use(monkeypatch: pytest.MonkeyPatch, transport: _FakeTransport) -> None:
 async def _key_claim(claim: WorkspaceClaim) -> RepositoryPrivacyContext:
     """The daemon's answer to a claim while its vault is ready: a keyed ``client_claim``."""
 
-    mac = hmac.new(b"installation", claim.digest.encode("ascii"), "sha256").hexdigest()
-    return RepositoryPrivacyContext(commitment="hmac-sha256:" + mac, identity_kind="client_claim")
+    from finishup.ports.workspace_agent import workspace_handle_for_claim
+
+    commitment = "hmac-sha256:" + hmac.new(
+        b"installation", claim.digest.encode("ascii"), "sha256"
+    ).hexdigest()
+    return RepositoryPrivacyContext(
+        commitment=commitment,
+        identity_kind="client_claim",
+        workspace_handle=workspace_handle_for_claim(commitment, claim.worktree),
+    )
 
 
 async def _serve(
@@ -201,6 +212,8 @@ def test_the_hello_to_a_remote_server_carries_a_claim_and_no_path(
     assert os.fsencode(tmp_path) not in tap.received
     assert b"workspace_locator" not in tap.received
     assert b'"workspace_claim"' in tap.received
+    # The claim names this worktree by its keyed digest (each linked worktree has its own).
+    assert b'"worktree":"sha256:' in tap.received
     # A connection that names a workspace but no binding claims it and offers no agent.
     assert b'"workspace_agent"' not in tap.received
     assert b'"workspace_binding":"client_claim"' in tap.sent
@@ -520,6 +533,9 @@ def test_a_serving_binding_claims_the_workspace_and_offers_the_agent(
     async def exercise() -> str:
         binding = await client_module.serving_workspace_binding(WorkspaceLocator(str(tmp_path)))
         assert binding is not None and binding.agent is not None
+        # The foundation's claim, under this target's own salt: the worktree it serves included.
+        salt = base64.b64decode(cast(str, remote.claim_salt))
+        assert binding.claim.worktree == worktree_digest(os.path.normpath(tmp_path), salt)
         client = await client_module.connect_service(
             ControlClientKind.MCP_BRIDGE, workspace_binding=binding
         )

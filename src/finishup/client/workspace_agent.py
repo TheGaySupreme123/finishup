@@ -48,6 +48,7 @@ from finishup.adapters.git_subject_state import (
     list_changed_relative_paths,
     open_local_workspace,
 )
+from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.task_input_read import (
     ReadDeadline,
     list_beneath,
@@ -64,8 +65,10 @@ from finishup.application.observation_check_policy import (
     load_observation_check_policy,
 )
 from finishup.config import paths as config_paths
-from finishup.domain.privacy import admitted_input_root_valid
+from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
+from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.logging import (
+    record_bounded_event_without_raising,
     record_public_error_without_raising,
     record_unexpected_exception_without_raising,
 )
@@ -111,7 +114,12 @@ from finishup.ports.workspace_agent import (
     resolve_client_location,
     workspace_handle_valid,
 )
-from finishup.ports.workspace_inspect import WorkspaceInspectCommand
+from finishup.ports.workspace_inspect import (
+    WorkspaceInspectCommand,
+    WorkspaceInspectLimitation,
+    WorkspaceInspectResult,
+    WorkspaceInspectStatus,
+)
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -122,13 +130,20 @@ __all__ = [
 
 _COMPONENT: Final = "client.workspace_agent"
 # Opened workspaces (``open_workspace``) this handler keeps; the oldest is forgotten first, and a
-# call naming a forgotten one is answered ``handle_unknown`` so the server opens it again.
+# call naming a forgotten one is answered ``handle_unknown`` so the server opens it again
+# (``workspace_routing`` reopens once). A keyed handler holds at most its two keyed handles.
 _MAX_OPEN_WORKSPACES: Final = 8
 # Domain of a keyed opened-workspace handle (``opened_handle_key``): the MAC over the open's
 # admitted-HOME flag and this agent's own root, so any agent of this client for the same workspace
 # recomputes it, and nothing else can.
 _OPENED_HANDLE_DOMAIN: Final = b"yoetz/opened-workspace/v1\x00"
 _OPENED_HANDLE_KEY_BYTES: Final = 32
+# What an approved-check run keeps of its call's deadline: killing and reaping a check that
+# reached its time, redacting and encoding its output, and the reply frame. A run never goes past
+# the call's deadline less this, so its result, a timeout included, reaches the server in time.
+_APPROVED_CHECK_REPLY_RESERVE_SECONDS: Final = 15.0
+# The least run time an approval may ask for (``ApprovedCheckApproval``).
+_MIN_APPROVED_CHECK_SECONDS: Final = 0.1
 
 
 class _Outcome(Exception):
@@ -228,6 +243,7 @@ class WorkspaceAgentHandler:
 
     __slots__ = (
         "_capture",
+        "_check_policy_trust",
         "_declaration",
         "_inspect",
         "_opened",
@@ -250,6 +266,7 @@ class WorkspaceAgentHandler:
         max_reply_bytes: int = MAX_WORKSPACE_FRAME_BYTES,
         check_sandbox: CheckSandboxPort | None = None,
         opened_handle_key: bytes | None = None,
+        check_policy_trust: Callable[[str], bool] | None = None,
     ) -> None:
         """``workspace`` is the locator the connection's claim was computed from.
 
@@ -259,10 +276,15 @@ class WorkspaceAgentHandler:
 
         ``opened_handle_key`` (32 bytes, a client secret the server never sees) makes the handle
         ``open_workspace`` answers a keyed digest of this root instead of a random one, so that
-        when several of this client's connections serve the same workspace (each process its own
-        agent, ADR-051 approach B), a later call naming the handle may be answered by any of
-        them: an agent that did not open it recomputes it for its own root and opens it again.
-        Without a key, a handle is known only to the agent that opened it.
+        when several of this client's connections serve the same worktree (a CLI command, the MCP
+        bridge, a background agent, a reconnect), a later call naming the handle may be answered
+        by any of them: an agent that did not open it recomputes it for its own root and opens it
+        again, and the bounded table can never forget a handle still in use. Without a key, a
+        handle is known only to the agent that opened it.
+
+        ``check_policy_trust`` answers whether this client's owner trusted a check policy's raw
+        digest; by default this process's own observation store answers
+        (``client.observation_outbox.check_policy_trusted``).
         """
 
         if type(workspace) is not WorkspaceLocator:
@@ -295,6 +317,9 @@ class WorkspaceAgentHandler:
         ):
             raise ValueError("opened_handle_key_invalid")
         self._opened_key = opened_handle_key
+        # Whether this client's owner trusted a check policy's raw digest (ADR-051 decision 12);
+        # None reads this process's own observation store, where 'observe checks trust' records it.
+        self._check_policy_trust = check_policy_trust
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -573,14 +598,20 @@ class WorkspaceAgentHandler:
 
     def _lstat_candidates(self, arguments: LstatCandidatesArguments, call: _Call) -> object:
         """Metadata only. A candidate inside the claimed workspace or FinishUP's own directories,
-        or not in normal form, is reported as not found: it is never an outside input."""
+        not in normal form, or one the local outside-input rule would never look at (hidden,
+        credential-named, a system directory, beneath no path an owner may admit) is reported
+        as not found: it is never an outside input, and the server learns nothing of it."""
 
         facts: list[LstatFacts | None] = []
         fenced = (self._root, *self._protected)
         for path in arguments.paths:
             if call.expired():
                 raise _Outcome("read_deadline")
-            if posixpath.normpath(path) != path or _folded_within(path, fenced):
+            if (
+                posixpath.normpath(path) != path
+                or _folded_within(path, fenced)
+                or not _outside_candidate(path)
+            ):
                 facts.append(None)
                 continue
             try:
@@ -632,15 +663,72 @@ class WorkspaceAgentHandler:
             raise _Outcome(_unavailable(str(exc))) from None
 
     def _inspect_paths(self, arguments: InspectArguments, _call: _Call) -> object:
-        return self._inspect.inspect(
-            WorkspaceInspectCommand(
-                workspace=self._opened_workspace(arguments.handle),
-                relative_paths=arguments.relative_paths,
+        """Excerpts of this workspace's own changed paths only, never what the server picks.
+
+        A local service only ever inspects ``list_changed_relative_paths``; here the server
+        names the paths, so the agent takes that listing itself and inspects only paths in it,
+        which leaves out Git-ignored files, unchanged files and everything under ``.git``. A
+        credential-named path, or one in the home directory's private state when the workspace
+        is the home directory, is left out too. A path left out is reported
+        ``path_out_of_scope`` (``partial``, or ``rejected`` when none is left); its bytes are
+        never read.
+        """
+
+        workspace = self._opened_workspace(arguments.handle)
+        try:
+            changed = frozenset(list_changed_relative_paths(workspace))
+        except ValueError as exc:
+            raise _Outcome(_unavailable(str(exc))) from None
+        root = Path(self._root)
+        allowed = tuple(
+            path
+            for path in arguments.relative_paths
+            if path in changed
+            and not credential_named_bytes(os.fsencode(path))
+            and not home_private_path(root, os.fsencode(path))
+        )
+        if not allowed:
+            return WorkspaceInspectResult(
+                WorkspaceInspectStatus.REJECTED,
+                (),
+                (WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE,),
+                None,
+            )
+        result = self._inspect.inspect(
+            WorkspaceInspectCommand(workspace=workspace, relative_paths=allowed)
+        )
+        if len(allowed) == len(arguments.relative_paths):
+            return result
+        limitations = tuple(
+            sorted(
+                {*result.limitations, WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE},
+                key=lambda item: item.value.encode(),
             )
         )
+        status = (
+            WorkspaceInspectStatus.PARTIAL
+            if result.status is WorkspaceInspectStatus.INSPECTED
+            else result.status
+        )
+        return WorkspaceInspectResult(
+            status, result.artifacts, limitations, result.selection_digest
+        )
 
-    def _run_approved_check(self, arguments: RunApprovedCheckArguments, _call: _Call) -> object:
-        """Run one argv only when this repository's own policy approves exactly it."""
+    def _policy_trusted(self, policy_digest: str) -> bool:
+        if self._check_policy_trust is not None:
+            return self._check_policy_trust(policy_digest)
+        from finishup.client.observation_outbox import check_policy_trusted
+
+        return check_policy_trusted(self._root, policy_digest)
+
+    def _run_approved_check(self, arguments: RunApprovedCheckArguments, call: _Call) -> object:
+        """Run one argv only when the policy the owner trusted on this client approves exactly it.
+
+        The run ends within the call's deadline, less the time its result needs to reach the
+        server: an approval longer than that (the transport caps a call at 300 s) is cut there
+        and records ``timeout``, never a lost call. With too little time left to run at all, the
+        call is answered ``deadline_exceeded`` and nothing runs.
+        """
 
         workspace = self._opened_workspace(arguments.handle)
         try:
@@ -651,13 +739,26 @@ class WorkspaceAgentHandler:
             # No policy, or one that does not parse, approves nothing.
             raise _Outcome("check_not_approved") from None
         approval = arguments.approval
-        if approval not in policy.checks:
+        # The owner's trust of this exact policy lives on this client (ADR-051 decision 12), never
+        # on the server: an untrusted or edited policy approves nothing, whatever the server asks.
+        if approval not in policy.checks or not self._policy_trusted(policy.raw_digest):
             raise _Outcome("check_not_approved")
+        budget = call.remaining() - _APPROVED_CHECK_REPLY_RESERVE_SECONDS
+        if budget < _MIN_APPROVED_CHECK_SECONDS:
+            raise _Outcome("deadline_exceeded")
+        capped = budget < approval.timeout_seconds
+        if capped:
+            record_bounded_event_without_raising(
+                component=_COMPONENT,
+                operation="workspace_call_run_approved_check",
+                reason="run_capped_at_call_deadline",
+            )
         captured: list[tuple[bytes, bool]] = []
         runner = ApprovedCheckRunner(
             {approval.approval_commitment: approval},
             sandbox=self._sandbox,
             output_sink=lambda output, redacted: captured.append((output, redacted)),
+            run_seconds_cap=budget if capped else None,
         )
         result = runner.run(
             ApprovedCheckCommand(
@@ -690,6 +791,29 @@ def _examinable(path: str) -> bool:
     except (OSError, ValueError):
         return True
     return True
+
+
+def _outside_candidate(path: str) -> bool:
+    """Whether a normalized absolute ``path`` passes the local outside-input candidate rule.
+
+    The rule a local service applies before it ever looks at a candidate's metadata
+    (``outside_input_candidates``): no hidden component, not credential-named, in no system
+    directory, and at or beneath a path an owner may admit as an input root. An honest server only
+    asks about such candidates, so this changes no answer it needs; it keeps a server from
+    learning whether anything else on this machine exists.
+    """
+
+    parts = path.split("/")[1:]
+    if not parts or not parts[0] or any(part.startswith(".") for part in parts):
+        return False
+    if (
+        credential_named_bytes(os.fsencode(path))
+        or system_directory_path(path)
+        or system_directory_path(path.casefold())
+    ):
+        return False
+    ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+    return any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
 
 
 def _unavailable(reason: str) -> str:

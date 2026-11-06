@@ -154,7 +154,9 @@ async def test_a_claim_bound_check_never_reads_the_services_own_outbox_as_comple
     gate = asyncio.Lock()
     probe = _Probe(gate, frozenset())
     daemon, seen = _daemon(gate, probe)
-    claim = RepositoryPrivacyContext("hmac-sha256:" + "0a" * 32, "client_claim")
+    claim = RepositoryPrivacyContext(
+        "hmac-sha256:" + "0a" * 32, "client_claim", workspace_handle="client:0123456789abcdef"
+    )
 
     await daemon._dispatch_ready(
         SimpleNamespace(), _request(mode=mode, await_observations=True), claim

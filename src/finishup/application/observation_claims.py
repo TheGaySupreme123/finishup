@@ -64,7 +64,7 @@ from finishup.observability.logging import (
 )
 from finishup.ports.control import RepositoryPrivacyContext
 from finishup.ports.start_catalog import TaskRoute
-from finishup.ports.workspace_agent import workspace_handle_for_commitment, workspace_handle_valid
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 __all__ = [
@@ -380,7 +380,9 @@ class ClaimObservationRouter:
             if not inside:
                 _record("observation_claim_ingest", "route_outside_claim")
                 return _reject(ObservationGapCode.CONSENT_MISSING.value)
-        handle = workspace_handle_for_commitment(context.commitment)
+        # One store per claimed worktree: consent for one worktree never covers another.
+        handle = context.workspace_handle
+        assert handle is not None  # a client_claim identity always names its worktree's handle
         claim = await self._open(handle)
         if claim is None:
             return _reject(ObservationGapCode.SERVICE_UNAVAILABLE.value)

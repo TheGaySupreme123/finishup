@@ -502,31 +502,35 @@ class _HookDrainClient(Protocol):
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
 
 
-def _drain_connector(
-    connect: HookDrainConnector | None, workspace_locator: str | None
-) -> HookDrainConnector | None:
-    """The drains' connector: claim-bound to this hook's workspace on a remote root (ADR-051).
+def _drain_connector(connect: object, workspace_locator: str | None) -> HookDrainConnector:
+    """The connector a hook pass's own outbox drains use (ADR-051).
 
-    A drain connects without naming a workspace, which a local service needs no more than that.
-    A server on another machine accepts this client's rows only on a connection bound to the
-    claim they were captured under (each row is attested from this client's own store), so on a
-    remote root the drain names the hook's workspace and ``service.client`` claims it without an
-    agent; the path itself is never sent. A local root, and an injected connector, connect
-    exactly as before.
+    An injected ``connect`` is used as given. Otherwise the root decides when the drain connects:
+    a local root (the everyday server, an isolated root, a named local server) connects exactly
+    as before, naming no workspace. A server on another machine accepts a row only when it is
+    attested over a connection that claims the row's workspace (decision 12); an unbound drain
+    there is refused, or its rows are quarantined. So on a remote root the drain names the hook's
+    canonical workspace and the connect seam claims it: the hello carries the claim, never the
+    path. A pass that knows no workspace sends nothing there: its connect fails, the rows stay
+    pending, and the background drain delivers them claim-bound.
     """
 
-    if connect is not None or workspace_locator is None:
-        return connect
-    locator = workspace_locator
+    if connect is not None:
+        return cast(HookDrainConnector, connect)
 
     async def drain_connect(kind: ControlClientKind) -> _HookDrainClient:
-        from finishup.client.remote_remedy import remote_root_selected
-        from finishup.ports.control import WorkspaceLocator
+        from finishup.client.targets import active_root_may_be_remote
 
         real = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
-        if not remote_root_selected():
+        if not active_root_may_be_remote():
             return await real(kind)
-        return await real(kind, workspace_locator=WorkspaceLocator(locator))
+        if workspace_locator is None:
+            from finishup.ports.control import ControlError
+
+            raise ControlError("service_unavailable", retryable=True)
+        from finishup.ports.control import WorkspaceLocator
+
+        return await real(kind, workspace_locator=WorkspaceLocator(workspace_locator))
 
     return drain_connect
 
@@ -2759,10 +2763,12 @@ async def _try_service_ingest(
             capture_only=capture_only,
         )
         if (
-            getattr(client, "workspace_handle", None) is not None
-            and store is not None
-            and workspace_commitment is not None
+            getattr(client, "workspace_binding", None) == "client_claim"
+            or getattr(client, "workspace_handle", None) is not None
         ):
+            # A remote server target: the row goes out attested, without the path, or not at all.
+            if store is None or workspace_commitment is None:
+                raise ValueError("observation_attestation_unavailable")
             from finishup.client.observation_attestation import attest_for_connection
 
             request = attest_for_connection(
@@ -6515,9 +6521,7 @@ def handle_observe(
                         codex_session_id=codex_session_id,
                         content_by_source_identity=content_map,
                         content_capture_profile=service_content_profile,
-                        connect=_drain_connector(
-                            cast(HookDrainConnector | None, connect), workspace_locator
-                        ),
+                        connect=_drain_connector(connect, workspace_locator),
                         event_name=resolved_event,
                         _state=_state,
                         budget_seconds=native_content_drain_budget,
@@ -6588,9 +6592,7 @@ def handle_observe(
                     codex_session_id=codex_session_id,
                     content_by_source_identity=content_map,
                     content_capture_profile=service_content_profile,
-                    connect=_drain_connector(
-                        cast(HookDrainConnector | None, connect), workspace_locator
-                    ),
+                    connect=_drain_connector(connect, workspace_locator),
                     event_name=resolved_event,
                     _state=_state,
                     budget_seconds=(
@@ -6625,9 +6627,7 @@ def handle_observe(
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
                         finishup_session_id=stop_mapping.finishup_session_id,
-                        connect=_drain_connector(
-                            cast(HookDrainConnector | None, connect), workspace_locator
-                        ),
+                        connect=_drain_connector(connect, workspace_locator),
                         _state=_state,
                         deadline=stop_drain_deadline,
                         monotonic=_monotonic,

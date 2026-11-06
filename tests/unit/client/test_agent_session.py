@@ -31,7 +31,9 @@ from finishup.config.paths import active_root, reset_selection_memo
 from finishup.ports.control import ControlError, WorkspaceClaim, WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
 
-_BINDING = ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "2" * 64))
+_BINDING = ClientWorkspaceBinding(
+    WorkspaceClaim("directory", "sha256:" + "2" * 64, "sha256:" + "3" * 64)
+)
 _HANDLE = "client:" + "1" * 16
 
 
@@ -250,8 +252,12 @@ def test_a_workspace_switch_releases_the_connection_that_claims_the_earlier_work
     drained: list[tuple[WorkspaceLocator, int]] = []
     first, second = WorkspaceLocator("/w/a"), WorkspaceLocator("/w/b")
     bindings = {
-        first: ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "a" * 64)),
-        second: ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "b" * 64)),
+        first: ClientWorkspaceBinding(
+            WorkspaceClaim("directory", "sha256:" + "a" * 64, "sha256:" + "c" * 64)
+        ),
+        second: ClientWorkspaceBinding(
+            WorkspaceClaim("directory", "sha256:" + "b" * 64, "sha256:" + "d" * 64)
+        ),
     }
 
     async def bind(workspace: WorkspaceLocator) -> ClientWorkspaceBinding:

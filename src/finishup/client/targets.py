@@ -70,6 +70,8 @@ __all__ = [
     "ServerTarget",
     "TargetError",
     "TargetKind",
+    "TargetRecordUnreadable",
+    "active_root_may_be_remote",
     "active_target_record",
     "clear_selection",
     "find_target",
@@ -83,6 +85,7 @@ __all__ = [
     "reauthorized",
     "registry_lock",
     "remove_target_root",
+    "require_current_authorization",
     "selection_path",
     "selection_source",
     "servers_dir",
@@ -143,6 +146,7 @@ _REASONS: Final = frozenset(
         "target_unknown",
         "target_selected",
         "target_record_invalid",
+        "target_reauthorization_required",
         "target_url_invalid",
         "target_tls_invalid",
         "target_path_invalid",
@@ -163,6 +167,25 @@ class TargetError(Exception):
             raise ValueError("target_reason_invalid")
         self.reason = reason
         super().__init__(reason)
+
+
+class TargetRecordUnreadable(TargetError):
+    """The active root resolves, but the server target record it holds cannot be read.
+
+    Its ``reason`` is the record's own closed refusal (``target_root_unsafe`` or
+    ``target_record_invalid``). Whether such a root is this machine's server or a remote one is
+    unknown, so a caller deciding where something may run fails closed on it, while a root that
+    cannot be resolved at all stays a plain ``TargetError`` its own path reports. ``target_id`` is
+    the root's generated ``t_<8 hex>`` folder name when it has one, never other folder text.
+    """
+
+    target_id: str | None
+
+    def __init__(self, reason: str, target_id: str | None) -> None:
+        super().__init__(reason)
+        self.target_id = (
+            target_id if target_id is not None and _TARGET_ID.match(target_id) else None
+        )
 
 
 def _absolute_text(value: str | None, *, required: bool = False) -> None:
@@ -770,6 +793,21 @@ def reauthorized(record: ServerTarget, *, now: str | None = None) -> ServerTarge
     return replace(record, authorized_at=now or _now(), disclosure_version=DISCLOSURE_VERSION)
 
 
+def require_current_authorization(record: ServerTarget | None) -> None:
+    """Refuse a remote target the owner authorized under an older disclosure (ADR-051 section 8).
+
+    A new disclosure version needs a fresh typed confirmation before anything is sent to that
+    target: ``finishup server use NAME`` on the trusted console shows the current disclosure and
+    records it (``reauthorized``). Raises ``target_reauthorization_required``; ``None`` and a local
+    record pass. Every path that opens a connection to a remote target calls this; the display and
+    reverse paths (``server status``, ``list``, ``test``, ``remove``, ``logout``) do not, so the
+    owner can still see and remove a stale target.
+    """
+
+    if record is not None and record.needs_reauthorization:
+        raise TargetError("target_reauthorization_required")
+
+
 def remove_target_root(record: ServerTarget) -> None:
     """Delete a remote target's root; local roots go through ``dispose_instance`` instead."""
 
@@ -819,7 +857,12 @@ def write_selection(record: ServerTarget) -> None:
 
 
 def clear_selection() -> bool:
-    """Return to the everyday server; returns whether a selection was removed."""
+    """Return to the everyday server; returns whether a selection was removed.
+
+    A selection that cannot be read (damaged, foreign-mode, or a symlink, which the root
+    resolution refuses) is removed too: this is the documented way back from it. Unlinking a
+    symlink removes the link, never what it points to. Anything but a file or a link is refused.
+    """
 
     path = selection_path()
     try:
@@ -827,7 +870,7 @@ def clear_selection() -> bool:
     except FileNotFoundError:
         reset_selection_memo()
         return False
-    if not stat.S_ISREG(facts.st_mode):
+    if not (stat.S_ISREG(facts.st_mode) or stat.S_ISLNK(facts.st_mode)):
         raise TargetError("selection_invalid")
     path.unlink()
     reset_selection_memo()
@@ -840,11 +883,32 @@ def selection_source() -> SelectionSource:
     return isolation_binding()
 
 
+def active_root_may_be_remote() -> bool:
+    """Whether a connection from this process must claim its workspace instead of naming a path.
+
+    True when the root's ``target.json`` names a remote kind, and also when the root resolves but
+    its record cannot be read: that record may name a server on another machine, so a caller
+    fails closed (it never sends a path there, and the connect seam then refuses on its own).
+    False for the everyday installation, an isolated root that is not a target, a named local
+    server, and a root that cannot be resolved at all, whose own path reports it exactly as
+    before. Hook-safe: it reads only the target records.
+    """
+
+    try:
+        record = active_target_record()
+    except TargetRecordUnreadable:
+        return True
+    except TargetError:
+        return False
+    return record is not None and record.is_remote
+
+
 def active_target_record() -> ServerTarget | None:
     """The target record of the root this process uses, or ``None`` for an ordinary local root.
 
     ``None`` covers the everyday server and an explicitly isolated root that is not a target.
-    A path-safety refusal of the root is reported as ``target_root_unsafe``.
+    A path-safety refusal of the root is reported as ``target_root_unsafe``; a root that resolves
+    but holds a record that cannot be read raises ``TargetRecordUnreadable``.
     """
 
     try:
@@ -853,4 +917,7 @@ def active_target_record() -> ServerTarget | None:
         raise TargetError("target_root_unsafe") from None
     if root is None:
         return None
-    return read_target(root)
+    try:
+        return read_target(root)
+    except TargetError as error:
+        raise TargetRecordUnreadable(error.reason, root.name) from None

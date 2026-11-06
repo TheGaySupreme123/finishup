@@ -55,6 +55,7 @@ __all__ = [
     "ClientObservationDrain",
     "ObservationIngestClient",
     "capture_pending",
+    "check_policy_trusted",
     "drain_client_observation",
 ]
 
@@ -165,6 +166,26 @@ class _WorkspaceStore(LocalObservationStore):
 
     def pending_workspaces(self) -> tuple[str, ...]:
         return tuple(item for item in super().pending_workspaces() if item == self._only)
+
+
+def check_policy_trusted(workspace: str, policy_digest: str, *, state: Path | None = None) -> bool:
+    """Whether this client's owner trusted ``policy_digest`` as ``workspace``'s check policy.
+
+    On a remote target the client's observation store is the authority for approved-check trust
+    (ADR-051 decision 12): ``finishup observe checks trust`` records it there and ``revoke``
+    removes it. The workspace agent asks here before every approved check it would run, so a
+    server, honest or not, can run only argv from the policy whose exact raw digest the owner
+    trusted, and a revoke takes effect at once. No key material is created: a store that never
+    recorded anything for ``workspace`` trusts nothing, and a store that cannot be read trusts
+    nothing either.
+    """
+
+    try:
+        store = LocalObservationStore(_state=state)
+        commitment = store.existing_workspace_commitment(workspace)
+        return commitment is not None and store.policy_digest_is_trusted(commitment, policy_digest)
+    except Exception:  # noqa: BLE001 - an unreadable store trusts nothing (fail closed)
+        return False
 
 
 def _workspace_commitment(state: Path | None, workspace: str) -> str | None:

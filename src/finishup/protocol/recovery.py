@@ -724,12 +724,12 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="workspace_binding_correction",
         directive=(
-            "This connection named both a workspace path and a workspace claim, so the service "
-            "refused it before any work. Reconnect through the FinishUP client for the selected "
-            "server; it sends exactly one of them."
+            "This request names its workspace in a form this connection cannot use (a client: "
+            "handle without a claim, or a path and a claim together), so nothing was recorded. "
+            "Name it by its absolute root and send it once under a NEW request_id."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
-        nudge="Never send a local path to a FinishUP server on another machine.",
+        nudge="The FinishUP MCP bridge and CLI choose the right form for the selected server.",
     ),
     RecoveryDirective(
         token="workspace_handle_required",
@@ -778,6 +778,16 @@ _DIRECTIVES: Final = (
             "status', or select a local server, then run this again."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
+    ),
+    RecoveryDirective(
+        token="server_reauthorization_required",
+        directive=(
+            "The selected FinishUP server was authorized under an older disclosure, so nothing "
+            "was sent to it. Ask the owner to run 'finishup server use' with its name in their "
+            "own terminal, then repeat this request."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge="Never select or authorize a FinishUP server for the owner.",
     ),
     RecoveryDirective(
         token="server_selection_overridden",

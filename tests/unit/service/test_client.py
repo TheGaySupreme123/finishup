@@ -513,6 +513,87 @@ async def test_on_demand_keeps_waiting_when_the_spawned_service_lost_the_singlet
     assert attempts == 3
 
 
+def _remote_record() -> object:
+    from finishup.client.targets import ServerTarget
+
+    return ServerTarget(
+        "t_0a1b2c3d",
+        "lab",
+        "ssh",
+        "2026-11-05T12:00:00.000Z",
+        host="lab.example",
+        port=22,
+        claim_salt="A" * 43 + "=",
+        authorized_at="2026-11-05T12:00:00.000Z",
+        disclosure_version=1,
+    )
+
+
+def _unreadable_record() -> object:
+    from finishup.client.targets import TargetRecordUnreadable
+
+    raise TargetRecordUnreadable("target_root_unsafe", "t_0a1b2c3d")
+
+
+@pytest.mark.parametrize("record", [_remote_record, _unreadable_record])
+def test_a_remote_target_root_never_spawns_a_local_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: object
+) -> None:
+    """ADR-051: a remote root's spawn is refused at once, typed, before anything starts."""
+
+    import finishup.service.client as client_module
+
+    def popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a remote target's root must not start a local service")
+
+    monkeypatch.setattr("finishup.client.targets.active_target_record", record)
+    monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+    with pytest.raises(ControlError) as refused:
+        client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
+    assert (refused.value.reason, refused.value.phase) == (
+        "service_unavailable",
+        "target_root_is_remote",
+    )
+    assert not (tmp_path / "logs").exists()
+
+
+@pytest.mark.anyio
+async def test_on_demand_names_a_remote_target_root_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.service.client as client_module
+
+    async def unavailable(_kind: ControlClientKind, **_kwargs: object) -> object:
+        raise ControlError("service_unavailable", retryable=True)
+
+    monkeypatch.setattr("finishup.client.targets.active_target_record", _remote_record)
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    started = time.monotonic()
+    with pytest.raises(ControlError) as refused:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=30.0)
+    assert refused.value.phase == "target_root_is_remote"
+    assert time.monotonic() - started < 5.0
+
+
+def test_a_local_or_named_local_root_still_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import finishup.service.client as client_module
+
+    spawned: list[object] = []
+
+    def popen(command: object, **_kwargs: object) -> object:
+        spawned.append(command)
+        return _ExitedProcess(None)
+
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: None)
+    monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+    client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
+    assert len(spawned) == 1
+
+
 def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -526,6 +607,7 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
 
     monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(client_module, "active_root", lambda: tmp_path / "isolated")
 
     spawned = client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
 
@@ -540,6 +622,48 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
         spawned.startup_correlation_id,
     )
     assert spawned.startup_correlation_id.startswith("err_")
+
+
+def test_an_everyday_spawner_tells_its_service_to_read_no_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051: the service serves the spawner's root, even after a selection appears.
+
+    The spawner resolved the everyday installation (its memo holds ``None``); another process
+    then selected a named server. The service it starts is told to read no selection, so it does
+    not start in that target's root while this spawner polls the everyday endpoint.
+    """
+
+    import finishup.service.client as client_module
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+    from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, SERVER_SELECTION_SCHEMA
+
+    observed: list[tuple[object, dict[str, str]]] = []
+
+    def popen(command: object, **kwargs: object) -> object:
+        observed.append((command, cast(dict[str, str], kwargs["env"])))
+        return _ExitedProcess(None)
+
+    with ambient_home(monkeypatch):
+        assert client_module.active_root() is None  # memoized: the everyday installation
+        with targets.registry_lock():
+            record, _root = targets.new_local_target("dev")
+        # Another process selects it: the file changes, this process's memo does not.
+        path = targets.selection_path()
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.write_bytes(
+            f'{{"schema":"{SERVER_SELECTION_SCHEMA}","target_id":"{record.target_id}"}}\n'.encode()
+        )
+        path.chmod(0o600)
+        monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+        client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
+
+    ((command, environment),) = observed
+    assert isinstance(command, tuple)
+    assert command[-1] == "--ambient-root"
+    assert not any(name in environment for name in ISOLATED_ROOT_ENV_NAMES)
 
 
 @pytest.mark.anyio

@@ -10,8 +10,11 @@ digest and the FinishUP route mapped for the host session. The server records it
 ``client_attested`` and verifies none of it.
 
 The workspace path never leaves either: any workspace-locator content in the row is replaced by
-the connection's own ``client:`` handle. A connection that is not claim-bound (every local
-target) sends the row exactly as before.
+the connection's own ``client:`` handle. A claim-bound connection the server gave no handle (its
+vault was not ready at hello) sends nothing at all: the row stays pending behind a retryable
+``vault_locked`` and a fresh connection after the unlock delivers it. Whether a connection is
+claim-bound is decided by its binding, never by the handle alone. A connection that is not
+claim-bound (every local target) sends the row exactly as before.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from finishup.domain.observation import (
     ObservationIngestRequest,
 )
 from finishup.domain.values import Timestamp
+from finishup.ports.control import ControlError
 from finishup.ports.workspace_agent import workspace_handle_valid
 
 __all__ = [
@@ -35,6 +39,7 @@ __all__ = [
     "attest_for_connection",
     "attest_ingest_request",
     "client_attestation",
+    "connection_claim_bound",
     "connection_workspace_handle",
 ]
 
@@ -77,6 +82,19 @@ def connection_workspace_handle(connection: object) -> str | None:
 
     handle = getattr(connection, "workspace_handle", None)
     return handle if type(handle) is str and workspace_handle_valid(handle) else None
+
+
+def connection_claim_bound(connection: object) -> bool:
+    """Whether ``connection`` claimed its workspace (a remote server target), handle or not.
+
+    The hello's binding decides: a claim-bound connection whose server could not key the claim
+    (a locked vault) reports ``client_claim`` with no handle, and must still never send a path.
+    """
+
+    return (
+        getattr(connection, "workspace_binding", None) == "client_claim"
+        or connection_workspace_handle(connection) is not None
+    )
 
 
 def client_attestation(
@@ -160,11 +178,18 @@ def attest_for_connection(
     workspace_commitment: str,
     state: Path | None = None,
 ) -> ObservationIngestRequest:
-    """``request`` as ``connection`` must send it: attested when claim-bound, else unchanged."""
+    """``request`` as ``connection`` must send it: attested when claim-bound, else unchanged.
 
+    A claim-bound connection without a handle raises the retryable ``vault_locked`` before
+    anything is encoded: the row cannot be attested and must not carry the workspace path, so it
+    stays pending until a connection the server keyed can deliver it.
+    """
+
+    if not connection_claim_bound(connection):
+        return request
     handle = connection_workspace_handle(connection)
     if handle is None:
-        return request
+        raise ControlError("vault_locked", retryable=True)
     return attest_ingest_request(
         request,
         handle=handle,

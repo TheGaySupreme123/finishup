@@ -55,6 +55,7 @@ __all__ = [
     "split_frames",
     "CLAIM_DIGEST",
     "SERVICE_ID",
+    "WORKTREE_DIGEST",
     "SLOW_METHOD",
     "MemoryStream",
     "ScriptedDaemon",
@@ -67,6 +68,7 @@ __all__ = [
 
 SERVICE_ID: Final = "svc_00000000-0000-4000-8000-0000000000a1"
 CLAIM_DIGEST: Final = "sha256:" + "c1a1" * 16
+WORKTREE_DIGEST: Final = "sha256:" + "d1e2" * 16
 # The agent scope's methods, each called once by the scripted session (ADR-051 decision 9).
 AGENT_METHODS: Final = (
     ControlMethod.START,
@@ -315,6 +317,7 @@ def _hello(*, agent: bool) -> dict[str, JsonValue]:
             "schema_version": "1.0.0",
             "identity_kind": "git_common_root",
             "digest": CLAIM_DIGEST,
+            "worktree": WORKTREE_DIGEST,
         }
         hello["workspace_agent"] = {
             "schema_version": "1.0.0",
