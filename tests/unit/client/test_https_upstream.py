@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import socket
 import ssl
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import httpcore
@@ -80,7 +80,9 @@ class _Flaky(httpx.AsyncBaseTransport):
 
 
 def _setup(
-    home: Path, *, transport_wrapper: type[_Flaky] | None = None
+    home: Path,
+    *,
+    transport_wrapper: Callable[[httpx.AsyncBaseTransport], httpx.AsyncBaseTransport] | None = None,
 ) -> tuple[GatewayApp, Connector, ScriptedDaemon, str, Path, httpx.AsyncBaseTransport]:
     with targets.registry_lock():
         record, root = targets.new_remote_target("gw", "https", base_url="https://gw.example")
@@ -119,6 +121,56 @@ def test_an_ambiguous_call_failure_is_polled_never_posted_twice(home: Path) -> N
         assert isinstance(transport, _Flaky) and transport.lost
         calls = [frame for frame in daemon.received() if b'"kind":"call"' in frame]
         assert len(calls) == len(set(calls)) == 8  # seven methods and the slow call, once each
+
+    with selection_override(root):
+        asyncio.run(exercise())
+
+
+class _Blips(httpx.AsyncBaseTransport):
+    """Fails the first frames poll, cancel and workspace reply once each, as a network blip.
+
+    The poll and the cancel fail before they reach the gateway; the reply reaches it and only
+    its answer is lost, so the retry delivers it a second time.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self.inner = inner
+        self.failed: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        route = f"{request.method} {path.rsplit('/', 1)[-1]}"
+        first = route not in self.failed and route in {"GET frames", "POST cancel", "POST frames"}
+        if first and route != "POST frames":
+            self.failed.append(route)
+            raise httpx.ConnectError("blip", request=request)
+        response = await self.inner.handle_async_request(request)
+        if first:
+            self.failed.append(route)
+            await response.aread()
+            raise httpx.ReadError("answer_lost", request=request)
+        return response
+
+
+def test_a_network_blip_on_a_poll_cancel_or_reply_does_not_end_the_connection(
+    home: Path,
+) -> None:
+    _state, connector, daemon, _key, root, transport = _setup(home, transport_wrapper=_Blips)
+
+    async def exercise() -> None:
+        client, local = _pair()
+        relay = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
+        async with asyncio.timeout(20):
+            received = await run_scripted_session(client, agent=True)
+            await client.shutdown_write()
+            await relay
+        assert len(received) == 10
+        assert received[-1].count(b"request_cancelled") == 1
+        assert isinstance(transport, _Blips)
+        assert sorted(transport.failed) == ["GET frames", "POST cancel", "POST frames"]
+        assert len(daemon.replies) == 2  # the retried reply arrived twice; the second is moot
+        status = read_connector_status(root)
+        assert status is None or status.phase != "unavailable"
 
     with selection_override(root):
         asyncio.run(exercise())

@@ -63,6 +63,8 @@ _CONNECT_SECONDS: Final = 10.0
 _READ_SECONDS: Final = MAX_WAIT_MS / 1000 + 15.0
 _AMBIGUOUS_POLLS: Final = 3
 _AMBIGUOUS_BACKOFF_SECONDS: Final = 0.5
+# Phases a retry cannot repair: the relay ends at once and names them.
+_TERMINAL_PHASES: Final = frozenset({"remote_auth_failed", "remote_service_not_running"})
 _JSON: Final = "application/json"
 
 
@@ -323,22 +325,40 @@ class _Relay:
         await self._write(response.content)
         return True
 
-    async def _await_result(self, rpc_id: str) -> None:
+    async def _request(
+        self, method: str, suffix: str, *, body: bytes | None = None, wait_ms: int | None = None
+    ) -> httpx.Response | None:
+        """One session request, tried again after a transient failure; ``None`` once it ended
+        the relay.
+
+        A dropped keep-alive connection, a proxy reset or a short outage must not end a relayed
+        connection (the gateway would then close its session and the daemon cancel every call on
+        it). Up to ``_AMBIGUOUS_POLLS`` consecutive failures are retried with a growing pause; a
+        phase no retry repairs ends the relay at once. Every request sent this way is safe to
+        repeat: a poll, a cancel (the gateway forwards only one for a running call) or a
+        workspace reply (the service drops one nothing awaits). A call is never sent this way.
+        """
+
         failures = 0
         while not self._closed.is_set():
             try:
-                response = await self._upstream.request(
-                    "GET", self._session_path(f"/results/{rpc_id}"), wait_ms=MAX_WAIT_MS
+                return await self._upstream.request(
+                    method, self._session_path(suffix), body=body, wait_ms=wait_ms
                 )
             except UpstreamUnavailable as error:
                 failures += 1
-                if failures >= _AMBIGUOUS_POLLS:
+                if error.reason in _TERMINAL_PHASES or failures >= _AMBIGUOUS_POLLS:
                     await self._on_unavailable(error.reason)
                     self._close()
-                    return
+                    return None
                 await asyncio.sleep(_AMBIGUOUS_BACKOFF_SECONDS * failures)
-                continue
-            failures = 0
+        return None
+
+    async def _await_result(self, rpc_id: str) -> None:
+        while not self._closed.is_set():
+            response = await self._request("GET", f"/results/{rpc_id}", wait_ms=MAX_WAIT_MS)
+            if response is None:
+                return
             if response.status_code == 200:
                 await self._write(response.content)
                 return
@@ -352,7 +372,7 @@ class _Relay:
                 "POST", self._session_path("/calls"), body=payload, wait_ms=MAX_WAIT_MS
             )
         except UpstreamUnavailable as error:
-            if error.reason in {"remote_auth_failed", "remote_service_not_running"}:
+            if error.reason in _TERMINAL_PHASES:
                 await self._on_unavailable(error.reason)
                 self._close()
                 return
@@ -367,15 +387,15 @@ class _Relay:
             self._close()
 
     async def _send(self, path: str, payload: bytes) -> None:
-        response = await self._upstream.request("POST", self._session_path(path), body=payload)
-        if response.status_code != 202:
+        response = await self._request("POST", path, body=payload)
+        if response is not None and response.status_code != 202:
             self._close()
 
     async def _poll_frames(self) -> None:
         while not self._closed.is_set():
-            response = await self._upstream.request(
-                "GET", self._session_path("/frames"), wait_ms=MAX_WAIT_MS
-            )
+            response = await self._request("GET", "/frames", wait_ms=MAX_WAIT_MS)
+            if response is None:
+                return
             if response.status_code == 200:
                 await self._write(response.content)
             elif response.status_code != 204:

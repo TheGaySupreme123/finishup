@@ -517,7 +517,9 @@ through the same relay; human-control and secret channels never leave the server
   socket-path bound counts OpenSSH's 17-byte temporary suffix on the master path.
 - **HTTPS and `local_port`.** Each local connection is one gateway session of the HTTPS binding
   v1 (see `INTERFACES.md`). A call is never posted twice: after an ambiguous failure the connector
-  only polls its result. When the hello declared a workspace agent, server frames arrive through
+  only polls its result. Polls, cancels and workspace replies, which are safe to repeat, are retried
+  after a transient failure (up to three in a row), so one network blip does not end a relayed
+  connection and every call on it. When the hello declared a workspace agent, server frames arrive through
   the `GET …/frames` long-poll and replies go out with `POST …/frames`. TLS uses the target's CA
   file, or its `sha256:` pin of the leaf certificate, checked right after the handshake and before
   any request byte. Only the connector reads the API key, and it rereads it after a refusal so a
