@@ -1,240 +1,278 @@
-"""The workspace agent on a direct-dial connection (ADR-051, approach B).
+"""Where a direct-dial client serves its workspace when no call runs (ADR-051, approach B).
 
-``serve_workspace_calls`` answers ``workspace_call`` frames with the injected handler and writes
-each ``workspace_reply`` back, over any transport — here a memory pair and the HTTPS binding
-(frames long-poll in, ``POST …/frames`` out). Until the client workspace track merges,
-``remote_workspace_binding`` offers nothing, so no remote connection claims a workspace and the
-foreground agent refuses before dialling.
+``run_foreground_agent`` (``finishup server connect NAME --agent``) keeps one agent connection to
+the named target, opened with that target resolved as the root, and opens it again when the
+server closes it. ``BridgeBackgroundWork`` is the MCP bridge's background agent connection and
+drain: kept while its lease runs or captured rows wait, released afterwards, dialled again after
+a back-off when the server is away, never by starting a service. Each uses injected connections
+here; the end-to-end tests run them through the real transports.
 """
 
 from __future__ import annotations
 
 import asyncio
-import threading
-from dataclasses import replace
+from collections.abc import Iterator
 from pathlib import Path
 
-import httpx
 import pytest
 
-from builders.direct_dial import (
-    AGENT,
-    CALL_ID,
-    CLAIM,
-    COMMITMENT,
-    HANDLE,
-    SERVICE_ID,
-    WORKSPACE_CALL,
-    FakeBindingGateway,
-    StaticCredential,
-    https_target,
-    memory_pair,
-    service_status,
-    ssh_target,
-)
-from finishup.client import agent_session
+from builders.server_targets import ambient_home
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.client import agent_session, targets
 from finishup.client.agent_session import (
-    NO_BINDING,
     AgentSessionError,
-    RemoteWorkspaceBinding,
-    open_agent_session,
-    remote_workspace_binding,
+    BackgroundPass,
+    BridgeBackgroundWork,
+    capture_pending,
     run_foreground_agent,
-    serve_workspace_calls,
+    start_remote_background_work,
 )
-from finishup.client.transports import HttpsTransport
-from finishup.ports.control import (
-    RepositoryPrivacyContext,
-    WorkspaceCall,
-    WorkspaceClaim,
-    WorkspaceLocator,
-    WorkspaceReply,
-)
-from finishup.service.control_protocol import (
-    ControlProtocolError,
-    ControlStream,
-    client_handshake,
-    parse_workspace_reply,
-    read_control_frame,
-    server_handshake,
-    write_workspace_call,
-)
+from finishup.config.paths import active_root, reset_selection_memo
+from finishup.ports.control import ControlError, WorkspaceClaim, WorkspaceLocator
+from finishup.service.client import ClientWorkspaceBinding
 
-_SECOND_CALL = "rpc_00000000-0000-4000-8000-0000000000c2"
+_BINDING = ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "2" * 64))
+_HANDLE = "client:" + "1" * 16
 
 
-class _Answers:
-    """A handler double: records each call in its worker thread and answers ``unavailable``."""
+class _Connection:
+    """A connection double the server can close (``drop``) and the owner can close."""
 
+    def __init__(self, handle: str | None = _HANDLE) -> None:
+        self.workspace_handle = handle
+        self._ended = asyncio.Event()
+        self.closed_by_owner = False
+
+    @property
+    def closed(self) -> bool:
+        return self._ended.is_set()
+
+    def drop(self) -> None:
+        self._ended.set()
+
+    async def wait_closed(self) -> None:
+        await self._ended.wait()
+
+    async def close(self) -> None:
+        self.closed_by_owner = True
+        self._ended.set()
+
+
+class _Clock:
     def __init__(self) -> None:
-        self.seen: list[tuple[str, str | None, bool]] = []
+        self.now = 1_000.0
 
-    def __call__(self, call: WorkspaceCall, handle: str | None) -> WorkspaceReply:
-        on_loop_thread = threading.current_thread() is threading.main_thread()
-        self.seen.append((call.call_id, handle, on_loop_thread))
-        return WorkspaceReply(
-            kind="workspace_reply",
-            protocol_version="1.0",
-            call_id=call.call_id,
-            outcome="unavailable",
-            result=None,
-            reason="workspace_unavailable",
-        )
+    def __call__(self) -> float:
+        return self.now
 
 
-async def _claiming_server(stream: ControlStream, calls: tuple[WorkspaceCall, ...]) -> list[str]:
-    """Handshake a claim-bound agent session, send ``calls``, collect the replies, then close."""
-
-    async def resolve(_claim: WorkspaceClaim) -> RepositoryPrivacyContext:
-        return RepositoryPrivacyContext(COMMITMENT, "client_claim")
-
-    session = await server_handshake(
-        stream, stream.peer_identity, service_status(), claim_context_resolver=resolve
-    )
-    assert session.workspace_agent == AGENT
-    for call in calls:
-        await write_workspace_call(stream, call)
-    replies = [parse_workspace_reply(await read_control_frame(stream)).call_id for _call in calls]
-    await stream.aclose()
-    return replies
+@pytest.fixture
+def remote(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            _record, root = targets.new_remote_target("lab", "https", base_url="https://fu.example")
+        reset_selection_memo()
+        yield root
 
 
-def test_a_binding_is_all_or_nothing() -> None:
-    with pytest.raises(ValueError, match="remote_workspace_binding_incomplete"):
-        RemoteWorkspaceBinding(CLAIM, None, None)
-    assert not NO_BINDING.declares_agent
+# -- the foreground agent --------------------------------------------------------------------------
 
 
-def test_no_remote_connection_claims_a_workspace_before_the_client_track_merges() -> None:
-    binding = asyncio.run(
-        remote_workspace_binding(ssh_target(), WorkspaceLocator("/home/owner/repository"))
-    )
-    assert binding is NO_BINDING
+def test_the_foreground_agent_binds_the_named_target_and_reconnects_after_a_close(
+    remote: Path,
+) -> None:
+    roots: list[Path | None] = []
+    dialled: list[_Connection] = []
 
+    async def bind(_workspace: WorkspaceLocator) -> ClientWorkspaceBinding:
+        # The named target is this block's root even though nothing selected it.
+        roots.append(active_root())
+        return _BINDING
 
-def test_workspace_calls_are_answered_in_worker_threads_and_replied_in_order() -> None:
-    answers = _Answers()
-    second = replace(WORKSPACE_CALL, call_id=_SECOND_CALL)
-
-    async def exercise() -> list[str]:
-        client, server = memory_pair()
-        serving = asyncio.create_task(_claiming_server(server, (WORKSPACE_CALL, second)))
-        session = await client_handshake(
-            client,
-            agent_session.ControlClientKind.CLI,
-            "0.3.0",
-            workspace_claim=CLAIM,
-            workspace_agent=AGENT,
-        )
-        await serve_workspace_calls(client, session, answers)
-        return await serving
-
-    replies = asyncio.run(exercise())
-    assert sorted(replies) == sorted([CALL_ID, _SECOND_CALL])
-    assert sorted(answers.seen) == sorted([(CALL_ID, HANDLE, False), (_SECOND_CALL, HANDLE, False)])
-
-
-def test_a_call_of_another_service_instance_ends_the_loop() -> None:
-    stranger = replace(WORKSPACE_CALL, service_instance_id=SERVICE_ID.replace("b1", "b2"))
+    async def dial(binding: ClientWorkspaceBinding) -> _Connection:
+        assert binding is _BINDING
+        connection = _Connection()
+        dialled.append(connection)
+        return connection
 
     async def exercise() -> None:
-        client, server = memory_pair()
-        asyncio.create_task(_claiming_server(server, (stranger,)))
-        session = await client_handshake(
-            client,
-            agent_session.ControlClientKind.CLI,
-            "0.3.0",
-            workspace_claim=CLAIM,
-            workspace_agent=AGENT,
+        serving = asyncio.create_task(
+            run_foreground_agent(
+                remote, WorkspaceLocator("/w/repo"), connect=dial, binding_for=bind
+            )
         )
-        await serve_workspace_calls(client, session, _Answers())
-
-    with pytest.raises(ControlProtocolError) as raised:
-        asyncio.run(exercise())
-    assert raised.value.reason == "frame_invalid"
-
-
-def test_an_agent_connection_serves_calls_through_the_https_binding() -> None:
-    answers = _Answers()
-    replies: list[list[str]] = []
-
-    async def upstream() -> ControlStream:
-        gateway_end, server_end = memory_pair()
-
-        async def serve() -> None:
-            replies.append(await _claiming_server(server_end, (WORKSPACE_CALL,)))
-
-        asyncio.get_running_loop().create_task(serve())
-        return gateway_end
-
-    gateway = FakeBindingGateway(upstream)
-    transport = HttpsTransport(
-        https_target(),
-        Path("/nonexistent"),
-        credential=StaticCredential(),
-        http_transport=httpx.ASGITransport(app=gateway),
-    )
-    binding = RemoteWorkspaceBinding(CLAIM, AGENT, answers)
-
-    async def exercise() -> None:
-        stream, session = await open_agent_session(transport, binding)
-        assert session.workspace_handle == HANDLE
-        try:
-            await asyncio.wait_for(serve_workspace_calls(stream, session, answers), 10)
-        finally:
-            await stream.aclose()
+        while not dialled:
+            await asyncio.sleep(0)
+        dialled[0].drop()  # the server closed the connection (its idle bound, a restart)
+        while len(dialled) < 2:
+            await asyncio.sleep(0)
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)
 
     asyncio.run(exercise())
-    assert replies == [[CALL_ID]]
-    assert answers.seen == [(CALL_ID, HANDLE, False)]
-    paths = [(method, path) for method, path, _headers in gateway.requests]
-    assert any(method == "GET" and path.endswith("/frames") for method, path in paths)
-    assert any(method == "POST" and path.endswith("/frames") for method, path in paths)
+    assert roots == [remote]
+    assert all(connection.closed_by_owner for connection in dialled)
+    assert active_root() is None  # the selection is the everyday install again
 
 
-def test_an_agent_session_needs_a_binding() -> None:
-    transport = HttpsTransport(https_target(), Path("/nonexistent"), credential=StaticCredential())
-    with pytest.raises(AgentSessionError) as raised:
-        asyncio.run(open_agent_session(transport, NO_BINDING))
-    assert raised.value.reason == "workspace_agent_unavailable"
-
-
-def test_the_foreground_agent_refuses_before_dialling_until_wired(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("binding", "handle", "error", "expected"),
+    [
+        (None, _HANDLE, None, ("agent_not_applicable", None)),
+        (_BINDING, None, None, ("workspace_agent_unavailable", None)),
+        (
+            _BINDING,
+            _HANDLE,
+            ControlError("service_unavailable", retryable=True, phase="remote_auth_failed"),
+            ("service_unavailable", "remote_auth_failed"),
+        ),
+    ],
+)
+def test_the_foreground_agent_refuses_with_closed_reasons(
+    remote: Path,
+    binding: ClientWorkspaceBinding | None,
+    handle: str | None,
+    error: ControlError | None,
+    expected: tuple[str, str | None],
 ) -> None:
-    def never(*_arguments: object) -> object:
-        raise AssertionError("no dial without a binding")
+    async def bind(_workspace: WorkspaceLocator) -> ClientWorkspaceBinding | None:
+        return binding
 
-    monkeypatch.setattr(agent_session, "transport_for_target", never)
+    async def dial(_binding: ClientWorkspaceBinding) -> _Connection:
+        if error is not None:
+            raise error
+        return _Connection(handle)
+
     with pytest.raises(AgentSessionError) as raised:
         asyncio.run(
             run_foreground_agent(
-                ssh_target(), Path("/nonexistent"), WorkspaceLocator("/home/owner/repository")
+                remote, WorkspaceLocator("/w/repo"), connect=dial, binding_for=bind
             )
         )
-    assert raised.value.reason == "workspace_agent_unavailable"
+    assert (raised.value.reason, raised.value.phase) == expected
+    assert "/w/repo" not in str(raised.value)
+
+
+# -- the bridge's background work ------------------------------------------------------------------
+
+
+def _work(
+    clock: _Clock,
+    *,
+    pending: list[bool],
+    dialled: list[_Connection],
+    failures: list[ControlError] | None = None,
+) -> BridgeBackgroundWork:
+    async def bind(_workspace: WorkspaceLocator) -> ClientWorkspaceBinding:
+        return _BINDING
+
+    async def dial(_binding: ClientWorkspaceBinding) -> _Connection:
+        if failures:
+            raise failures.pop(0)
+        connection = _Connection()
+        dialled.append(connection)
+        return connection
+
+    return BridgeBackgroundWork(
+        lease_seconds=60.0,
+        drain_interval=30.0,
+        connect=dial,
+        binding_for=bind,
+        pending=lambda _workspace: pending[0],
+        clock=clock,
+    )
+
+
+def test_the_bridge_holds_an_agent_while_its_lease_runs_and_releases_it_after() -> None:
+    clock = _Clock()
+    dialled: list[_Connection] = []
+    work = _work(clock, pending=[False], dialled=dialled)
+
+    async def exercise() -> list[BackgroundPass]:
+        passes = [await work.run_pass()]  # no workspace named yet: nothing to serve
+        work.note_activity(WorkspaceLocator("/w/repo"))
+        passes.append(await work.run_pass())
+        passes.append(await work.run_pass())  # the same connection is kept
+        dialled[0].drop()  # the server closed it within the lease: dialled again
+        passes.append(await work.run_pass())
+        clock.now += 61.0  # the lease ran out and nothing waits: released
+        passes.append(await work.run_pass())
+        await work.aclose()
+        return passes
+
+    passes = asyncio.run(exercise())
+    assert [item.connected for item in passes] == [False, True, True, True, False]
+    assert len(dialled) == 2
+    assert dialled[1].closed_by_owner
+    assert work.connection is None
+
+
+def test_captured_rows_keep_or_bring_back_the_connection_after_the_lease(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    clock = _Clock()
+    dialled: list[_Connection] = []
+    work = _work(clock, pending=[True], dialled=dialled)
+    drained: list[object] = []
+
+    async def drain_over(
+        _self: BridgeBackgroundWork, _workspace: WorkspaceLocator, connection: object
+    ) -> object:
+        drained.append(connection)
+        from finishup.application.observation_drain import ObservationDrainSummary
+        from finishup.client.observation_outbox import ClientDrainSummary
+
+        return ClientDrainSummary(0, ObservationDrainSummary(1, 1, 0, 0, ()))
+
+    monkeypatch.setattr(BridgeBackgroundWork, "_drain_over", drain_over)
+
+    async def exercise() -> BackgroundPass:
+        work.note_activity(WorkspaceLocator(str(tmp_path)))
+        clock.now += 120.0  # past the lease, but rows wait
+        delivered = await work.run_pass()
+        # The delivered row renewed the lease: the server verifies it through this agent.
+        later = await work.run_pass()
+        assert later.connected
+        await work.aclose()
+        return delivered
+
+    delivered = asyncio.run(exercise())
+    assert delivered.connected and delivered.drained is not None
+    assert drained == [dialled[0], dialled[0]]
+
+
+def test_a_server_that_is_away_is_dialled_again_only_after_a_back_off() -> None:
+    clock = _Clock()
+    dialled: list[_Connection] = []
+    away = ControlError("service_unavailable", retryable=True, phase="remote_service_not_running")
+    work = _work(clock, pending=[False], dialled=dialled, failures=[away, away])
+
+    async def exercise() -> list[bool]:
+        work.note_activity(WorkspaceLocator("/w/repo"))
+        connected = [(await work.run_pass()).connected]
+        connected.append((await work.run_pass()).connected)  # inside the back-off: no dial
+        clock.now += 1.0
+        connected.append((await work.run_pass()).connected)  # dialled: away again
+        clock.now += 2.0
+        connected.append((await work.run_pass()).connected)  # dialled: answers
+        await work.aclose()
+        return connected
+
+    assert asyncio.run(exercise()) == [False, False, False, True]
+    assert len(dialled) == 1
 
 
 def test_only_a_remote_root_starts_the_bridges_background_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from builders.server_targets import ambient_home
-    from finishup.client import targets
-    from finishup.client.agent_session import start_remote_background_work
-    from finishup.config.paths import reset_selection_memo
-
-    drained: list[tuple[str, Path]] = []
-
-    async def drain(target: object, root: Path) -> None:
-        drained.append((getattr(target, "target_id"), root))
-
-    monkeypatch.setattr(agent_session, "remote_background_drain", drain)
-
     async def started() -> bool:
-        task = start_remote_background_work()
-        if task is None:
+        begun = start_remote_background_work()
+        if begun is None:
             return False
-        await task
+        work, task = begun
+        assert isinstance(work, BridgeBackgroundWork)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         return True
 
     with ambient_home(monkeypatch):
@@ -245,8 +283,22 @@ def test_only_a_remote_root_starts_the_bridges_background_work(
         reset_selection_memo()
         assert asyncio.run(started()) is False  # a named local server
         with targets.registry_lock():
-            remote, root = targets.new_remote_target("lab", "https", base_url="https://fu.example")
+            remote, _root = targets.new_remote_target("lab", "https", base_url="https://fu.example")
             targets.write_selection(remote)
         reset_selection_memo()
         assert asyncio.run(started()) is True
-    assert drained == [(remote.target_id, root)]
+
+
+def test_nothing_is_pending_where_no_hook_ever_captured(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    assert capture_pending(WorkspaceLocator(str(tmp_path)), state) is False
+    # The probe made no commitment for the workspace.
+    store = LocalObservationStore(_state=state)
+    assert store.existing_workspace_commitment(str(tmp_path)) is None
+
+
+def test_background_bounds_are_validated() -> None:
+    with pytest.raises(ValueError, match="background_work_bound_invalid"):
+        BridgeBackgroundWork(lease_seconds=0.0)
+    assert agent_session.AGENT_LEASE_SECONDS == 900.0

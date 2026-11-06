@@ -123,3 +123,84 @@ def test_the_bridge_connection_serves_the_workspace_on_a_remote_root(
     assert "workspace_locator" not in call
     binding = call["workspace_binding"]
     assert type(binding) is ClientWorkspaceBinding and binding.agent is not None
+
+
+def test_server_connect_agent_serves_the_named_remote_target(
+    remote: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from typer.testing import CliRunner
+
+    from finishup.cli import server as server_cli
+    from finishup.client import agent_session
+
+    del remote
+    served: list[tuple[Path, WorkspaceLocator]] = []
+
+    async def serve(root: Path, locator: WorkspaceLocator) -> None:
+        served.append((root, locator))
+
+    def ready(_name: str | None, _action: str) -> str:
+        return "lab (t_x)"
+
+    monkeypatch.setattr(server_cli, "_runtime_call", ready)
+    monkeypatch.setattr(agent_session, "run_foreground_agent", serve)
+    monkeypatch.chdir(tmp_path)
+    reset_selection_memo()
+    result = CliRunner().invoke(cli_app.app, ["server", "connect", "lab", "--agent"])
+    assert result.exit_code == 0, result.output
+    ((root, locator),) = served
+    record = targets.find_target("lab")
+    assert root == targets.target_root(record.target_id)
+    assert locator.path == str(tmp_path.resolve())
+    assert "Ctrl-C" in result.stdout and "lab.example" not in result.output
+
+
+def test_server_connect_agent_refuses_the_everyday_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typer.testing import CliRunner
+
+    with ambient_home(monkeypatch):
+        reset_selection_memo()
+        result = CliRunner().invoke(cli_app.app, ["server", "connect", "local", "--agent"])
+    assert result.exit_code != 0
+    assert "only a remote server target needs a workspace agent" in result.stderr
+
+
+def test_each_bridge_service_call_renews_the_background_lease(
+    remote: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    del remote
+    noted: list[WorkspaceLocator | None] = []
+
+    class _Work:
+        def note_activity(self, workspace: WorkspaceLocator | None) -> None:
+            noted.append(workspace)
+
+    async def on_demand(_kind: ControlClientKind, **_kwargs: Any) -> object:  # noqa: ANN401
+        raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+
+    monkeypatch.setattr(bridge, "connect_service_on_demand", on_demand)
+    monkeypatch.chdir(tmp_path)
+    runtime = bridge.build_bridge_runtime()
+    runtime._slot.remote_background = _Work()  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    asyncio.run(
+        bridge.dispatch_start(
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": "req_00000000-0000-4000-8000-000000000072",
+                "actor": {"actor_id": "harness:mcp", "actor_type": "harness"},
+                "client": {
+                    "kind": "cooperative_agent",
+                    "version": "0.1.0",
+                    "integration": "cooperative_mcp",
+                },
+                "mode": "create",
+                "task_title": "Remote task",
+                "requested_view": "compact",
+            },
+            runtime,
+        )
+    )
+    assert noted and noted[0] == WorkspaceLocator(str(tmp_path.resolve()))

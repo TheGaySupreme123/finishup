@@ -3,83 +3,68 @@
 In approach B the workspace agent runs inside the client processes themselves; there is no relay
 or agent daemon on the client machine:
 
-* **Per connection.** Every connection a client process opens to a remote target claims the
-  process's workspace and declares the agent, so the server can call back during that process's
-  own operation (a CLI ``check``, a hook's observation). ``remote_workspace_binding`` decides the
-  claim and the agent for one connection; ``service.client`` calls it for every remote dial.
-* **Background work.** The MCP bridge keeps its connection for the whole agent session, so that
-  same declaration lets the server reach the workspace for work that outlives a call (the detached
-  semantic check, reviewer reads, observation verification).
-* **CLI-only use.** ``finishup server connect NAME --agent`` keeps one agent connection open in the
-  foreground (``run_foreground_agent``) for an owner who runs no MCP bridge.
-* **Background drain.** The MCP bridge, the long-lived client process of this approach, also
-  drains what hooks captured under a remote root (the observation outbox and the legacy spool) to
-  the server between hook passes (``start_remote_background_work``).
+* **Per connection.** A process whose calls need the workspace while they run (a CLI workflow
+  command, the terminal interface, the MCP bridge) connects with
+  ``service.client.serving_workspace_binding``: its hello claims the workspace and offers the
+  agent, and ``ServiceClient`` answers the server's ``workspace_call`` frames on that same
+  connection. Short-lived processes (hooks) are claim-bound without an agent.
+* **Background work.** Work that outlives a call (a semantic review after ``check`` returned,
+  the verification of a row a hook delivered) needs an agent connection while no call runs. The
+  MCP bridge, the long-lived client process of this approach, holds one
+  (``BridgeBackgroundWork``): a claim-bound agent connection kept while the session is active
+  and released ``AGENT_LEASE_SECONDS`` after its last activity, so the server's idle relock and
+  idle stop still apply. Over that connection it delivers what hooks captured under the remote
+  root and could not deliver themselves (the observation outbox and the legacy spool), with the
+  shared ``ClientObservationDrain``.
+* **CLI-only use.** ``finishup server connect NAME --agent`` keeps one agent connection to that
+  target open in the foreground until interrupted (``run_foreground_agent``), for an owner who
+  runs no MCP bridge.
 
-``serve_workspace_calls`` is the frame loop of an agent-only connection: it reads
-``workspace_call`` frames, answers each in a worker thread, and writes the ``workspace_reply``
-under one write lock. It works over every transport, because every transport carries the same
-frames.
-
-Two pieces come from the shared foundation tracks and are wired here once they merge: the claim
-(``finishup.client.workspace_claim``) and the handler that runs the eighteen operations against
-the local adapters (``finishup.client.workspace_agent``). Until then ``remote_workspace_binding``
-returns ``NO_BINDING``: a remote connection claims nothing, declares no agent, and never sends a
-path, so the server binds it ``none``.
+Nothing here starts a remote service in the background: the bridge's background connection
+dials only a service that is already running. Failures are closed reasons; no path, host or
+server text appears in an error or a log.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
-from finishup import __version__
-from finishup.client.targets import ServerTarget
-from finishup.client.transports import ControlTransport, transport_for_target
-from finishup.ports.control import (
-    ControlClientKind,
-    WorkspaceAgentDeclaration,
-    WorkspaceCall,
-    WorkspaceClaim,
-    WorkspaceLocator,
-    WorkspaceReply,
-)
-from finishup.service.control_protocol import (
-    ControlProtocolError,
-    ControlSession,
-    ControlStream,
-    client_handshake,
-    is_workspace_call_frame,
-    parse_workspace_call,
-    read_control_frame,
-    write_workspace_reply,
-)
+from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
+
+if TYPE_CHECKING:
+    from finishup.client.observation_outbox import (
+        ClientDrainSummary,
+        ClientObservationDrain,
+        ObservationIngestClient,
+    )
+    from finishup.service.client import ClientWorkspaceBinding
 
 __all__ = [
-    "AGENT_CONCURRENCY",
-    "NO_BINDING",
+    "AGENT_LEASE_SECONDS",
+    "DRAIN_INTERVAL_SECONDS",
+    "AgentConnection",
     "AgentSessionError",
-    "RemoteWorkspaceBinding",
-    "WorkspaceAnswer",
-    "open_agent_session",
-    "remote_workspace_binding",
-    "remote_background_drain",
+    "BackgroundPass",
+    "BridgeBackgroundWork",
+    "capture_pending",
     "run_foreground_agent",
-    "serve_workspace_calls",
     "start_remote_background_work",
 ]
 
-# Calls one agent connection answers at once; the hub bounds its own side too.
-AGENT_CONCURRENCY: Final = 4
-_AGENT_HANDSHAKE_SECONDS: Final = 10.0
-
-# ``answer(call, workspace_handle)``: run one call against the claimed workspace and return its
-# reply; never raises for anything the call carried (``WorkspaceAgentHandler.answer``).
-type WorkspaceAnswer = Callable[[WorkspaceCall, str | None], WorkspaceReply]
+# The bridge keeps its background agent connection this long after its last activity (a tool
+# call, or rows its drain delivered): the lease approach A's connector keeps too.
+AGENT_LEASE_SECONDS: Final = 900.0
+# How often the bridge looks for captured rows to deliver while nothing wakes it sooner.
+DRAIN_INTERVAL_SECONDS: Final = 30.0
+# Waits between reconnect attempts of a background or foreground agent connection.
+_RECONNECT_BACKOFF_SECONDS: Final = (1.0, 2.0, 5.0, 15.0, 30.0)
+_COMPONENT: Final = "client.agent_session"
 
 
 class AgentSessionError(Exception):
@@ -96,202 +81,320 @@ class AgentSessionError(Exception):
         super().__init__(reason if phase is None else f"{reason}:{phase}")
 
 
-@dataclass(frozen=True, slots=True)
-class RemoteWorkspaceBinding:
-    """How one connection to a remote target binds its workspace.
-
-    ``claim`` replaces the locator on the hello (a keyed digest, never a path); ``agent`` is the
-    declaration the hello offers; ``answer`` serves the calls the server then sends. All three are
-    present together or all absent.
-    """
-
-    claim: WorkspaceClaim | None
-    agent: WorkspaceAgentDeclaration | None
-    answer: WorkspaceAnswer | None
-
-    def __post_init__(self) -> None:
-        present = (self.claim is not None, self.agent is not None, self.answer is not None)
-        if any(present) and not all(present):
-            raise ValueError("remote_workspace_binding_incomplete")
+class AgentConnection(Protocol):
+    """What the agent loops need of a connection; ``ServiceClient`` is the production one."""
 
     @property
-    def declares_agent(self) -> bool:
-        return self.agent is not None
+    def closed(self) -> bool: ...
+
+    @property
+    def workspace_handle(self) -> str | None: ...
+
+    async def wait_closed(self) -> None: ...
+
+    async def close(self) -> None: ...
 
 
-NO_BINDING: Final = RemoteWorkspaceBinding(None, None, None)
+type AgentConnector = Callable[[ClientWorkspaceBinding], Awaitable[AgentConnection]]
+type BindingFactory = Callable[[WorkspaceLocator], Awaitable[ClientWorkspaceBinding | None]]
+type PendingProbe = Callable[[WorkspaceLocator], bool]
 
 
-async def remote_workspace_binding(
-    target: ServerTarget, workspace_locator: WorkspaceLocator | None
-) -> RemoteWorkspaceBinding:
-    """INTEGRATION POINT — wired after split/client and split/server merge.
-
-    Decide the claim and the agent for one connection to the remote ``target`` from this
-    process's workspace. ``service.client`` calls it for every remote dial (so every client
-    process is the agent of its own connection, and the MCP bridge's long-lived connection is the
-    agent for background work), and ``run_foreground_agent`` calls it for
-    ``finishup server connect --agent``. After the merge it becomes::
-
-        if workspace_locator is None or target.claim_salt is None:
-            return NO_BINDING
-        salt = base64.b64decode(target.claim_salt, validate=True)
-        claim = await finishup.client.workspace_claim.workspace_claim(workspace_locator, salt)
-        handler = finishup.client.workspace_agent.WorkspaceAgentHandler(workspace_locator)
-        return RemoteWorkspaceBinding(
-            claim,
-            handler.declaration,
-            lambda call, handle: handler.answer(call, workspace_handle=handle),
-        )
-
-    and ``service.client._connect_remote_attempt`` passes ``binding.answer`` to the
-    ``ServiceClient`` it builds (split/client's agent-serving constructor argument). Until then
-    no remote connection claims a workspace or declares an agent, and no path is sent.
-    """
-
-    del target, workspace_locator
-    return NO_BINDING
+def _backoff(attempt: int) -> float:
+    return _RECONNECT_BACKOFF_SECONDS[min(attempt, len(_RECONNECT_BACKOFF_SECONDS) - 1)]
 
 
-async def serve_workspace_calls(
-    stream: ControlStream,
-    session: ControlSession,
-    answer: WorkspaceAnswer,
-    *,
-    concurrency: int = AGENT_CONCURRENCY,
-) -> None:
-    """Answer ``workspace_call`` frames on an agent-only connection until the server closes it.
+def _record(operation: str, reason: str) -> None:
+    from finishup.observability.logging import record_bounded_event_without_raising
 
-    The connection makes no calls of its own, so every frame it receives must be a workspace call
-    of this session's service instance and generation; anything else ends the loop as
-    ``frame_invalid``. Each call runs in a worker thread (the handler blocks on Git and the
-    filesystem) and its reply is written under one lock, in completion order.
-    """
-
-    if type(concurrency) is not int or not 1 <= concurrency <= 32:
-        raise ValueError("agent_concurrency_invalid")
-    write_lock = asyncio.Lock()
-    limiter = asyncio.Semaphore(concurrency)
-    tasks: set[asyncio.Task[None]] = set()
-
-    async def handle(call: WorkspaceCall) -> None:
-        async with limiter:
-            reply = await asyncio.to_thread(answer, call, session.workspace_handle)
-        async with write_lock:
-            await write_workspace_reply(stream, reply)
-
-    try:
-        while True:
-            try:
-                frame = await read_control_frame(stream, eof_reason="session_closed")
-            except ControlProtocolError as error:
-                if error.reason == "session_closed":
-                    return
-                raise
-            if not is_workspace_call_frame(frame):
-                raise ControlProtocolError("frame_invalid")
-            call = parse_workspace_call(frame)
-            if (
-                call.service_instance_id != session.service_instance_id
-                or call.service_generation != session.service_generation
-            ):
-                raise ControlProtocolError("frame_invalid")
-            task = asyncio.create_task(handle(call))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-    finally:
-        pending = tuple(tasks)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+    record_bounded_event_without_raising(component=_COMPONENT, operation=operation, reason=reason)
 
 
-async def open_agent_session(
-    transport: ControlTransport,
-    binding: RemoteWorkspaceBinding,
-    *,
-    client_kind: ControlClientKind = ControlClientKind.CLI,
-    timeout_seconds: float = _AGENT_HANDSHAKE_SECONDS,
-) -> tuple[ControlStream, ControlSession]:
-    """Dial ``transport`` and handshake an agent connection that claims ``binding``'s workspace."""
+async def _serving_binding(workspace: WorkspaceLocator) -> ClientWorkspaceBinding | None:
+    from finishup.service.client import serving_workspace_binding
 
-    if binding.claim is None or binding.agent is None:
-        raise AgentSessionError("workspace_agent_unavailable")
-    stream: ControlStream | None = None
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            stream = await transport.connect()
-            session = await client_handshake(
-                stream,
-                client_kind,
-                __version__,
-                workspace_claim=binding.claim,
-                workspace_agent=binding.agent,
-            )
-    except BaseException:
-        if stream is not None:
-            with contextlib.suppress(Exception):
-                await stream.aclose()
-        raise
-    return stream, session
+    return await serving_workspace_binding(workspace)
+
+
+# -- the foreground agent (``finishup server connect NAME --agent``) ------------------------------
+
+
+async def _connect_on_demand(binding: ClientWorkspaceBinding) -> AgentConnection:
+    from finishup.service.client import connect_service_on_demand
+
+    return await connect_service_on_demand(ControlClientKind.CLI, workspace_binding=binding)
 
 
 async def run_foreground_agent(
-    target: ServerTarget, root: Path, workspace_locator: WorkspaceLocator
+    root: Path,
+    workspace_locator: WorkspaceLocator,
+    *,
+    connect: AgentConnector | None = None,
+    binding_for: BindingFactory | None = None,
 ) -> None:
-    """INTEGRATION POINT (CLI) — serve this workspace's calls until the server closes the session.
+    """Serve this workspace's calls on one connection to the target at ``root`` until cancelled.
 
     ``finishup server connect NAME --agent`` runs this in the foreground, for owners who drive a
-    remote target from the CLI only (no MCP bridge holds a connection for background work). It
-    needs ``remote_workspace_binding`` to produce a binding, so until split/client and
-    split/server merge it refuses with ``workspace_agent_unavailable`` before dialling.
+    remote target from the CLI only (no MCP bridge holds a connection for background work). The
+    target is resolved as ``root`` for this block, whatever this process's selection names. When
+    the server closes the connection (its idle bound, a restart) it is opened again after a short
+    back-off, so while this runs the server counts it as a connected client.
+
+    Raises ``AgentSessionError``: ``agent_not_applicable`` for a root that is not a remote target,
+    ``workspace_agent_unavailable`` when the server bound no workspace handle (its vault is
+    locked, say), or a closed control reason and remote phase: any failure of the first
+    connection, and a non-retryable failure of a later one.
     """
 
-    from finishup.client.transports import TransportError
+    from finishup.config.paths import selection_override
 
-    binding = await remote_workspace_binding(target, workspace_locator)
-    if binding.answer is None:
-        raise AgentSessionError("workspace_agent_unavailable")
-    transport = transport_for_target(target, root)
-    try:
-        stream, session = await open_agent_session(transport, binding)
-    except TransportError as error:
-        raise AgentSessionError("service_unavailable", phase=error.phase) from None
-    except (ControlProtocolError, TimeoutError):
-        raise AgentSessionError("service_unavailable", phase="remote_unreachable") from None
-    try:
-        if session.workspace_handle is None:
-            # The server derived no handle (its vault is locked, say): no call can name us.
-            raise AgentSessionError("workspace_agent_unavailable")
-        await serve_workspace_calls(stream, session, binding.answer)
-    finally:
-        with contextlib.suppress(Exception):
-            await stream.aclose()
+    dial = connect if connect is not None else _connect_on_demand
+    bind = binding_for if binding_for is not None else _serving_binding
+    with selection_override(root):
+        try:
+            binding = await bind(workspace_locator)
+        except ControlError as error:
+            raise AgentSessionError(error.reason, phase=error.phase) from None
+        if binding is None:
+            raise AgentSessionError("agent_not_applicable")
+        attempt = 0
+        served = False
+        while True:
+            try:
+                connection = await dial(binding)
+            except ControlError as error:
+                if not served or not error.retryable:
+                    raise AgentSessionError(error.reason, phase=error.phase) from None
+                _record("foreground_agent", error.phase or error.reason)
+                await asyncio.sleep(_backoff(attempt))
+                attempt += 1
+                continue
+            try:
+                if connection.workspace_handle is None:
+                    # The server derived no handle (its vault is locked, say): no call names us.
+                    raise AgentSessionError("workspace_agent_unavailable")
+                served = True
+                attempt = 0
+                await connection.wait_closed()
+            finally:
+                await connection.close()
+            _record("foreground_agent", "reconnecting")
 
 
-async def remote_background_drain(target: ServerTarget, root: Path) -> None:
-    """INTEGRATION POINT — wired after split/client merges.
+# -- the bridge's background agent and drain ------------------------------------------------------
 
-    The MCP bridge runs this for the life of its process when its active root is a remote target
-    (``start_remote_background_work``), so what hooks captured under ``<root>/state`` (the
-    observation outbox and the legacy spool) reaches the server between hook passes. After the
-    merge it loops over split/client's drain helper on a ``connect_service`` connection, with a
-    bounded pause between passes, until cancelled. Until then there is nothing to drain and it
-    returns at once; hooks still drain their own pass.
+
+def capture_pending(workspace: WorkspaceLocator, state: Path | None = None) -> bool:
+    """Whether hooks left rows or spooled records for ``workspace`` (a read-only probe).
+
+    ``finishup.client.observation_outbox.capture_pending``; it creates nothing.
     """
 
-    del target, root
+    from finishup.client.observation_outbox import capture_pending as pending
+
+    return pending(workspace, state=state)
 
 
-def start_remote_background_work() -> asyncio.Task[None] | None:
+async def _connect_running(binding: ClientWorkspaceBinding) -> AgentConnection:
+    from finishup.service.client import connect_service
+
+    # Only a service that is already running: background work never starts a remote service.
+    return await connect_service(ControlClientKind.CLI, workspace_binding=binding)
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundPass:
+    """What one background pass did: whether an agent connection is held, and any delivery."""
+
+    connected: bool
+    drained: ClientDrainSummary | None = None
+
+
+class BridgeBackgroundWork:
+    """The MCP bridge's background agent connection and observation drain for a remote root.
+
+    ``note_activity`` (each tool call) names the bridge's workspace and renews the lease; ``run``
+    is the loop the bridge runs for its lifetime. Each pass, woken by activity or every
+    ``drain_interval`` seconds:
+
+    * while the lease runs, or while captured rows wait, one agent connection is kept (dialled
+      again if the server closed it, after a back-off; never by starting a service);
+    * rows waiting for this workspace are delivered over that connection, and delivered rows
+      renew the lease (the server verifies them through this agent);
+    * once the lease has run out and nothing waits, the connection is closed.
+    """
+
+    __slots__ = (
+        "_attempt",
+        "_binding_for",
+        "_clock",
+        "_connect",
+        "_connection",
+        "_drain",
+        "_drain_interval",
+        "_last_activity",
+        "_lease",
+        "_pending",
+        "_retry_at",
+        "_wake",
+        "_workspace",
+    )
+
+    def __init__(
+        self,
+        *,
+        lease_seconds: float = AGENT_LEASE_SECONDS,
+        drain_interval: float = DRAIN_INTERVAL_SECONDS,
+        connect: AgentConnector | None = None,
+        binding_for: BindingFactory | None = None,
+        pending: PendingProbe | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        for bound in (lease_seconds, drain_interval):
+            if type(bound) is not float or not 0.0 < bound <= 86_400.0:
+                raise ValueError("background_work_bound_invalid")
+        self._lease = lease_seconds
+        self._drain_interval = drain_interval
+        self._connect = connect if connect is not None else _connect_running
+        self._binding_for = binding_for if binding_for is not None else _serving_binding
+        self._pending = pending if pending is not None else capture_pending
+        self._clock = clock
+        self._wake = asyncio.Event()
+        self._workspace: WorkspaceLocator | None = None
+        self._last_activity = clock()
+        self._connection: AgentConnection | None = None
+        self._drain: ClientObservationDrain | None = None
+        self._attempt = 0
+        self._retry_at = 0.0
+
+    @property
+    def connection(self) -> AgentConnection | None:
+        """The live background agent connection, if one is held."""
+
+        held = self._connection
+        return None if held is None or held.closed else held
+
+    def note_activity(self, workspace: WorkspaceLocator | None) -> None:
+        """Renew the lease for ``workspace`` (the bridge's own) and wake the loop."""
+
+        if type(workspace) is WorkspaceLocator and workspace != self._workspace:
+            if self._workspace is not None:
+                # The bridge now serves another workspace (a Cursor folder change, say).
+                self._close_drain()
+            self._workspace = workspace
+        self._last_activity = self._clock()
+        self._wake.set()
+
+    async def run(self) -> None:
+        """Run passes until cancelled; a failed pass is recorded by closed reason only."""
+
+        try:
+            while True:
+                try:
+                    await self.run_pass()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    from finishup.observability.logging import (
+                        record_unexpected_exception_without_raising,
+                    )
+
+                    record_unexpected_exception_without_raising(
+                        exc, component=_COMPONENT, operation="background_pass_failed"
+                    )
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(self._drain_interval):
+                        await self._wake.wait()
+                self._wake.clear()
+        finally:
+            await self.aclose()
+
+    async def run_pass(self) -> BackgroundPass:
+        """One pass: keep or release the agent connection, and deliver what waits."""
+
+        workspace = self._workspace
+        if workspace is None:
+            return BackgroundPass(False)
+        leased = self._clock() - self._last_activity < self._lease
+        pending = await asyncio.to_thread(self._pending, workspace)
+        if not leased and not pending:
+            await self._release()
+            return BackgroundPass(False)
+        connection = await self._ensure_connection(workspace)
+        if connection is None:
+            return BackgroundPass(False)
+        if not pending:
+            return BackgroundPass(True)
+        summary = await self._drain_over(workspace, connection)
+        if summary.delivery is not None and summary.delivery.acknowledged:
+            # The server verifies what it accepted through this agent: keep it for that.
+            self._last_activity = self._clock()
+        return BackgroundPass(True, summary)
+
+    async def _ensure_connection(self, workspace: WorkspaceLocator) -> AgentConnection | None:
+        live = self.connection
+        if live is not None:
+            return live
+        await self._release()
+        now = self._clock()
+        if now < self._retry_at:
+            return None
+        try:
+            binding = await self._binding_for(workspace)
+            if binding is None:
+                # The bridge's root is not a remote target any more; there is nothing to serve.
+                return None
+            connection = await self._connect(binding)
+        except ControlError as error:
+            self._retry_at = now + _backoff(self._attempt)
+            self._attempt += 1
+            _record("background_agent", error.phase or error.reason)
+            return None
+        self._attempt = 0
+        self._retry_at = 0.0
+        self._connection = connection
+        return connection
+
+    async def _drain_over(
+        self, workspace: WorkspaceLocator, connection: AgentConnection
+    ) -> ClientDrainSummary:
+        from finishup.client.observation_outbox import ClientObservationDrain
+
+        drain = self._drain
+        if drain is None:
+            drain = ClientObservationDrain(workspace)
+            self._drain = drain
+        # A ``ServiceClient``: the drain sends each row as ``observation_ingest`` on it.
+        return await drain.drain(cast("ObservationIngestClient", connection))
+
+    async def _release(self) -> None:
+        connection, self._connection = self._connection, None
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.close()
+
+    def _close_drain(self) -> None:
+        drain, self._drain = self._drain, None
+        if drain is not None:
+            drain.close()
+
+    async def aclose(self) -> None:
+        """Close the background connection and the drain's worker pool."""
+
+        await self._release()
+        self._close_drain()
+
+
+def start_remote_background_work() -> tuple[BridgeBackgroundWork, asyncio.Task[None]] | None:
     """Start the bridge's background work for a remote active root; ``None`` for a local root.
 
     A local root (the everyday server, an isolated root, a named local server) starts nothing,
     and a root whose record cannot be read starts nothing either: the bridge's own connection
-    reports that refusal.
+    reports that refusal. The work serves no workspace until the bridge names it
+    (``BridgeBackgroundWork.note_activity``).
     """
 
-    from finishup.client.targets import TargetError, active_target_record, target_root
+    from finishup.client.targets import TargetError, active_target_record
 
     try:
         record = active_target_record()
@@ -299,4 +402,5 @@ def start_remote_background_work() -> asyncio.Task[None] | None:
         return None
     if record is None or not record.is_remote:
         return None
-    return asyncio.create_task(remote_background_drain(record, target_root(record.target_id)))
+    work = BridgeBackgroundWork()
+    return work, asyncio.create_task(work.run())

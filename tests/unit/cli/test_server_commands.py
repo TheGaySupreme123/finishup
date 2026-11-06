@@ -739,9 +739,19 @@ def test_the_foreground_agent_is_only_for_remote_targets(home: Path) -> None:
     assert result.stderr.startswith("agent_not_applicable:")
 
 
-def test_the_foreground_agent_is_a_typed_refusal_until_the_agent_is_wired(
-    home: Path, authorized: list[tuple[str, str]], offline_remote: list[tuple[str, Path | None]]
+def test_the_foreground_agent_reports_its_refusal_as_a_typed_outcome(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    offline_remote: list[tuple[str, Path | None]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from finishup.client import agent_session
+
+    async def refuse(_root: Path, _locator: object) -> None:
+        # The server bound no workspace for this directory (its vault is locked, say).
+        raise agent_session.AgentSessionError("workspace_agent_unavailable")
+
+    monkeypatch.setattr(agent_session, "run_foreground_agent", refuse)
     assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
     result = _invoke("connect", "lab", "--agent")
     assert result.exit_code == 20

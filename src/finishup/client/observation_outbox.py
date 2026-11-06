@@ -54,6 +54,7 @@ __all__ = [
     "ClientDrainSummary",
     "ClientObservationDrain",
     "ObservationIngestClient",
+    "capture_pending",
     "drain_client_observation",
 ]
 
@@ -170,6 +171,25 @@ def _workspace_commitment(state: Path | None, workspace: str) -> str | None:
     """The store's commitment for ``workspace``; None while nothing was ever captured here."""
 
     return LocalObservationStore(_state=state).existing_workspace_commitment(workspace)
+
+
+def capture_pending(workspace: WorkspaceLocator, *, state: Path | None = None) -> bool:
+    """Whether this root's store holds rows or spooled records for ``workspace`` to deliver.
+
+    A read-only probe a long-lived process runs before it connects to drain (``state`` is the
+    active root's when None): it never creates a commitment, so a workspace no hook ever captured
+    is simply not pending, and an idle process opens no connection to deliver nothing.
+    """
+
+    if type(workspace) is not WorkspaceLocator:
+        raise TypeError("workspace_locator_invalid")
+    store = LocalObservationStore(_state=state)
+    commitment = store.existing_workspace_commitment(workspace.path)
+    if commitment is None:
+        return False
+    if commitment in store.pending_workspaces():
+        return True
+    return HookSpool(_state=state).has_pending(commitment)
 
 
 def _replay_spool(state: Path | None, workspace_commitment: str, limit: int) -> int:

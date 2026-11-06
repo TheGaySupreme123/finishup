@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 from urllib.parse import unquote_to_bytes, urlsplit
 
 import anyio
@@ -183,6 +183,9 @@ from finishup.service.client import (
     serving_workspace_binding,
     start_timed_out,
 )
+
+if TYPE_CHECKING:
+    from finishup.client.agent_session import BridgeBackgroundWork
 
 __all__ = [
     "BRIDGE_RUNTIME",
@@ -553,6 +556,9 @@ class _ClientSlot:
     # Bumped whenever the slot's client is retired (a Cursor binding change, shutdown): a probe
     # that started before a retirement never publishes its client (review of #1226).
     retirement_generation: int = 0
+    # A remote target's background agent connection and drain (ADR-051, direct dial); each
+    # service call renews its lease. ``None`` for a local root.
+    remote_background: BridgeBackgroundWork | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1045,6 +1051,8 @@ async def _ensure_service_client(
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
         raise _CursorWorkspaceBindingError()
+    if slot.remote_background is not None:
+        slot.remote_background.note_activity(workspace_locator)
     generation = slot.retirement_generation
     owner = object()
     owns_probe = False
@@ -4709,14 +4717,20 @@ def _initialization_options(
 async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
     """Run bounded stdio and let the SDK negotiate protocol versions conformantly.
 
-    For a remote server target the bridge is also the long-lived client process that drains what
-    hooks captured (ADR-051, direct dial); a local root starts no background work.
+    For a remote server target the bridge is also this approach's long-lived client process
+    (ADR-051, direct dial): it holds a background workspace-agent connection while the session is
+    active and delivers what hooks captured. A local root starts no background work.
     """
 
     from finishup.client.agent_session import start_remote_background_work
 
     active_server = server if runtime is BRIDGE_RUNTIME else _build_server(runtime)
-    background = start_remote_background_work()
+    started = start_remote_background_work()
+    background: asyncio.Task[None] | None = None
+    if started is not None:
+        work, background = started
+        runtime._slot.remote_background = work  # pyright: ignore[reportPrivateUsage]
+        work.note_activity(_workspace_locator_for_runtime(runtime))
     async with bounded_stdio_server(drain_pending_responses=True) as (read_stream, write_stream):
         try:
             await active_server.run(
@@ -4729,6 +4743,7 @@ async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
             if background is not None:
                 background.cancel()
                 await asyncio.gather(background, return_exceptions=True)
+                runtime._slot.remote_background = None  # pyright: ignore[reportPrivateUsage]
             await close_bridge_runtime(runtime)
 
 

@@ -215,7 +215,8 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         _USAGE,
     ),
     "workspace_agent_unavailable": (
-        "this directory could not be offered to that server as a workspace agent",
+        "that server bound no workspace for this directory (its vault may be locked); unlock it "
+        "on the server, then run this again",
         _UNAVAILABLE,
     ),
 }
@@ -1129,18 +1130,21 @@ def _serve_foreground_agent(record: ServerTarget, root: Path) -> None:
     from finishup.cli.bootstrap import resolve_cli_workspace_locator
     from finishup.client.agent_session import AgentSessionError, run_foreground_agent
 
+    del record
     locator = resolve_cli_workspace_locator()
     if locator is None:
         raise ServerCommandRefused("workspace_agent_unavailable")
-    typer.echo("Serving this directory's workspace calls; press Ctrl-C to stop.")
+    typer.echo(
+        "Serving this directory's workspace calls; press Ctrl-C to stop. While this runs the "
+        "server counts it as a connected client, so its idle lock waits."
+    )
     try:
-        anyio.run(run_foreground_agent, record, root, locator)
+        anyio.run(run_foreground_agent, root, locator)
     except KeyboardInterrupt:
         typer.echo("Stopped the workspace agent.")
         return
     except AgentSessionError as error:
         raise ServerCommandRefused(error.phase or error.reason) from None
-    typer.echo("The server closed the workspace agent connection.")
 
 
 @server_app.command("disconnect")
