@@ -25,6 +25,7 @@ from finishup.client.server_folders import (
     FolderError,
     add_folder,
     clear_folders,
+    folder_admissible,
     folder_covers,
     folder_holds_home,
     folders_path,
@@ -260,3 +261,22 @@ def test_a_reader_is_bound_to_one_target_and_reads_its_record_on_every_call(
     folders_path(root).chmod(0o600)
     remove_folder(root, record.target_id, folder)
     assert by_root() == ()
+
+
+def test_admissibility_is_the_rule_add_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_home = (tmp_path / "users" / "me").resolve()
+    (user_home / "Library" / "Mail").mkdir(parents=True)
+    (user_home / "projects").mkdir()
+    monkeypatch.setenv("HOME", os.fspath(user_home))
+    for refused in (
+        os.fspath(user_home),
+        os.fspath(user_home.parent),
+        os.fspath(user_home / "Library" / "Mail"),
+        "relative/folder",
+        "/etc",
+        os.fspath(tmp_path / "missing"),
+    ):
+        assert folder_admissible(refused) is False, refused
+    assert folder_admissible(os.fspath(user_home / "projects")) is True
