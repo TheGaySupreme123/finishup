@@ -255,7 +255,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   maps them to its own root and refuses any other handle (`workspace_not_claimed`). An outside read
   never enters the claimed workspace through an outside root, nor the client's protected
   directories — its own FinishUP directories and the everyday installation's under both
-  application names — whatever the server excludes. The agent refuses unknown operations and
+  application names — whatever the server excludes. Where a local service's own caller narrowed
+  an operation, the agent narrows it itself: `inspect` excerpts only the workspace's own changed
+  paths (never an ignored, unchanged, `.git` or credential-named file), and `lstat_candidates`
+  answers only for a candidate the local outside-input rule would look at (no hidden,
+  credential-named or system path, and beneath a path an owner may admit). The agent refuses unknown operations and
   never runs a command that did not come from the repository's owner-approved
   `.finishup/checks.toml` (`check_not_approved`). HOME decisions are made by the agent on the
   client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,

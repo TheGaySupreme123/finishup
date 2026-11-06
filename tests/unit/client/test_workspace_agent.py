@@ -77,7 +77,11 @@ from finishup.ports.workspace_agent import (
     operation_spec,
     remote_workspace_handle_valid,
 )
-from finishup.ports.workspace_inspect import WorkspaceInspectCommand
+from finishup.ports.workspace_inspect import (
+    WorkspaceInspectCommand,
+    WorkspaceInspectLimitation,
+    WorkspaceInspectStatus,
+)
 from finishup.protocol.ids import IdKind, new_id
 
 _HANDLE = "client:0123456789abcdef"
@@ -598,6 +602,36 @@ def test_lstat_reports_only_outside_candidates(
     assert stat.S_ISREG(facts[0].mode)
 
 
+def test_lstat_never_reports_what_the_local_candidate_rule_would_not_look_at(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    """A server learns nothing of hidden, credential-named or system paths (ADR-051)."""
+
+    handler = _handler(repository, protected)
+    (shared / ".ssh").mkdir()
+    (shared / ".ssh" / "id_ed25519").write_text("KEY\n", encoding="utf-8")
+    (shared / "credentials").write_text("SECRET\n", encoding="utf-8")
+    (shared / "deploy.pem").write_text("PEM\n", encoding="utf-8")
+    refused = (
+        f"{shared}/.ssh",
+        f"{shared}/.ssh/id_ed25519",
+        f"{shared}/credentials",
+        f"{shared}/deploy.pem",
+        "/proc/self/status",
+        "/etc/hostname",
+        "/",
+    )
+    for path in refused[:4]:
+        assert os.path.lexists(path)
+    facts = _ok(
+        handler,
+        WorkspaceOperation.LSTAT_CANDIDATES,
+        LstatCandidatesArguments((*refused, f"{shared}/spec.md")),
+    )
+    assert facts[:-1] == (None,) * len(refused)
+    assert facts[-1] == LstatFacts.from_stat_result(os.lstat(f"{shared}/spec.md"))
+
+
 def test_a_spent_deadline_ends_a_metadata_read(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -646,6 +680,50 @@ def test_observation_operations_equal_the_local_adapters(repository: Path, prote
     )
     assert inspected == LocalWorkspaceInspectAdapter().inspect(
         WorkspaceInspectCommand(workspace=local, relative_paths=("new.py", "tracked.txt"))
+    )
+
+
+def test_inspect_reads_only_the_workspaces_own_changed_paths(
+    repository: Path, protected: Path
+) -> None:
+    """A server cannot pick secrets to excerpt: ignored, unchanged and Git files stay unread."""
+
+    (repository / ".gitignore").write_text("ignored.log\n.env\n*.key\n", encoding="utf-8")
+    _git(repository, "add", ".gitignore")
+    _git(repository, "commit", "--quiet", "-m", "ignore secrets")
+    (repository / "deploy.pem").write_text("TRACKED_PEM\n", encoding="utf-8")
+    _git(repository, "add", "deploy.pem")
+    _git(repository, "commit", "--quiet", "-m", "track a pem")
+    _git(repository, "config", "remote.origin.url", "https://user:TOKEN123@example.invalid/r")
+    _change(repository)
+    (repository / ".env").write_text("AWS_SECRET=SUPERSECRET_ENV\n", encoding="utf-8")
+    (repository / "config").mkdir()
+    (repository / "config" / "master.key").write_text("MASTERKEY_SECRET\n", encoding="utf-8")
+    (repository / "deploy.pem").write_text("CHANGED_PEM_SECRET\n", encoding="utf-8")
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+
+    secrets = (".env", "config/master.key", ".git/config", "deploy.pem", "tracked.txt.orig")
+    rejected = _ok(handler, WorkspaceOperation.INSPECT, InspectArguments(opened, secrets))
+    assert rejected.status is WorkspaceInspectStatus.REJECTED
+    assert rejected.artifacts == ()
+    assert rejected.limitations == (WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE,)
+
+    mixed = _ok(
+        handler, WorkspaceOperation.INSPECT, InspectArguments(opened, ("new.py", ".env", "README"))
+    )
+    assert mixed.status is WorkspaceInspectStatus.PARTIAL
+    assert [artifact.relative_path for artifact in mixed.artifacts] == ["new.py"]
+    assert WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE in mixed.limitations
+    for result in (rejected, mixed):
+        for marker in (b"SUPERSECRET", b"MASTERKEY", b"TOKEN123", b"PEM_SECRET"):
+            assert all(marker not in artifact.excerpt for artifact in result.artifacts)
+    # The workspace's own changed paths are inspected exactly as the local adapter does.
+    changed = ("new.py", "tracked.txt")
+    assert _ok(
+        handler, WorkspaceOperation.INSPECT, InspectArguments(opened, changed)
+    ) == LocalWorkspaceInspectAdapter().inspect(
+        WorkspaceInspectCommand(workspace=open_local_workspace(repository), relative_paths=changed)
     )
 
 

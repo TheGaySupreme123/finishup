@@ -4643,6 +4643,15 @@ worker thread. Its confinement rules:
   and never enter a protected directory, whatever the server lists as excluded; an `lstat`
   candidate inside either is reported as not found. An exclusion naming a directory this user
   cannot examine does not empty the read.
+- `lstat_candidates` answers only for a candidate the local outside-input rule
+  (`outside_input_candidates`) would look at: no hidden component, not credential-named, in no
+  system directory, at or beneath a path an owner may admit. Any other candidate is reported as
+  not found, so a server learns nothing of it; an honest server never asks about one.
+- `inspect` excerpts only the workspace's own changed paths: the agent takes
+  `list_changed_relative_paths` itself and inspects only paths in it (no Git-ignored, unchanged
+  or `.git` file), never a credential-named path, nor one in the home directory's private state
+  when the workspace is the home directory. A path left out is `path_out_of_scope` (`partial`, or
+  `rejected` when none is left) and its bytes are never read.
 - `protected` defaults to `client_protected_directories()`: this process's isolation root and its
   bundle, config, cache, state, log and runtime directories, then
   `config.paths.ambient_installation_dirs()` — the everyday installation's directories under both

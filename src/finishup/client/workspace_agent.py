@@ -48,6 +48,7 @@ from finishup.adapters.git_subject_state import (
     list_changed_relative_paths,
     open_local_workspace,
 )
+from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.task_input_read import (
     ReadDeadline,
     list_beneath,
@@ -64,7 +65,8 @@ from finishup.application.observation_check_policy import (
     load_observation_check_policy,
 )
 from finishup.config import paths as config_paths
-from finishup.domain.privacy import admitted_input_root_valid
+from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
+from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.logging import (
     record_bounded_event_without_raising,
     record_public_error_without_raising,
@@ -112,7 +114,12 @@ from finishup.ports.workspace_agent import (
     resolve_client_location,
     workspace_handle_valid,
 )
-from finishup.ports.workspace_inspect import WorkspaceInspectCommand
+from finishup.ports.workspace_inspect import (
+    WorkspaceInspectCommand,
+    WorkspaceInspectLimitation,
+    WorkspaceInspectResult,
+    WorkspaceInspectStatus,
+)
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -582,14 +589,20 @@ class WorkspaceAgentHandler:
 
     def _lstat_candidates(self, arguments: LstatCandidatesArguments, call: _Call) -> object:
         """Metadata only. A candidate inside the claimed workspace or FinishUP's own directories,
-        or not in normal form, is reported as not found: it is never an outside input."""
+        not in normal form, or one the local outside-input rule would never look at (hidden,
+        credential-named, a system directory, beneath no path an owner may admit) is reported
+        as not found: it is never an outside input, and the server learns nothing of it."""
 
         facts: list[LstatFacts | None] = []
         fenced = (self._root, *self._protected)
         for path in arguments.paths:
             if call.expired():
                 raise _Outcome("read_deadline")
-            if posixpath.normpath(path) != path or _folded_within(path, fenced):
+            if (
+                posixpath.normpath(path) != path
+                or _folded_within(path, fenced)
+                or not _outside_candidate(path)
+            ):
                 facts.append(None)
                 continue
             try:
@@ -641,11 +654,55 @@ class WorkspaceAgentHandler:
             raise _Outcome(_unavailable(str(exc))) from None
 
     def _inspect_paths(self, arguments: InspectArguments, _call: _Call) -> object:
-        return self._inspect.inspect(
-            WorkspaceInspectCommand(
-                workspace=self._opened_workspace(arguments.handle),
-                relative_paths=arguments.relative_paths,
+        """Excerpts of this workspace's own changed paths only, never what the server picks.
+
+        A local service only ever inspects ``list_changed_relative_paths``; here the server
+        names the paths, so the agent takes that listing itself and inspects only paths in it,
+        which leaves out Git-ignored files, unchanged files and everything under ``.git``. A
+        credential-named path, or one in the home directory's private state when the workspace
+        is the home directory, is left out too. A path left out is reported
+        ``path_out_of_scope`` (``partial``, or ``rejected`` when none is left); its bytes are
+        never read.
+        """
+
+        workspace = self._opened_workspace(arguments.handle)
+        try:
+            changed = frozenset(list_changed_relative_paths(workspace))
+        except ValueError as exc:
+            raise _Outcome(_unavailable(str(exc))) from None
+        root = Path(self._root)
+        allowed = tuple(
+            path
+            for path in arguments.relative_paths
+            if path in changed
+            and not credential_named_bytes(os.fsencode(path))
+            and not home_private_path(root, os.fsencode(path))
+        )
+        if not allowed:
+            return WorkspaceInspectResult(
+                WorkspaceInspectStatus.REJECTED,
+                (),
+                (WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE,),
+                None,
             )
+        result = self._inspect.inspect(
+            WorkspaceInspectCommand(workspace=workspace, relative_paths=allowed)
+        )
+        if len(allowed) == len(arguments.relative_paths):
+            return result
+        limitations = tuple(
+            sorted(
+                {*result.limitations, WorkspaceInspectLimitation.PATH_OUT_OF_SCOPE},
+                key=lambda item: item.value.encode(),
+            )
+        )
+        status = (
+            WorkspaceInspectStatus.PARTIAL
+            if result.status is WorkspaceInspectStatus.INSPECTED
+            else result.status
+        )
+        return WorkspaceInspectResult(
+            status, result.artifacts, limitations, result.selection_digest
         )
 
     def _run_approved_check(self, arguments: RunApprovedCheckArguments, call: _Call) -> object:
@@ -716,6 +773,29 @@ def _examinable(path: str) -> bool:
     except (OSError, ValueError):
         return True
     return True
+
+
+def _outside_candidate(path: str) -> bool:
+    """Whether a normalized absolute ``path`` passes the local outside-input candidate rule.
+
+    The rule a local service applies before it ever looks at a candidate's metadata
+    (``outside_input_candidates``): no hidden component, not credential-named, in no system
+    directory, and at or beneath a path an owner may admit as an input root. An honest server only
+    asks about such candidates, so this changes no answer it needs; it keeps a server from
+    learning whether anything else on this machine exists.
+    """
+
+    parts = path.split("/")[1:]
+    if not parts or not parts[0] or any(part.startswith(".") for part in parts):
+        return False
+    if (
+        credential_named_bytes(os.fsencode(path))
+        or system_directory_path(path)
+        or system_directory_path(path.casefold())
+    ):
+        return False
+    ancestors = ("/" + "/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+    return any(admitted_input_root_valid(ancestor) for ancestor in ancestors)
 
 
 def _unavailable(reason: str) -> str:
