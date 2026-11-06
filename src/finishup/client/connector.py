@@ -23,8 +23,9 @@ client's ``workspace_reply`` frames pass through both relays unchanged.
 
 The connector is started on demand by ``finishup.service.client`` and by ``finishup server
 connect``; it never starts, stops or supersedes a FinishUP service, except that for an SSH
-target it may run the server's own ``<launcher> service start`` once when the remote endpoint
-is missing (an idle-stopped service).
+target it may run the server's own ``<launcher> service start`` once when a client's connection
+finds the remote endpoint missing (an idle-stopped service). Its own background agents never
+start the remote service: a service the owner stopped stays stopped until a client asks.
 """
 
 from __future__ import annotations
@@ -342,7 +343,8 @@ class Connector:
                 asyncio.ensure_future(self._observe_claim(claim))
             encoded = encode_control_frame(hello)
             if self._ssh is not None:
-                await self._relay_ssh(local, encoded)
+                # Only a client's own connection is demand for the remote service.
+                await self._relay_ssh(local, encoded, restart=not own)
             else:
                 from finishup.client.https_upstream import HttpsUpstream, relay_https_connection
 
@@ -364,8 +366,15 @@ class Connector:
                 self._active -= 1
                 self._last_activity = time.monotonic()
 
-    async def _open_ssh_channel(self, hello: bytes) -> tuple[AuthenticatedUnixStream, bytes]:
-        """Connect one channel, send the hello, and return it with the first answered bytes."""
+    async def _open_ssh_channel(
+        self, hello: bytes, *, restart: bool
+    ) -> tuple[AuthenticatedUnixStream, bytes]:
+        """Connect one channel, send the hello, and return it with the first answered bytes.
+
+        With ``restart`` (a client's connection), a remote service that is not running is
+        started once with the server's own launcher; a background agent's connection never
+        starts it.
+        """
 
         assert self._ssh is not None
         for attempt in range(2):
@@ -389,16 +398,18 @@ class Connector:
             # sshd could not reach the server's endpoint: its service is not running. Start it
             # once with the server's own launcher, then try the channel again.
             now = time.monotonic()
-            if attempt == 0 and now - self._last_restart >= _RESTART_WINDOW_SECONDS:
+            if restart and attempt == 0 and now - self._last_restart >= _RESTART_WINDOW_SECONDS:
                 self._last_restart = now
                 if await self._ssh.run_remote("service", "start") == 0:
                     continue
             break
         raise UpstreamUnavailable("remote_service_not_running")
 
-    async def _relay_ssh(self, local: AuthenticatedUnixStream, hello: bytes) -> None:
+    async def _relay_ssh(
+        self, local: AuthenticatedUnixStream, hello: bytes, *, restart: bool
+    ) -> None:
         try:
-            upstream, first = await self._open_ssh_channel(hello)
+            upstream, first = await self._open_ssh_channel(hello, restart=restart)
         except UpstreamUnavailable as error:
             await self._unavailable(error.reason)
             return

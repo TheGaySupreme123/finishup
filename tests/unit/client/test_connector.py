@@ -212,6 +212,53 @@ def test_a_service_that_stays_down_is_named_and_the_client_can_read_why(home: Pa
         asyncio.run(exercise())
 
 
+def test_a_background_agent_never_starts_a_stopped_remote_service(home: Path) -> None:
+    """The owner stopped the server's service; only a client's connection may start it again."""
+
+    record, root = _ssh_target(home)
+
+    async def exercise() -> None:
+        daemon = ScriptedDaemon()
+        started = [False]
+        restarts: list[str] = []
+        master = _StubMaster(root, restarts=restarts)
+
+        async def start_service(*arguments: str) -> int:
+            restarts.append(" ".join(arguments))
+            started[0] = True
+            return 0
+
+        master.run_remote = start_service  # type: ignore[method-assign]
+        upstream = await _serve_upstream(master.upstream_path, daemon, started)
+        connector = Connector(root, record)
+        connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        try:
+            # The connector's own background agent reconnects: nothing is started.
+            agent = await connector._dial_own()  # pyright: ignore[reportPrivateUsage]
+            await agent.send_all(_hello())
+            assert await _closed_unanswered(agent)
+            await agent.aclose()
+            assert restarts == []
+            status = read_connector_status(root)
+            assert status is not None
+            assert (status.phase, status.reason) == ("unavailable", "remote_service_not_running")
+            # A client's connection is demand: the service is started once and relayed.
+            client, local = _pair()
+            serving = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
+            received = await run_scripted_session(client, agent=False)
+            await client.shutdown_write()
+            async with asyncio.timeout(5):
+                await serving
+            assert restarts == ["service start"]
+            assert len(received) == 9
+        finally:
+            upstream.cancel()
+            await asyncio.gather(upstream, return_exceptions=True)
+
+    with selection_override(root):
+        asyncio.run(exercise())
+
+
 def test_an_unreachable_server_is_recorded_with_a_closed_reason_only(home: Path) -> None:
     record, root = _ssh_target(home)
 

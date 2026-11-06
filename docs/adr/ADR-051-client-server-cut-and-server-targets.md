@@ -508,8 +508,10 @@ through the same relay; human-control and secret channels never leave the server
   ServerAliveCountMax=3 -p <port> -L <troot>/run/upstream.sock:<remote endpoint> <[user@]host>`.
   Each local connection gets its own channel and an unparsed byte pump; only the first frame (the
   hello) is read, to refuse a locator and to note a claim. When sshd cannot reach the server's
-  endpoint (an idle-stopped service), the connector runs the server's own `<remote launcher>
-  service start` once over the master, pinned to the remote root, and retries. `server add
+  endpoint on a client's connection (an idle-stopped service), the connector runs the server's
+  own `<remote launcher> service start` once over the master, pinned to the remote root, and
+  retries; the connector's own background agents never start it, so a service the owner stopped
+  stays stopped until a client connects. `server add
   ssh://…` records the endpoint and an absolute launcher from one interactive `ssh … finishup
   service endpoint --json`, in which OpenSSH itself asks the owner to confirm a new host key. The
   socket-path bound counts OpenSSH's 17-byte temporary suffix on the master path.
