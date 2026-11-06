@@ -9,7 +9,9 @@ is not a remote target's own with a fixed line.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import stat
 from collections.abc import Iterator
 from pathlib import Path
@@ -175,3 +177,98 @@ def test_an_unsupported_scope_is_a_usage_error_not_a_damaged_key_file(home: Path
     assert "damaged" not in refused.stderr
     assert not output.exists()
     assert (_keys(home) / "keys.json").read_bytes() == before
+
+
+class _ConsoleNotOurs:
+    """A terminal on stdin that is not this process's foreground console: nothing is shown."""
+
+    def __enter__(self) -> _ConsoleNotOurs:
+        from finishup.cli.trusted_console import TrustedConsoleError
+
+        raise TrustedConsoleError("trusted_console_required")
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+class _FullDisk:
+    """The CLI's ``os`` with a disk that fills up as the key file is flushed."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(os, name)
+
+    @staticmethod
+    def fsync(_descriptor: int) -> None:
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+
+def _rows(home: Path) -> dict[str, dict[str, object]]:
+    listed = _invoke("service", "gateway", "key", "list", "--json")
+    assert listed.exit_code == 0, listed.output
+    return {row["key_id"]: row for row in json.loads(listed.stdout)["keys"]}
+
+
+@pytest.mark.parametrize("rotate", [False, True])
+def test_a_key_whose_secret_was_never_shown_is_revoked(
+    home: Path, monkeypatch: pytest.MonkeyPatch, rotate: bool
+) -> None:
+    """stdin is a terminal, but the trusted console refuses after the key was created; nobody
+    holds the new key, so it must not stay active. A rotated key is left exactly as it was."""
+
+    from finishup.cli import trusted_console
+    from finishup.gateway.keys import create_key
+
+    old, old_key = create_key(_keys(home), label="laptop", scope="operator")
+    monkeypatch.setattr(gateway_cli, "_stdin_is_terminal", lambda: True)
+    monkeypatch.setattr(trusted_console, "TrustedForegroundConsole", _ConsoleNotOurs)
+    arguments = ("--rotate", old.key_id) if rotate else ("--label", "ci", "--scope", "agent")
+    refused = _invoke("service", "gateway", "key", "create", *arguments)
+    assert refused.exit_code == 2
+    assert refused.stderr.startswith("gateway_key_not_shown:")
+    assert "Created key" not in refused.stdout
+    rows = _rows(home)
+    (new_id,) = set(rows) - {old.key_id}
+    assert rows[new_id]["revoked_at"] is not None
+    assert rows[old.key_id]["revoked_at"] is None
+    assert not isinstance(KeyRing(_keys(home)).authenticate(old_key), str)
+
+
+def test_a_key_that_could_not_be_written_is_revoked_and_its_file_removed(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = home / "laptop.key"
+    monkeypatch.setattr(gateway_cli, "os", _FullDisk())
+    refused = _invoke(
+        "service", "gateway", "key", "create", "--label", "laptop", "--scope", "agent",
+        "--output-file", str(output),
+    )  # fmt: skip
+    assert refused.exit_code == 20
+    assert refused.stderr.startswith("gateway_key_output_failed:")
+    assert not output.exists()
+    (row,) = _rows(home).values()
+    assert row["revoked_at"] is not None
+
+
+def test_a_failed_revoke_of_an_undelivered_key_names_the_key_and_its_revoke(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.gateway import keys as gateway_keys
+    from finishup.gateway.keys import GatewayKeyError
+
+    def refuse(_directory: Path, _key_id: str) -> object:
+        raise GatewayKeyError("gateway_keys_unsafe")
+
+    monkeypatch.setattr(gateway_cli, "os", _FullDisk())
+    monkeypatch.setattr(gateway_keys, "revoke_key", refuse)
+    refused = _invoke(
+        "service", "gateway", "key", "create", "--label", "laptop", "--scope", "agent",
+        "--output-file", str(home / "laptop.key"),
+    )  # fmt: skip
+    assert refused.exit_code == 20
+    (row,) = _rows(home).values()
+    assert row["revoked_at"] is None
+    key_id = row["key_id"]
+    assert refused.stderr == (
+        f"gateway_key_output_failed: key {key_id} could not be revoked; "
+        f"run 'finishup service gateway key revoke {key_id}'\n"
+    )
