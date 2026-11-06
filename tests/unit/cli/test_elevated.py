@@ -2517,11 +2517,11 @@ def test_a_committed_relayed_grant_reports_a_remote_server_left_selected_without
 
     surfaced: list[bool] = []
 
-    def surface(*, interactive: bool) -> str:
+    async def surface(*, interactive: bool) -> str:
         surfaced.append(interactive)
         return "warned"
 
-    monkeypatch.setattr(zero_network, "surface_after_policy_change", surface)
+    monkeypatch.setattr(zero_network, "surface_after_policy_change_async", surface)
     committed = PrivacyDecisionResult("committed", "sha256:" + ("f" * 64))
 
     async def decide(*_args: object, **_kwargs: object) -> object:

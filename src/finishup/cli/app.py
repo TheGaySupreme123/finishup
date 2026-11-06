@@ -2274,11 +2274,15 @@ async def _run_credential_heuristic_command(
     from finishup.cli.privacy_setup import run_credential_heuristic_change
     from finishup.cli.provider_status import MachineScopeError
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
     from finishup.domain.privacy import CredentialHeuristic
 
     setting = CredentialHeuristic.DISABLED if action == "disable" else CredentialHeuristic.ENFORCED
     try:
-        report = await run_credential_heuristic_change(setting, machine_default=machine_default)
+        # A JSON answer keeps stdout to the document: a remote server left selected under
+        # zero-network is reported on stderr, never offered on the console (ADR-051 decision 8).
+        with machine_readable_answer(json_output):
+            report = await run_credential_heuristic_change(setting, machine_default=machine_default)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except MachineScopeError as error:
@@ -2327,6 +2331,7 @@ _CONVERSATION_SETTINGS: Final = {
 async def _run_conversation_review_command(setting_name: str, json_output: bool) -> int:
     from finishup.cli.privacy_setup import run_conversation_review_change
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
     from finishup.domain.privacy import ConversationReview
 
     token = _CONVERSATION_SETTINGS.get(setting_name)
@@ -2339,7 +2344,9 @@ async def _run_conversation_review_command(setting_name: str, json_output: bool)
         return 2
     setting = ConversationReview(token)
     try:
-        report = await run_conversation_review_change(setting)
+        # A JSON answer never offers the server choice (ADR-051 decision 8): stderr only.
+        with machine_readable_answer(json_output):
+            report = await run_conversation_review_change(setting)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except (HumanCeremonyCliError, OSError, ValueError) as error:
@@ -2476,9 +2483,12 @@ async def _run_input_root_command(action: str, value: str, json_output: bool) ->
 
     from finishup.cli.privacy_setup import run_input_root_change
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
 
     try:
-        report = await run_input_root_change("add" if action == "add" else "remove", value)
+        # A JSON answer never offers the server choice (ADR-051 decision 8): stderr only.
+        with machine_readable_answer(json_output):
+            report = await run_input_root_change("add" if action == "add" else "remove", value)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except (HumanCeremonyCliError, OSError, ValueError) as error:
