@@ -917,6 +917,10 @@ class ServiceDaemon:
         self._soft_reready_task: asyncio.Task[bool] | None = None
         # Locks in progress: a lock outranks an automatic re-ready, so none starts until it applied.
         self._locks_pending = 0
+        # A scoped auto-unlock read that a cancelled or expired re-ready left in its worker
+        # thread, until it returns: no attempt starts another meanwhile, so a credential store
+        # that never answers pins one worker thread, not one more per retry.
+        self._outstanding_auto_unlock_read: asyncio.Future[_AutoUnlockCandidates] | None = None
         self._stop_event = asyncio.Event()
         # ``serve`` owns the accept loops; a daemon driven by ``start`` alone never serves and
         # must never wait on an event nothing will set.
@@ -2975,6 +2979,18 @@ class ServiceDaemon:
                 or lifecycle.state is not ServiceState.LOCKED
             ):
                 return False
+            outstanding = self._outstanding_auto_unlock_read
+            if outstanding is not None and not outstanding.done():
+                # An earlier attempt's scoped auto-unlock read still waits on the credential
+                # store. Another read would pin one more worker thread of the shared pool that
+                # activation and the unlock ceremony need; stay LOCKED, keep the soft reason,
+                # and let the first request after that read returns try again.
+                get_logger("service.daemon").warning(
+                    "auto_unlock",
+                    outcome="failed",
+                    reason="auto_unlock_read_outstanding",
+                )
+                return False
             deadline = _soft_reready_deadline()
             try:
                 async with deadline:
@@ -3073,6 +3089,34 @@ class ServiceDaemon:
         except LifecycleError:
             pass
 
+    async def _read_auto_unlock_candidates(
+        self, store: AutoUnlockPassphraseStore
+    ) -> _AutoUnlockCandidates:
+        """Read the scoped auto-unlock entries in a worker thread, never leaving them unzeroed.
+
+        Cancelling the wait cannot stop the worker thread, and ``asyncio.to_thread`` would drop
+        the passphrase bytes it returns afterwards without overwriting them. The read's own
+        future is shielded instead. On a cancel it stays the outstanding read until it returns,
+        and whatever it returns then is overwritten.
+        """
+
+        read = asyncio.get_running_loop().run_in_executor(
+            None, contextvars.copy_context().run, store.load_candidates_with_reason
+        )
+        try:
+            return await asyncio.shield(read)
+        except asyncio.CancelledError:
+            self._outstanding_auto_unlock_read = read
+            read.add_done_callback(self._settle_outstanding_auto_unlock_read)
+            raise
+
+    def _settle_outstanding_auto_unlock_read(
+        self, read: asyncio.Future[_AutoUnlockCandidates]
+    ) -> None:
+        if self._outstanding_auto_unlock_read is read:
+            self._outstanding_auto_unlock_read = None
+        _overwrite_unclaimed_candidates(read)
+
     async def _soft_unlock_passphrase_locked(self) -> bool:
         """Unlock passphrase vault from the bundle-scoped platform entry under activation lock."""
 
@@ -3085,7 +3129,7 @@ class ServiceDaemon:
             return False
 
         store = AutoUnlockPassphraseStore(bundle)
-        candidates, load_reason = await _load_auto_unlock_candidates(store)
+        candidates, load_reason = await self._read_auto_unlock_candidates(store)
         if not candidates:
             reason = (
                 load_reason
@@ -3273,24 +3317,6 @@ def _record_soft_reready_failure(task: asyncio.Task[bool]) -> None:
 
 
 type _AutoUnlockCandidates = tuple[tuple[tuple[bytearray, str], ...], str]
-
-
-async def _load_auto_unlock_candidates(store: AutoUnlockPassphraseStore) -> _AutoUnlockCandidates:
-    """Read the scoped auto-unlock entries in a worker thread, never leaving them unzeroed.
-
-    Cancelling the wait cannot stop the worker thread, and ``asyncio.to_thread`` would drop the
-    passphrase bytes it returns afterwards without overwriting them. The read's own future is
-    shielded instead, and on a cancel whatever it returns is overwritten as it arrives.
-    """
-
-    read = asyncio.get_running_loop().run_in_executor(
-        None, contextvars.copy_context().run, store.load_candidates_with_reason
-    )
-    try:
-        return await asyncio.shield(read)
-    except asyncio.CancelledError:
-        read.add_done_callback(_overwrite_unclaimed_candidates)
-        raise
 
 
 def _overwrite_unclaimed_candidates(read: asyncio.Future[_AutoUnlockCandidates]) -> None:

@@ -812,7 +812,11 @@ installation is never touched by a target operation.
   5-second handshake deadline stops waiting for it but never interrupts it. A lock outranks it:
   an explicit or session lock cancels the attempt first and records its own reason. The attempt's
   own 30-second deadline, the on-demand cold-start budget for the same unlock and activation,
-  returns a stalled one to the soft lock for the next request to retry (2026-11-06, after review).
+  returns a stalled one to the soft lock for a later request to retry. While a scoped-entry read
+  is still blocked in its worker thread, no attempt starts another, so a credential store that
+  never answers holds one thread. The deadline bounds only what the attempt awaits: an
+  `os_keyring` root-key read on the event loop, or an activation step that joins its worker
+  thread, still runs to its end (2026-11-06, after review).
 - Out of scope: multi-user or team hosting; a FinishUP-operated cloud; ledger sync or migration
   between targets; an offline write queue; a plain-TCP control channel; unlock, consent or the
   owner view over the network; MCP over HTTP to hosts; native launchd or systemd installers;

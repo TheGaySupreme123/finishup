@@ -253,9 +253,17 @@ never passes because a read was missing.
 - With that same unlock secret, the server's FinishUP also **re-opens by itself** after it locked
   itself (after a while without use, or when the server's session locks or the machine sleeps):
   the next request from your computer re-opens it. Locking it yourself, or the server's session
-  locking, still takes effect at once while a re-open is under way. A re-open that cannot finish
-  within 30 seconds, for example because the server's credential store does not answer, stops and
-  leaves the server locked, and the next request tries again.
+  locking, takes priority over a re-open under way. A re-open that cannot finish within 30
+  seconds stops and leaves the server locked, and a later request tries again. If the reason is
+  that the server's credential store does not answer, FinishUP waits for that answer rather than
+  asking again, and until it comes, requests are refused as locked straight away. A re-open
+  part-way through preparing FinishUP's storage finishes that step before it stops, so a lock can
+  take a moment longer then.
+- Those limits hold for a vault that FinishUP opens with a stored unlock secret for its passphrase
+  (`finishup service status --json` shows `"vault_mode": "passphrase"`). If the vault key itself
+  is kept in the server's credential store (`"vault_mode": "os_keyring"`) and that store stops
+  answering, the whole service waits for it: nothing, locking included, takes effect until it
+  answers.
 - On **Linux**, a service started from an SSH login loses its connection folder when you log out
   unless lingering is on for your account (`loginctl enable-linger`), or FinishUP runs in its own
   folder on the server. `finishup service endpoint --json`, run on the server, reports both.
