@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import socket
 from collections.abc import Iterator
@@ -29,7 +30,7 @@ from finishup.client.connector import Connector, run_connector
 from finishup.client.connector_status import read_connector_status
 from finishup.client.ssh_upstream import UpstreamUnavailable
 from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, selection_override
-from finishup.ports.control import WorkspaceClaim
+from finishup.ports.control import WorkspaceClaim, WorkspaceLocator
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.schemas import load_schema_catalog
 from finishup.service.control_protocol import encode_control_frame
@@ -461,6 +462,55 @@ def test_a_background_agent_still_opening_is_held_and_ended_when_the_connector_s
             assert await serving == "stop_requested"
         assert ended == ["cancelled"]
         await client.aclose()
+
+    with selection_override(root):
+        asyncio.run(exercise())
+
+
+def test_a_background_agent_reads_the_folders_of_its_own_target(home: Path, tmp_path: Path) -> None:
+    """ADR-051 decision 5: the agent the connector opens for a relayed claim admits the folders
+    the owner recorded for the connector's own target, never another target's, and keeps that
+    record when this process's selection later names another target."""
+
+    from finishup.client.claimed_workspaces import record_claimed_workspace
+    from finishup.client.connector import open_background_agent
+    from finishup.client.connector_agent import ConnectorAgent
+    from finishup.client.server_folders import add_folder
+    from finishup.client.workspace_agent import WorkspaceAgentHandler
+    from finishup.client.workspace_claim import workspace_claim
+
+    record, root = _ssh_target(home)
+    with targets.registry_lock():
+        other, other_root = targets.new_remote_target("gw", "https", base_url="https://gw.example")
+    admitted: list[str] = []
+    for target, folder in ((record, tmp_path / "mine"), (other, tmp_path / "theirs")):
+        folder.mkdir()
+        admitted.append(os.fspath(folder.resolve(strict=True)))
+        add_folder(targets.target_root(target.target_id), target.target_id, admitted[-1])
+    (tmp_path / "workspace").mkdir()
+    workspace = WorkspaceLocator(os.fspath((tmp_path / "workspace").resolve(strict=True)))
+
+    async def exercise() -> None:
+        salt = base64.b64decode(record.claim_salt or "", validate=True)
+        claim = await workspace_claim(workspace, salt)
+        assert record_claimed_workspace(root, claim, workspace) is True
+        never = asyncio.Event()
+
+        async def dial() -> AuthenticatedUnixStream:
+            await never.wait()  # no server answers: the agent's handler is what is checked
+            raise AssertionError("unreachable")
+
+        agent = await open_background_agent(root, claim, dial)
+        assert isinstance(agent, ConnectorAgent)
+        try:
+            handler = agent._binding.agent  # pyright: ignore[reportPrivateUsage]
+            assert type(handler) is WorkspaceAgentHandler
+            folders = handler._folders  # pyright: ignore[reportPrivateUsage]
+            assert folders() == (admitted[0],)
+            with selection_override(other_root):
+                assert folders() == (admitted[0],)
+        finally:
+            await agent.aclose()
 
     with selection_override(root):
         asyncio.run(exercise())
