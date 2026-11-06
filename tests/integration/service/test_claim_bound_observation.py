@@ -149,6 +149,32 @@ def local_reads(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
     yield recorded
 
 
+@pytest.fixture
+def loop_reads(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Every observation access built on the event loop's own thread; none may be (ADR-051)."""
+
+    recorded: list[str] = []
+
+    def watch(name: str) -> None:
+        original = getattr(LocalObservationWorkspace, name)
+
+        def call(self: object, *args: object, **kwargs: object) -> Any:  # noqa: ANN401
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                recorded.append(name + ":worker")
+            else:
+                recorded.append(name + ":event_loop")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(LocalObservationWorkspace, name, call)
+
+    # Building the local Git adapter probes the Git version; a client's workspace builds it too.
+    for name in ("subject_state", "inspect_port"):
+        watch(name)
+    yield recorded
+
+
 class _Client:
     """The client machine: its repository, its own state root and its observation store."""
 
@@ -317,6 +343,7 @@ async def test_a_remote_hook_row_is_accepted_verified_through_the_agent_and_atte
     service: _Service,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
     local_reads: list[str],
+    loop_reads: list[str],
 ) -> None:
     client = _Client(tmp_path)
     client.consent()
@@ -356,6 +383,8 @@ async def test_a_remote_hook_row_is_accepted_verified_through_the_agent_and_atte
         )
         assert local_reads == []
         assert spy.workspaces == []
+        assert "subject_state:worker" in loop_reads
+        assert not [read for read in loop_reads if read.endswith(":event_loop")], loop_reads
 
         # The attested route, consent and commitments were recorded for the claim, in the claim's
         # own store; nothing on the server names the client's path.
