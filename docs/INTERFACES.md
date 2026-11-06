@@ -4619,12 +4619,18 @@ with one line per mode (`OUTSIDE_READ_MODE_LINES`), answered `local` or `listed`
 another word asks again, up to three answers, and then, or at end of input or an interrupt,
 nothing is added (`outside_reads_not_chosen`). `--outside-reads local|listed` answers it up
 front (any other value is `outside_read_mode_invalid` before any console; with `--local` it is
-`usage`), and the console then shows the mode it authorizes. An official endpoint
-(`server_folders.official_address`) is not asked and is left unrecorded, `local`. The answer is
+`usage`), and the console then shows the mode it authorizes. When the mode is `local`, answered
+or by the flag, the console shows the body of the `server folders mode NAME local` notice (what
+that mode lets the server read, a rule-breaking server included) before the typed name, with no
+extra prompt. An official endpoint (`server_folders.official_address`) is not asked, sees no such
+notice, and is left unrecorded, `local`. The answer is
 written with `set_mode` under the registry lock that creates the target; where it cannot be,
 the target is still added and `add` says it is `listed` until the owner chooses. The terminal
 interface's `/server` add flow asks the same question (`OUTSIDE_READ_QUESTION`, the same lines)
-and prints `finishup server add NAME … --outside-reads MODE`. `server folders mode NAME local`
+and prints `finishup server add NAME … --outside-reads MODE`; while `OFFICIAL_ENDPOINT_HOSTS` is
+not empty it also offers an official FinishUP service (`add:official`), asks it nothing and
+prints `finishup server add NAME https://HOST` for each reviewed host, without
+`--outside-reads`. `server folders mode NAME local`
 records `local` only after the typed name on the trusted console, unless the owner already chose
 `local`, and even for an official endpoint, which is `local` unrecorded; without the console an
 official endpoint is left unrecorded (it says so and exits 0) and any other target is

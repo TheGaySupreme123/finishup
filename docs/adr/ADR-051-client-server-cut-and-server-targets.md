@@ -323,7 +323,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   word asks again, a few times, and then, or at end of input or an interrupt, nothing is added,
   `outside_reads_not_chosen`); the typed target name then authorizes both. `--outside-reads
   local|listed` answers the question up front, and still needs the trusted console and the typed
-  name, as every remote `add` does; the console shows the mode it authorizes. The answer is
+  name, as every remote `add` does; the console shows the mode it authorizes. When the owner
+  chooses `local`, answered or by the flag, the console shows, before the typed name, the same
+  notice `server folders mode NAME local` shows of what that mode lets the server read, a
+  rule-breaking server included; it adds no prompt. The answer is
   recorded in the client record. Where it cannot be written, the target is still added, in
   `listed` mode, and `add` says so and how to choose again. The one exception is an official
   FinishUP endpoint: an HTTPS target whose exact hostname is in the reviewed constant
@@ -353,7 +356,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   carries the same, with the listed folders, as `target.outside_reads` of `server-target-status`
   1.0.0 (null for a target that is not remote). The terminal interface's `/server` add flow asks
   the same question in the same words and prints the `server add` command with
-  `--outside-reads` set to the answer.
+  `--outside-reads` set to the answer. It keeps the same exception: while
+  `OFFICIAL_ENDPOINT_HOSTS` names a host, it offers an official FinishUP service as its own
+  choice, asks it nothing, and prints `server add NAME https://HOST` without `--outside-reads`,
+  so that service's `local` stays unrecorded and follows the reviewed list instead of becoming
+  the owner's own recorded choice.
 
   In `listed` mode the folders are the owner's: `finishup server folders add NAME FOLDER` needs the
   trusted foreground console and the owner typing the target name; it records FOLDER canonicalized

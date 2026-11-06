@@ -3081,10 +3081,18 @@ class FinishUpTui(App[int]):
         """``/server`` add: which kind of server, and for one on another machine, a port or the
         web, the question ``finishup server add`` asks (ADR-051 decision 5): what it may read
         outside your projects. The answer rides in the printed command as ``--outside-reads``, so
-        the command asks only for the typed name, in your terminal."""
+        the command asks only for the typed name, in your terminal. An official FinishUP service
+        (offered only while ``OFFICIAL_ENDPOINT_HOSTS`` names one) is not asked, as ``server
+        add`` does not ask it: its command carries no ``--outside-reads``, so its ``local`` is
+        left unrecorded and follows the reviewed list."""
 
-        from finishup.client.server_folders import OUTSIDE_READ_MODE_LINES, OUTSIDE_READ_QUESTION
+        from finishup.client.server_folders import (
+            OFFICIAL_ENDPOINT_HOSTS,
+            OUTSIDE_READ_MODE_LINES,
+            OUTSIDE_READ_QUESTION,
+        )
 
+        official_hosts = tuple(sorted(OFFICIAL_ENDPOINT_HOSTS))
         where = await self.ask(
             SelectionView(
                 name="server-add",
@@ -3094,6 +3102,17 @@ class FinishUpTui(App[int]):
                         "add:local",
                         "On this computer",
                         "a second FinishUP with its own tasks, vault and settings",
+                    ),
+                    *(
+                        (
+                            Option(
+                                "add:official",
+                                "An official FinishUP service",
+                                "on the web; it reads what FinishUP on this computer would",
+                            ),
+                        )
+                        if official_hosts
+                        else ()
                     ),
                     Option(
                         "add:remote",
@@ -3110,6 +3129,11 @@ class FinishUpTui(App[int]):
         if where == "add:local":
             self.say(Level.OPTIONAL, "Run this in your shell", _server_add_lines(None))
             return
+        if where == "add:official":
+            self.say(
+                Level.OPTIONAL, "Run this in your shell", _server_add_official_lines(official_hosts)
+            )
+            return
         mode = await self.ask(
             SelectionView(
                 name="server-add-outside-reads",
@@ -3117,6 +3141,14 @@ class FinishUpTui(App[int]):
                 body=(
                     "Every kind of server is asked the same. You can change it later with",
                     "'finishup server folders mode NAME local' or '... listed'.",
+                    *(
+                        (
+                            "An official FinishUP service is not asked: go back and choose it",
+                            "instead.",
+                        )
+                        if official_hosts
+                        else ()
+                    ),
                 ),
                 options=tuple(
                     Option(mode, mode, OUTSIDE_READ_MODE_LINES[mode])
@@ -3357,6 +3389,21 @@ def _server_add_lines(mode: str | None) -> tuple[str, ...]:
         f"    finishup server add NAME https://host --outside-reads {mode}",
         "",
         "It shows what is sent to that server and asks you to type its name.",
+        "Then select it with /server or 'finishup server use NAME'.",
+    )
+
+
+def _server_add_official_lines(hosts: tuple[str, ...]) -> tuple[str, ...]:
+    """The ``finishup server add`` command ``/server`` prints for an official FinishUP service:
+    one per reviewed host, never with ``--outside-reads``, which ``server add`` would record as
+    the owner's own choice instead of following the reviewed list (ADR-051 decision 5)."""
+
+    return (
+        *(f"    finishup server add NAME https://{host}" for host in hosts),
+        "",
+        "It shows what is sent to that server and asks you to type its name. It does not ask",
+        "what the server may read outside your projects: an official FinishUP service reads",
+        "what FinishUP on this computer would read (mode local).",
         "Then select it with /server or 'finishup server use NAME'.",
     )
 
