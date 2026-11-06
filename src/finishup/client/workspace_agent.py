@@ -77,7 +77,7 @@ from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
 )
-from finishup.client.server_folders import folder_covers, folder_holds_home, folders_reader
+from finishup.client.server_folders import folder_covers, folder_holds_home
 from finishup.config import paths as config_paths
 from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
 from finishup.domain.repository_excerpt import credential_named_bytes
@@ -304,10 +304,11 @@ class WorkspaceAgentHandler:
         (``client.observation_outbox.check_policy_trusted``).
 
         ``outside_folders`` answers, on each call, the folders outside the workspace this
-        client's owner admitted for the server. By default it reads the record of the server
-        target this process uses when the handler is built (``client.server_folders.
-        folders_reader``), so a later change of the process's selection never switches it to
-        another target's record. An answer that fails admits nothing.
+        client's owner admitted for the server: the reader of the record of the target the
+        connection's claim was made for (``client.server_folders.folders_reader`` given that
+        target's root or its claim salt). Without one the handler admits no folder outside the
+        workspace: it never guesses the target from this process's selection, which may name
+        another server. An answer that fails admits nothing.
         """
 
         if type(workspace) is not WorkspaceLocator:
@@ -344,8 +345,9 @@ class WorkspaceAgentHandler:
         # None reads this process's own observation store, where 'observe checks trust' records it.
         self._check_policy_trust = check_policy_trust
         # The folders outside the workspace the owner admitted for this server (ADR-051 decision
-        # 5), from the record 'server folders add' writes for the target bound here.
-        self._outside_folders = folders_reader() if outside_folders is None else outside_folders
+        # 5), from the record 'server folders add' writes for the target its caller bound here;
+        # none when the caller bound no record.
+        self._outside_folders = _no_folders if outside_folders is None else outside_folders
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -937,6 +939,12 @@ class WorkspaceAgentHandler:
             return ApprovedCheckRun(result)
         output, redacted = captured[-1]
         return ApprovedCheckRun(result, output, redacted)
+
+
+def _no_folders() -> tuple[str, ...]:
+    """The admitted folders of a handler bound to no record: none."""
+
+    return ()
 
 
 def _examinable(path: str) -> bool:

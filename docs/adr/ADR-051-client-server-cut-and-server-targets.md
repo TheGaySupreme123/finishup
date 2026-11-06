@@ -311,16 +311,18 @@ answers bounded `workspace_call`s on a connection that declared it.
   asks, so the owner never consents to a folder that is then refused. The record is owner-only
   (`<target root>/config/folders.json`) and never sent to the server. Each agent is bound, when
   it is built, to the record of the target its connection's claim was made for (the target in use
-  then, whose claim salt must be the claim's); a later change of the process's selection never
-  switches it to another target's record. The agent reads that record off the event loop on every
-  outside read; a record that cannot be read admits nothing. A read root the server names must
-  have the shape an owner may admit, and what the read reaches must lie inside the claimed
-  worktree or at or beneath an admitted folder; otherwise the read is `root_not_admitted`. For a
-  single-root read (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it
-  the read names. For a task-input read (`read_outside_inputs`, `snapshot_outside_inputs`) it is
-  every path the task names beneath a named root: one the owner did not admit refuses the whole
-  call, which the server records as the check's `workspace_agent_refused`, so an input is never
-  passed over in silence, and a named root beneath which the task names nothing is left
+  then, whose claim salt must be the claim's, or a target root its caller names); a later change
+  of the process's selection never switches it to another target's record, and an agent built
+  without a record admits no folder rather than guess one from the selection, which may name
+  another server. The agent reads that record off the event loop on every outside read; a record
+  that cannot be read admits nothing. A read root the server names must have the shape an owner
+  may admit, and what the read reaches must lie inside the claimed worktree or at or beneath an
+  admitted folder; otherwise the read is `root_not_admitted`. For a single-root read
+  (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it the read names.
+  For a task-input read (`read_outside_inputs`, `snapshot_outside_inputs`) it is every path the
+  task names beneath a named root: one the owner did not admit refuses the whole call, which the
+  server records as the check's `workspace_agent_refused`, so an input is never passed over in
+  silence, and a named root beneath which the task names nothing is left
   unopened. The server's own privacy policy still decides which roots it asks for: the client's
   record narrows it, never widens it, and a folder narrower than the server's root admits what
   lies beneath that folder alone. A declared test is read strictly beneath the claimed root, or

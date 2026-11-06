@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pytest
 
+from builders.server_targets import ambient_home
 from finishup.adapters.approved_checks import ApprovedCheckCommand, ApprovedCheckRunner
 from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
 from finishup.adapters.git_subject_state import (
@@ -36,12 +37,15 @@ from finishup.adapters.task_input_read import (
     snapshot_outside_inputs,
 )
 from finishup.adapters.workspace_inspect import LocalWorkspaceInspectAdapter
+from finishup.client import targets
 from finishup.client import workspace_agent as agent_module
+from finishup.client.server_folders import add_folder, folders_reader
 from finishup.client.workspace_agent import (
     WorkspaceAgentHandler,
     client_protected_directories,
     workspace_reply,
 )
+from finishup.config.paths import reset_selection_memo
 from finishup.domain.values import JsonObject
 from finishup.ports.approved_checks import (
     ApprovedCheckApproval,
@@ -798,34 +802,36 @@ def test_the_admitted_folders_are_read_on_every_call_and_fail_closed(
     ) == ("refused", "root_not_admitted")
 
 
-def test_by_default_the_record_of_the_target_in_use_when_built_admits(
+def test_a_handler_bound_to_no_record_admits_no_folder(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bound when the handler is built, read on every call (ADR-051 decision 5)."""
+    """The process's selection may name another server than the one an agent serves (an agent
+    for target Y built in a process whose selection names X): a handler its caller bound to no
+    record admits no folder, even one the selected target admits (ADR-051 decision 5)."""
 
-    bound: list[bool] = []
-    read: list[bool] = []
-
-    def reader() -> tuple[str, ...]:
-        read.append(True)
-        return (os.fspath(shared),)
-
-    def folders_reader() -> object:
-        bound.append(True)
-        return reader
-
-    monkeypatch.setattr(agent_module, "folders_reader", folders_reader)
-    handler = WorkspaceAgentHandler(
-        WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
+    read = (
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
     )
-    assert bound == [True] and read == []
-    for _ in range(2):
-        assert _ok(
-            handler,
-            WorkspaceOperation.READ_TEXT_BENEATH,
-            ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
-        ) == (b"SPEC_MARKER\n", 12)
-    assert bound == [True] and read == [True, True]
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            selected, selected_root = targets.new_remote_target(
+                "selected", "https", base_url="https://selected.example"
+            )
+            targets.write_selection(selected)
+        add_folder(selected_root, selected.target_id, os.fspath(shared))
+        reset_selection_memo()
+        unbound = WorkspaceAgentHandler(
+            WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
+        )
+        assert _refused(unbound, *read) == ("refused", "root_not_admitted")
+        # Bound to the selected target's own record, the same folder is admitted.
+        bound = WorkspaceAgentHandler(
+            WorkspaceLocator(os.fspath(repository)),
+            protected=(os.fspath(protected),),
+            outside_folders=folders_reader(selected_root),
+        )
+        assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)
 
 
 def test_a_declared_test_beneath_an_admitted_folder_is_read_as_locally(
