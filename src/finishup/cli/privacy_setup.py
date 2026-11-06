@@ -1435,6 +1435,7 @@ async def _propose(
     authority_digest: str,
     *,
     workspace_locator: Path | None = None,
+    prompt: bool = True,
 ) -> str | None:
     from finishup.adapters.privacy.catalog import encode_privacy_policy_json
     from finishup.cli.app import build_service_client
@@ -1464,6 +1465,7 @@ async def _propose(
     if result.get("outcome") == "decision_required" and type(proposal_id) is str:
         return proposal_id
     if result.get("outcome") == "tightening_applied":
+        await _surface_zero_network_selection(prompt=prompt)
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 
@@ -1474,12 +1476,17 @@ async def propose_privacy_candidate(
     *,
     workspace_locator: Path | None = None,
 ) -> str | None:
-    """Propose one exact privacy candidate through the public setup helper."""
+    """Propose one exact privacy candidate through the public setup helper.
+
+    Its caller relays an agent chat's approval, so a remote server left selected under
+    zero-network is reported on stderr, never asked about on a console (ADR-051 decision 8).
+    """
 
     return await _propose(
         candidate,
         authority_digest,
         workspace_locator=workspace_locator,
+        prompt=False,
     )
 
 
@@ -1495,8 +1502,25 @@ async def _decide(proposal_id: str) -> object:
     config = load_config({}, os.environ, None)
     passphrase = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir)).load()
     if passphrase is None:
-        return await decide_policy(proposal_id)
-    return await decide_policy_with_local_reauthentication(proposal_id, passphrase)
+        decision = await decide_policy(proposal_id)
+    else:
+        decision = await decide_policy_with_local_reauthentication(proposal_id, passphrase)
+    if getattr(decision, "status", None) == "committed":
+        await _surface_zero_network_selection()
+    return decision
+
+
+async def _surface_zero_network_selection(*, prompt: bool = True) -> None:
+    """After a committed policy change: a remote server still selected under zero-network.
+
+    ADR-051 decision 8 (maintainer decision, 2026-11-06): on this terminal the owner chooses to
+    switch to this computer's everyday FinishUP or keep the server; without one, or with
+    ``prompt`` off, the facts and the command are printed. FinishUP never switches on its own.
+    """
+
+    from finishup.cli.zero_network_selection import surface_after_policy_change_async
+
+    await surface_after_policy_change_async(interactive=prompt and _interactive_terminal())
 
 
 def _confirmed_candidate(
@@ -1891,6 +1915,7 @@ async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str
         await client.close()
     if result.get("outcome") != "tightening_applied":
         raise ValueError("privacy_tightening_not_applied")
+    await _surface_zero_network_selection()
 
 
 async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> str | None:
@@ -1913,6 +1938,7 @@ async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str
     if result.get("outcome") == "decision_required" and type(proposal_id) is str:
         return proposal_id
     if result.get("outcome") == "tightening_applied":
+        await _surface_zero_network_selection()
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 

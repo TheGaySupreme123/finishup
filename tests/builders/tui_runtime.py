@@ -167,6 +167,9 @@ class FakeRuntime:
     server_selected: str | None = None
     server_uses: list[str] = field(default_factory=lambda: [])
     server_error: RuntimeError_ | None = None
+    # The zero-network item (ADR-051 decision 8): lines ``/server`` shows, and how often it was read.
+    zero_network: tuple[str, ...] = ()
+    zero_network_reads: int = 0
 
     def project_root(self) -> Path:
         return Path("/tmp/project")
@@ -494,6 +497,10 @@ class FakeRuntime:
 
     def server_indicator(self) -> str | None:
         return self.server_selected
+
+    async def refresh_zero_network_item(self) -> tuple[str, ...]:
+        self.zero_network_reads += 1
+        return self.zero_network
 
     async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
         if self.server_error is not None:

@@ -847,6 +847,10 @@ async def _complete_repository_privacy_grant(
 
     if type(decision_result) is not PrivacyDecisionResult or decision_result.status != "committed":
         raise ElevatedBootstrapError("repository_privacy_grant_failed")
+    from finishup.cli.zero_network_selection import surface_after_policy_change_async
+
+    # ADR-051 decision 8: a relayed grant never prompts; the facts and the command go to stderr.
+    await surface_after_policy_change_async(interactive=False)
     return {"recipe": recipe, "outcome": "granted"}
 
 

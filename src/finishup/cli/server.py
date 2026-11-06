@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -299,8 +299,6 @@ class ServerCommandRefused(Exception):
 
 
 _DEFAULT_REMEDY: Final = "the server target did not respond as needed"
-# Written once, when the everyday installation's vault is initialized.
-_INSTALLATION_MARKER: Final = "installation-state.json"
 ROOT_UNUSABLE_MESSAGE: Final = (
     "this process's FinishUP root cannot be used; 'finishup service isolation' explains which "
     "source decided it"
@@ -423,84 +421,25 @@ def _kind_label(kind: str) -> str:
     }[kind]
 
 
-def _everyday_installation_exists() -> bool:
-    """Whether this computer's everyday FinishUP was set up (its vault initialized).
-
-    Read under ``selection_override(None)``. The installation marker is written once, when the
-    vault is initialized, so its presence means this computer has a privacy policy of its own.
-    Anything that keeps the answer from being known (a configuration or folder that cannot be
-    read) fails closed: it counts as set up.
-    """
-
-    import os
-
-    from finishup.config.load import load_config
-    from finishup.config.models import ConfigError
-    from finishup.config.paths import bundle_root
-
-    try:
-        config = load_config({}, os.environ, None)
-        (bundle_root(_data_dir=config.storage.data_dir) / _INSTALLATION_MARKER).lstat()
-    except FileNotFoundError:
-        return False
-    except (ConfigError, OSError, PathSafetyError):
-        return True
-    return True
-
-
 def _zero_network_in_force() -> bool:
     """Whether this computer is in the zero-network state that refuses a remote hop (ADR-051).
 
     Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
-    This computer's own FinishUP decides. When its everyday installation was set up, its running
-    service's effective machine-scope policy decides (``privacy_get_effective`` for this
-    installation's machine scope: a computer-wide question, so no repository is named), and a
-    policy that does not permit network egress is the zero-network state; when that policy cannot
-    be read (the service is stopped, locked, or does not answer, or the installation's identity
-    cannot be read) the hop is refused with ``network_policy_unreadable``, never allowed. A
-    computer whose everyday FinishUP was never set up has no policy of its own, so nothing here
-    refuses it: it is a client of the server it names, and that server's own policy governs its
-    data.
+    This computer's own FinishUP decides (``zero_network_selection.everyday_network_state``): its
+    everyday installation's effective machine-scope policy, when it was set up. A policy that does
+    not permit network egress is the zero-network state; one that cannot be read (the service is
+    stopped, locked, or does not answer, or the installation's identity cannot be read) refuses
+    the hop with ``network_policy_unreadable``, never allows it. A computer whose everyday
+    FinishUP was never set up has no policy of its own, so nothing here refuses it: it is a
+    client of the server it names, and that server's own policy governs its data.
     """
 
-    import anyio
+    from finishup.cli.zero_network_selection import everyday_network_state
 
-    from finishup.cli.provider_status import MachineScopeError, machine_scope_request
-    from finishup.config.paths import selection_override
-    from finishup.domain.values import JsonObject
-    from finishup.ports.control import ControlClientKind, ControlError
-    from finishup.service.client import connect_service
-
-    async def effective(request: JsonObject) -> bool | None:
-        try:
-            with anyio.fail_after(3.0):
-                client = await connect_service(ControlClientKind.CLI, workspace_locator=None)
-        except (ControlError, TimeoutError):
-            return None
-        try:
-            response = await client.privacy_get_effective(request)
-        except ControlError:
-            return None
-        finally:
-            await client.close()
-        # The reply is a frozen ``JsonObject`` (a ``Mapping``, not a ``dict``) on the wire.
-        policy = response.get("policy")
-        if not isinstance(policy, Mapping):
-            return None
-        return cast(Mapping[str, object], policy).get("network_egress_permitted") is not True
-
-    with selection_override(None):
-        if not _everyday_installation_exists():
-            return False
-        try:
-            request = machine_scope_request()
-        except MachineScopeError:
-            answer = None
-        else:
-            answer = anyio.run(effective, request)
-    if answer is None:
+    state = everyday_network_state()
+    if state == "unreadable":
         raise ServerCommandRefused("network_policy_unreadable")
-    return answer
+    return state == "zero_network"
 
 
 def _confirm_on_trusted_console(name: str, kind: str) -> None:
@@ -797,11 +736,31 @@ def render_target_rows(rows: tuple[TargetRow, ...], source: str) -> tuple[str, .
     return tuple(lines)
 
 
+def _show_zero_network_item(*, machine_readable: bool) -> None:
+    """Say so while this computer forbids network use and a remote server is selected.
+
+    ADR-051 decision 8 (maintainer decision, 2026-11-06): the zero-network setting does not stop
+    traffic to a server already selected, so the owner displays name it and the way out. Fixed
+    text, a generated id and closed tokens only; on standard error beside a JSON answer.
+    """
+
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    item = find_zero_network_selection()
+    if item is None:
+        return
+    if machine_readable:
+        typer.echo(item.line(), err=True)
+        return
+    _emit((*item.lines(), ""))
+
+
 @server_app.command("list")
 @_cli
 def server_list() -> None:
     """List server targets; the selected one is marked with *."""
 
+    _show_zero_network_item(machine_readable=False)
     rows, source = target_rows()
     _emit(render_target_rows(rows, source))
 
@@ -1007,6 +966,7 @@ def server_status(
 ) -> None:
     """Show which source decides the server, the target, and one probe of it."""
 
+    _show_zero_network_item(machine_readable=json_output or not sys.stdout.isatty())
     document = build_status_document(name)
     if json_output or not sys.stdout.isatty():
         sys.stdout.buffer.write(canonical_encode(cast(JsonValue, document)) + b"\n")

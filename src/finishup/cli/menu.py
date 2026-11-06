@@ -193,6 +193,8 @@ class _Overview:
     service_line: str
     harness_lines: tuple[str, ...]
     setup_line: str
+    # ADR-051 decision 8: a remote server still selected while this computer forbids network use.
+    server_lines: tuple[str, ...] = ()
 
 
 async def _service_summary() -> str:
@@ -267,10 +269,14 @@ def _gather_overview() -> _Overview:
 
     run_async(collect)
     setup_line = "complete" if setup_marker_present() else "not completed — option 2 runs it"
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    zero_network = find_zero_network_selection()
     return _Overview(
         service_line=cast(str, lines["service"]),
         harness_lines=cast(tuple[str, ...], lines["harness"]),
         setup_line=setup_line,
+        server_lines=() if zero_network is None else zero_network.lines(),
     )
 
 
@@ -282,6 +288,8 @@ def _print_home(overview: _Overview) -> None:
     for line in overview.harness_lines:
         typer.echo(f"  Harness    {line}")
     typer.echo(f"  First-run  {overview.setup_line}")
+    for line in overview.server_lines:
+        typer.echo(f"  Server     {line}")
     typer.echo("")
     typer.echo("  1  Refresh status      re-probe the summary above")
     typer.echo("  2  Setup wizard        guided harness discovery and MCP registration")
