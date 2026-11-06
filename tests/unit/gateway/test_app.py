@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -61,6 +61,7 @@ class _Gateway:
     agent_key: str
     operator_key: str
     served: list[asyncio.Task[None]] = field(default_factory=list[asyncio.Task[None]])
+    app: object = None
 
     def headers(self, key: str | None = None, **extra: str) -> dict[str, str]:
         return {
@@ -96,7 +97,7 @@ async def _gateway(home: Path, **options: object) -> _Gateway:
         **options,  # type: ignore[arg-type]
     )
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE)
-    return _Gateway(state, client, daemon, audit, keys, agent_key, operator_key, served)
+    return _Gateway(state, client, daemon, audit, keys, agent_key, operator_key, served, app)
 
 
 @pytest.fixture
@@ -413,6 +414,33 @@ async def test_a_cancel_that_overtook_its_call_follows_it_to_the_daemon(gateway:
 
 
 @pytest.mark.anyio
+async def test_a_cancel_naming_no_active_call_is_acknowledged_and_never_forwarded(
+    gateway: _Gateway,
+) -> None:
+    # The daemon closes the whole connection on a cancel naming no active call, so a cancel for a
+    # call it already answered, or for one it never had, never reaches it.
+    sid = await _open(gateway)
+    answered = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
+    )
+    assert answered.status_code == 200
+    for target in (7, 0x7777):
+        response = await gateway.client.post(
+            f"/v1/sessions/{sid}/cancel",
+            content=_cancel(target, 0x7000 + target),
+            headers=gateway.headers(),
+        )
+        assert response.status_code == 202
+    # The session still serves calls; the daemon reads in order, so by this call's answer it has
+    # read anything forwarded before it.
+    later = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(8), headers=gateway.headers()
+    )
+    assert later.status_code == 200
+    assert not [frame for frame in gateway.daemon.received() if b'"kind":"cancel"' in frame]
+
+
+@pytest.mark.anyio
 async def test_server_frames_long_poll_and_replies_reach_the_daemon(gateway: _Gateway) -> None:
     sid = await _open(gateway, agent=True)
     empty = await gateway.client.get(
@@ -496,6 +524,81 @@ async def test_idle_sessions_expire_and_close_their_upstream(home: Path) -> None
             await asyncio.gather(*built.served)
     finally:
         await built.client.aclose()
+
+
+@pytest.mark.anyio
+async def test_an_agent_session_whose_client_stopped_polling_is_closed(gateway: _Gateway) -> None:
+    from finishup.gateway.sessions import AGENT_POLL_GRACE_SECONDS
+
+    key_id = gateway.agent_key.split("_")[1]
+    dead = await _open(gateway, agent=True)
+    alive = await _open(gateway, agent=True)
+    plain = await _open(gateway)
+    sessions = gateway.state.sessions
+    for sid in (dead, alive, plain):
+        held = sessions.get(sid, key_id)
+        assert held is not None
+        # Quiet for longer than the grace, as a client that died without DELETE leaves it.
+        held.poll_started -= AGENT_POLL_GRACE_SECONDS + 1.0
+    # A live agent client keeps its frames long-poll going; a poll that began restarts the grace.
+    polled = await gateway.client.get(
+        f"/v1/sessions/{alive}/frames?wait_ms=0", headers=gateway.headers()
+    )
+    assert polled.status_code == 204
+    await gateway.state.sweep()
+    # The dead agent session is closed (its upstream too, so the daemon unregisters the agent);
+    # the polling one and the session without an agent are untouched.
+    assert sessions.get(dead, key_id) is None
+    assert sessions.get(alive, key_id) is not None
+    assert sessions.get(plain, key_id) is not None
+    response = await gateway.client.post(
+        f"/v1/sessions/{dead}/calls?wait_ms=0", content=_call(9), headers=gateway.headers()
+    )
+    assert response.status_code == 404 and _reason(response) == "session_unknown"
+
+
+@pytest.mark.anyio
+async def test_a_session_whose_client_left_during_the_hello_is_never_kept(
+    gateway: _Gateway,
+) -> None:
+    # The client gave up while the daemon started or answered: nobody can learn the session id.
+    body = _hello(agent=True)
+    inbound: list[dict[str, object]] = [{"type": "http.request", "body": body, "more_body": False}]
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return inbound.pop(0) if inbound else {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/v1/sessions",
+        "raw_path": b"/v1/sessions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"gw.example"),
+            (b"authorization", f"Bearer {gateway.agent_key}".encode("ascii")),
+            (b"finishup-binding", b"1.0"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("gw.example", 443),
+        "client": ("127.0.0.1", 40_000),
+    }
+    app = cast(Any, gateway.app)
+    await app(scope, receive, send)
+    assert len(gateway.state.sessions) == 0
+    assert sent[0]["status"] == 503
+    # The daemon saw the hello, and its connection was closed with the session.
+    assert gateway.daemon.connections == 1
+    async with asyncio.timeout(5):
+        await asyncio.gather(*gateway.served)
 
 
 @pytest.mark.anyio

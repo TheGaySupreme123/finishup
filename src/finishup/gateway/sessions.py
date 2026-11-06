@@ -21,7 +21,10 @@ right after its call.
 
 A session ends when its upstream closes, when its key no longer authenticates, after
 ``SESSION_IDLE_SECONDS`` without a request (closing the upstream so the daemon's idle relock and
-idle stop still work), or on ``DELETE``.
+idle stop still work), or on ``DELETE``. A session whose hello declared a workspace agent also
+ends once no ``GET …/frames`` long-poll has begun for ``AGENT_POLL_GRACE_SECONDS``: its client
+keeps one going while it lives, so a client that died without ``DELETE`` stops being the agent
+the daemon routes workspace calls to well before the idle bound.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from typing import Final
 
 from finishup.protocol.rest_binding import (
     MAX_SESSIONS_PER_KEY,
+    MAX_WAIT_MS,
     SESSION_IDLE_SECONDS,
     KeyScope,
 )
@@ -52,6 +56,7 @@ from finishup.service.control_protocol import (
 )
 
 __all__ = [
+    "AGENT_POLL_GRACE_SECONDS",
     "GatewaySession",
     "SessionLimit",
     "SessionRegistry",
@@ -64,6 +69,9 @@ _DELIVERED_MEMORY: Final = 1_024
 # whose answer was lost in transit can fetch it by polling instead of posting the call again.
 _RETAIN_SECONDS: Final = 60.0
 _RETAIN_BYTES: Final = 8 * 1_048_576
+# A live agent client begins a frames long-poll at least every ``MAX_WAIT_MS``; this adds room for
+# a slow round trip and a fresh TLS connection.
+AGENT_POLL_GRACE_SECONDS: Final = MAX_WAIT_MS / 1_000 + 15.0
 
 
 type UpstreamStream = ControlStream
@@ -90,6 +98,8 @@ class GatewaySession:
     service_instance_id: str
     service_generation: str
     last_seen: float = field(default_factory=time.monotonic)
+    # When the latest ``GET …/frames`` long-poll began (the session's creation before the first).
+    poll_started: float = field(default_factory=time.monotonic)
     closed: asyncio.Event = field(default_factory=asyncio.Event)
     _results: dict[str, asyncio.Future[bytes]] = field(
         default_factory=dict[str, "asyncio.Future[bytes]"]
@@ -110,6 +120,11 @@ class GatewaySession:
 
     def touch(self) -> None:
         self.last_seen = time.monotonic()
+
+    def agent_lapsed(self, now: float, grace: float) -> bool:
+        """Whether this agent session's client stopped polling for server frames (it died)."""
+
+        return self.agent and now - self.poll_started >= grace
 
     def start(self) -> None:
         self._reader = asyncio.create_task(self._read_upstream())
@@ -241,6 +256,7 @@ class GatewaySession:
     async def next_frame(self, seconds: float) -> bytes | None:
         """The next server frame (``workspace_call``), or ``None`` after ``seconds``."""
 
+        self.poll_started = time.monotonic()
         with contextlib.suppress(asyncio.QueueEmpty):
             return self._frames.get_nowait()
         getter = asyncio.ensure_future(self._frames.get())
@@ -290,10 +306,12 @@ class SessionRegistry:
         *,
         idle_seconds: float = SESSION_IDLE_SECONDS,
         per_key: int = MAX_SESSIONS_PER_KEY,
+        agent_poll_grace_seconds: float = AGENT_POLL_GRACE_SECONDS,
     ) -> None:
         self._connect = connect_upstream
         self._idle = idle_seconds
         self._per_key = per_key
+        self._agent_grace = agent_poll_grace_seconds
         self._sessions: dict[str, GatewaySession] = {}
         # Sessions being opened, per key: they count against the bound from before the first
         # await, so concurrent opens of one key cannot all pass it.
@@ -410,13 +428,16 @@ class SessionRegistry:
         return len(doomed)
 
     async def sweep(self) -> int:
-        """Close sessions idle past the bound or whose upstream ended; how many closed."""
+        """Close sessions idle past the bound, whose upstream ended, or whose agent client stopped
+        polling; how many closed."""
 
         now = time.monotonic()
         doomed = [
             sid
             for sid, session in self._sessions.items()
-            if session.closed.is_set() or now - session.last_seen >= self._idle
+            if session.closed.is_set()
+            or now - session.last_seen >= self._idle
+            or session.agent_lapsed(now, self._agent_grace)
         ]
         for sid in doomed:
             await self.close(sid)

@@ -618,7 +618,10 @@ through the same relay; human-control and secret channels never leave the server
   headers and locator hellos, enforces the key's scope (decision 9) by answering an out-of-scope
   call with a synthesized `method_forbidden` control-result that is never forwarded, keeps results
   per `(sid, rpc_id)` until fetched and readable for 60 seconds after (8 MiB per session), expires
-  a session after 120 seconds idle, holds at most 64 per key, and stops with `gateway_stale` when
+  a session after 120 seconds idle (an agent session also once no frames long-poll began for 40
+  seconds, so a client that died without `DELETE` stops being the agent workspace calls go to),
+  closes a session whose client left while its hello was held (a slow on-demand service start),
+  holds at most 64 per key, and stops with `gateway_stale` when
   the daemon answers with another release's manifest. `--behind-proxy` serves plain HTTP on a
   loopback address only. There is no access log; audit lines carry the key id, route, method,
   status, closed reason and correlation id only, and the audit is bounded (one rotation at 8 MiB;

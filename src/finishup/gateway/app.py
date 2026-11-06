@@ -401,6 +401,12 @@ class GatewayApp:
                 self._on_stale()
                 raise _Refused("service_unavailable")
             return _Answer(opened.status, opened.body)
+        if await request.is_disconnected():
+            # The client gave up while the daemon started or answered (a slow service start):
+            # nobody can learn this session's id, so it must not hold a session or keep the
+            # daemon's idle relock away until it expires.
+            await self.sessions.close(opened.session.sid)
+            raise _Refused("service_unavailable")
         return _Answer(201, opened.body, location=f"/v1/sessions/{opened.session.sid}")
 
     async def call(self, request: Request, key: GatewayKey) -> _Answer:

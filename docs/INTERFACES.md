@@ -4951,7 +4951,12 @@ an HTTP body to its frame bytes; where this table and those artifacts differ, th
 | `DELETE /v1/sessions/{sid}` | none | `204`; closes the session's one upstream control connection |
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
-expires after 120 seconds idle, and one key holds at most 64 sessions. Delivery is at most once: a
+expires after 120 seconds idle, and one key holds at most 64 sessions. A session whose hello
+declared `workspace_agent` also ends once no `GET …/frames` long-poll has begun for 40 seconds
+(`AGENT_POLL_GRACE_SECONDS`, the 25-second wait plus a margin), so a client that died without
+`DELETE` stops being the agent the daemon routes workspace calls to. The gateway starts an
+idle-stopped service while it holds `POST /v1/sessions`; when the client left before that answer,
+the session is closed at once instead of being kept. Delivery is at most once: a
 call is forwarded once per `(sid, rpc_id)`; a repeated post of a pending `rpc_id` waits on the same
 result, and a post of an `rpc_id` already delivered is `frame_invalid`. A result stays readable by
 `GET …/results/{rpc_id}` until it is fetched and for 60 seconds after (at most 8 MiB per session),
