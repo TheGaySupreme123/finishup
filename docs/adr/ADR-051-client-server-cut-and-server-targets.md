@@ -260,7 +260,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   directories — its own FinishUP directories and the everyday installation's under both
   application names — whatever the server excludes. The agent refuses unknown operations and
   never runs a command that did not come from the repository's owner-approved
-  `.finishup/checks.toml` (`check_not_approved`). HOME decisions are made by the agent on the
+  `.finishup/checks.toml` (`check_not_approved`): the policy must approve the exact argv, and the
+  owner must have trusted that policy's raw digest in this client's own observation store, checked
+  on every call, so a misbehaving server cannot run an untrusted or edited policy. HOME decisions are made by the agent on the
   client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,
   and change capture's own reasons keep their exact `ChangeCaptureUnavailable` tokens.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a

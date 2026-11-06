@@ -221,6 +221,7 @@ class WorkspaceAgentHandler:
 
     __slots__ = (
         "_capture",
+        "_check_policy_trust",
         "_declaration",
         "_inspect",
         "_opened",
@@ -241,12 +242,15 @@ class WorkspaceAgentHandler:
         operations: Iterable[str] | None = None,
         max_reply_bytes: int = MAX_WORKSPACE_FRAME_BYTES,
         check_sandbox: CheckSandboxPort | None = None,
+        check_policy_trust: Callable[[str], bool] | None = None,
     ) -> None:
         """``workspace`` is the locator the connection's claim was computed from.
 
         ``protected`` defaults to ``client_protected_directories()``; ``operations`` to the whole
         catalog. ``check_sandbox`` replaces the platform's network-denying sandbox only where a
-        caller supplies an equally enforcing one.
+        caller supplies an equally enforcing one. ``check_policy_trust`` answers whether this
+        client's owner trusted a check policy's raw digest; by default this process's own
+        observation store answers (``client.observation_outbox.check_policy_trusted``).
         """
 
         if type(workspace) is not WorkspaceLocator:
@@ -273,6 +277,9 @@ class WorkspaceAgentHandler:
         self._subject_state = GitSubjectStateAdapter()
         self._inspect = LocalWorkspaceInspectAdapter()
         self._sandbox = check_sandbox
+        # Whether this client's owner trusted a check policy's raw digest (ADR-051 decision 12);
+        # None reads this process's own observation store, where 'observe checks trust' records it.
+        self._check_policy_trust = check_policy_trust
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -587,8 +594,15 @@ class WorkspaceAgentHandler:
             )
         )
 
+    def _policy_trusted(self, policy_digest: str) -> bool:
+        if self._check_policy_trust is not None:
+            return self._check_policy_trust(policy_digest)
+        from finishup.client.observation_outbox import check_policy_trusted
+
+        return check_policy_trusted(self._root, policy_digest)
+
     def _run_approved_check(self, arguments: RunApprovedCheckArguments, _call: _Call) -> object:
-        """Run one argv only when this repository's own policy approves exactly it."""
+        """Run one argv only when the policy the owner trusted on this client approves exactly it."""
 
         workspace = self._opened_workspace(arguments.handle)
         try:
@@ -599,7 +613,9 @@ class WorkspaceAgentHandler:
             # No policy, or one that does not parse, approves nothing.
             raise _Outcome("check_not_approved") from None
         approval = arguments.approval
-        if approval not in policy.checks:
+        # The owner's trust of this exact policy lives on this client (ADR-051 decision 12), never
+        # on the server: an untrusted or edited policy approves nothing, whatever the server asks.
+        if approval not in policy.checks or not self._policy_trusted(policy.raw_digest):
             raise _Outcome("check_not_approved")
         captured: list[tuple[bytes, bool]] = []
         runner = ApprovedCheckRunner(

@@ -4643,7 +4643,10 @@ worker thread. Its confinement rules:
   the `finishup` and the legacy `yoetz` name — so a selected or isolated root never makes those
   readable.
 - `run_approved_check` runs only when the repository's own `.finishup/checks.toml` approves
-  exactly the requested argv (`check_not_approved` otherwise). HOME decisions use this machine's
+  exactly the requested argv and this client's owner trusted that policy's exact raw digest in the
+  client's observation store (`finishup observe checks trust`; checked on every call through
+  `client.observation_outbox.check_policy_trusted`, so a revoke takes effect at once);
+  `check_not_approved` otherwise, whatever the server asked. HOME decisions use this machine's
   home directory, never the server's.
 - Unknown operations are refused; logs carry closed tokens only, never a path, argument or output.
 

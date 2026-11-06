@@ -9,6 +9,7 @@ checks only from the repository's own policy, and closed reasons for everything 
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -712,11 +713,33 @@ def _echo_approval() -> ApprovedCheckApproval:
     )
 
 
+def _trust_policy(repository: Path) -> None:
+    """``finishup observe checks trust`` on this client: trust the policy's exact raw digest."""
+
+    from finishup.adapters.integrations.observation_local import LocalObservationStore
+    from finishup.application.observation_check_policy import load_observation_check_policy
+
+    policy, _raw = load_observation_check_policy(repository)
+    store = LocalObservationStore()
+    store.trust_policy_digest(store.workspace_commitment(os.fspath(repository)), policy.raw_digest)
+
+
+@pytest.fixture
+def client_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This client's own state (its observation store) in a private folder for the test."""
+
+    state = tmp_path / "client-state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_STATE_HOME", os.fspath(state))
+    return state
+
+
 def test_an_approved_check_runs_as_the_local_runner_runs_it(
-    repository: Path, protected: Path
+    repository: Path, protected: Path, client_state: Path
 ) -> None:
     (repository / ".finishup").mkdir()
     (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    _trust_policy(repository)
     handler = _handler(repository, protected)
     opened = _open(handler)
     approval = _echo_approval()
@@ -793,6 +816,51 @@ def test_a_check_the_repository_policy_does_not_approve_never_runs(
         WorkspaceOperation.RUN_APPROVED_CHECK,
         RunApprovedCheckArguments(opened, forged, digest),
     ) == ("refused", "check_not_approved")
+    assert not marker.exists()
+
+
+def test_a_policy_the_owner_did_not_trust_here_runs_nothing(
+    repository: Path, protected: Path, tmp_path: Path, client_state: Path
+) -> None:
+    """ADR-051 decision 12: the client's own trust decides, whatever a server asks."""
+
+    marker = tmp_path / "ran"
+    touch = shutil.which("touch", path=os.defpath) or "/usr/bin/touch"
+    argv = (touch, os.fspath(marker))
+    approval = ApprovedCheckApproval(
+        approval_id="mark",
+        argv=argv,
+        allow_network=False,
+        timeout_seconds=10.0,
+        approval_commitment=approval_commitment("mark", argv, allow_network=False),
+    )
+    policy = (
+        'format = "yoetz.approved-check-policy/1"\n\n'
+        "[[checks]]\n"
+        'id = "mark"\n'
+        f"argv = [{json.dumps(touch)}, {json.dumps(os.fspath(marker))}]\n"
+        "network = false\n"
+    )
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    handler = _handler(repository, protected)
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    run = RunApprovedCheckArguments(opened, approval, digest, digest)
+
+    # The repository's policy approves the argv, but nobody trusted it on this client.
+    assert _refused(handler, WorkspaceOperation.RUN_APPROVED_CHECK, run) == (
+        "refused",
+        "check_not_approved",
+    )
+    # Trust recorded for an earlier policy does not carry over to an edited one.
+    (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    _trust_policy(repository)
+    (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    assert _refused(handler, WorkspaceOperation.RUN_APPROVED_CHECK, run) == (
+        "refused",
+        "check_not_approved",
+    )
     assert not marker.exists()
 
 
@@ -888,3 +956,33 @@ def test_an_exclusion_closed_to_this_account_is_dropped_and_the_rest_kept(
         ),
     )
     assert seen == [(os.fspath(repository), "/srv/kept", os.fspath(protected))]
+
+
+def test_an_injected_trust_source_is_asked_for_the_exact_policy_digest(
+    repository: Path, protected: Path
+) -> None:
+    from finishup.application.observation_check_policy import load_observation_check_policy
+
+    (repository / ".finishup").mkdir()
+    (repository / ".finishup" / "checks.toml").write_text(_POLICY, encoding="utf-8")
+    asked: list[str] = []
+
+    def untrusted(digest: str) -> bool:
+        asked.append(digest)
+        return False
+
+    handler = WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        check_sandbox=_ReadySandbox(),
+        check_policy_trust=untrusted,
+    )
+    opened = _open(handler)
+    digest = "sha256:" + "a" * 64
+    assert _refused(
+        handler,
+        WorkspaceOperation.RUN_APPROVED_CHECK,
+        RunApprovedCheckArguments(opened, _echo_approval(), digest, digest),
+    ) == ("refused", "check_not_approved")
+    policy, _raw = load_observation_check_policy(repository)
+    assert asked == [policy.raw_digest]
