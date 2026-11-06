@@ -746,8 +746,13 @@ async def _review(
     monkeypatch: pytest.MonkeyPatch,
     hub: WorkspaceAgentHub,
     *replies: Any,  # noqa: ANN401
+    handle: str = _HANDLE,
 ) -> tuple[Any, Any]:  # noqa: ANN401
-    """The reviewer composition suite's harness, with a claim-bound workspace (ADR-051)."""
+    """The reviewer composition suite's harness, with a claim-bound workspace (ADR-051).
+
+    ``handle`` names the claimed workspace; an approach's topology test passes the handle its
+    real connection was given.
+    """
 
     from types import SimpleNamespace
 
@@ -762,7 +767,7 @@ async def _review(
     from integration.service import test_semantic_non_dispatch as non_dispatch
 
     async def workspace_root(_runtime: object) -> str:
-        return _HANDLE
+        return handle
 
     monkeypatch.setattr(ready_composition_module, "_workspace_root_for_runtime", workspace_root)
     adapter = sqlite_adapter(append_command())
@@ -806,7 +811,7 @@ async def _review(
         workspace_routing=routing,
     )
     # The check's own connection bound this claim, so the check-time change is the agent's too.
-    source = CheckWorkspaceSource(_HANDLE, non_dispatch._REPOSITORY)  # pyright: ignore[reportPrivateUsage]
+    source = CheckWorkspaceSource(handle, non_dispatch._REPOSITORY)  # pyright: ignore[reportPrivateUsage]
     with check_workspace_source_scope(source):
         return await evaluator(frozen, (), runtime), gateway
 
