@@ -394,6 +394,13 @@ _SOFT_REREADY_ACTIVATION_RETRY_LIMIT: Final = 3
 # activation lock and UNLOCKING, and the next request tries again. The 5-second handshake deadline
 # would be too short: a slow but healthy activation could then never finish.
 _SOFT_REREADY_DEADLINE_SECONDS: Final = 30.0
+# How long a passphrase rotation's open waits for a staged-slot reconcile still running (#492
+# review). A healthy reconcile is a few credential-store calls, so the open normally proceeds
+# once it returned; one still running past this bound is a store that does not answer, and the
+# open is refused instead. The budget is the handshake deadline's: a claim hello waits the same
+# 5 seconds for the re-ready that started the reconcile. The human-control mutex is held while the
+# open waits, so another open, or shutdown closing the ceremony service, waits at most this long.
+_ROTATION_RECONCILE_WAIT_SECONDS: Final = _CONTROL_HANDSHAKE_DEADLINE_SECONDS
 # Response-frame send must complete within this wall-clock window. A stalled peer that stops
 # reading cannot retain an in-flight entry in ``calls`` (and thus the inactive-session exemption)
 # indefinitely via write backpressure on sock_sendall.
@@ -846,6 +853,40 @@ class _PrivacyPolicyAppRelay:
         return getter()
 
 
+class _StagedReconcileTracker:
+    """The staged-slot reconcile a soft re-ready started, while it runs (#492 review).
+
+    The daemon records it here and lets activation go on without it; the human effects read it,
+    so a passphrase rotation does not open beside it. The reconcile discards a staged rotation
+    entry it finds, and the trusted helper stages its replacement there once the rotation opened:
+    beside a reconcile, the rewrap could outlive that entry and leave the active one stale.
+    """
+
+    __slots__ = ("current",)
+
+    def __init__(self) -> None:
+        self.current: asyncio.Future[None] | None = None
+
+    def outstanding(self) -> bool:
+        current = self.current
+        return current is not None and not current.done()
+
+    async def returned_within(self, seconds: float) -> bool:
+        """Wait up to ``seconds`` for the reconcile, and any started meanwhile, to return.
+
+        Returns at once when none runs. The deadline ends only the wait: the reconcile runs on in
+        its worker thread. On True, nothing awaits between the last check and the return.
+        """
+
+        try:
+            async with asyncio.timeout(seconds):
+                while (current := self.current) is not None and not current.done():
+                    await asyncio.wait((current,))
+        except TimeoutError:
+            return False
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceComposition:
     """One generation's service-owned components, redacted by construction."""
@@ -869,6 +910,11 @@ class ServiceComposition:
     privacy_policy_app_relay: _PrivacyPolicyAppRelay | None = None
     auto_unlock_reason: str = "none"
     auto_unlock_bundle: Path | None = None
+    # The soft re-ready's staged-slot reconcile while it runs; a passphrase rotation does not
+    # open beside it. Shared with the human effects, which compose before the daemon.
+    staged_reconcile: _StagedReconcileTracker = field(
+        default_factory=_StagedReconcileTracker, repr=False
+    )
     # Where the per-session MCP serving route is remembered (#985); ``None`` keeps it in memory.
     session_route_path: Path | None = None
     maintenance_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -939,8 +985,9 @@ class ServiceDaemon:
         # answers pins one worker thread, not one more per retry.
         self._outstanding_auto_unlock_store_call: asyncio.Future[Any] | None = None
         # The staged-slot reconcile a re-ready started once the vault opened, while it still
-        # runs. That attempt never waits for it; the next attempt does, before it reads.
-        self._staged_reconcile: asyncio.Future[None] | None = None
+        # runs. That attempt never waits for it; the next attempt does, before it reads, and a
+        # passphrase rotation does not open beside it.
+        self._staged_reconcile = _composition.staged_reconcile
         self._stop_event = asyncio.Event()
         # ``serve`` owns the accept loops; a daemon driven by ``start`` alone never serves and
         # must never wait on an event nothing will set.
@@ -3220,6 +3267,11 @@ class ServiceDaemon:
         a lock's cancel, or relock the ready vault (#492 review). It stays the re-ready's store
         call until it returns: the next attempt waits for it before reading, so a read never
         overlaps it and no second store call starts beside it.
+
+        The caller starts it in the same step its unlock returned in, so a passphrase rotation,
+        which opens only on a ready vault, never opens before it is recorded and does not open
+        while it runs. None starts while a rotation is open: only an unlock starts one, and the
+        lock before it ends that ceremony as stale.
         """
 
         reconcile = asyncio.get_running_loop().run_in_executor(
@@ -3227,12 +3279,12 @@ class ServiceDaemon:
             contextvars.copy_context().run,
             functools.partial(_reconcile_staged_slots, store, accepted_slot),
         )
-        self._staged_reconcile = reconcile
+        self._staged_reconcile.current = reconcile
         reconcile.add_done_callback(self._settle_staged_reconcile)
 
     def _settle_staged_reconcile(self, reconcile: asyncio.Future[None]) -> None:
-        if self._staged_reconcile is reconcile:
-            self._staged_reconcile = None
+        if self._staged_reconcile.current is reconcile:
+            self._staged_reconcile.current = None
         if not reconcile.cancelled() and reconcile.exception() is not None:
             get_logger("service.daemon").warning(
                 "auto_unlock",
@@ -3248,7 +3300,7 @@ class ServiceDaemon:
         store call.
         """
 
-        reconcile = self._staged_reconcile
+        reconcile = self._staged_reconcile.current
         if reconcile is None or reconcile.done():
             return
         with contextlib.suppress(Exception):
@@ -3319,7 +3371,9 @@ class ServiceDaemon:
         # The vault is ready from here on. Reconciling the staged keyring entries is
         # credential-store hygiene only: a promote/discard failure, or a store that never
         # answers it, must never relock a ready vault, so it runs on its own while activation
-        # continues, and its failure is logged (#492 review).
+        # continues, and its failure is logged (#492 review). Nothing awaits between the unlock
+        # and this call: a passphrase rotation must see the reconcile from the moment the vault
+        # is ready.
         self._start_staged_reconcile(store, accepted_slot)
         if not vault.ready:
             self._state_reason = "unlock_failed"
@@ -4131,6 +4185,7 @@ class _LockedHumanEffects:
         maintenance_gate: asyncio.Lock | None = None,
         observation_gate: asyncio.Lock | None = None,
         owner_view_grants: OwnerViewGrants | None = None,
+        staged_reconcile: _StagedReconcileTracker | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._vault = vault
@@ -4140,6 +4195,9 @@ class _LockedHumanEffects:
         self._unlock = unlock
         self._maintenance_gate = maintenance_gate or asyncio.Lock()
         self._observation_gate = observation_gate or asyncio.Lock()
+        self._staged_reconcile = (
+            staged_reconcile if staged_reconcile is not None else _StagedReconcileTracker()
+        )
         self._maintenance_request_id: str | None = None
         self._prepared_recovery_snapshots: dict[str, PreparedInstallationSnapshot] = {}
         self._prepared_root_rotations: dict[str, Path] = {}
@@ -4189,6 +4247,26 @@ class _LockedHumanEffects:
             if request.ceremony_kind is HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE:
                 if not self._vault.ready or mode != "passphrase":
                     raise HumanControlError("state_forbidden")
+                # A soft re-ready's staged-slot reconcile may still run beside the open vault. It
+                # discards a staged rotation entry it finds, and the trusted helper stages this
+                # rotation's replacement there once the rotation opened: opened beside it, the
+                # rewrap could outlive that entry and leave the active one stale (#492 review).
+                # The open waits for it briefly, since a healthy one returns in moments; one
+                # still running at the deadline is a store that does not answer, and the open is
+                # refused rather than held. The released ceremony vocabulary has no closer code
+                # than ``state_forbidden``: the trusted helper, which can see the vault is open,
+                # tells the owner what happened and to try again.
+                if not await self._staged_reconcile.returned_within(
+                    _ROTATION_RECONCILE_WAIT_SECONDS
+                ):
+                    get_logger("service.daemon").warning(
+                        "vault_passphrase_rotate",
+                        outcome="refused",
+                        reason="staged_reconcile_outstanding",
+                    )
+                    raise HumanControlError("state_forbidden")
+                if not self._vault.ready or self._vault.mode.value != "passphrase":
+                    raise HumanControlError("state_forbidden")  # locked while the open waited
                 return VaultPassphraseRotatePreview(), digest, None
             if request.ceremony_kind is HumanCeremonyKind.KEYRING_RETRY:
                 operation = "pristine_create" if mode == "uninitialized" else "existing_load"
@@ -5515,6 +5593,7 @@ async def _production_composition(
                 ),
             )
         )
+        staged_reconcile = _StagedReconcileTracker()
         unlock = UnlockCoordinator(
             clock=clock,
             throttle=throttle,
@@ -5550,6 +5629,7 @@ async def _production_composition(
                 maintenance_gate,
                 observation_gate,
                 owner_view_grants,
+                staged_reconcile,
             ),
             user_presence=user_presence,
             # Scoped to the owner's receipt view (ADR-009, ADR-016 decision 4): presence never
@@ -5579,6 +5659,7 @@ async def _production_composition(
             privacy_policy_app_relay=privacy_relay,
             auto_unlock_reason=auto_unlock_reason,
             auto_unlock_bundle=paths.bundle,
+            staged_reconcile=staged_reconcile,
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
             owner_view_grants=owner_view_grants,

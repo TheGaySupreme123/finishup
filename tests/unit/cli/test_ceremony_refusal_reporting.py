@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import typer
@@ -21,6 +23,12 @@ from finishup.cli.exits import ceremony_refusal_message, exit_code_for, remediat
 from finishup.cli.unlock import HumanCeremonyCliError
 from finishup.protocol.errors import PublicErrorCode
 from finishup.service.confidential_client import ConfidentialClientError
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
 
 _REFUSALS = (
     "ceremony_unsupported",
@@ -422,3 +430,141 @@ def test_reauthentication_recovery_includes_repository_privacy_and_rotation() ->
     assert "finishup --privacy" in message
     assert "finishup service rotate-passphrase" in message
     assert "finishup provider credential set" in message
+
+
+class _RefusingHumanControlClient:
+    """A service that answered the open and declined it with ``reason``."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    async def open(self, kind: object, target: object) -> object:
+        del kind, target
+        raise ConfidentialClientError(self.reason)
+
+
+async def _open_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    vault_open: bool,
+    replacement: bytearray | None = None,
+) -> list[bool]:
+    """Open a passphrase rotation the service refuses as ``state_forbidden``."""
+
+    from finishup.cli import unlock
+    from finishup.service.confidential_protocol import EmptyVaultTarget, HumanCeremonyKind
+
+    probes: list[bool] = []
+
+    async def probe() -> bool:
+        probes.append(vault_open)
+        return vault_open
+
+    monkeypatch.setattr(unlock, "_service_reports_ready_passphrase_vault", probe)
+    await unlock._complete_human_ceremony(
+        cast(Any, _RefusingHumanControlClient("state_forbidden")),
+        cast(Any, None),
+        HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE,
+        EmptyVaultTarget(expected_mode="passphrase"),
+        None,
+        None,
+        None,
+        None,
+        replacement,
+    )
+    return probes
+
+
+@pytest.mark.anyio
+async def test_a_rotation_refused_while_the_vault_is_open_says_why_and_to_try_again(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The service refuses a rotation's open as ``state_forbidden`` while the credential-store
+    # check after its last unlock still runs (#492 review). The wire code is released and would
+    # print "the vault must be unlocked", which is false then: the helper sees the vault open.
+    with pytest.raises(HumanCeremonyCliError) as refused:
+        await _open_rotation(monkeypatch, vault_open=True)
+    assert refused.value.reason == "credential_store_check_in_progress"
+
+    code = _trusted_exception_failure(refused.value)
+
+    captured = capsys.readouterr().err
+    assert captured.startswith(
+        "credential_store_check_in_progress: the vault is open, but the service is still "
+        "finishing a credential-store check from its last unlock"
+    )
+    assert "nothing was stored; try again in a moment" in captured
+    assert "Continuation: ceremony_retry_shortly" in captured
+    assert "must be unlocked" not in captured
+    assert "service_unavailable" not in captured
+    assert code == exit_code_for(PublicErrorCode.INVALID_REQUEST)
+
+
+@pytest.mark.anyio
+async def test_a_rotation_refused_on_a_locked_vault_still_names_the_unlock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ConfidentialClientError) as refused:
+        await _open_rotation(monkeypatch, vault_open=False)
+    assert refused.value.reason == "state_forbidden"
+
+
+@pytest.mark.anyio
+async def test_a_generated_rotation_keeps_the_refusal_it_was_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The generated rotation staged its replacement before the open, so a retry is not simply
+    # safe there; it keeps the service's own code and never asks about the vault.
+    probes: list[bool] = []
+    with pytest.raises(ConfidentialClientError) as refused:
+        probes = await _open_rotation(
+            monkeypatch, vault_open=True, replacement=bytearray(b"generated-replacement!!")
+        )
+    assert refused.value.reason == "state_forbidden"
+    assert probes == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("state", "vault_mode", "expected"),
+    [
+        ("ready", "passphrase", True),
+        ("locked", "passphrase", False),
+        ("ready", "os_keyring", False),
+    ],
+)
+async def test_the_open_vault_probe_reads_the_service_status(
+    monkeypatch: pytest.MonkeyPatch, state: str, vault_mode: str, expected: bool
+) -> None:
+    from finishup.cli import unlock
+    from finishup.ports.control import ServiceState
+
+    class _Client:
+        async def service_status(self) -> object:
+            return SimpleNamespace(state=ServiceState(state), vault_mode=vault_mode)
+
+        async def close(self) -> None:
+            return None
+
+    async def connect(kind: object, **_kwargs: object) -> _Client:
+        del kind
+        return _Client()
+
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
+
+    assert await unlock._service_reports_ready_passphrase_vault() is expected
+
+
+@pytest.mark.anyio
+async def test_the_open_vault_probe_is_false_when_the_service_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.cli import unlock
+
+    async def connect(kind: object, **_kwargs: object) -> object:
+        del kind
+        raise OSError("no service")
+
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
+
+    assert await unlock._service_reports_ready_passphrase_vault() is False

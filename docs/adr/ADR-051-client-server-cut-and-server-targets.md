@@ -918,7 +918,13 @@ installation is never touched by a target operation.
   returns a stalled one to the soft lock for a later request to retry. The staged-slot reconcile
   after the vault opens is hygiene: it runs beside activation, outside that deadline and a
   lock's cancel, so it never relocks the open vault, and the next attempt waits for it before
-  reading. While a credential-store call an attempt gave up on (the scoped-entry read or that
+  reading. A passphrase rotation does not open while it runs, because it discards a staged
+  rotation entry it finds and the helper stages its replacement once the rotation opened: the
+  open waits up to the 5-second handshake budget for it, and only a store that does not answer
+  by then gets a refusal, which the helper reports as a credential-store check still running,
+  safe to retry. The generated rotation, which stages before it opens, stays a known limit
+  (INTERFACES). While a
+  credential-store call an attempt gave up on (the scoped-entry read or that
   reconcile) is still blocked in its worker thread, no attempt starts another, so a credential
   store that never answers holds one thread. The deadline bounds only what the attempt awaits: an
   `os_keyring` root-key read on the event loop, or an activation step that joins its worker

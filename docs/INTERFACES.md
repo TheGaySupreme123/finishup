@@ -4088,7 +4088,18 @@ reconcile that promotes or discards staged entries. The reconcile is hygiene: th
 to activation without waiting for it, so neither its failure (logged as `auto_unlock` outcome
 `degraded`, reason `staged_reconcile_failed`) nor a store that never answers it delays `ready` or
 relocks the vault. The next attempt waits for a reconcile still running before it reads, so a read
-never overlaps one. A lock or the deadline ends an attempt's wait for either call, not the thread.
+never overlaps one. A passphrase rotation does not open while a reconcile runs: the reconcile
+discards a staged rotation entry it finds, and the trusted helper stages its replacement once the
+rotation opened. The open waits up to 5 seconds (the handshake deadline) for it, without holding
+activation or the event loop, then proceeds; a reconcile still running then means a store that
+does not answer, and the open is refused as `state_forbidden` (logged as `vault_passphrase_rotate`
+outcome `refused`, reason `staged_reconcile_outstanding`). The released ceremony vocabulary has no
+closer code, so the interactive helper, which stages only after the open, checks the service
+status: with the vault open it reports the local reason `credential_store_check_in_progress`
+(continuation `ceremony_retry_shortly`: nothing changed, try again in a moment) on the CLI and in
+the terminal interface instead of the unlock advice. None starts while a rotation is open: only an
+unlock starts one, and the lock before it ends the ceremony. A lock or the deadline ends an
+attempt's wait for either call, not the thread.
 Until a call an attempt stopped waiting for returns, no attempt starts another store call; requests
 meanwhile are answered as locked at once, keeping the soft-lock reason, so a credential store that
 never answers holds one worker thread however often requests retry, and the candidates a read
@@ -4153,7 +4164,18 @@ uninitialized vault). CLI-side staging, promotion, and proof-based discard seria
 bundle-scoped advisory lock held by the initializing process for its whole
 stage→ceremony→promote span and re-checked by discard-only callers while held, so a stale status
 read can never delete a credential whose vault commit is in flight, and generated-passphrase
-installations cannot be stranded. Because trusted initialization may run before any service start
+installations cannot be stranded. That lock covers initialization only. Known limit: rotation
+staging and promotion run in the trusted helper's process under no lock the service's reconcile
+honours, so the accepting unlock's proof does not cover a rotation in flight there. The generated
+rotation (`vault_passphrase_rotate`, ADR-015) stages its replacement before it opens the ceremony;
+a reconcile at service start or after a soft re-ready that reads that entry and returns before the
+ceremony opens discards it, the rewrap still goes through, the helper's promotion fails with
+`missing`, and no stored entry opens the vault. An interactive rotation stages only after the
+service admitted the ceremony, which the soft re-ready rule above keeps clear of a reconcile. A
+generated rotation refused at open keeps the bare `ceremony_state_forbidden`: its replacement is
+already staged, and a retry can be refused as `auto_unlock_entry_exists` until a reconcile clears
+it.
+Because trusted initialization may run before any service start
 has created the bundle root (issue #565), the guard first creates exactly that root, owner-only and
 only when its parent already exists, then verifies the path symlink-free, owned, and owner-only with
 the same helper the service uses; it never creates anything outside the selected bundle. Guard

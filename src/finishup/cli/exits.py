@@ -216,6 +216,12 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
             "tty, in the foreground process group). From an agent session run "
             "'finishup consent prepare <operation>' then 'finishup consent authorize' instead"
         ),
+        # A passphrase rotation refused at open while the vault is open (#492 review).
+        "credential_store_check_in_progress": (
+            "the vault is open, but the service is still finishing a credential-store check from "
+            "its last unlock, so the passphrase was not changed and nothing was stored; try again "
+            "in a moment"
+        ),
         "human_authority_unavailable": (
             "no verified foreground console was found for this review; run "
             "'finishup consent review' directly on a local terminal"
