@@ -1007,6 +1007,7 @@ def test_a_check_longer_than_its_call_ends_as_a_timeout_the_server_still_receive
     approval, policy = _sleep_approval(300.0)
     (repository / ".finishup").mkdir()
     (repository / ".finishup" / "checks.toml").write_text(policy, encoding="utf-8")
+    _trust_policy(repository)
     handler = _handler(repository, protected)
     opened = _open(handler)
     digest = "sha256:" + "a" * 64
