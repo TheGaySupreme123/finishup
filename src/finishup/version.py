@@ -139,7 +139,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # ADR-051 decision 12: +1 canonical vector (CTL-2106, a claim-bound observation ingest carrying
 # the client's attestation).
 # +1 schema: version manifest 2.4.0 reports this inventory; v0.3.0's 2.3.0 stays frozen.
-REVIEWED_RESOURCE_COUNT: Final = 356
+# +1 schema: yoetz-config 1.4.0 carries the [network] table; v0.3.0's 1.3.0 stays frozen.
+REVIEWED_RESOURCE_COUNT: Final = 357
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",

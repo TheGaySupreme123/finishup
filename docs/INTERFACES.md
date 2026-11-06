@@ -4932,7 +4932,7 @@ unavailable reasons `workspace_agent_unavailable` and `workspace_agent_refused`,
 
 **Server-native network API v1** (`https`, `local_port` and `ssh` targets; this tree's approach).
 The service serves it itself, only when its `config.toml` has a `[network]` table
-(`finishup.config.models.NetworkConfig`): `listen` (IP-literal `host:port` addresses, TLS unless a
+(`finishup.config.models.NetworkConfig`; `yoetz-config` `1.4.0`, v0.3.0's `1.3.0` stays frozen): `listen` (IP-literal `host:port` addresses, TLS unless a
 loopback address with `allow_plain_loopback = true`), `tls_cert` and `tls_key` (paths; the key file
 owner-only), and `api_socket` (the owner-only, peer-UID-checked `<runtime>/api.sock`). Modules:
 `service.http_api` (server), `service.network_protocol` and `service.api_keys` (shared contract and

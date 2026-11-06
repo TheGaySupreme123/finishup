@@ -109,6 +109,6 @@ def test_config_writers_keep_the_table_and_it_matches_the_schema(tmp_path: Path)
     )
     rendered = render_config_toml(config)
     assert '[network]\nlisten = ["127.0.0.1:8443"]\napi_socket = true\n' in rendered
-    validate_schema_instance("yoetz-config", "1.3.0", cast(JsonValue, tomllib.loads(rendered)))
+    validate_schema_instance("yoetz-config", "1.4.0", cast(JsonValue, tomllib.loads(rendered)))
     path = write_config_toml(config, path=tmp_path / "config.toml")
     assert load_config({}, {}, path) == config
