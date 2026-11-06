@@ -4714,7 +4714,9 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   bound. It refuses a hello carrying `workspace_locator`. Its integration point for long-lived
   agents is `open_background_agent(root: Path, claim: WorkspaceClaim) -> BackgroundAgent | None`
   (a `BackgroundAgent` has `alive` and `aclose()`), kept for `AGENT_LEASE_SECONDS` (900) after
-  that workspace's last hello.
+  that workspace's last hello. Its integration point for the client-captured observation outbox
+  and spool is `drain_captured_observations(root: Path) -> None`, called every
+  `DRAIN_INTERVAL_SECONDS` (30) while the connector runs and once more as it stops.
 - `<troot>/state/connector.lock`: the connector's singleton flock, stamped with `pid`, `version`
   and `schema_manifest_digest`; `<troot>/state/connector-status.json`
   (`yoetz.connector-status/1`): `schema`, `generation` (moves on every change of phase or reason

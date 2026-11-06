@@ -417,7 +417,10 @@ through the same relay; human-control and secret channels never leave the server
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
   connection per workspace whose claim it relayed, for 15 minutes after that workspace's last
-  hello (`open_background_agent(root, claim)`).
+  hello (`open_background_agent(root, claim)`). It is also the process that drains what the
+  client captured for a remote root (the observation outbox and spool) in the background, every
+  30 seconds and once more as it stops (`drain_captured_observations(root)`); hooks still drain
+  once per pass.
 - **Reverse states.** `server connect` / `server disconnect` (the stamped pid only, then `ssh -O
   exit` for a master that outlived it; never by pattern) and the 15-minute idle exit;
   `service gateway key create` / `key revoke`; `service gateway run` / Ctrl-C or the supervisor.

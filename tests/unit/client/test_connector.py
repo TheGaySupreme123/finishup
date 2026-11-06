@@ -263,10 +263,14 @@ def test_each_claimed_workspace_gets_one_background_agent_lease(home: Path) -> N
 
 def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
     record, root = _ssh_target(home)
+    drained: list[Path] = []
+
+    async def drainer(target: Path) -> None:
+        drained.append(target)
 
     async def exercise() -> None:
         listener = await bind_control_listener()
-        connector = Connector(root, record, idle_seconds=0.05)
+        connector = Connector(root, record, idle_seconds=0.3, drainer=drainer, drain_interval=0.05)
         master = _StubMaster(root, restarts=[])
         master.failure = "remote_unreachable"
         connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
@@ -278,6 +282,8 @@ def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
         assert status is not None and (status.phase, status.reason) == ("stopped", "idle_timeout")
         with pytest.raises(Exception):
             await connect_control()
+        # The client-captured outbox is drained while it runs and once more as it stops.
+        assert len(drained) >= 2 and set(drained) == {root}
 
     with selection_override(root):
         asyncio.run(exercise())

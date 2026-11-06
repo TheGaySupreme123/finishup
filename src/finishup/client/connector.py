@@ -68,8 +68,10 @@ from finishup.service.control_protocol import (
 
 __all__ = [
     "AGENT_LEASE_SECONDS",
+    "DRAIN_INTERVAL_SECONDS",
     "BackgroundAgent",
     "Connector",
+    "drain_captured_observations",
     "open_background_agent",
     "run_connector",
     "run_connector_process",
@@ -77,6 +79,8 @@ __all__ = [
 
 # How long the connector keeps a background workspace agent after that workspace's last hello.
 AGENT_LEASE_SECONDS: Final = 900.0
+# How often the connector drains the client-captured observation outbox for its root.
+DRAIN_INTERVAL_SECONDS: Final = 30.0
 _HELLO_SECONDS: Final = 10.0
 _LOCK_RETRY_SECONDS: Final = 0.5
 _TICK_SECONDS: Final = 1.0
@@ -111,6 +115,21 @@ async def open_background_agent(root: Path, claim: WorkspaceClaim) -> Background
 
     del root, claim
     return None
+
+
+async def drain_captured_observations(root: Path) -> None:
+    """Deliver what this client captured for ``root`` (observation outbox and spool) to the server.
+
+    Integration point — wired after split/client and split/server merge. For a remote target the
+    client drains what it captured (ADR-051, F5): hooks drain once per pass as today, and the
+    connector, the long-lived process of approach A, calls this every
+    ``DRAIN_INTERVAL_SECONDS`` while it runs and once more before it stops. The split/client
+    implementation runs its outbox/spool drain helper against ``root``'s own control endpoint
+    (through this connector) under ``root``'s selection; it must return without raising when
+    there is nothing to send or the server cannot take it now.
+    """
+
+    del root
 
 
 @dataclass(slots=True)
@@ -164,6 +183,8 @@ class Connector:
         credential: Callable[[], str] | None = None,
         agent_opener: Callable[[Path, WorkspaceClaim], Awaitable[BackgroundAgent | None]]
         | None = None,
+        drainer: Callable[[Path], Awaitable[None]] | None = None,
+        drain_interval: float = DRAIN_INTERVAL_SECONDS,
     ) -> None:
         if not record.is_remote:
             raise ValueError("target_not_remote")
@@ -175,6 +196,9 @@ class Connector:
         self._credential = _Credential(credential or self._stored_credential)
         self._https: object | None = None
         self._agent_opener = agent_opener or open_background_agent
+        self._drainer = drainer or drain_captured_observations
+        self._drain_interval = drain_interval
+        self._last_drain = time.monotonic()
         self._status: ConnectorStatus | None = read_connector_status(root)
         self._started_at = now_stamp()
         self._active = 0
@@ -388,10 +412,17 @@ class Connector:
             self._connections.add(task)
             task.add_done_callback(self._connections.discard)
 
+    async def _drain(self) -> None:
+        self._last_drain = time.monotonic()
+        with contextlib.suppress(Exception):
+            await self._drainer(self._root)
+
     async def _watch(self) -> None:
         while not self._stop.is_set():
-            await asyncio.sleep(_TICK_SECONDS)
+            await asyncio.sleep(min(_TICK_SECONDS, self._drain_interval))
             await self._expire_claims()
+            if time.monotonic() - self._last_drain >= self._drain_interval:
+                await self._drain()
             idle = time.monotonic() - self._last_activity
             if self._active == 0 and idle >= self._idle_seconds:
                 self.request_stop("idle_timeout")
@@ -409,6 +440,8 @@ class Connector:
             for task in (accept, warm, watch):
                 task.cancel()
             await asyncio.gather(accept, warm, watch, return_exceptions=True)
+            # A last delivery of what was captured, while the upstream is still open.
+            await self._drain()
             with contextlib.suppress(Exception):
                 await listener.aclose()
             for task in tuple(self._connections):
