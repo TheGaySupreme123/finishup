@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 __all__ = ["GatewayConfigError", "gateway_server", "parse_listen", "run_gateway"]
 
 _STALE_EXIT: Final = 21
+# How long a stop lets the answers to the polls it ended finish before it drops idle connections.
+_ANSWER_SECONDS: Final = 1.0
 
 
 class GatewayConfigError(Exception):
@@ -64,21 +66,48 @@ def _loopback(host: str) -> bool:
     return host == "localhost" or ipaddress.ip_address(host).is_loopback
 
 
+def _responding(connection: object) -> bool:
+    """Whether a uvicorn connection is still sending a response (its cycle is not complete)."""
+
+    cycle = getattr(connection, "cycle", None)
+    return cycle is not None and not getattr(cycle, "response_complete", True)
+
+
 def gateway_server(config: uvicorn.Config, state: GatewayApp) -> uvicorn.Server:
     """A uvicorn server that ends every gateway session first when it is told to stop.
 
     A connector keeps a frames long-poll open for up to 25 s. uvicorn closes sessions only after
     its graceful wait, so a stop (Ctrl-C or SIGTERM) used to sit out that wait and then cancel the
-    open poll with an error traceback. Closing the sessions first answers every open poll at once,
-    each connector sees its session end, and the server exits without cancelling anything.
+    open poll with an error traceback. Here the stop first stops accepting, then closes the
+    sessions, which answers every open poll at once, lets those answers finish (at most
+    ``_ANSWER_SECONDS``), and drops the connections left idle: over TLS a polite close waits for
+    the client's own close, which a client keeping an idle pooled connection never sends, so it
+    too held the stop for the whole graceful wait. Nothing is in flight on an idle connection,
+    and each connector sees its session end.
     """
+
+    import asyncio
 
     import uvicorn
 
     class _GatewayServer(uvicorn.Server):
         async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+            for listener in self.servers:
+                listener.close()
             with contextlib.suppress(Exception):
                 await state.sessions.close_all()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _ANSWER_SECONDS
+            while loop.time() < deadline and any(
+                _responding(connection) for connection in self.server_state.connections
+            ):
+                await asyncio.sleep(0.01)
+            for connection in list(self.server_state.connections):
+                if not _responding(connection):
+                    transport = getattr(connection, "transport", None)
+                    with contextlib.suppress(Exception):
+                        if transport is not None:
+                            transport.abort()
             await super().shutdown(sockets=sockets)
 
     return _GatewayServer(config)

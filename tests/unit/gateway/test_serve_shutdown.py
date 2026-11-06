@@ -10,8 +10,11 @@ timeout and nothing is cancelled.
 from __future__ import annotations
 
 import asyncio
+import datetime
+import ipaddress
 import logging
 import socket
+import ssl
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,6 +22,10 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from builders.control_relay import CLAIM_DIGEST, ScriptedDaemon, memory_pair
 from builders.server_targets import ambient_home
@@ -44,6 +51,39 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+def _certificate(directory: Path) -> tuple[Path, Path]:
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "finishup-gateway-test")])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_path = directory / "gateway.pem"
+    key_path = directory / "gateway-key.pem"
+    cert_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    key_path.chmod(0o600)
+    return cert_path, key_path
+
+
 def _agent_hello() -> bytes:
     hello: dict[str, JsonValue] = {
         "protocol_version": "1.0",
@@ -65,10 +105,18 @@ def _agent_hello() -> bytes:
     return encode_control_frame(hello)[4:]
 
 
+@pytest.mark.parametrize("tls", [False, True], ids=["http", "tls"])
 def test_a_stop_answers_the_open_long_poll_and_cancels_nothing(
-    home: Path, caplog: pytest.LogCaptureFixture
+    home: Path, caplog: pytest.LogCaptureFixture, tls: bool
 ) -> None:
+    """Over TLS an idle keep-alive connection must not hold the stop open either.
+
+    A client that keeps an idle pooled connection never answers the server's TLS close, so a
+    plain close waited out the whole graceful timeout and logged ``Cancel 0 running task(s)``.
+    """
+
     keys = home / "gateway"
+    cert, key_file = _certificate(home) if tls else (None, None)
     _record, api_key = create_key(keys, label="agent", scope="agent")
     port = _free_port()
     headers = {"Authorization": f"Bearer {api_key}", "FinishUP-Binding": "1.0"}
@@ -96,6 +144,8 @@ def test_a_stop_answers_the_open_long_poll_and_cancels_nothing(
                 app,
                 host="127.0.0.1",
                 port=port,
+                ssl_certfile=None if cert is None else str(cert),
+                ssl_keyfile=None if key_file is None else str(key_file),
                 access_log=False,
                 log_level="warning",
                 lifespan="on",
@@ -104,7 +154,13 @@ def test_a_stop_answers_the_open_long_poll_and_cancels_nothing(
             state,
         )
         serving = asyncio.create_task(server.serve())
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+        verify: ssl.SSLContext | bool = (
+            False if cert is None else ssl.create_default_context(cafile=str(cert))
+        )
+        scheme = "https" if tls else "http"
+        async with httpx.AsyncClient(
+            base_url=f"{scheme}://127.0.0.1:{port}", verify=verify, trust_env=False
+        ) as client:
             async with asyncio.timeout(10):
                 while not server.started:
                     await asyncio.sleep(0.02)
