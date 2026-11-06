@@ -285,3 +285,49 @@ def test_rest_endpoints_follow_the_record(
     pinned = rest_endpoint_for(https, https_root)
     assert pinned.pin_mismatch is not None and pinned.credential == "k" * 32
     assert "k" * 32 not in repr(pinned)
+
+
+def test_the_probe_samples_round_trips_after_the_first_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first call of a process also loads its protocol validators (a local connection does
+    # that in its hello). Sampled, it alone pushed a 20 ms target's p95 past the 200 ms warning.
+    from finishup.client.target_runtime import PROBE_SAMPLES
+    from finishup.ports.control import ServiceState, ServiceStatus
+
+    clock = [100.0]
+    calls: list[int] = []
+
+    class _Client:
+        async def service_status(self) -> ServiceStatus:
+            calls.append(len(calls))
+            clock[0] += 0.4 if len(calls) == 1 else 0.02
+            return ServiceStatus(
+                "1.0",
+                "0.3.0",
+                "svc_00000000-0000-4000-8000-000000000051",
+                "1",
+                ServiceState.READY,
+                "none",
+                "passphrase",
+                (),
+                "unavailable",
+            )
+
+        async def close(self) -> None:
+            return None
+
+    async def connect(*_args: object, **_kwargs: object) -> _Client:
+        return _Client()
+
+    monkeypatch.setattr("finishup.client.rest_client.connect_rest_service", connect)
+    monkeypatch.setattr(rest_runtime.time, "monotonic", lambda: clock[0])
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            _record, root = targets.new_remote_target(
+                "web", "https", base_url="https://fu.example", tls_pin="sha256:" + "a" * 64
+            )
+        result = rest_runtime.RestTargetRuntime().probe(root)
+    assert result.outcome == "ready"
+    assert len(calls) == PROBE_SAMPLES + 1
+    assert (result.samples, result.round_trip_p95_ms) == (PROBE_SAMPLES, 20)

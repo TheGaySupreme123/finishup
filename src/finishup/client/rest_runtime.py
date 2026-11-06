@@ -415,7 +415,10 @@ class RestTargetRuntime:
                 return ProbeResult(outcome, reason=failure.reason, phase=failure.phase)
             samples: list[float] = []
             try:
-                status = None
+                # The first call also loads this process's protocol validators, which a local
+                # connection loads during its hello; that is not a round trip, so it is not one
+                # of the samples (it read about 0.2 s against a 20 ms round trip in a real run).
+                status = await client.service_status()
                 for _sample in range(PROBE_SAMPLES):
                     started = time.monotonic()
                     status = await client.service_status()
