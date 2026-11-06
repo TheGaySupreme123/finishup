@@ -14,6 +14,7 @@ import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -381,6 +382,47 @@ def test_a_tampered_record_fails_closed(home: Path) -> None:
     with pytest.raises(TargetError) as raised:
         targets.list_targets()
     assert raised.value.reason == "target_record_invalid"
+
+
+@pytest.mark.parametrize("failing", ["open", "read"])
+def test_a_record_that_fails_to_read_after_its_check_fails_closed(
+    home: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    """Changed between the check and the read (made unreadable, replaced, an I/O error)."""
+
+    with targets.registry_lock():
+        record, root = targets.new_remote_target(
+            "lab", "ssh", user="owner", host="lab.example", port=22
+        )
+    targets.write_selection(record)
+    reset_selection_memo()
+    record_path = os.fspath(root / "target.json")
+    real_open, real_read = os.open, os.read
+    opened: set[int] = set()
+
+    def flaky_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:  # noqa: ANN401
+        if os.fspath(path) == record_path and failing == "open":
+            raise PermissionError(13, "denied")
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == record_path:
+            opened.add(descriptor)
+        return descriptor
+
+    def flaky_read(descriptor: int, size: int) -> bytes:
+        if descriptor in opened:
+            raise OSError(5, "input/output error")
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+    monkeypatch.setattr(os, "read", flaky_read)
+
+    with pytest.raises(TargetError) as raised:
+        targets.list_targets()
+    assert raised.value.reason == "target_root_unsafe"
+    with pytest.raises(targets.TargetRecordUnreadable):
+        targets.active_target_record()
+    # Unreadable may be remote: a connection claims its workspace rather than send a path.
+    assert targets.active_root_may_be_remote() is True
 
 
 def test_a_remote_record_carries_a_claim_salt_and_authorization(home: Path) -> None:
