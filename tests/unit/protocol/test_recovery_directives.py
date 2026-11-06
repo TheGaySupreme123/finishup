@@ -609,6 +609,23 @@ class TestWorkspaceBindingAndServerTargetReasons:
             assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase)
             assert continuation_for_reason(phase) is not None
 
+    @pytest.mark.parametrize(
+        "token",
+        ["remote_server_test", "remote_credential_repair", "remote_service_start_required"],
+    )
+    def test_a_remote_failure_that_may_follow_a_sent_call_never_claims_nothing_was_recorded(
+        self, token: str
+    ) -> None:
+        # A connection can end, a key be revoked or the remote service stop while a call is in
+        # flight, after the server may already have recorded it; the directive says to repeat it
+        # under its original identity rules (the same request_id for a write), never that it is
+        # safe to treat as unsent.
+        entry = directive_for(token)
+        assert entry is not None
+        assert "nothing was recorded" not in entry.directive
+        assert "sent nothing" not in entry.directive
+        assert entry.directive.endswith("under its original identity rules.")
+
     def test_the_new_tokens_are_protocol_tokens_not_local_ones(self) -> None:
         tokens = set(self._EXPECTED.values())
         assert tokens <= CONTINUATION_TOKENS
