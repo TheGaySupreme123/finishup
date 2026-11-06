@@ -530,7 +530,12 @@ def _read_owner_only(path: Path, maximum: int) -> bytes | None:
         or facts.st_size > maximum
     ):
         raise TargetError("target_root_unsafe")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    # The file can still change between the check and the read (replaced by a link, removed,
+    # made unreadable): that is the same unsafe record, never a raw ``OSError``.
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise TargetError("target_root_unsafe") from None
     try:
         chunks: list[bytes] = []
         remaining = maximum + 1
@@ -540,6 +545,8 @@ def _read_owner_only(path: Path, maximum: int) -> bytes | None:
                 break
             chunks.append(chunk)
             remaining -= len(chunk)
+    except OSError:
+        raise TargetError("target_root_unsafe") from None
     finally:
         os.close(descriptor)
     data = b"".join(chunks)
