@@ -17,11 +17,13 @@ authority.
 **Implemented by (shared foundation, identical in all three pull requests):**
 `tests/unit/architecture/` (boundary map, crossing ledger and the AST boundary test),
 `src/finishup/cli/command_scope.py`, the `src/finishup/client/` package (targets, credentials,
-`target_runtime`, `workspace_claim`, `workspace_agent`), `src/finishup/cli/server.py`,
+`target_runtime`, `workspace_claim`, `workspace_agent`, `workspace_ref`, `remote_binding`,
+`observation_outbox`, `attribution`), `src/finishup/cli/server.py`,
 `active_root()` and the `selection` binding in `src/finishup/config/paths.py`,
 `src/finishup/ports/workspace_agent.py`, `src/finishup/adapters/workspace_root.py`,
-`src/finishup/service/workspace_hub.py`, `src/finishup/service/workspace_routing.py`, the claim
-path of `src/finishup/service/control_protocol.py` and `src/finishup/service/daemon.py`, the
+`src/finishup/service/workspace_hub.py`, `src/finishup/service/workspace_routing.py`,
+`src/finishup/application/observation_workspace.py`, the claim path of
+`src/finishup/service/control_protocol.py` and `src/finishup/service/daemon.py`, the
 control-envelope 2.10.0 schemas and fixtures, and the closed tokens in
 `src/finishup/protocol/errors.py` and `src/finishup/protocol/recovery.py`. Each approach adds the
 modules its topology section names.
@@ -78,17 +80,32 @@ typed outcomes when the client side cannot be reached.
 
 ### 1. The cut line is an enforced contract, not a package move
 
-- Every module under `src/finishup/` is labelled CLIENT, SERVER, SHARED or GATEWAY in one boundary
-  map. GATEWAY is reserved for a same-user control client of the daemon on the server host
-  (`finishup.gateway`), used only by the approaches that run one. CLIENT covers `cli`, `mcp`, `tui`,
-  `service.client`, `service.confidential_client`, the host integration adapters (except the
+- Every module under `src/finishup/` is labelled CLIENT, SERVER, SHARED, WORKSPACE or GATEWAY in
+  one boundary map. GATEWAY is reserved for a same-user control client of the daemon on the server
+  host (`finishup.gateway`), used only by the approaches that run one. CLIENT covers `cli`, `mcp`,
+  `tui`, `service.client`, `service.confidential_client`, the host integration adapters (except the
   observation store the service also opens), the client-side application modules and the new
   `finishup.client` package. SHARED covers `protocol`, `ports`, `domain`, `config`,
-  `observability`, `resources`, `version`, the control-protocol framing, the Unix-socket adapter,
-  the pure Git helpers and the new `adapters/workspace_root.py`. Everything else is SERVER.
+  `observability`, `resources`, `version`, the control-protocol framing and the Unix-socket
+  adapter. Everything else is SERVER.
+- WORKSPACE is the layer of workspace readers, which run wherever the workspace is: in the local
+  service for a local root and in the client's workspace agent (decision 5) for a remote one. It
+  holds the Git capture, task-input, approved-check, sandbox, inspection, home-project and
+  input-summary adapters, the Git subject-state, `rev-parse` and version helpers, the shared
+  `adapters/workspace_root.py` rule and the repository check-policy parser
+  (`application.observation_check_policy`). CLIENT and SERVER modules may import it; a WORKSPACE
+  module may import only WORKSPACE and SHARED modules, so a workspace reader never reaches storage,
+  the vault, providers, the service or a client surface, and no ledger entry may excuse one.
+  SHARED and GATEWAY modules may not import it.
 - An AST test walks every module, including imports inside functions, and fails on any crossing
   not recorded in a ledger. The ledger is seeded with today's crossings, measured by the test
-  itself, and may only shrink: a ledger entry that no longer occurs also fails.
+  itself, and may only shrink: a ledger entry that no longer occurs also fails. Each entry carries
+  a closed disposition: `server_host_only`, `shared_pure`, `to_rpc` or `client_outbox`. The last is
+  the only one a `finishup.client` module may carry, and it names one module: the client's drain
+  opens its own root's observation outbox to deliver what that root's hooks captured to a remote
+  server, which never opens that root. The import crosses only because the outbox and the
+  service's observation store still share `adapters.integrations.observation_local`; it closes
+  when the outbox moves out of that module.
 - A command-scope registry labels every CLI and terminal-interface command `any`, `server_host`
   or `client_only`. One guard, `require_server_host()`, refuses a `server_host` command while a
   remote target is active, with `requires_server_host`. A test walks the command tree and the
@@ -175,7 +192,9 @@ resource ripple.
   under the new domain `yoetz/repository-claim/v1` over `kind ‖ digest`, producing
   `RepositoryPrivacyContext(identity_kind="client_claim", workspace_locator=None)`. The repository
   fence works on that commitment unchanged. The server never resolves a filesystem path for a
-  claim-bound connection. A server-side option lets a network edge refuse locators entirely.
+  claim-bound connection. The composition flag `ServiceComposition.refuse_workspace_locators`
+  (off by default) lets a network edge close any hello that names a locator. A claim on a locked
+  service binds no handle and no agent.
 - **Agent declaration.** The hello gains an optional `workspace_agent` `{schema_version: "1.0.0",
   operations: [...], max_reply_bytes: <int>}`: this connection answers workspace calls for its
   claimed workspace.
@@ -190,9 +209,13 @@ resource ripple.
   "unavailable" | "refused" | "failed"`, `result`, `reason`). The daemon sends server→client
   frames only to connections whose hello declared `workspace_agent`.
 - **Claim-bound start.** On a claim-bound connection `start.workspace_ref` must equal the
-  connection's handle; an absolute path is refused with `workspace_ref_not_portable`. Without this
-  rule the reviewer's workspace root would be a server directory that happens to share the path.
-  The MCP bridge and the CLI rewrite an absolute `workspace_ref` to the handle before sending.
+  connection's handle; an absolute path, or no `workspace_ref` on a start that opens a session
+  (only `mode: attach` may omit it), is refused with `workspace_ref_not_portable`, and a handle sent
+  on a connection without a claim is `workspace_binding_conflict`. Without this rule the reviewer's
+  workspace root would be a server directory that happens to share the path. The MCP bridge, the
+  CLI and the SessionStart auto-attach rewrite an absolute `workspace_ref` to the handle before
+  sending; a claim-bound connection with no handle sends nothing and answers
+  `workspace_ref_not_portable` without naming a path.
 - **What stays identical.** Framing (6 MiB frames, 1 MiB ordinary), all 32 methods and their
   bodies, `rpc_id` multiplexing and cancel, the client-kind gate and the client's exact-set check,
   and idempotency by `(installation_id, request_id)`. The YZH1 human-control and YZS1 secret
@@ -218,40 +241,73 @@ answers bounded `workspace_call`s on a connection that declared it.
   refusal, object verification, size and time bounds, the approved-check sandbox. Two
   confinements are added: an operation's workspace must be the agent's own claimed root, and
   outside reads stay inside the admitted roots the server names and the existing exclusions. The
-  agent refuses unknown operations and never runs a command that did not come from the
-  repository's owner-approved `.finishup/checks.toml`. HOME decisions are made by the agent on the
-  client, never by the server's own home directory. Failure reasons map to the existing
-  `ChangeCaptureUnavailable` reasons where one exists.
+  server names the claimed workspace by its handle, never by its path: a read root or an exclusion
+  may be the handle, and a declared-test location may be `client:<16 hex>/<relative>`; the agent
+  maps them to its own root and refuses any other handle (`workspace_not_claimed`). An outside read
+  never enters the claimed workspace through an outside root, nor the client's protected
+  directories — its own FinishUP directories and the everyday installation's under both
+  application names — whatever the server excludes. The agent refuses unknown operations and
+  never runs a command that did not come from the repository's owner-approved
+  `.finishup/checks.toml` (`check_not_approved`). HOME decisions are made by the agent on the
+  client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,
+  and change capture's own reasons keep their exact `ChangeCaptureUnavailable` tokens.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a
   connection that declared the agent registers at handshake and unregisters on close.
-  `WorkspaceAgentHub.call(handle, operation, arguments, deadline)` sends a `workspace_call` under
-  that session's write lock and awaits the correlated reply. With no channel it waits a bounded
-  time for one — 5 seconds inside a live call, 30 seconds for background work — then raises the
-  typed `WorkspaceAgentUnavailable`. A dropped channel fails its pending calls. Calls per channel
-  and bytes per reply are bounded, and the hub logs closed tokens only.
+  `WorkspaceAgentHub.call(handle, operation, arguments, *, timeout_seconds)` sends a
+  `workspace_call` under that session's write lock and awaits the correlated reply. With no channel
+  it waits a bounded time for one — 5 seconds inside a live control call, 30 seconds for
+  background work such as the detached review and recovered jobs — then raises the typed
+  `WorkspaceAgentUnavailable`, whose reason is closed. Each call is bounded by the catalog's call
+  deadline, a channel serves at most four calls at once, and pending argument bytes are bounded. A
+  dropped channel fails its pending calls; a pending call keeps its connection out of idle close;
+  a reply on a connection that declared no agent closes it. The hub logs closed tokens only.
 - **Routing.** `service/workspace_routing.py` wraps every workspace port and callable the service
   composes. An absolute-path workspace goes to the existing local adapter unchanged; a
-  `client:<16 hex>` handle goes to the hub. Callers that ran synchronously on the event loop move
-  to a worker thread at their call sites, with no other behaviour change.
-- **Observation over claims.** `observation_ingest` is allowed on a claim-bound connection; the
-  server reads the locator as the handle and runs observation verification and approved checks
-  through the hub. The client drains the outbox and spool it captured for a remote root, and the
-  server's sweeper ignores roots it does not own.
+  `client:<16 hex>` handle goes to the hub, and no local adapter is ever handed it. Callers that
+  ran synchronously on the event loop — the reviewer broker's file reads, declared-test pinning,
+  the observation verification steps and the post-run hash — move to a worker thread at their call
+  sites, with no other behaviour change. A composition built without the hub fails a claim-bound
+  read as unavailable (`hub_unavailable`), never as a local read.
+- **The client side.** A connection to a remote root sends a `ClientWorkspaceBinding` (the claim,
+  and optionally the agent) in place of its locator. `binding_for_active_root(locator, *,
+  serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
+  root, so every approach decides the same way. A client that serves an agent answers at most four
+  workspace calls at once in worker threads; a client without one still rejects a `workspace_call`
+  as a malformed frame, so a local connection is unchanged.
+- **Observation over claims.** Observation verification and approved checks for a `client:`
+  locator route through the hub, and the client drains the outbox and spool it captured for a
+  remote root over its own claim-bound connection (`ClientObservationDrain`; which long-lived
+  client process holds it is the approach's choice). `observation_ingest` is allowed on a
+  claim-bound connection, and the server's sweeper reads only its own state directory, so it
+  never touches a client root. Decision 12 says whose consent and keys govern such an ingest.
 - **Local stays local.** Local targets never declare an agent, so the default path is unchanged.
 
 ### 6. Honest outcomes
 
 - **Provenance.** Every piece of workspace evidence obtained through the hub is labelled
-  `client_attested`. For a non-local service connection, the text, markdown, MCP and terminal
-  receipt renderings add one fixed line: "Workspace evidence was read on the client machine by the
+  `client_attested`. The fixed line is "Workspace evidence was read on the client machine by the
   FinishUP workspace agent and attested over the connection; the server did not read the
-  repository itself." Status and receipts name the producing service by `service_instance_id` and
-  a transport token.
+  repository itself." Two renderers carry it, and neither puts anything user-controlled beside it:
+  - The service ends the text and markdown receipt of a claim-bound task (its session opened with
+    a `client:` handle, a durable fact a replay reads alike) with a "Workspace evidence" section:
+    the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
+    client_claim).` The stored receipt document and JSON receipts are unchanged.
+  - The client ends every human status and receipt rendering of a claim-bound connection — CLI
+    text, the MCP status and receipt text, the terminal interface's task views and receipt — with
+    the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
+    service <service_instance_id> (transport: <token>).` The id is the one the hello-result named.
+    The token is a closed set supplied by whoever builds the connection: `unix` (the default, a
+    service's local control endpoint), `connector` (a local relay that carries the connection on),
+    `ssh` (an SSH channel the client process opened) or `https` (HTTPS the client process speaks).
+    The MCP structured result, CLI JSON output and a local connection's output are unchanged
+    byte for byte.
 - **Typed gaps when no agent is reachable.** An operation that ends `workspace_agent_unavailable`
   fires the existing gap for what it would have read, and the new reason
   `workspace_agent_unavailable` joins the check-time change unavailable reasons
-  (`check_time_change_unavailable_workspace_agent_unavailable`). A missing reply is never a pass,
-  and an unknown change state fails closed for no-material-work. A refused operation is
+  (`check_time_change_unavailable_workspace_agent_unavailable`, with its own fixed sentence). A
+  review whose file read finds the agent gone ends `workspace_agent_unavailable` and records an
+  unavailable result of failure class `transport`, never a judgment. A missing reply is never a
+  pass, and an unknown change state fails closed for no-material-work. A refused operation is
   `workspace_agent_refused`.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never
   falls back to the ambient one; a service refuses to run in a root whose target is remote
@@ -327,12 +383,69 @@ superseded by a client. A compatibility window is a later decision.
 ### 11. What stays on the server host
 
 Vault setup, unlock and passphrase changes, provider and AI-powered review configuration, privacy
-ceremonies, elevated bootstrap, observation store administration, backup, restore and migrate run
-on the server host. Over SSH, `finishup service start|stop|restart|status|lock|unlock|diagnostics`
+ceremonies, elevated bootstrap, backup, restore and migrate run on the server host. Observation
+store administration (`observe …`, `/observe`) acts on the active root's own observation store,
+which on a remote target is the client's store and its authority (decision 12), so it runs on the
+client. Over SSH, `finishup service start|stop|restart|status|lock|unlock|diagnostics`
 can run there through `ssh -t`, whose remote pseudo-terminal passes the trusted-console check.
 On the client every `server_host` command is refused with `requires_server_host`, whose remedy
 says to run it on the server host (through `ssh -t` for an SSH target; by the server's operator for
 an HTTPS target).
+
+### 12. Observation on a remote target
+
+For a remote target the hooks run on the client, the owner granted observation consent there, and
+the rows were captured there. The server holds none of it and must not borrow it.
+
+- **The client is the authority.** The client's observation store under the target root (consent,
+  content-capture profiles, selection, approved-check policy trust, the observation key that
+  computes every session and workspace commitment), its lifecycle mappings and its outbox and
+  spool stay on the client. The `observe` commands and `/observe` administer that store, so they
+  are labelled `any`. The observation key never leaves the client.
+- **Client attestation.** On a claim-bound connection each `observation_ingest` body carries
+  `client_attestation` (control-request 2.10.0): `schema_version`, `consent`
+  (`active`, `paused` or `revoked`), `granted_at`, `content_capture_profiles`,
+  `authority_generation` (the client's content-capture fence), `check_policy_digest` (the one
+  policy digest the owner trusted there, or null) and `route` (the FinishUP task, session and
+  writer the client's mapping names for the host session, or null). The client builds it from its
+  own store and mapping when it sends the row (hook pass, `observe drain` and the background
+  drain alike), and replaces any workspace-locator content with the connection's handle, so no
+  path leaves the client.
+- **Accepted as `client_attested`, never verified.** The server cannot recompute a commitment made
+  under the client's key, so on a claim-bound connection it accepts the envelope's session
+  commitment and the attested consent, profiles, fence, trust and route as client-attested. It
+  records them keyed to the claim in a separate claim store, `<state dir>/observation-claims/<16
+  hex of the handle>/` (an ordinary observation store and lifecycle-mapping directory holding only
+  that claim's workspace, under a key the server generates), and runs the unchanged observation
+  coordinator over it with the claim's handle as the workspace. Its own observation store,
+  mappings and consent are never read or written for a claim.
+- **What the server still decides.** Only the connection's own claim is touched. The attested
+  route must name a task whose route was opened on a connection carrying the same claim (its
+  route commitment is the claim commitment); any other route is refused with `consent_missing`
+  before anything is written. The server's own observation switch and vault gate apply.
+  Verification opens the claimed workspace by its handle through the workspace agent (decision 5)
+  and never through a stored locator.
+- **Refusals keep their closed reasons.** A claim-bound ingest without an attestation is refused
+  with `consent_missing`, before anything is read or written; an attestation without a route is
+  `mapping_missing` (retryable, as locally); a paused or revoked consent is refused exactly as a
+  local one is. When too many claims are busy at once the row is refused `service_unavailable`
+  (retryable). An attestation on a connection that carries no claim is a malformed request
+  (`frame_invalid`). A locator-bound or unbound connection keeps today's checks byte for byte:
+  commitment against the server's key, consent and mapping from the server's own store.
+- **Consent changes travel with the next row.** A pause, resume or revoke on the client is mirrored
+  into the claim store when the next row arrives; a revoke runs the service's own revocation for
+  that claim (task stores deactivate their locator and trust rows), and later rows are refused.
+  Rows the server already accepted stay accepted, as for a local revoke.
+- **Honest receipts.** Text and markdown receipts of a claim-bound task whose coverage includes
+  hook-observed evidence add one fixed line after the workspace-evidence line: "Hook observations
+  were captured on the client machine under its own observation consent and delivered over the
+  connection; the server did not verify that consent or the session commitments." Logs carry the
+  `client_attested` label and closed tokens only.
+- **Limits.** Advice the service prepares for hooks to deliver stays in the claim store and does
+  not yet reach a remote client's hooks. After a server restart a claim's pending verification
+  resumes when that claim delivers its next row. The server's check barrier reconciles only its
+  own store's capture handoffs, and a claim-bound `check` that asks to await observations reports
+  that wait `unavailable`: the rows wait in the client's outbox, which the server cannot read.
 
 ## Topology (approach-specific)
 

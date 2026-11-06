@@ -8,6 +8,8 @@ from typing import Protocol, cast
 from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationEnvelope,
+    ObservationGapCode,
+    ObservationIngestDisposition,
     ObservationIngestRequest,
     ObservationIngestResult,
     ObservationRevokeCommand,
@@ -22,11 +24,15 @@ from finishup.domain.observation import (
     observation_status_to_json,
 )
 from finishup.domain.values import JsonObject, freeze_json
-from finishup.ports.control import ControlError, ControlMethod
+from finishup.ports.control import ControlError, ControlMethod, RepositoryPrivacyContext
 from finishup.ports.observation import ObservationPort
 from finishup.protocol.errors import ProtocolValueError, PublicOperationError
 
-__all__ = ["ObservationIngestPort", "build_observation_support_handlers"]
+__all__ = [
+    "ClaimObservationIngest",
+    "ObservationIngestPort",
+    "build_observation_support_handlers",
+]
 
 type _SupportHandler = Callable[[object], Awaitable[JsonObject]]
 
@@ -45,6 +51,14 @@ class ObservationIngestPort(Protocol):
     async def resume(self, command: ObservationControlCommand) -> ObservationStatus: ...
 
     async def revoke(self, command: ObservationRevokeCommand) -> ObservationStatus: ...
+
+
+class ClaimObservationIngest(Protocol):
+    """Where a claim-bound connection's rows go: that claim's client-attested store (ADR-051)."""
+
+    async def ingest(
+        self, context: RepositoryPrivacyContext, request: ObservationIngestRequest
+    ) -> ObservationIngestResult: ...
 
 
 def _as_json_object(request: object) -> JsonObject:
@@ -104,15 +118,46 @@ def _map_public_error(error: PublicOperationError) -> ControlError:
 
 def build_observation_support_handlers(
     port: ObservationPort | ObservationIngestPort,
+    *,
+    claims: ClaimObservationIngest | None = None,
 ) -> Mapping[ControlMethod, _SupportHandler]:
-    """Bind the five observation_* control methods to one ObservationPort/coordinator."""
+    """Bind the five observation_* control methods to one ObservationPort/coordinator.
 
-    async def ingest(request: object) -> JsonObject:
+    A claim-bound connection's ``observation_ingest`` goes to ``claims`` (ADR-051 decision 12);
+    every other connection's goes to ``port`` exactly as before, and a client attestation on it is
+    a malformed request. With no ``claims`` composed, a claim-bound row is refused with
+    ``consent_missing``: this service holds no consent of its own for a client's workspace.
+    """
+
+    async def ingest(
+        request: object, *, repository_privacy_context: RepositoryPrivacyContext | None = None
+    ) -> JsonObject:
         body = _as_json_object(request)
+        claim = (
+            repository_privacy_context
+            if repository_privacy_context is not None
+            and repository_privacy_context.identity_kind == "client_claim"
+            else None
+        )
         try:
-            if "codex_session_id" in body and hasattr(port, "ingest_request"):
+            if claim is not None:
                 ingest_request = observation_ingest_request_from_json(body)
                 if type(ingest_request) is not ObservationIngestRequest:
+                    raise ControlError("frame_invalid")
+                if claims is None:
+                    result = ObservationIngestResult(
+                        ObservationIngestDisposition.REJECTED,
+                        ObservationGapCode.CONSENT_MISSING.value,
+                        None,
+                    )
+                else:
+                    result = await claims.ingest(claim, ingest_request)
+            elif "codex_session_id" in body and hasattr(port, "ingest_request"):
+                ingest_request = observation_ingest_request_from_json(body)
+                if type(ingest_request) is not ObservationIngestRequest:
+                    raise ControlError("frame_invalid")
+                if ingest_request.client_attestation is not None:
+                    # Only a claim-bound client's own store can attest; this connection has none.
                     raise ControlError("frame_invalid")
                 result = await cast(ObservationIngestPort, port).ingest_request(ingest_request)
             else:

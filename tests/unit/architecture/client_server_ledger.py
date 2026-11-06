@@ -17,6 +17,16 @@ Dispositions (closed):
   failure records, the observation store and outbox, the hook spool, consent handoff files,
   recommendations); the crossing closes when that access moves behind a control method or the
   workspace agent.
+* ``client_outbox`` — the importer opens the observation outbox of the client's *own* root to
+  deliver what this client's hooks captured to a FinishUP server on another machine. That server
+  never opens the root, which holds client state only, so no state crosses hosts: the import
+  crosses only because one module (``observation_local``) still holds both the client's outbox
+  and the service's observation store. The crossing closes when the outbox moves out of that
+  module. It is the one disposition a ``finishup.client`` module may carry.
+* ``client_side`` — the importer runs on the client, and the imported module serves whichever
+  side holds the workspace and its observation store: the client for a remote target (ADR-051
+  decision 12), the server host for a local one. The crossing closes when that module is
+  reclassified to the side both use.
 """
 
 from __future__ import annotations
@@ -26,9 +36,13 @@ from typing import Final, Literal
 
 __all__ = ["DISPOSITIONS", "LEDGER", "Crossing", "Disposition"]
 
-type Disposition = Literal["server_host_only", "shared_pure", "to_rpc"]
+type Disposition = Literal[
+    "server_host_only", "shared_pure", "to_rpc", "client_outbox", "client_side"
+]
 
-DISPOSITIONS: Final[frozenset[str]] = frozenset({"server_host_only", "shared_pure", "to_rpc"})
+DISPOSITIONS: Final[frozenset[str]] = frozenset(
+    {"server_host_only", "shared_pure", "to_rpc", "client_outbox", "client_side"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,36 +97,9 @@ _CONSENT_COMMANDS: Final = (
     "elevated-bootstrap review",
     "elevated-bootstrap status",
 )
-_OBSERVE_COMMANDS: Final = (
-    "observe checks preview",
-    "observe checks revoke",
-    "observe checks run",
-    "observe checks status",
-    "observe checks trust",
-    "observe content-disable",
-    "observe content-enable",
-    "observe content-status",
-    "observe drain",
-    "observe grant",
-    "observe pause",
-    "observe promote",
-    "observe protect-read",
-    "observe reclaim",
-    "observe reconcile",
-    "observe resume",
-    "observe revoke",
-    "observe selection-apply",
-    "observe selection-preview",
-    "observe selection-revoke",
-    "observe selection-status",
-    "observe status",
-    "/observe",
-)
 _RECOMMEND_COMMANDS: Final = ("recommend accept", "recommend decline", "recommend list")
 
 LEDGER: Final[tuple[Crossing, ...]] = (
-    # finishup.adapters.git_subject_state
-    _c("adapters.git_subject_state", "adapters.home_project_reads", "<module>", 1, "shared_pure"),
     # finishup.adapters.importers.codex_rollout_jsonl
     _c(
         "adapters.importers.codex_rollout_jsonl",
@@ -255,25 +242,18 @@ LEDGER: Final[tuple[Crossing, ...]] = (
         1,
         "to_rpc",
     ),
-    # finishup.application.observation_check_policy
+    # finishup.application.observation_claims (ADR-051 decision 12: a claim's attested mappings)
     _c(
-        "application.observation_check_policy",
-        "adapters.approved_checks",
-        "<module>",
-        1,
-        "shared_pure",
-    ),
-    # finishup.application.observation_coordinator
-    _c(
-        "application.observation_coordinator",
+        "application.observation_claims",
         "adapters.integrations.codex_lifecycle",
         "<module>",
         1,
         "to_rpc",
     ),
+    # finishup.application.observation_coordinator
     _c(
         "application.observation_coordinator",
-        "application.observation_check_policy",
+        "adapters.integrations.codex_lifecycle",
         "<module>",
         1,
         "to_rpc",
@@ -468,38 +448,8 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     # finishup.cli.menu
     _c("cli.menu", "service.vault", "_provider_menu", 1, "shared_pure"),
     # finishup.cli.observe
-    _c(
-        "cli.observe",
-        "adapters.approved_checks",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
-    _c(
-        "cli.observe",
-        "adapters.check_sandbox",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
-    _c(
-        "cli.observe",
-        "adapters.integrations.observation_local",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
-    _c(
-        "cli.observe",
-        "application.observation_verification",
-        "<module>",
-        1,
-        "server_host_only",
-        _OBSERVE_COMMANDS,
-    ),
+    _c("cli.observe", "adapters.integrations.observation_local", "<module>", 1, "client_side"),
+    _c("cli.observe", "application.observation_verification", "<module>", 1, "client_side"),
     # finishup.cli.observe_hooks
     _c("cli.observe_hooks", "adapters.integrations.observation_local", "<module>", 1, "to_rpc"),
     _c(
@@ -541,7 +491,6 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     # finishup.cli.runtime_facts
     _c("cli.runtime_facts", "service.write_scope_admission", "_docs_admitted", 1, "shared_pure"),
     # finishup.cli.setup
-    _c("cli.setup", "adapters.check_sandbox", "_platform_diagnostics", 1, "shared_pure"),
     _c(
         "cli.setup",
         "adapters.integrations.observation_local",
@@ -600,6 +549,14 @@ LEDGER: Final[tuple[Crossing, ...]] = (
         ("service recovery restore",),
     ),
     _c("cli.unlock", "service.owner_view", "_owner_view_target_digest", 1, "shared_pure"),
+    # finishup.client.observation_outbox
+    _c(
+        "client.observation_outbox",
+        "adapters.integrations.observation_local",
+        "<module>",
+        1,
+        "client_outbox",
+    ),
     # finishup.kernel.claim_verification
     _c("kernel.claim_verification", "kernel.acceptance_risk", "<module>", 1, "shared_pure"),
     _c("kernel.claim_verification", "kernel.closure_class", "<module>", 1, "shared_pure"),
@@ -659,7 +616,6 @@ LEDGER: Final[tuple[Crossing, ...]] = (
     _c("service.ready_composition", "application.observation_drain", "<module>", 1, "to_rpc"),
     _c("service.ready_composition", "cli.observe_hooks", "_replay_legacy_hook_spool", 1, "to_rpc"),
     # finishup.tui.runtime
-    _c("tui.runtime", "adapters.check_sandbox", "_host_entries", 1, "shared_pure"),
     _c("tui.runtime", "adapters.integrations.observation_local", "<module>", 1, "to_rpc"),
     _c(
         "tui.runtime",

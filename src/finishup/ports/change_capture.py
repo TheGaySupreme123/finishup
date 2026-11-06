@@ -1054,14 +1054,20 @@ class CheckWorkspaceSource:
     ``workspace`` is the locator the authenticated connection supplied at handshake and
     ``repository_commitment`` the installation-keyed commitment the service derived from that same
     locator. The capture runs only when the commitment equals the task route's own, so a
-    connection cannot point one task's review at another repository.
+    connection cannot point one task's review at another repository. A claim-bound connection's
+    ``workspace`` is its ``client:`` handle (ADR-051): only its workspace agent reads it.
     """
 
     workspace: str = field(repr=False)
     repository_commitment: str
 
     def __post_init__(self) -> None:
-        if type(self.workspace) is not str or not Path(self.workspace).is_absolute():
+        # Imported here: the workspace-agent catalog builds on this module's own codecs.
+        from finishup.ports.workspace_agent import workspace_handle_valid
+
+        if type(self.workspace) is not str or not (
+            Path(self.workspace).is_absolute() or workspace_handle_valid(self.workspace)
+        ):
             raise _invalid()
         validate_commitment(self.repository_commitment)
 

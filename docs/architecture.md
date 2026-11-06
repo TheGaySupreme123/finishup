@@ -102,14 +102,17 @@ and merely transcribed by the interface. The split makes that reviewable, becaus
 and the terminal interface — from the *server*, without moving a package. The cut line is a
 contract: every module carries one side, and an AST test that also sees imports inside functions
 fails on any crossing that its ledger of today's crossings does not list. That ledger may only
-shrink.
+shrink. A `finishup.client` module may carry one kind of entry only, `client_outbox`: the drain that
+delivers what a remote root's hooks captured opens that root's own observation outbox, a module the
+service's observation store still shares.
 
 | Side | Modules |
 |---|---|
-| **SHARED** (imports SHARED only) | `protocol`, `ports`, `domain`, `config`, `observability`, `resources`, `legacy_names`, `version`; `service.control_protocol` and `service.confidential_protocol` (wire codecs); `adapters.control`; `adapters.git_rev_parse`, `adapters.git_version`, `adapters.git_subject_state`; `adapters.workspace_root` (the one rule for "which directory is this workspace"); the credential-store primitives `adapters.keys.os_keyring` and `adapters.keys.owner_file_store`; the pure renderers `kernel.fact_lineage` and `kernel.claim_verification`. |
-| **CLIENT** | `cli`, `mcp`, `tui`, the new `client` package, `service.client`, `service.confidential_client`, the host integration adapters under `adapters.integrations` (except the observation store), `adapters.workspace_binding`, `workspace_fingerprint`, `mcp_stdio`, `process_lifetime`, `release_runtime`, `package_upgrade`, and the client-side application modules `harness_mcp`, `host_connection`, `codex_plugin`, `applied_mcp_route`, `upgrade`, `package_update`, `observation_check_policy`, `observation_drain`. |
-| **SERVER** | The rest of `service`, `application`, `kernel` and `adapters`: storage, the vault, providers, privacy, the runtime, and the adapters that read the agent's workspace. The workspace agent runs those workspace-reading adapters on the client when the service is remote (below). |
-| **GATEWAY** (server host) | `gateway`: a same-user control client of the service, used only by the approaches that run one. It imports SHARED modules and `service.client`, and never touches the vault or storage. |
+| **SHARED** (imports SHARED only) | `protocol`, `ports`, `domain`, `config`, `observability`, `resources`, `legacy_names`, `version`; `service.control_protocol` and `service.confidential_protocol` (wire codecs); `adapters.control`; the credential-store primitives `adapters.keys.os_keyring` and `adapters.keys.owner_file_store`; the pure renderers `kernel.fact_lineage` and `kernel.claim_verification`. |
+| **WORKSPACE** (imports WORKSPACE and SHARED only; CLIENT and SERVER may import it) | The workspace readers, which run wherever the workspace is: in the local service for a local root, and in the client's workspace agent for a remote one. `adapters.git_change_capture`, `task_input_read`, `approved_checks`, `check_sandbox`, `workspace_inspect`, `home_project_reads`, `input_summary`, `git_subject_state`, `git_rev_parse`, `git_version`; `adapters.workspace_root` (the one rule for "which directory is this workspace"); and `application.observation_check_policy` (the repository's own `checks.toml`). None of them reaches storage, the vault, providers, the service or a client surface. |
+| **CLIENT** | `cli`, `mcp`, `tui`, the new `client` package, `service.client`, `service.confidential_client`, the host integration adapters under `adapters.integrations` (except the observation store), `adapters.workspace_binding`, `workspace_fingerprint`, `mcp_stdio`, `process_lifetime`, `release_runtime`, `package_upgrade`, and the client-side application modules `harness_mcp`, `host_connection`, `codex_plugin`, `applied_mcp_route`, `upgrade`, `package_update`, `observation_drain`. |
+| **SERVER** | The rest of `service`, `application`, `kernel` and `adapters`: storage, the vault, providers, privacy and the runtime. |
+| **GATEWAY** (server host) | `gateway`: a same-user control client of the service, used only by the approaches that run one. It imports SHARED modules and `service.client`, never a workspace reader, and never touches the vault or storage. |
 
 Commands carry a scope too. Each CLI and terminal-interface command is `any`, `server_host` (vault
 setup and unlock, provider and privacy configuration, backup, restore, migrate, observation store

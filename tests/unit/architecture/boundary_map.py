@@ -6,8 +6,12 @@ a submodule may override its package (``adapters.keys.os_keyring`` is SHARED ins
 test beside it, which fails on any new crossing and on any ledger entry that no longer occurs.
 
 * SHARED modules may import SHARED modules only.
-* CLIENT modules may import CLIENT and SHARED modules.
-* SERVER modules may import SERVER and SHARED modules.
+* CLIENT modules may import CLIENT, WORKSPACE and SHARED modules.
+* SERVER modules may import SERVER, WORKSPACE and SHARED modules.
+* WORKSPACE modules read a workspace and run wherever it is: in the local service for a local
+  root, and in the client's workspace agent for a server on another machine. They may import
+  WORKSPACE and SHARED modules only, so they never reach storage, the vault, providers, the
+  service or a client surface; a SHARED or GATEWAY module may not import them.
 * GATEWAY modules (a same-user control client on the server host) may import SHARED modules and
   ``finishup.service.client`` only.
 * ``finishup.cli.gateway`` — the ``server_host`` commands that run the gateway and manage its
@@ -27,7 +31,7 @@ __all__ = [
     "side_of",
 ]
 
-type Side = Literal["SHARED", "CLIENT", "SERVER", "GATEWAY"]
+type Side = Literal["SHARED", "CLIENT", "SERVER", "WORKSPACE", "GATEWAY"]
 
 MODULE_SIDES: Final[dict[str, Side]] = {
     # The package root marker (exact match only: it is never a prefix fallback, so a new top-level
@@ -63,21 +67,16 @@ MODULE_SIDES: Final[dict[str, Side]] = {
     "finishup.application.applied_mcp_route": "CLIENT",
     "finishup.application.upgrade": "CLIENT",
     "finishup.application.package_update": "CLIENT",
-    "finishup.application.observation_check_policy": "CLIENT",
     "finishup.application.observation_drain": "CLIENT",
     # The kernel is server-side except two pure renderers the client surfaces share.
     "finishup.kernel": "SERVER",
     "finishup.kernel.fact_lineage": "SHARED",
     "finishup.kernel.claim_verification": "SHARED",
-    # Adapters: storage, vault, providers, and every read of the workspace for the service are
-    # server-side; host integrations and the client's own process facts are client-side.
+    # Adapters: storage, vault and providers are server-side; host integrations and the client's
+    # own process facts are client-side.
     "finishup.adapters": "SERVER",
     "finishup.adapters.control": "SHARED",
     "finishup.adapters.control.unix_socket": "SHARED",
-    "finishup.adapters.git_rev_parse": "SHARED",
-    "finishup.adapters.git_version": "SHARED",
-    "finishup.adapters.git_subject_state": "SHARED",
-    "finishup.adapters.workspace_root": "SHARED",
     "finishup.adapters.keys.os_keyring": "SHARED",
     "finishup.adapters.keys.owner_file_store": "SHARED",
     "finishup.adapters.integrations": "CLIENT",
@@ -88,6 +87,20 @@ MODULE_SIDES: Final[dict[str, Side]] = {
     "finishup.adapters.process_lifetime": "CLIENT",
     "finishup.adapters.release_runtime": "CLIENT",
     "finishup.adapters.package_upgrade": "CLIENT",
+    # The workspace readers (ADR-051): whoever holds the workspace runs them, the local service
+    # for a local root and the client's workspace agent for a remote one.
+    "finishup.adapters.approved_checks": "WORKSPACE",
+    "finishup.adapters.check_sandbox": "WORKSPACE",
+    "finishup.adapters.git_change_capture": "WORKSPACE",
+    "finishup.adapters.git_rev_parse": "WORKSPACE",
+    "finishup.adapters.git_subject_state": "WORKSPACE",
+    "finishup.adapters.git_version": "WORKSPACE",
+    "finishup.adapters.home_project_reads": "WORKSPACE",
+    "finishup.adapters.input_summary": "WORKSPACE",
+    "finishup.adapters.task_input_read": "WORKSPACE",
+    "finishup.adapters.workspace_inspect": "WORKSPACE",
+    "finishup.adapters.workspace_root": "WORKSPACE",
+    "finishup.application.observation_check_policy": "WORKSPACE",
     # A same-user control client of the daemon on the server host (approach-owned package).
     "finishup.gateway": "GATEWAY",
 }
@@ -120,6 +133,9 @@ def allowed(importer: str, imported: str) -> bool:
         return True
     if source == "SHARED":
         return False
+    if target == "WORKSPACE":
+        # Either side may run the workspace readers; a gateway never reads a workspace.
+        return source != "GATEWAY"
     if source == "GATEWAY":
         return imported == GATEWAY_SERVICE_CLIENT or target == "GATEWAY"
     if target == "GATEWAY":

@@ -1494,6 +1494,11 @@ later process to the default service.
   the client's workspace agent serves the server's workspace reads; receipts carry the
   `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
   by the client over the ordinary control channel, not by the server's sweeper.
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.

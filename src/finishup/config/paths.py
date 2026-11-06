@@ -36,6 +36,7 @@ __all__ = [
     "PathSafetyError",
     "RuntimePin",
     "active_root",
+    "ambient_installation_dirs",
     "ambient_registry_dirs",
     "bundle_root",
     "cache_dir",
@@ -461,6 +462,33 @@ def ambient_registry_dirs(*, _probe: _PathProbe | None = None) -> tuple[Path, Pa
 
     dirs = _ambient_dirs(_probe_or_default(_probe))
     return Path(dirs.user_config_dir), Path(dirs.user_state_dir)
+
+
+def ambient_installation_dirs() -> tuple[Path, ...]:
+    """Every platform directory the everyday installation may use, under both names (ADR-048).
+
+    The data, configuration, cache, state, log and runtime directories of the ambient
+    installation as ``finishup`` and as the legacy ``yoetz``, whatever root this process uses and
+    whether or not they exist. Nothing is read, validated or created: the answer only names
+    directories a caller keeps reads out of (the workspace agent's own-directory fence, ADR-051),
+    so a selected or isolated root never makes the everyday installation readable.
+    """
+
+    found: list[Path] = []
+    for app_name in (APP_NAME, LEGACY_APP_NAME):
+        dirs = _platform_dirs(app_name)
+        found.extend(
+            Path(directory)
+            for directory in (
+                dirs.user_data_dir,
+                dirs.user_config_dir,
+                dirs.user_cache_dir,
+                dirs.user_state_dir,
+                dirs.user_log_dir,
+                dirs.user_runtime_dir,
+            )
+        )
+    return tuple(dict.fromkeys(found))
 
 
 def _read_selection(path: Path, probe: _PathProbe) -> str | None:

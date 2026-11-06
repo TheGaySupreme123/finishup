@@ -223,6 +223,8 @@ def test_schema_registry_is_complete() -> None:
             }
             else "2.10.0"
             if path.endswith("-2.10.0.schema.json")
+            else "1.1.0"
+            if path == "service/isolation-report-1.1.0.schema.json"
             else "2.9.0"
             if path.endswith("-2.9.0.schema.json")
             else "2.8.0"

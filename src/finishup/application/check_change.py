@@ -73,6 +73,7 @@ from finishup.ports.change_capture import (
 from finishup.ports.clock import ClockPort
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
 from finishup.ports.runtime import TaskRuntime
+from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -104,6 +105,8 @@ _MAX_REDACTION_PASSES: Final = 64
 _SHOWN_FILE_DOMAIN: Final = b"yoetz/check-change-shown-file/v1\x00"
 _SHOWN_VIEW_DOMAIN: Final = b"yoetz/check-change-shown-view/v1\x00"
 _STRUCTURAL_METADATA_UNAVAILABLE: Final = "metadata_unavailable"
+# A claim-bound task's workspace agent did not answer a read the capture needed (ADR-051).
+_WORKSPACE_AGENT_UNAVAILABLE: Final = "workspace_agent_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +335,13 @@ async def _pin_first_check_base(
             component=_COMPONENT,
             operation="check_time_change_base_not_pinned",
             reason=exc.reason,
+            request_id=request_id,
+        )
+    except WorkspaceAgentUnavailable:
+        record_bounded_event_without_raising(
+            component=_COMPONENT,
+            operation="check_time_change_base_not_pinned",
+            reason=_WORKSPACE_AGENT_UNAVAILABLE,
             request_id=request_id,
         )
     except Exception as exc:
@@ -680,6 +690,13 @@ def _capture_redacted(
     )
     # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
     # the stored object, so a recovered job replays the decision instead of re-reading the disk.
+    # A claim-bound workspace's candidates are looked up on the client's machine (ADR-051).
+    lstat_probe = getattr(port, "lstat_probe", None)
+    probe = (
+        cast(Callable[[str], Callable[[str], os.stat_result | None] | None], lstat_probe)(workspace)
+        if callable(lstat_probe)
+        else None
+    )
     if outside_inputs_not_admitted(
         input_paths,
         verification_paths,
@@ -688,6 +705,7 @@ def _capture_redacted(
         priority_paths,
         task_started_at=task_started_at,
         space_cut=space_cut_paths,
+        probe=probe,
     ):
         capture = replace(capture, outside_inputs_not_admitted=True)
     return capture
@@ -770,6 +788,15 @@ async def capture_check_time_change(
             request_id=request_id,
         )
         return CheckChangeOutcome(unavailable=True, reason=exc.reason)
+    except WorkspaceAgentUnavailable:
+        # The capture, or an input read inside it, needed the client's agent and got no answer.
+        record_bounded_event_without_raising(
+            component=_COMPONENT,
+            operation="check_time_change_unavailable",
+            reason=_WORKSPACE_AGENT_UNAVAILABLE,
+            request_id=request_id,
+        )
+        return CheckChangeOutcome(unavailable=True, reason=_WORKSPACE_AGENT_UNAVAILABLE)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -817,6 +844,8 @@ async def capture_structural_check_change(
             raise TypeError("check_change_metadata_invalid")
     except ChangeCaptureUnavailable as exc:
         return None, exc.reason
+    except WorkspaceAgentUnavailable:
+        return None, _WORKSPACE_AGENT_UNAVAILABLE
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -898,6 +927,13 @@ async def record_task_change_base(
             component="start",
             operation="task_change_base_unavailable",
             reason=exc.reason,
+            request_id=request_id,
+        )
+    except WorkspaceAgentUnavailable:
+        record_bounded_event_without_raising(
+            component="start",
+            operation="task_change_base_unavailable",
+            reason=_WORKSPACE_AGENT_UNAVAILABLE,
             request_id=request_id,
         )
     except Exception as exc:
@@ -1731,7 +1767,7 @@ async def requested_output_states(
         probes = cast(tuple[object, ...], raw_probes)
         if len(probes) != len(bounded):
             raise TypeError("requested_path_probe_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return unverified
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -1875,7 +1911,7 @@ async def _with_declared_line_counts(
             base_paths
         ):
             raise TypeError("change_line_counts_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return states
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -2085,7 +2121,7 @@ async def undeclared_references(
             tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1])))),
             tuple(sorted(ambiguous.items(), key=lambda item: os.fsencode(item[0]))),
         )
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return empty
     except Exception as exc:
         record_unexpected_exception_without_raising(
