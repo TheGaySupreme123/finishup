@@ -4809,15 +4809,15 @@ wait `unavailable`.
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
-| `target_root_is_remote` | `service run` or `service start` is asked to serve a remote target's root | the service runs on the server; use `finishup server test` here |
+| `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
 | `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root` and `server connect`) | the owner runs `finishup server use NAME` on the trusted console |
 
 The remote connection phases ride as `phase` on a retryable `service_unavailable`
 (`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,
 `remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running`,
-`remote_incompatible` (whose text names both releases), and the client's own refusal
-`target_reauthorization_required`. A client that catches that `TargetError` from the binding
+`remote_incompatible` (whose text names both releases), and the client's own refusals
+`target_reauthorization_required` and `target_root_is_remote`. A client that catches that `TargetError` from the binding
 helpers raises it as this phase, so every surface renders its directive. The check-time change gains the
 unavailable reason `workspace_agent_unavailable`, so
 `check_time_change_unavailable_workspace_agent_unavailable` joins

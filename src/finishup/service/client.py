@@ -273,9 +273,37 @@ class _SpawnedService:
     startup_correlation_id: str
 
 
-def _spawn_service_process() -> _SpawnedService:
-    """Start one detached service that records any startup failure under a fresh id (#1040)."""
+def _refuse_remote_target_root() -> None:
+    """A remote server target's root never starts a local service (ADR-051).
 
+    Its record names a remote kind, or cannot be read and may: the spawn is refused at once with
+    the closed phase ``target_root_is_remote``, instead of starting a child that refuses unseen
+    while the caller waits out its whole start budget. A root that cannot be resolved at all is
+    left to the spawn's own path-safety refusal.
+    """
+
+    from finishup.client.targets import TargetError, TargetRecordUnreadable, active_target_record
+
+    try:
+        record = active_target_record()
+    except TargetRecordUnreadable:
+        remote = True
+    except TargetError:
+        return
+    else:
+        remote = record is not None and record.is_remote
+    if remote:
+        raise ControlError("service_unavailable", retryable=True, phase="target_root_is_remote")
+
+
+def _spawn_service_process() -> _SpawnedService:
+    """Start one detached service that records any startup failure under a fresh id (#1040).
+
+    A remote server target's root raises ``service_unavailable`` with the phase
+    ``target_root_is_remote`` and starts nothing.
+    """
+
+    _refuse_remote_target_root()
     startup_correlation_id = new_id(IdKind.CORRELATION)
     command = (
         sys.executable,

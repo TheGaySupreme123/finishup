@@ -466,7 +466,8 @@ SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
 # protocol reason code a surface reports for it, so its recovery directive resolves the same way
 # on every surface; no host, user or path rides on it. Besides the five ``remote_*`` connection
 # failures, the client itself refuses a target the owner authorized under an older disclosure
-# (``target_reauthorization_required``) before anything is sent. Every phase is retryable: the
+# (``target_reauthorization_required``) before anything is sent, and refuses to start a local
+# service for a remote target's root (``target_root_is_remote``). Every phase is retryable: the
 # same request succeeds once that phase's own repair is made.
 REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
     {
@@ -476,6 +477,7 @@ REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
         "remote_service_not_running",
         "remote_unreachable",
         "target_reauthorization_required",
+        "target_root_is_remote",
     }
 )
 # #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check; ADR-051:

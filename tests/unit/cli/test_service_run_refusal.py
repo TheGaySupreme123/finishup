@@ -225,3 +225,16 @@ def test_configuration_refusal_names_its_reason_like_every_other_command(
 
     assert result.exit_code == 2
     assert result.stderr == "invalid_request: unknown_config_env_var\n"
+
+
+@pytest.mark.usefixtures("no_singleton_stamp")
+def test_target_root_is_remote_names_the_way_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(**_kwargs: object) -> None:
+        raise LifecycleError("target_root_is_remote")
+
+    monkeypatch.setattr(daemon_module, "main", refuse)
+    result = CliRunner().invoke(cli.app, ["service", "run"])
+
+    assert result.exit_code == 20
+    assert result.stderr.startswith("target_root_is_remote: this FinishUP root belongs to")
+    assert "'finishup server use local'" in result.stderr

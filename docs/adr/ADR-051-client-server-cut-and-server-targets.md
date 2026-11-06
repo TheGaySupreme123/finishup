@@ -316,7 +316,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   `workspace_agent_refused`.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never
   falls back to the ambient one; a service refuses to run in a root whose target is remote
-  (`target_root_is_remote`). Writes fail closed and stay retryable through the existing
+  (`target_root_is_remote`). The daemon refuses at composition, before anything is created, when
+  the root's `target.json` names a remote kind or cannot be read (it reads only the kind, through
+  the shared `config.paths.server_target_kind`), and an on-demand start refuses to spawn a local
+  service for such a root at once instead of waiting out its start budget. Writes fail closed and stay retryable through the existing
   reconnect, operation-status probe and `request_id` replay. There is no local write queue: a
   queued write would let a receipt describe work the server never recorded.
 - **No replay across targets.** Idempotency is scoped by installation (ADR-002 decision 4). A
