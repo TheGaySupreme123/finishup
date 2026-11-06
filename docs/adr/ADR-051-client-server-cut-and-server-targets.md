@@ -545,7 +545,8 @@ through the same relay; human-control and secret channels never leave the server
   a session after 120 seconds idle, holds at most 64 per key, and stops with `gateway_stale` when
   the daemon answers with another release's manifest. `--behind-proxy` serves plain HTTP on a
   loopback address only. There is no access log; audit lines carry the key id, route, method,
-  status, closed reason and correlation id only. v1 has one principal (`owner`): claims pass
+  status, closed reason and correlation id only, and the audit is bounded (one rotation at 8 MiB;
+  unauthenticated refusals written once per reason per minute, with a count of the rest). v1 has one principal (`owner`): claims pass
   unchanged, so the owner's SSH and HTTPS clients reach the same tasks; per-principal claim
   namespaces wait for multi-key hosting.
 - **Binding at the connect seam.** `service.client` binds every connection to a remote root:

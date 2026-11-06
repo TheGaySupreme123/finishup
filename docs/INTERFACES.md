@@ -4956,8 +4956,12 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   manifest. `<state>/gateway/keys.json` (`yoetz.gateway-keys/1`) holds `key_id`, `label`, `scope`,
   `principal` (`owner`), `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `salt` and
   `digest` (`sha256(salt ‖ secret)`); `gateway/keys.lock` serializes writers. Audit lines go to
-  `<log dir>/gateway-audit.jsonl` with `event`, `correlation_id`, `route`, `key_id`, `method`,
-  `status` and `reason` only; every response carries `FinishUP-Correlation-Id`.
+  `<log dir>/gateway-audit.jsonl` with `event` (`gateway_request`), `correlation_id`, `route`,
+  `key_id`, `method`, `status` and `reason` only; every response carries
+  `FinishUP-Correlation-Id`. The file is renamed to `gateway-audit.jsonl.1` (replacing the previous
+  one) once it reaches 8 MiB. A refusal of a request no key authenticated is written at most once
+  per reason per minute; the next window first writes `event` `gateway_refusals_suppressed` with
+  that `reason` and the `count` not written.
 
 ### Several-agent setup batches (issue #1119)
 

@@ -557,3 +557,60 @@ async def test_audit_lines_carry_closed_tokens_only(gateway: _Gateway) -> None:
         text = json.dumps(record)
         for forbidden in (sid, secret, "evil.example", 'agent"', "gw.example"):
             assert forbidden not in text.replace('"route": "sessions"', "")
+
+
+@pytest.mark.anyio
+async def test_a_flood_without_a_key_cannot_grow_the_audit(
+    gateway: _Gateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anyone who reaches the listener can send requests; a refusal of one no key authenticated
+    is audited at most once per reason per window, and the rest are counted, not written."""
+
+    import finishup.gateway.app as gateway_app
+
+    for _attempt in range(50):
+        refused = await gateway.client.get("/v1/server", headers={"Authorization": "Bearer x"})
+        assert refused.status_code == 401
+        forbidden = await gateway.client.get("/v1/server", headers={"Origin": "https://x.example"})
+        assert forbidden.status_code == 403
+    assert [(record["event"], record["reason"]) for record in gateway.audit.records] == [
+        ("gateway_request", "api_key_invalid"),
+        ("gateway_request", "origin_forbidden"),
+    ]
+    # Authenticated requests are audited one line each, as before.
+    for _attempt in range(3):
+        await gateway.client.get("/v1/server", headers=gateway.headers())
+    assert len(gateway.audit.records) == 5
+    # The next window writes the count of what the previous one did not.
+    monkeypatch.setattr(gateway_app, "UNAUTHENTICATED_AUDIT_SECONDS", 0.0)
+    await gateway.client.get("/v1/server", headers={"Authorization": "Bearer x"})
+    assert gateway.audit.records[-2:] == [
+        {"event": "gateway_refusals_suppressed", "reason": "api_key_invalid", "count": 49},
+        {
+            "event": "gateway_request",
+            "correlation_id": gateway.audit.records[-1]["correlation_id"],
+            "route": "server",
+            "key_id": None,
+            "method": None,
+            "status": 401,
+            "reason": "api_key_invalid",
+        },
+    ]
+
+
+def test_the_audit_file_rotates_once_it_reaches_its_bound(tmp_path: Path) -> None:
+    from finishup.gateway.app import FileAuditSink
+
+    path = tmp_path / "log" / "gateway-audit.jsonl"
+    sink = FileAuditSink(path, rotate_bytes=200)
+    record: dict[str, JsonValue] = {"event": "gateway_request", "reason": None, "status": 200}
+    line = len(json.dumps(record, separators=(",", ":"))) + 1
+    for _line in range(100):
+        sink.write(record)
+    rotated = path.with_name("gateway-audit.jsonl.1")
+    assert path.stat().st_size < 200 + line
+    assert rotated.stat().st_size < 200 + line
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert {json.loads(text)["event"] for text in path.read_text().splitlines()} == {
+        "gateway_request"
+    }
