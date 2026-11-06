@@ -1505,7 +1505,12 @@ class FinishUpRuntime:
 
         import asyncio
 
-        from finishup.cli.server import ServerCommandRefused, build_status_document, status_lines
+        from finishup.cli.server import (
+            ServerCommandRefused,
+            admitted_folder_lines,
+            build_status_document,
+            status_lines,
+        )
         from finishup.client.targets import TargetError
         from finishup.config.paths import PathSafetyError
 
@@ -1513,7 +1518,8 @@ class FinishUpRuntime:
             document = await asyncio.to_thread(build_status_document, name)
         except (ServerCommandRefused, TargetError, PathSafetyError) as error:
             raise _server_failure(error) from None
-        return status_lines(document)
+        # The folders this client admitted for that server (ADR-051 decision 5), read off the loop.
+        return status_lines(document, await asyncio.to_thread(admitted_folder_lines, document))
 
     async def use_server(self, name: str) -> str:
         """Select ``name`` (``local``: the everyday server), as ``finishup server use`` does.

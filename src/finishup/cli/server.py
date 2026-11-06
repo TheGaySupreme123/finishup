@@ -16,6 +16,12 @@ trusted console; refusals name a target by its id or not at all, with a closed r
 
 An isolation root or a runtime pin outranks the selection; while one is in force every command
 that would change or use the selection is refused with ``selection_overridden``.
+
+``folders add NAME FOLDER`` lets a remote target's server read beneath one folder outside the
+claimed workspace on this computer, after the owner types the target name on the trusted console;
+``folders remove`` is the reverse, and ``folders list`` and ``status`` show them. The record is
+this client's own (``finishup.client.server_folders``) and never sent to the server (ADR-051
+decision 5).
 """
 
 from __future__ import annotations
@@ -154,6 +160,32 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         _USAGE,
     ),
     "authorization_declined": ("the target name was not typed; nothing was changed", _USAGE),
+    # 'server folders' (ADR-051 decision 5): fixed text, never the folder.
+    "folders_not_applicable": (
+        "a server on this computer reads your folders under its own privacy policy; folders are "
+        "admitted only for a server on another machine, a port or the web",
+        _USAGE,
+    ),
+    "folder_invalid": (
+        "give an existing folder by its full path (starting with /), with no link on the way and "
+        "no hidden or system folder; your home folder, a folder that holds it, and its private "
+        "folders cannot be admitted",
+        _USAGE,
+    ),
+    "folder_limit": (
+        "that server may already read the most folders FinishUP allows; remove one first",
+        _USAGE,
+    ),
+    "folders_record_invalid": (
+        "the record of folders that server may read is damaged, so it reads none; 'finishup "
+        "server folders remove NAME --all' clears it",
+        _UNSAFE,
+    ),
+    "folders_record_unsafe": (
+        "the record of folders that server may read is not owner-only or is a link, so it reads "
+        "none; 'finishup server folders remove NAME --all' clears it",
+        _UNSAFE,
+    ),
     "zero_network_in_force": (
         "this computer's FinishUP is set to make no network connections, so it cannot use a "
         "server on another machine; change the privacy policy on this computer first",
@@ -883,7 +915,9 @@ def build_status_document(
     return document
 
 
-def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
+def status_lines(document: dict[str, JsonValue], folders: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """The owner display of a status document; ``folders`` are ``admitted_folder_lines``."""
+
     target = cast(dict[str, JsonValue], document["target"])
     probe = cast(dict[str, JsonValue], document["probe"])
     name = target["name"] or "this process's isolated root"
@@ -912,6 +946,7 @@ def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
         lines.append(
             f"Round trip p95: {probe['round_trip_p95_ms']} ms over {probe['samples']} status calls"
         )
+    lines.extend(folders)
     if document["selection_overridden"]:
         lines.append("The server selection is not used here: an isolation root decides it.")
     return tuple(lines)
@@ -930,7 +965,7 @@ def server_status(
         sys.stdout.buffer.write(canonical_encode(cast(JsonValue, document)) + b"\n")
         sys.stdout.flush()
         return
-    _emit(status_lines(document))
+    _emit(status_lines(document, admitted_folder_lines(document)))
 
 
 @server_app.command("test")
@@ -1151,3 +1186,178 @@ def server_disconnect(
 
     label = _runtime_call(name, "stop")
     typer.echo(f"Disconnected: {label}.")
+
+
+# --- folders outside your projects a server may read (ADR-051 decision 5) --------------------
+
+folders_app = typer.Typer(
+    help="Let a server on another machine read a folder outside your projects on this computer.",
+    no_args_is_help=True,
+)
+server_app.add_typer(folders_app, name="folders")
+
+_FOLDER_NOTICE: Final = (
+    "Let server target {name} ({target_id}) read files beneath this folder on this computer:",
+    "  {folder}",
+    "",
+    "When that server checks or reviews your work, the FinishUP workspace agent here may send it",
+    "the text of files beneath this folder that a task names, that its reviewer asks to read, or",
+    "that your agent declared as a test, within FinishUP's usual size limits. Hidden and",
+    "credential-named files are never read and links are never followed. The server's own",
+    "privacy policy still decides whether a task's input files are read at all.",
+    "Undo it with 'finishup server folders remove {name} FOLDER'.",
+    "",
+)
+
+
+def _remote_target_or_fail(name: str) -> ServerTarget:
+    record = _target_or_fail(name)
+    if not record.is_remote:
+        raise ServerCommandRefused("folders_not_applicable")
+    return record
+
+
+def _confirm_folder_on_trusted_console(record: ServerTarget, folder: str) -> None:
+    """Show what admitting ``folder`` lets ``record``'s server read; require the typed name."""
+
+    from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+
+    try:
+        with TrustedForegroundConsole() as console:
+            for line in _FOLDER_NOTICE:
+                console.write(
+                    line.format(name=record.name, target_id=record.target_id, folder=folder) + "\n"
+                )
+            console.read_choice(
+                "Type the target name to allow it (anything else cancels): ",
+                (record.name.encode("ascii"),),
+            )
+    except TrustedConsoleError as error:
+        if error.reason == "trusted_console_required":
+            raise ServerCommandRefused("trusted_console_required") from None
+        raise ServerCommandRefused("authorization_declined") from None
+
+
+def _folders_of(record: ServerTarget) -> tuple[str, ...]:
+    from finishup.client.server_folders import FolderError, read_folders
+
+    try:
+        return read_folders(target_root(record.target_id), record.target_id)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+
+
+def admitted_folder_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
+    """Owner-display lines naming the folders a status document's remote target may read here.
+
+    Empty for a local target. Read from this client's own record, never from the server; a
+    record that cannot be read admits nothing, and says so.
+    """
+
+    from finishup.client.server_folders import FolderError, read_folders
+    from finishup.client.targets import REMOTE_KINDS
+
+    target = cast(dict[str, JsonValue], document["target"])
+    target_id = target["target_id"]
+    if type(target_id) is not str or target["kind"] not in REMOTE_KINDS:
+        return ()
+    try:
+        folders = read_folders(target_root(target_id), target_id)
+    except (FolderError, TargetError):
+        return (
+            "Folders it may read outside your projects: none, its record cannot be read "
+            "('finishup server folders remove NAME --all' clears it)",
+        )
+    if not folders:
+        return ("Folders it may read outside your projects: none",)
+    return ("Folders it may read outside your projects:", *(f"  {folder}" for folder in folders))
+
+
+@folders_app.command("add")
+@_cli
+def server_folders_add(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    folder: Annotated[str, typer.Argument(help="An existing folder, by its full path.")],
+) -> None:
+    """Let a server read files beneath FOLDER on this computer (you confirm it here)."""
+
+    from finishup.cli.privacy_setup import admitted_root_from_path
+    from finishup.client.server_folders import MAX_FOLDERS, FolderError, add_folder
+
+    _require_selection_in_force()
+    record = _remote_target_or_fail(name)
+    # The rule the local service uses for an admitted input root: an existing directory named
+    # by its absolute, normalized path with no link on the way, never hidden or a system tree.
+    canonical = admitted_root_from_path(folder)
+    if canonical is None:
+        raise ServerCommandRefused("folder_invalid")
+    current = _folders_of(record)
+    if canonical in current:
+        typer.echo(f"{record.name} ({record.target_id}) may already read that folder.")
+        return
+    if len(current) >= MAX_FOLDERS:
+        raise ServerCommandRefused("folder_limit")
+    _confirm_folder_on_trusted_console(record, canonical)
+    try:
+        with registry_lock():
+            add_folder(target_root(record.target_id), record.target_id, canonical)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    typer.echo(f"{record.name} ({record.target_id}) may now read files beneath {canonical}.")
+
+
+@folders_app.command("list")
+@_cli
+def server_folders_list(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+) -> None:
+    """Show the folders outside your projects a server may read on this computer."""
+
+    _require_no_explicit_source()
+    record = _remote_target_or_fail(name)
+    folders = _folders_of(record)
+    if not folders:
+        typer.echo(
+            f"{record.name} ({record.target_id}) may read no folder outside your projects on "
+            "this computer."
+        )
+        return
+    typer.echo(f"{record.name} ({record.target_id}) may read files beneath:")
+    _emit(tuple(f"  {item}" for item in folders))
+
+
+@folders_app.command("remove")
+@_cli
+def server_folders_remove(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    folder: Annotated[
+        str | None, typer.Argument(help="A folder 'server folders list' shows.")
+    ] = None,
+    all_folders: Annotated[
+        bool,
+        typer.Option("--all", help="Remove every folder (also clears a damaged record)."),
+    ] = False,
+) -> None:
+    """Stop a server reading beneath a folder on this computer (takes effect at once)."""
+
+    from finishup.client.server_folders import FolderError, clear_folders, remove_folder
+
+    _require_no_explicit_source()
+    if (folder is None) == (not all_folders):
+        raise ServerCommandRefused("usage", message="give exactly one of FOLDER or --all")
+    record = _remote_target_or_fail(name)
+    root = target_root(record.target_id)
+    try:
+        with registry_lock():
+            removed = (
+                clear_folders(root)
+                if folder is None
+                else remove_folder(root, record.target_id, folder)
+            )
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    if not removed:
+        typer.echo(f"No such folder was admitted for {record.name} ({record.target_id}).")
+        return
+    which = "any folder" if folder is None else "that folder"
+    typer.echo(f"{record.name} ({record.target_id}) may no longer read {which} on this computer.")

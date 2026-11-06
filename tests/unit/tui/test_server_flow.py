@@ -118,6 +118,7 @@ async def test_declining_the_remote_switch_changes_nothing() -> None:
         ("add", "finishup server add NAME --local"),
         ("remove", "finishup server remove NAME"),
         ("login", "finishup server login NAME"),
+        ("folders", "finishup server folders add NAME"),
     ],
 )
 async def test_registry_changes_print_the_cli_command(choice: str, command: str) -> None:

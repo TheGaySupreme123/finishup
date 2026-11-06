@@ -7,16 +7,21 @@ answers it by running the very local adapters a local service runs, with every f
 Git hardening and ownership checks, ignore rules, credential-named and hidden-path refusals,
 byte and time bounds, and the network-denying check sandbox.
 
-Two confinements hold on top of the adapters':
+These confinements hold on top of the adapters':
 
 * **The claimed workspace only.** A handler is built for the one workspace its connection
   claimed. The server names that workspace by the connection's ``client:`` handle; the handler
   maps the handle to its own root and refuses any other handle (``workspace_not_claimed``).
-* **Outside reads stay outside.** Reads beyond the workspace are confined to the admitted roots
-  the server names (each must pass the owner-policy rule ``admitted_input_root_valid``) and never
-  enter the claimed workspace through an outside root, or this client's own FinishUP directories
-  at all, whatever the server lists as excluded. A declared test names no root, so it is read
-  only inside the claimed workspace (``root_not_admitted`` elsewhere).
+* **Outside reads only where this client's owner admitted them.** A read root the server names
+  must have the shape an owner may admit (``admitted_input_root_valid``) and lie inside the
+  claimed worktree or at or beneath a folder this computer's owner admitted for the server target
+  in use (``finishup server folders add``; ``client.server_folders``). That record is this
+  client's own, read on every call and never sent to the server; one that cannot be read admits
+  nothing. A single-root read beyond it is refused (``root_not_admitted``); a multi-root task
+  input read reads beneath the admitted roots only. A declared test is read inside the claimed
+  workspace, or beneath an admitted folder, and nowhere else. Outside reads never enter the
+  claimed workspace through an outside root, or this client's own FinishUP directories at all,
+  whatever the server lists as excluded.
 
 An approved check runs only when the repository's own ``.finishup/checks.toml`` (read here, by
 the existing policy loader) approves exactly the argv the server asked for; anything else is
@@ -52,6 +57,7 @@ from finishup.adapters.git_subject_state import (
 from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.task_input_read import (
     ReadDeadline,
+    declared_test_top,
     list_beneath,
     read_declared_test,
     read_outside_inputs,
@@ -65,6 +71,7 @@ from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
 )
+from finishup.client.server_folders import active_target_folders, folder_covers, folder_holds_home
 from finishup.config import paths as config_paths
 from finishup.domain.privacy import admitted_input_root_valid, system_directory_path
 from finishup.domain.repository_excerpt import credential_named_bytes
@@ -251,6 +258,7 @@ class WorkspaceAgentHandler:
         "_opened_guard",
         "_opened_key",
         "_operations",
+        "_outside_folders",
         "_protected",
         "_root",
         "_sandbox",
@@ -268,8 +276,10 @@ class WorkspaceAgentHandler:
         check_sandbox: CheckSandboxPort | None = None,
         opened_handle_key: bytes | None = None,
         check_policy_trust: Callable[[str], bool] | None = None,
+        outside_folders: Callable[[], Sequence[str]] | None = None,
     ) -> None:
-        """``workspace`` is the locator the connection's claim was computed from.
+        """``workspace`` is the locator the connection's claim was computed from; never the
+        filesystem root, which no claim names (``workspace_locator_path_invalid``).
 
         ``protected`` defaults to ``client_protected_directories()``; ``operations`` to the whole
         catalog. ``check_sandbox`` replaces the platform's network-denying sandbox only where a
@@ -286,11 +296,15 @@ class WorkspaceAgentHandler:
         ``check_policy_trust`` answers whether this client's owner trusted a check policy's raw
         digest; by default this process's own observation store answers
         (``client.observation_outbox.check_policy_trusted``).
+
+        ``outside_folders`` answers, on each call, the folders outside the workspace this
+        client's owner admitted for the server; by default the active server target's own record
+        (``client.server_folders.active_target_folders``). An answer that fails admits nothing.
         """
 
         if type(workspace) is not WorkspaceLocator:
             raise TypeError("workspace_locator_invalid")
-        if posixpath.normpath(workspace.path) != workspace.path:
+        if posixpath.normpath(workspace.path) != workspace.path or workspace.path == "/":
             raise ValueError("workspace_locator_path_invalid")
         directories = client_protected_directories() if protected is None else tuple(protected)
         if any(type(item) is not str or not item.startswith("/") for item in directories):
@@ -321,6 +335,9 @@ class WorkspaceAgentHandler:
         # Whether this client's owner trusted a check policy's raw digest (ADR-051 decision 12);
         # None reads this process's own observation store, where 'observe checks trust' records it.
         self._check_policy_trust = check_policy_trust
+        # The folders outside the workspace the owner admitted for this server (ADR-051 decision
+        # 5); None reads the active target's record, where 'server folders add' writes it.
+        self._outside_folders = outside_folders
         self._opened: OrderedDict[str, LocalWorkspaceHandle] = OrderedDict()
         self._opened_guard = threading.Lock()
         self._table: dict[WorkspaceOperation, Callable[[Any, _Call], object]] = {
@@ -433,10 +450,53 @@ class WorkspaceAgentHandler:
         own = (self._root, *self._protected) if outside else self._protected
         return tuple(dict.fromkeys((*filter(_examinable, resolved), *own)))
 
-    @staticmethod
-    def _admitted(roots: Sequence[str]) -> None:
+    def _folders(self) -> tuple[str, ...]:
+        """The folders this client's owner admitted for the server, read now; none on failure."""
+
+        try:
+            found = (
+                active_target_folders()
+                if self._outside_folders is None
+                else tuple(self._outside_folders())
+            )
+        except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
+            return ()
+        return tuple(
+            folder
+            for folder in found
+            if type(folder) is str
+            and admitted_input_root_valid(folder)
+            and not folder_holds_home(folder)
+        )
+
+    def _inside_claimed(self, path: str) -> bool:
+        return path == self._root or path.startswith(self._root.rstrip("/") + "/")
+
+    def _admitted_roots(self, roots: Sequence[str]) -> tuple[str, ...]:
+        """The named roots this client admits: in the claimed worktree, or at or beneath a folder
+        the owner admitted for this server. A root of a shape no owner could admit is refused."""
+
         if any(not admitted_input_root_valid(root) for root in roots):
             raise _Outcome("root_not_admitted")
+        folders = self._folders()
+        return tuple(
+            root for root in roots if self._inside_claimed(root) or folder_covers(root, folders)
+        )
+
+    def _admitted(self, root: str) -> None:
+        if self._admitted_roots((root,)) != (root,):
+            raise _Outcome("root_not_admitted")
+
+    def _claimed_relative(self, spellings: Sequence[str]) -> str | None:
+        """The path strictly beneath the claimed root that one of ``spellings`` names, relative
+        to it; ``None`` when none lies beneath it. Exact: the claimed root is the resolved
+        locator every client surface sends, and a differently cased spelling is not beneath it."""
+
+        prefix = self._root.rstrip("/") + "/"
+        for spelling in spellings:
+            if spelling.startswith(prefix) and len(spelling) > len(prefix):
+                return spelling[len(prefix) :]
+        return None
 
     def _read_root(
         self, root: str, excluded: Sequence[str], call: _Call
@@ -447,7 +507,7 @@ class WorkspaceAgentHandler:
 
         if not root.startswith("/"):
             return self._location(root, call), self._excluded(excluded, call, outside=False)
-        self._admitted((root,))
+        self._admitted(root)
         if _folded_within(root, self._protected):
             raise _Outcome("root_not_admitted")
         return root, self._excluded(excluded, call, outside=True)
@@ -542,9 +602,15 @@ class WorkspaceAgentHandler:
     # --- reads ------------------------------------------------------------------------------
 
     def _read_outside_inputs(self, arguments: ReadOutsideInputsArguments, call: _Call) -> object:
-        self._admitted(arguments.roots)
+        """Task inputs beneath the named roots this client admits, and only those.
+
+        A root the owner did not admit here is passed over like a file that fails a fence, not
+        refused: the call reads what lies beneath the others, so the check-time change it rides
+        on stays available. A local service reads beneath its policy's roots alone.
+        """
+
         return read_outside_inputs(
-            arguments.roots,
+            self._admitted_roots(arguments.roots),
             arguments.values,
             limit=arguments.limit,
             excluded=self._excluded(arguments.excluded, call, outside=True),
@@ -554,9 +620,8 @@ class WorkspaceAgentHandler:
     def _snapshot_outside_inputs(
         self, arguments: SnapshotOutsideInputsArguments, call: _Call
     ) -> object:
-        self._admitted(arguments.roots)
         return snapshot_outside_inputs(
-            arguments.roots,
+            self._admitted_roots(arguments.roots),
             arguments.values,
             limit=arguments.limit,
             max_bytes=arguments.max_bytes,
@@ -566,23 +631,30 @@ class WorkspaceAgentHandler:
         )
 
     def _read_declared_test(self, arguments: ReadDeclaredTestArguments, call: _Call) -> object:
-        """One declared test file, read only inside the claimed workspace (ADR-051 decision 5).
+        """One declared test file, inside the claimed workspace or beneath an admitted folder.
 
         A local service reads the test file its own agent declared, outside the workspace too
-        (#1220). Here the server names the location, with no admitted root for it, and this agent
-        cannot tell whether the agent declared that path, so an outside location is refused
-        (``root_not_admitted``) rather than read on the server's word. Inside the claimed
-        workspace, named by its handle or by its absolute path, the read is the local one. The
-        comparison is exact: a differently cased spelling is refused, never let in.
+        (#1220). Here the server names the location and this agent cannot tell whether its agent
+        declared it, so the location must lie strictly beneath the claimed root (named by its
+        handle or its absolute path), or at or beneath a folder this client's owner admitted for
+        the server (ADR-051 decision 5); anything else is ``root_not_admitted``, never read on
+        the server's word. Both comparisons are made on the spelling the local read walks too: a
+        first component that is a link root owns (``/tmp`` on macOS) counts as its target. They
+        are exact otherwise: a differently cased spelling is refused, never let in. The read
+        itself is the local one, with all its fences.
         """
 
         location = self._location(arguments.location, call)
         if posixpath.normpath(location) != location:
             raise _Outcome("arguments_invalid")
-        if not location.startswith(self._root.rstrip("/") + "/"):
-            raise _Outcome("root_not_admitted")
         if call.handle is None:
             raise _Outcome("workspace_not_claimed")
+        walked = declared_test_top(location)
+        spellings = (location,) if walked is None else (location, f"{walked[0]}/{walked[1]}")
+        if self._claimed_relative(spellings) is None and not any(
+            folder_covers(spelling, self._folders()) for spelling in spellings
+        ):
+            raise _Outcome("root_not_admitted")
         return read_declared_test(
             location,
             excluded=self._excluded(arguments.excluded, call, outside=False),

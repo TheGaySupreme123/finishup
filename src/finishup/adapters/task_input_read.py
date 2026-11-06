@@ -64,6 +64,7 @@ __all__ = [
     "MAX_TASK_INPUT_READ_BYTES",
     "ReadDeadline",
     "clear_cut",
+    "declared_test_top",
     "list_beneath",
     "read_declared_test",
     "read_text_beneath",
@@ -757,6 +758,32 @@ def _beneath_system_directory(path: str) -> bool:
     return False
 
 
+def declared_test_top(location: str) -> tuple[str, str] | None:
+    """``(top, rest)`` of an absolute ``location`` as ``read_declared_test`` walks it, or ``None``.
+
+    ``top`` is the first component, replaced by its target when it is a link root owns whose
+    target is a directory at most two levels deep (``/tmp`` or ``/var`` on macOS, which lead to
+    ``/private/...``); no other link is followed. ``rest`` is the remainder below it. ``None``
+    when ``location`` has no component below the first, when the first cannot be examined, or
+    when it is a link that does not qualify.
+    """
+
+    first, _, rest = location[1:].partition("/")
+    if not first or not rest:
+        return None
+    top = "/" + first
+    try:
+        facts = os.lstat(top)
+        if stat.S_ISLNK(facts.st_mode):
+            target = os.path.realpath(top)
+            if facts.st_uid != 0 or target.count("/") > 2 or not os.path.isdir(target):
+                return None
+            top = target
+    except OSError:
+        return None
+    return top, rest
+
+
 def read_declared_test(
     location: str, *, excluded: tuple[str, ...], expired: Callable[[], bool] = lambda: False
 ) -> bytes | None:
@@ -778,19 +805,10 @@ def read_declared_test(
         or system_directory_path(location)
     ):
         return None
-    first, _, rest = location[1:].partition("/")
-    if not first or not rest:
+    walked = declared_test_top(location)
+    if walked is None:
         return None
-    top = "/" + first
-    try:
-        facts = os.lstat(top)
-        if stat.S_ISLNK(facts.st_mode):
-            target = os.path.realpath(top)
-            if facts.st_uid != 0 or target.count("/") > 2 or not os.path.isdir(target):
-                return None
-            top = target
-    except OSError:
-        return None
+    top, rest = walked
     resolved = f"{top}/{rest}"
     # By spelling (case-folded too) and by identity (#1220 review): on a case-insensitive volume
     # ``/ETC`` or ``<HOME>/LIBRARY`` names the same directory as the refused spelling.
