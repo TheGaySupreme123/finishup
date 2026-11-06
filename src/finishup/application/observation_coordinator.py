@@ -6675,7 +6675,9 @@ class ObservationCoordinator:
                 trust_ref=trust_ref,
                 trusted_at=now,
             )
-        capture = access.subject_state()
+        # Every access read blocks (ObservationWorkspaceAccess): constructing the local Git
+        # adapter probes the Git version, so it never runs on the event loop.
+        capture = await asyncio.to_thread(access.subject_state)
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6693,6 +6695,9 @@ class ObservationCoordinator:
             )
 
         current_digest = await asyncio.to_thread(subject_digest, handle)
+        runner = await asyncio.to_thread(
+            access.runner, {item.approval_commitment: item for item in policy.checks}
+        )
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
         async def persist_output(
@@ -6710,7 +6715,7 @@ class ObservationCoordinator:
 
         worker = ObservationVerificationWorker(
             repository=repository,
-            runner=access.runner({item.approval_commitment: item for item in policy.checks}),
+            runner=runner,
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,
@@ -6763,11 +6768,12 @@ class ObservationCoordinator:
                 changed_digest = canonical_digest(
                     JsonObject({"relative_paths": list(relative_paths)})
                 )
+                inspect_port = await asyncio.to_thread(access.inspect_port)
                 orchestration = await asyncio.to_thread(
                     partial(
                         orchestrate_changed_path_inspection,
                         workspace=handle,
-                        inspect_port=access.inspect_port(),
+                        inspect_port=inspect_port,
                         relative_paths=relative_paths,
                         changed_paths_digest=changed_digest,
                     )
@@ -6921,7 +6927,9 @@ class ObservationCoordinator:
             return None
         if not store.policy_digest_is_trusted(workspace, policy.raw_digest):
             return None
-        capture = access.subject_state()
+        # Every access read blocks (ObservationWorkspaceAccess): constructing the local Git
+        # adapter probes the Git version, so it never runs on the event loop.
+        capture = await asyncio.to_thread(access.subject_state)
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6938,6 +6946,9 @@ class ObservationCoordinator:
                 )
             )
 
+        runner = await asyncio.to_thread(
+            access.runner, {item.approval_commitment: item for item in policy.checks}
+        )
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
         async def persist_output(
@@ -6955,7 +6966,7 @@ class ObservationCoordinator:
 
         return ObservationVerificationWorker(
             repository=repository,
-            runner=access.runner({item.approval_commitment: item for item in policy.checks}),
+            runner=runner,
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,
