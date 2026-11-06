@@ -144,7 +144,12 @@ def test_mcp_server_import_graph_excludes_the_cli_and_its_trusted_helpers(
     installed_candidate: InstalledCandidate,
 ) -> None:
     modules = _imported_modules(installed_candidate, "import finishup.mcp.server")
-    cli_modules = [module for module in modules if module.startswith("finishup.cli")]
+    # ``finishup.client`` (ADR-051) shares the ``finishup.cli`` prefix but is not the CLI.
+    cli_modules = [
+        module
+        for module in modules
+        if module == "finishup.cli" or module.startswith("finishup.cli.")
+    ]
     assert not cli_modules, f"MCP unexpectedly reaches CLI modules: {cli_modules}"
 
 
