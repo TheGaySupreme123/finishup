@@ -57,6 +57,7 @@ from finishup.service.control_protocol import (
 
 __all__ = [
     "AGENT_POLL_GRACE_SECONDS",
+    "HELLO_RESULT_SECONDS",
     "GatewaySession",
     "SessionLimit",
     "SessionRegistry",
@@ -72,6 +73,10 @@ _RETAIN_BYTES: Final = 8 * 1_048_576
 # A live agent client begins a frames long-poll at least every ``MAX_WAIT_MS``; this adds room for
 # a slow round trip and a fresh TLS connection.
 AGENT_POLL_GRACE_SECONDS: Final = MAX_WAIT_MS / 1_000 + 15.0
+# The daemon answers a hello within this, as a client's own handshake budget expects (5 seconds,
+# like ``service.client``'s connect handshake and the daemon's own handshake deadline). A daemon
+# that accepted the connection and never answers must not hold the request and its session slot.
+HELLO_RESULT_SECONDS: Final = 5.0
 
 
 type UpstreamStream = ControlStream
@@ -307,11 +312,13 @@ class SessionRegistry:
         idle_seconds: float = SESSION_IDLE_SECONDS,
         per_key: int = MAX_SESSIONS_PER_KEY,
         agent_poll_grace_seconds: float = AGENT_POLL_GRACE_SECONDS,
+        hello_result_seconds: float = HELLO_RESULT_SECONDS,
     ) -> None:
         self._connect = connect_upstream
         self._idle = idle_seconds
         self._per_key = per_key
         self._agent_grace = agent_poll_grace_seconds
+        self._hello_result = hello_result_seconds
         self._sessions: dict[str, GatewaySession] = {}
         # Sessions being opened, per key: they count against the bound from before the first
         # await, so concurrent opens of one key cannot all pass it.
@@ -340,7 +347,8 @@ class SessionRegistry:
         ``201`` with the daemon's hello-result for an admitted session; ``409`` with the daemon's
         own hello-result when it answered a manifest mismatch (it then closes the connection).
         ``SessionLimit`` when the key holds its maximum; ``ControlProtocolError`` when the daemon
-        closed without answering.
+        closed without answering or did not answer within ``HELLO_RESULT_SECONDS`` (the upstream
+        is then closed and the key's place given back).
         """
 
         if self.count_for(key_id) >= self._per_key:
@@ -372,8 +380,14 @@ class SessionRegistry:
     ) -> OpenedSession:
         upstream = await self._connect()
         try:
-            await upstream.send_all(struct.pack(">I", len(hello_payload)) + hello_payload)
-            answer = await read_control_frame(upstream, eof_reason="handshake_rejected")
+            async with asyncio.timeout(self._hello_result):
+                await upstream.send_all(struct.pack(">I", len(hello_payload)) + hello_payload)
+                answer = await read_control_frame(upstream, eof_reason="handshake_rejected")
+        except TimeoutError:
+            # A wedged daemon: answered like one that closed (``service_unavailable``).
+            with contextlib.suppress(Exception):
+                await upstream.aclose()
+            raise ControlProtocolError("frame_read_timeout") from None
         except BaseException:
             with contextlib.suppress(Exception):
                 await upstream.aclose()

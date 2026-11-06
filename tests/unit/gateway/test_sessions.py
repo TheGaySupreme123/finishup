@@ -6,12 +6,13 @@ import asyncio
 
 import pytest
 
-from builders.control_relay import ScriptedDaemon, memory_pair
+from builders.control_relay import MemoryStream, ScriptedDaemon, memory_pair
 from finishup.gateway.sessions import SessionLimit, SessionRegistry
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.schemas import load_schema_catalog
 from finishup.service.control_protocol import (
     ControlFrame,
+    ControlProtocolError,
     ControlStream,
     decode_control_frame,
     encode_control_frame,
@@ -95,5 +96,43 @@ def test_a_failed_open_gives_its_place_back() -> None:
                     manifest_digest=load_schema_catalog().manifest_digest,
                 )
         assert registry.count_for("k_one") == 0
+
+    asyncio.run(exercise())
+
+
+def test_a_daemon_that_never_answers_the_hello_gives_the_place_back() -> None:
+    """A daemon that accepted the connection and never answers (a wedged holder) must not hold
+    the open, or its place against the key's bound, forever: the open fails within the hello
+    deadline and its upstream is closed."""
+
+    async def exercise() -> None:
+        wedged: list[MemoryStream] = []
+
+        async def connect_upstream() -> ControlStream:
+            client, server = memory_pair()
+            wedged.append(server)  # accepted, never answered
+            return client
+
+        registry = SessionRegistry(connect_upstream, per_key=1, hello_result_seconds=0.05)
+        hello, payload = _hello()
+        for _attempt in range(2):  # the second would be ``SessionLimit`` if the place leaked
+            async with asyncio.timeout(5):
+                with pytest.raises(ControlProtocolError):
+                    await registry.open(
+                        key_id="k_one",
+                        scope="agent",
+                        hello=hello,
+                        hello_payload=payload,
+                        manifest_digest=load_schema_catalog().manifest_digest,
+                    )
+            assert registry.count_for("k_one") == 0
+        assert len(registry) == 0 and len(wedged) == 2
+        for server in wedged:
+            # The daemon's end got the hello, then the end of the stream.
+            received = bytearray()
+            async with asyncio.timeout(5):
+                while chunk := await server.receive(65_536):
+                    received.extend(chunk)
+            assert bytes(received) == len(payload).to_bytes(4, "big") + payload
 
     asyncio.run(exercise())

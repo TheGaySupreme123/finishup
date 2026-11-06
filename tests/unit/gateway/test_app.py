@@ -38,7 +38,11 @@ from finishup.protocol.rest_binding import (
     ServerInfoContract,
 )
 from finishup.protocol.schemas import load_schema_catalog, validate_schema_instance
-from finishup.service.control_protocol import decode_control_frame, encode_control_frame
+from finishup.service.control_protocol import (
+    ControlStream,
+    decode_control_frame,
+    encode_control_frame,
+)
 
 _BASE = "https://gw.example"
 
@@ -719,3 +723,30 @@ def test_the_audit_file_rotates_once_it_reaches_its_bound(tmp_path: Path) -> Non
     assert {json.loads(text)["event"] for text in path.read_text().splitlines()} == {
         "gateway_request"
     }
+
+
+@pytest.mark.anyio
+async def test_a_daemon_that_never_answers_the_hello_is_service_unavailable(home: Path) -> None:
+    """``POST /v1/sessions`` must not hang on a wedged daemon, nor keep the key's place."""
+
+    from finishup.gateway.sessions import SessionRegistry
+
+    built = await _gateway(home)
+    wedged: list[object] = []
+
+    async def connect_upstream() -> ControlStream:
+        client, server = memory_pair()
+        wedged.append(server)  # accepted, never answered
+        return client
+
+    built.state.sessions = SessionRegistry(connect_upstream, per_key=1, hello_result_seconds=0.05)
+    try:
+        for _attempt in range(2):  # the second would be ``session_limit`` if the place leaked
+            async with asyncio.timeout(5):
+                response = await built.client.post(
+                    "/v1/sessions", content=_hello(), headers=built.headers()
+                )
+            assert response.status_code == 503 and _reason(response) == "service_unavailable"
+        assert len(built.state.sessions) == 0 and len(wedged) == 2
+    finally:
+        await built.client.aclose()
