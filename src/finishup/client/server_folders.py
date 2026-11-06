@@ -4,7 +4,8 @@ A FinishUP server on another machine reads nothing on this computer by itself: t
 agent (``finishup.client.workspace_agent``) answers its bounded calls. Inside the claimed worktree
 the agent reads under the existing fences. Outside it, each server target has an **outside-read
 mode**, this client's own fact, as approved-check trust is (ADR-051 decisions 5 and 12): it is
-never sent to the server, and nothing the server sends changes it.
+never sent to the server, and nothing the server sends changes it. Every remote kind
+(``local_port``, ``ssh``, ``https``) offers the same two modes, with the same behaviour:
 
 * ``local``: the agent answers the server's outside reads as a FinishUP service on this computer
   would answer them. The server's own admitted-root policy chooses the roots, and the adapters'
@@ -12,16 +13,17 @@ never sent to the server, and nothing the server sends changes it.
 * ``listed``: the agent reads outside the worktree only beneath a folder this computer's owner
   listed for that target with ``finishup server folders add``; anything else is refused.
 
-``finishup server folders mode NAME local|listed`` sets the mode. A target with no mode set has
-its kind's default, from the one table ``DEFAULT_OUTSIDE_READ_MODE`` (``ssh`` and ``local_port``
-``local``, ``https`` ``listed``), except that an HTTPS target at an official FinishUP endpoint
+The owner chooses the mode when adding the target (``finishup server add``, on the trusted
+console, or ``--outside-reads``), and ``finishup server folders mode NAME local|listed`` changes
+it. There is no default per kind. An HTTPS target at an official FinishUP endpoint
 (``OFFICIAL_ENDPOINT_HOSTS``, matched by exact hostname, and only while it trusts the system
-certificate store) defaults to ``local``. A record that cannot be read is ``listed`` with no
-folder: it fails closed.
+certificate store) is not asked and is ``local`` while its owner has recorded no mode. Any other
+target with no mode recorded is ``listed`` (``not_chosen``), and a record that cannot be read is
+``listed`` with no folder: both fail closed.
 
 The record is ``<target root>/config/folders.json`` (``yoetz.server-folders/1``): an owner-only
 regular file of canonical JSON with exactly ``schema``, ``target_id`` (the root's own id) and
-``folders`` (sorted, unique, at most ``MAX_FOLDERS``), and ``mode`` when the owner set one. Each
+``folders`` (sorted, unique, at most ``MAX_FOLDERS``), and ``mode`` when the owner chose one. Each
 folder is an absolute path an owner could admit as an input root (``admitted_input_root_valid``)
 that is neither the home directory nor one that holds it. Only a remote target has such a record;
 removing the target removes it with its root. Every failure is a closed reason, never a path.
@@ -52,12 +54,13 @@ if TYPE_CHECKING:
     from finishup.client.targets import ServerTarget
 
 __all__ = [
-    "DEFAULT_OUTSIDE_READ_MODE",
     "FOLDERS_FILE_NAME",
     "FOLDERS_SCHEMA",
     "MAX_FOLDERS",
     "OFFICIAL_ENDPOINT_HOSTS",
     "OUTSIDE_READ_MODES",
+    "OUTSIDE_READ_MODE_LINES",
+    "OUTSIDE_READ_QUESTION",
     "ClearOutcome",
     "FolderError",
     "FolderRecord",
@@ -66,12 +69,12 @@ __all__ = [
     "OutsideReads",
     "add_folder",
     "clear_folders",
-    "default_outside_read_mode",
     "folder_admissible",
     "folder_covers",
     "folder_holds_home",
     "folders_path",
     "mode_of",
+    "official_address",
     "official_endpoint",
     "outside_reads_of",
     "outside_reads_reader",
@@ -102,28 +105,32 @@ _REASONS: Final = frozenset(
 # ``local``: outside reads are answered as a FinishUP service on this computer answers them.
 # ``listed``: only beneath a folder the owner listed for the target here.
 type OutsideReadMode = Literal["local", "listed"]
-# Where a target's mode came from: the owner ('server folders mode'); with no mode recorded, its
-# kind's default or the official-endpoint default; or a record that cannot be read, which is
-# 'listed' with no folder.
-type OutsideReadSource = Literal["owner", "kind_default", "official_endpoint", "unreadable"]
+# Where a target's mode came from: the owner (at 'server add', or 'server folders mode'); with no
+# mode recorded, an official FinishUP endpoint ('local') or no choice yet ('listed'); or a record
+# that cannot be read, which is 'listed' with no folder.
+type OutsideReadSource = Literal["owner", "official_endpoint", "not_chosen", "unreadable"]
 OUTSIDE_READ_MODES: Final[tuple[OutsideReadMode, ...]] = ("listed", "local")
 
-# The outside-read mode of each remote kind while its owner has set none (ADR-051 decision 5).
-# The one table of defaults: a change of default is a change of one line here, and applies to
-# every target whose owner has not set a mode. A kind missing here defaults to 'listed'.
-DEFAULT_OUTSIDE_READ_MODE: Final[Mapping[str, OutsideReadMode]] = MappingProxyType(
+# What the owner is asked at 'server add' (the trusted console) and in the terminal interface's
+# '/server' add flow, then one plain line per mode. Fixed text, the same for every remote kind.
+OUTSIDE_READ_QUESTION: Final = "What may this server read outside your projects on this computer?"
+OUTSIDE_READ_MODE_LINES: Final[Mapping[OutsideReadMode, str]] = MappingProxyType(
     {
-        "ssh": "local",  # the owner's own account on another machine: owner-equivalent
-        "local_port": "local",  # a FinishUP served on this same computer
-        "https": "listed",  # a server on the web
+        "local": (
+            "what FinishUP on this computer would read there; choose it for a server you trust "
+            "as you trust this computer"
+        ),
+        "listed": (
+            "only folders you list for it with 'finishup server folders add'; nothing else there"
+        ),
     }
 )
 
-# Hostnames of official FinishUP endpoints, whose HTTPS targets default to 'local' as a FinishUP
-# on this computer would read. Reviewed by the maintainer, who adds each exact, lowercase
-# hostname here when an official hosted endpoint exists. Empty today: none exists yet. A target
-# matches only by its exact hostname, and only while it trusts the system certificate store:
-# one added with --ca-file or --tls-pin never counts as official by its hostname alone.
+# Hostnames of official FinishUP endpoints, whose HTTPS targets are 'local' without being asked,
+# as FinishUP on this computer would read. Reviewed by the maintainer, who adds each exact,
+# lowercase hostname here when an official hosted endpoint exists. Empty today: none exists yet.
+# A target matches only by its exact hostname, and only while it trusts the system certificate
+# store: one added with --ca-file or --tls-pin never counts as official by its hostname alone.
 OFFICIAL_ENDPOINT_HOSTS: Final[frozenset[str]] = frozenset()
 
 
@@ -141,8 +148,8 @@ class FolderError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class FolderRecord:
-    """What one target's record holds: its listed folders, and the mode its owner set (None: the
-    owner set none, so the kind's default applies)."""
+    """What one target's record holds: its listed folders, and the mode its owner chose (None:
+    none recorded, so ``listed``, or ``local`` for an official FinishUP endpoint)."""
 
     folders: tuple[str, ...] = ()
     mode: OutsideReadMode | None = None
@@ -157,7 +164,7 @@ class OutsideReads:
 
     mode: OutsideReadMode
     folders: tuple[str, ...] = ()
-    source: OutsideReadSource = "kind_default"
+    source: OutsideReadSource = "not_chosen"
 
 
 # An agent bound to no record, and a record that cannot be read: 'listed' with no folder.
@@ -166,45 +173,46 @@ _LISTED_NOTHING: Final = OutsideReads("listed", (), "unreadable")
 type ClearOutcome = Literal["absent", "cleared", "reset_to_listed"]
 
 
-def official_endpoint(record: ServerTarget) -> bool:
-    """Whether ``record`` is an HTTPS target at an official FinishUP endpoint.
+def official_address(
+    kind: str, base_url: str | None, *, ca_file: str | None, tls_pin: str | None
+) -> bool:
+    """Whether a target of ``kind`` at ``base_url`` is an official FinishUP endpoint.
 
-    Its exact hostname must be in ``OFFICIAL_ENDPOINT_HOSTS`` and it must trust the system
-    certificate store: a target with its own ``ca_file`` or ``tls_pin`` never counts by hostname.
+    Only an ``https`` target whose exact hostname is in ``OFFICIAL_ENDPOINT_HOSTS`` and that
+    trusts the system certificate store: one with its own ``ca_file`` or ``tls_pin`` never counts
+    by hostname. ``server add`` asks this before the target exists, to skip the mode question.
     """
 
-    if (
-        record.kind != "https"
-        or record.base_url is None
-        or record.ca_file is not None
-        or record.tls_pin is not None
-    ):
+    if kind != "https" or base_url is None or ca_file is not None or tls_pin is not None:
         return False
     try:
-        host = urlsplit(record.base_url).hostname
+        host = urlsplit(base_url).hostname
     except ValueError:
         return False
     return host is not None and host in OFFICIAL_ENDPOINT_HOSTS
 
 
-def default_outside_read_mode(record: ServerTarget) -> OutsideReadMode:
-    """The mode of ``record`` while its owner has set none: its kind's
-    (``DEFAULT_OUTSIDE_READ_MODE``), except ``local`` for an official FinishUP endpoint
-    (``official_endpoint``)."""
+def official_endpoint(record: ServerTarget) -> bool:
+    """Whether ``record`` is an HTTPS target at an official FinishUP endpoint
+    (``official_address``)."""
 
-    if official_endpoint(record):
-        return "local"
-    return DEFAULT_OUTSIDE_READ_MODE.get(record.kind, "listed")
+    return official_address(
+        record.kind, record.base_url, ca_file=record.ca_file, tls_pin=record.tls_pin
+    )
 
 
 def mode_of(record: ServerTarget, found: FolderRecord) -> tuple[OutsideReadMode, OutsideReadSource]:
-    """The mode ``record`` is in given its readable record ``found``, and where it came from."""
+    """The mode ``record`` is in given its readable record ``found``, and where it came from.
+
+    The owner's recorded choice; else ``local`` for an official FinishUP endpoint; else
+    ``listed``, the fail-closed value of a target whose owner has not chosen (every kind alike).
+    """
 
     if found.mode is not None:
         return found.mode, "owner"
     if official_endpoint(record):
         return "local", "official_endpoint"
-    return default_outside_read_mode(record), "kind_default"
+    return "listed", "not_chosen"
 
 
 def folders_path(root: Path) -> Path:
@@ -462,12 +470,12 @@ def set_mode(root: Path, target_id: str, mode: OutsideReadMode) -> bool:
     """Record ``mode`` as the owner's choice for the target at ``root``; False when it already
     was. The listed folders are kept.
 
-    A mode is recorded even where it equals the kind's default, so a later change of default
-    never changes a mode its owner chose. A recorded ``local`` therefore widens what such a
-    change would narrow: callers record it only after the owner typed the target's name on the
-    trusted console, even where it is the default now (``finishup server folders mode``). A
-    damaged record is refused, never replaced: ``clear_folders`` is its way out. Callers hold
-    ``targets.registry_lock()``.
+    A recorded mode is the owner's own: ``server add`` records the answer to its question (or
+    ``--outside-reads``), and ``finishup server folders mode`` changes it. A recorded ``local``
+    widens what the server reads, so callers record it only after the owner typed the target's
+    name on the trusted console, an official endpoint's included, whose ``local`` would otherwise
+    follow the reviewed list of official hosts. A damaged record is refused, never replaced:
+    ``clear_folders`` is its way out. Callers hold ``targets.registry_lock()``.
     """
 
     if mode not in OUTSIDE_READ_MODES:
@@ -486,8 +494,8 @@ def clear_folders(root: Path, target_id: str) -> ClearOutcome:
     folder: none is listed now, and the mode its owner set, if any, is kept. ``reset_to_listed``
     when the record could not be read: it is replaced by one that lists nothing in ``listed``
     mode, the state a record that cannot be read already stood for, so clearing it never widens
-    what the server may read (a kind whose default is ``local`` included); the owner chooses
-    ``local`` again with ``set_mode``. A link is replaced itself, never its target; anything but
+    what the server may read (an official endpoint's included); the owner chooses ``local``
+    again with ``set_mode``. A link is replaced itself, never its target; anything but
     a file or a link is refused. Callers hold ``targets.registry_lock()``.
     """
 
@@ -510,7 +518,7 @@ def clear_folders(root: Path, target_id: str) -> ClearOutcome:
         _write(root, target_id, FolderRecord((), current.mode))
         return "cleared"
     # Replaced in one rename, which replaces a link itself and never its target: there is no
-    # moment without a record, when a kind's default could apply.
+    # moment without a record, when an official endpoint's 'local' could apply.
     _write(root, target_id, FolderRecord((), "listed"))
     return "reset_to_listed"
 
@@ -520,9 +528,9 @@ def outside_reads_of(root: Path, record: ServerTarget) -> OutsideReads:
     the claimed worktree on this computer, read now.
 
     Never raises: a record that cannot be read, or is another target's, is ``listed`` with no
-    folder. With no mode set, the kind's default applies (``default_outside_read_mode``). A
-    folder that holds the home directory is never listed here; one recorded under another home
-    directory than this process's is left out rather than read.
+    folder. With no mode recorded it is ``listed``, or ``local`` for an official endpoint
+    (``mode_of``). A folder that holds the home directory is never listed here; one recorded
+    under another home directory than this process's is left out rather than read.
     """
 
     try:
@@ -561,7 +569,7 @@ def outside_reads_reader(
     target probed under ``selection_override``) therefore never makes the agent read another
     target's record. Neither ``root`` nor ``claim_salt``, a root that is not a remote target, a
     target record that cannot be read and a salt that does not match all bind a reader that
-    answers ``listed`` with no folder, whatever any kind's default. Never raises.
+    answers ``listed`` with no folder, whatever mode any target is in. Never raises.
     """
 
     from finishup.client.targets import read_target

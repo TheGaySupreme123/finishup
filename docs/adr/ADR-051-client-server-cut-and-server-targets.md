@@ -305,9 +305,11 @@ answers bounded `workspace_call`s on a connection that declared it.
 - **Outside admission is the client's own fact** (amended 2026-11-06 by maintainer decision, after
   the review of the three pull requests found that the agent admitted any root the server named
   by its shape alone; amended again the same day by maintainer decision D2, which made it a
-  per-target mode). What a server may read outside the claimed worktree is recorded on the
-  client, per server target, as approved-check trust is (decision 12), and is the owner's to set.
-  Each remote target has an **outside-read mode**:
+  per-target mode, and by D2b, which gave every remote kind the same choice, asked at `server
+  add`). What a server may read outside the claimed worktree is recorded on the client, per
+  server target, as approved-check trust is (decision 12), and is the owner's to set. Each remote
+  target has an **outside-read mode**, and every remote kind (`local_port`, `ssh`, `https`)
+  offers the same two, with the same behaviour:
   - **`local`**: the agent answers the server's outside reads exactly as a local FinishUP service
     would answer them. The server's own admitted-root policy decides which roots it reads; the
     adapters' fences and the agent's own exclusions below still hold, and there is no client
@@ -318,52 +320,67 @@ answers bounded `workspace_call`s on a connection that declared it.
   - **`listed`**: the server reads outside the worktree only beneath folders the owner listed
     for that target, as described below; anything else is refused.
 
-  `finishup server folders mode NAME local|listed` sets the mode. `local` widens what the
-  server reads, so it needs the trusted foreground console and the owner typing the target name
-  after a notice of what that mode lets the server read, a rule-breaking server included;
-  `listed` narrows it and is the way back, needing neither. A mode the owner sets is recorded even
-  where it equals the default, so a later change of default never changes it. A recorded `local`
-  therefore outlives a default that later narrows, so recording it always takes the console and
-  the typed name, even where `local` is the target's default already; where no trusted console
-  can ask (an agent's shell), `mode NAME local` on such a target records nothing, says that it
-  stays in its default, and leaves it following that default. A target with no
-  mode recorded has its kind's default, kept in one table in code
-  (`client.server_folders.DEFAULT_OUTSIDE_READ_MODE`), so the maintainer changes a default in one
-  line: `ssh` defaults to `local`, because the SSH login is the owner's own account on another
-  machine (owner-equivalent, decision 3); `local_port` defaults to `local`, because it is a
-  FinishUP on this same computer (a loopback port can forward elsewhere, so an owner who points
-  one at a server they do not control sets `listed`); `https` defaults to `listed`, because it is a
-  server on the web. The one exception is an official FinishUP endpoint: an HTTPS target whose
-  exact hostname is in the reviewed constant `client.server_folders.OFFICIAL_ENDPOINT_HOSTS`
-  defaults to `local`, so the official trusted service reads as much as a local one. The match is
-  by exact hostname only, and applies only while the target trusts the system certificate store:
-  a target added with `--ca-file` or `--tls-pin` never counts as official by its hostname alone.
-  The constant is empty, because no official hosted endpoint exists yet; the maintainer fills it
-  in when one does. `server add` prints the mode it chose and the one command that changes it, and
-  `server folders list`, `server status` and the terminal's `/server` status show the mode and
-  where it came from (`owner`, `kind_default`, `official_endpoint`, or `unreadable`);
-  `server status --json` carries the same, with the listed folders, as `target.outside_reads` of
-  `server-target-status` 1.0.0 (null for a target that is not remote).
+  There is no default per kind. `finishup server add` asks the owner which mode a new remote
+  target gets, on the trusted foreground console as part of its typed confirmation: after the
+  disclosure it asks what the server may read outside the owner's projects, with one plain line
+  for each mode, and requires an explicit answer (`local` or `listed`; Enter alone or another
+  word asks again, a few times, and then, or at end of input or an interrupt, nothing is added,
+  `outside_reads_not_chosen`); the typed target name then authorizes both. `--outside-reads
+  local|listed` answers the question up front, and still needs the trusted console and the typed
+  name, as every remote `add` does; the console shows the mode it authorizes. The answer is
+  recorded in the client record. Where it cannot be written, the target is still added, in
+  `listed` mode, and `add` says so and how to choose again. The one exception is an official
+  FinishUP endpoint: an HTTPS target whose exact hostname is in the reviewed constant
+  `client.server_folders.OFFICIAL_ENDPOINT_HOSTS` is not asked and is `local` (source
+  `official_endpoint`), so the official trusted service reads as much as a local one. The match
+  is by exact hostname only, and applies only while the target trusts the system certificate
+  store: a target added with `--ca-file` or `--tls-pin` never counts as official by its hostname
+  alone, and is asked. Its `local` is not recorded, so it follows the reviewed list; an explicit
+  `--outside-reads` is recorded as the owner's own. The constant is empty, because no official
+  hosted endpoint exists yet; the maintainer fills it in when one does. A record with no mode (no
+  release wrote one; a record whose mode could not be written) reads as `listed`, the fail-closed
+  value (source `not_chosen`), and `server status`, `server folders list` and the terminal's
+  `/server` status say how to choose. Once chosen, nothing asks again: hooks, agent tools (MCP),
+  the CLI and the terminal interface read the record, and the agent reads it at every call.
+
+  `finishup server folders mode NAME local|listed` changes the mode later. `local` widens what
+  the server reads, so it needs the trusted foreground console and the owner typing the target
+  name after a notice of what that mode lets the server read, a rule-breaking server included;
+  `listed` narrows it and is the way back, needing neither. A recorded `local` is the owner's own
+  choice, kept whatever the reviewed list of official endpoints later says, so recording it
+  always takes the console and the typed name, an official endpoint's included; where no trusted
+  console can ask (an agent's shell), `mode NAME local` on an official endpoint records nothing,
+  says that it is already `local` as an official server, and leaves it following the list.
+  `server add` prints the mode it recorded and the one command that changes it, and `server
+  folders list`, `server status` and the terminal's `/server` status show the mode and where it
+  came from (`owner`, `official_endpoint`, `not_chosen`, or `unreadable`); `server status --json`
+  carries the same, with the listed folders, as `target.outside_reads` of `server-target-status`
+  1.0.0 (null for a target that is not remote). The terminal interface's `/server` add flow asks
+  the same question in the same words and prints the `server add` command with
+  `--outside-reads` set to the answer.
 
   In `listed` mode the folders are the owner's: `finishup server folders add NAME FOLDER` needs the
   trusted foreground console and the owner typing the target name; it records FOLDER canonicalized
   by the local service's own input-root rule (an existing directory named by its absolute,
   normalized, link-free path; never hidden or a system tree), and never the home directory, a
   folder that holds it, or one in its private trees. `server folders remove NAME FOLDER|--all` is
-  the way out and takes effect at the next call. Listing or removing a folder keeps the mode; a
-  folder listed in `local` mode is kept for `listed` mode and said to be so. `add` checks the home
+  the way out; like a change of mode, it applies from the workspace agent's next read, and a read
+  already in progress may still return files from that folder. Listing or removing a folder
+  keeps the mode; a folder listed in `local` mode is kept for `listed` mode and said to be so.
+  `add` checks the home
   rules before it asks, so the owner never consents to a folder that is then refused. The record
   is owner-only (`<target root>/config/folders.json`, `yoetz.server-folders/1`, with an optional
   `mode`) and never sent to the server. Each agent is bound, when it is built, to the record of
   the target its connection's claim was made for (the target in use then, whose claim salt must
   be the claim's, or a target root its caller names); a later change of the process's selection
   never switches it to another target's record, and an agent built without a record is `listed`
-  with no folder rather than guess a target, or take a kind's default, from the selection, which
-  may name another server. The agent reads that record off the event loop on every outside read,
-  so a change of mode or folders applies at the next call. A record that cannot be read fails
-  closed to `listed` with no folder, whatever the kind's default; `remove NAME --all` replaces it
-  with an empty record in `listed` mode, the state it already stood for, so clearing it never
-  widens what the server reads. In both modes a read root the server names must have the shape an
+  with no folder rather than guess a target, or take the mode of the target in use, from the
+  selection, which may name another server. The agent reads that record off the event loop on
+  every outside read, so a change of mode or folders applies from its next read (one already in
+  progress finishes under the record it started with). A record that cannot be read fails closed
+  to `listed` with no folder, whatever mode it held; `remove NAME --all` replaces it with an
+  empty record in `listed` mode, the state it already stood for, so clearing it never widens
+  what the server reads. In both modes a read root the server names must have the shape an
   owner may admit, and nothing in FinishUP's own directories is ever read: every outside read
   excludes them. In `local` mode that exclusion is all, as for a local service, so a read rooted
   there answers nothing and is not refused. In `listed` mode a reviewer read or listing rooted
@@ -417,8 +434,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   and in no system or protected directory, and list the names in its directories. In `local`
   mode it can do so beneath any root of a shape an owner could admit, anywhere on this machine,
   within the same fences (the home directory's private trees included), as a local service's
-  reads could; that is why `local` is a typed choice for a server the owner trusts as they trust
-  FinishUP on this computer, and the default only for the owner's own account and this computer.
+  reads could; that is why `local` is the owner's typed choice, at `server add` or later, for a
+  server they trust as they trust FinishUP on this computer, and never a default for any kind
+  (an official FinishUP endpoint alone is `local` without the question).
   Anywhere on this machine, it can learn the metadata (existence, type, size and times, never
   content) of a path the local outside-input candidate rule would look at (`lstat_candidates`),
   which the server's outside-input hint needs. The owner lists only folders they would let that
@@ -579,8 +597,11 @@ answers bounded `workspace_call`s on a connection that declared it.
 ### 8. Consent per remote target, on the trusted console
 
 - `server add` and `server use` for a remote kind need the trusted foreground console, a versioned
-  disclosure and the owner typing the target name. `target.json` records `authorized_at` and
-  `disclosure_version`; a new disclosure version requires a fresh confirmation before use.
+  disclosure and the owner typing the target name. At `server add` the same confirmation first
+  asks what the server may read outside the owner's projects (decision 5), unless
+  `--outside-reads` answered it or the target is an official endpoint; `server use` does not ask
+  it again. `target.json` records `authorized_at` and `disclosure_version`; a new disclosure
+  version requires a fresh confirmation before use.
   `targets.require_current_authorization` enforces it at every hop decision
   (`is_remote_active_root`, `binding_for_active_root`, `server connect`), with or without a
   workspace, and refuses with `target_reauthorization_required`; `server status`, `list`, `test`,
@@ -610,7 +631,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted
   `local_port`, and said the client re-checks before each hop, which no code does.) The check
   runs when the owner adds or selects a remote target; client processes do not consult the local
-  policy again before each connection.
+  policy again before each connection. `server status --json` (`server-target-status` 1.0.0)
+  reserves `zero_network_selection` for telling the owner of that state: null, or the item's
+  `reason` (`zero_network_remote_selected` or `zero_network_selection_unreadable`), `target_id`,
+  `kind` and `detail`, generated ids and closed tokens only. It is null while nothing on the
+  client reports the state.
 - **Zero-network set while a remote target is selected: surfaced, and the owner decides**
   (maintainer decision, 2026-11-06). FinishUP never switches servers on its own.
   `cli/zero_network_selection.py` reads the selection file afresh (never the process memo) and,
@@ -958,8 +983,9 @@ HTTPS and LOCALHOST PORT
 | `server add NAME …` | `server remove NAME [--select-local]` (disconnects, deletes the credential, disposes of the root; refuses the selected target unless `--select-local`) | `server list` |
 | `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
-| `server folders mode NAME local` (trusted console and typed name whenever it records `local`, the target's default included; without the console a default `local` is left unrecorded) | `server folders mode NAME listed` (takes effect at the next workspace call) | `server folders list NAME`, `server status [--json]`, `/server` status |
-| `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; takes effect at the next workspace call) | `server folders list NAME`, `server status [--json]`, `/server` status |
+| `server add NAME …` for a remote kind records the outside-read mode the owner answered (or `--outside-reads`; an official endpoint is `local` unrecorded) | `server folders mode NAME local` or `listed` changes it; `server remove NAME` removes it with the target | `server add` output, `server folders list NAME`, `server status [--json]`, `/server` status |
+| `server folders mode NAME local` (trusted console and typed name whenever it records `local`, an official endpoint's included; without the console an official endpoint's `local` is left unrecorded) | `server folders mode NAME listed` (applies from the workspace agent's next read; a read already in progress may finish) | `server folders list NAME`, `server status [--json]`, `/server` status |
+| `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; applies from the workspace agent's next read, and a read already in progress may still return files) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
 | `server connect NAME --agent` (foreground workspace agent) | Ctrl-C; the connection closes | the terminal it runs in |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |

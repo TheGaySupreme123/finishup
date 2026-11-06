@@ -116,7 +116,6 @@ async def test_declining_the_remote_switch_changes_nothing() -> None:
 @pytest.mark.parametrize(
     ("choice", "command"),
     [
-        ("add", "finishup server add NAME --local"),
         ("remove", "finishup server remove NAME"),
         ("login", "finishup server login NAME"),
         ("folders", "finishup server folders add NAME"),
@@ -134,6 +133,57 @@ async def test_registry_changes_print_the_cli_command(choice: str, command: str)
     assert (level, title) == (Level.OPTIONAL, "Run this in your shell")
     assert any(command in line for line in body)
     assert runtime.server_uses == []
+
+
+async def test_adding_a_server_on_this_computer_prints_its_command() -> None:
+    runtime = FakeRuntime(servers=_ROWS)
+    harness = _Harness(runtime, ["add", "add:local"])
+
+    await harness.app.command_server()
+
+    level, title, body = harness.said[-1]
+    assert (level, title) == (Level.OPTIONAL, "Run this in your shell")
+    assert "    finishup server add NAME --local" in body
+    assert not any("--outside-reads" in line for line in body)
+    assert len(harness.views) == 2  # no outside-read question for a server on this computer
+
+
+@pytest.mark.parametrize("answer", ["local", "listed"])
+async def test_adding_a_remote_server_asks_what_it_may_read_outside_your_projects(
+    answer: str,
+) -> None:
+    """D2b: ``/server`` asks the question ``finishup server add`` asks, in the same words, and
+    the printed command carries the answer for every remote kind."""
+
+    from finishup.client.server_folders import OUTSIDE_READ_MODE_LINES, OUTSIDE_READ_QUESTION
+
+    runtime = FakeRuntime(servers=_ROWS)
+    harness = _Harness(runtime, ["add", "add:remote", answer])
+
+    await harness.app.command_server()
+
+    question = harness.views[2]
+    assert isinstance(question, SelectionView)
+    assert question.title_text == OUTSIDE_READ_QUESTION
+    options = {option.key: option.description for option in question._all_options}  # pyright: ignore[reportPrivateUsage]
+    assert options == dict(OUTSIDE_READ_MODE_LINES)
+    level, title, body = harness.said[-1]
+    assert (level, title) == (Level.OPTIONAL, "Run this in your shell")
+    for address in ("ssh://user@host", "--port PORT", "https://host"):
+        assert f"    finishup server add NAME {address} --outside-reads {answer}" in body
+    assert any("type its name" in line for line in body)
+    assert runtime.server_uses == []
+
+
+@pytest.mark.parametrize("answers", [["add", None], ["add", "add:remote", None]])
+async def test_going_back_from_the_add_flow_adds_nothing(answers: list[str | None]) -> None:
+    runtime = FakeRuntime(servers=_ROWS)
+    harness = _Harness(runtime, answers)
+
+    await harness.app.command_server()
+
+    assert harness.said[-1][1] == "No server was added."
+    assert not any(title == "Run this in your shell" for title in harness.titles)
 
 
 async def test_status_shows_the_probe_lines() -> None:
@@ -272,9 +322,17 @@ async def test_the_real_runtime_status_shows_what_a_remote_server_may_read_outsi
             add_folder(root, record.target_id, str(shared))
         runtime = FinishUpRuntime(cwd=home)
         lines = await runtime.server_status_lines("devbox")
+        # No mode chosen: listed, and how to choose, as 'finishup server status' says.
         assert (
-            "Outside your projects: reads as FinishUP on this computer would (mode local, the "
-            "default for an SSH server)"
+            "Outside your projects: reads only folders you list (mode listed, not chosen yet)"
+        ) in lines
+        assert any("'finishup server folders mode devbox local'" in line for line in lines)
+        with targets.registry_lock():
+            set_mode(root, record.target_id, "local")
+        lines = await runtime.server_status_lines("devbox")
+        assert (
+            "Outside your projects: reads what FinishUP on this computer would read (mode local, "
+            "set by you)"
         ) in lines
         assert f"  {shared}" in lines
         with targets.registry_lock():

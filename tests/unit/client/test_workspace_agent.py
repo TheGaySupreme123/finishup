@@ -886,11 +886,11 @@ def test_a_handler_bound_to_no_record_admits_no_folder(
         assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)
 
 
-def test_an_unbound_handler_never_takes_a_kinds_local_default(
+def test_an_unbound_handler_never_takes_the_selected_targets_local_mode(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An SSH target defaults to ``local``, but an agent its caller bound to no record, or to a
-    record it cannot read, is ``listed`` with no folder (ADR-051 decision 5)."""
+    """The selected SSH target's owner chose ``local``, but an agent its caller bound to no
+    record, or to a record it cannot read, is ``listed`` with no folder (ADR-051 decision 5)."""
 
     read = (
         WorkspaceOperation.READ_TEXT_BENEATH,
@@ -901,6 +901,7 @@ def test_an_unbound_handler_never_takes_a_kinds_local_default(
             selected, selected_root = targets.new_remote_target(
                 "devbox", "ssh", host="devbox.example", port=22
             )
+            set_mode(selected_root, selected.target_id, "local")
             targets.write_selection(selected)
         reset_selection_memo()
         bound = WorkspaceAgentHandler(
@@ -908,7 +909,7 @@ def test_an_unbound_handler_never_takes_a_kinds_local_default(
             protected=(os.fspath(protected),),
             outside_reads=outside_reads_reader(selected_root),
         )
-        assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)  # the kind's default: local
+        assert _ok(bound, *read) == (b"SPEC_MARKER\n", 12)  # the owner's choice: local
         for unbound in (
             WorkspaceAgentHandler(
                 WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
@@ -1090,8 +1091,9 @@ def test_the_mode_is_read_on_every_call_and_switches_both_ways(
 def test_the_bound_record_decides_the_mode_at_each_call(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``server folders mode`` takes effect at the next call; a record that cannot be read
-    fails closed to ``listed`` even for a kind whose default is ``local``."""
+    """``server folders mode`` takes effect at the next call; a target whose owner chose no mode
+    reads as ``listed``, whatever its kind; a record that cannot be read fails closed to
+    ``listed`` even where the owner chose ``local``."""
 
     from finishup.client.server_folders import folders_path
 
@@ -1109,6 +1111,10 @@ def test_the_bound_record_decides_the_mode_at_each_call(
             protected=(os.fspath(protected),),
             outside_reads=outside_reads_reader(root),
         )
+        # No mode chosen: 'listed', no folder, for an SSH server as for any other.
+        assert _refused(handler, *read) == ("refused", "root_not_admitted")
+        with targets.registry_lock():
+            set_mode(root, record.target_id, "local")
         assert _ok(handler, *read) == (b"SPEC_MARKER\n", 12)
         with targets.registry_lock():
             set_mode(root, record.target_id, "listed")

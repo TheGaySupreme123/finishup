@@ -3028,7 +3028,10 @@ class FinishUpTui(App[int]):
         if choice == "status":
             self.say(Level.ACTIVE, "Server status", await self.runtime.server_status_lines())
             return
-        if choice in {"add", "remove", "login", "folders"}:
+        if choice == "add":
+            await self._server_add()
+            return
+        if choice in {"remove", "login", "folders"}:
             self.say(Level.OPTIONAL, "Run this in your shell", _SERVER_SHELL_COMMANDS[choice])
             return
         name = choice.removeprefix("use:")
@@ -3073,6 +3076,59 @@ class FinishUpTui(App[int]):
             ),
         )
         await self._refresh_header()
+
+    async def _server_add(self) -> None:
+        """``/server`` add: which kind of server, and for one on another machine, a port or the
+        web, the question ``finishup server add`` asks (ADR-051 decision 5): what it may read
+        outside your projects. The answer rides in the printed command as ``--outside-reads``, so
+        the command asks only for the typed name, in your terminal."""
+
+        from finishup.client.server_folders import OUTSIDE_READ_MODE_LINES, OUTSIDE_READ_QUESTION
+
+        where = await self.ask(
+            SelectionView(
+                name="server-add",
+                title="Add a server",
+                options=(
+                    Option(
+                        "add:local",
+                        "On this computer",
+                        "a second FinishUP with its own tasks, vault and settings",
+                    ),
+                    Option(
+                        "add:remote",
+                        "On another machine, a port or the web",
+                        "over SSH, a port of this computer, or HTTPS",
+                    ),
+                ),
+                hint="enter to choose · esc to go back",
+            )
+        )
+        if where is None:
+            self.say(Level.OPTIONAL, "No server was added.")
+            return
+        if where == "add:local":
+            self.say(Level.OPTIONAL, "Run this in your shell", _server_add_lines(None))
+            return
+        mode = await self.ask(
+            SelectionView(
+                name="server-add-outside-reads",
+                title=OUTSIDE_READ_QUESTION,
+                body=(
+                    "Every kind of server is asked the same. You can change it later with",
+                    "'finishup server folders mode NAME local' or '... listed'.",
+                ),
+                options=tuple(
+                    Option(mode, mode, OUTSIDE_READ_MODE_LINES[mode])
+                    for mode in ("listed", "local")
+                ),
+                hint="enter to choose · esc to go back",
+            )
+        )
+        if mode not in {"listed", "local"}:
+            self.say(Level.OPTIONAL, "No server was added.")
+            return
+        self.say(Level.OPTIONAL, "Run this in your shell", _server_add_lines(mode))
 
     async def command_work(self) -> None:
         recent = self.runtime.opened_titles
@@ -3284,15 +3340,29 @@ class FinishUpTui(App[int]):
         return self._active_task_title
 
 
+def _server_add_lines(mode: str | None) -> tuple[str, ...]:
+    """The ``finishup server add`` commands ``/server`` prints: a server on this computer
+    (``mode`` None), or one on another machine, a port or the web with the outside-read mode the
+    owner chose here, which the command records after the typed name."""
+
+    if mode is None:
+        return (
+            "    finishup server add NAME --local",
+            "",
+            "Then select it with /server or 'finishup server use NAME', and run 'finishup setup'.",
+        )
+    return (
+        f"    finishup server add NAME ssh://user@host --outside-reads {mode}",
+        f"    finishup server add NAME --port PORT --outside-reads {mode}",
+        f"    finishup server add NAME https://host --outside-reads {mode}",
+        "",
+        "It shows what is sent to that server and asks you to type its name.",
+        "Then select it with /server or 'finishup server use NAME'.",
+    )
+
+
 # ``/server`` prints these for the changes that belong on the command line (ADR-051).
 _SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
-    "add": (
-        "    finishup server add NAME --local",
-        "    finishup server add NAME ssh://user@host",
-        "    finishup server add NAME https://host",
-        "",
-        "Then select it with /server or 'finishup server use NAME'.",
-    ),
     "remove": ("    finishup server remove NAME",),
     "login": ("    finishup server login NAME",),
     "folders": (
@@ -3302,9 +3372,9 @@ _SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
         "    finishup server folders add NAME /full/path/to/folder",
         "    finishup server folders remove NAME /full/path/to/folder",
         "",
-        "Mode local reads outside your projects as FinishUP on this computer would; mode",
-        "listed reads only the folders you list. Choosing local, and adding a folder, ask you to",
-        "confirm in your terminal.",
+        "Mode local reads outside your projects what FinishUP on this computer would read;",
+        "mode listed reads only the folders you list. Choosing local, and adding a folder, ask",
+        "you to confirm in your terminal. A change applies from the server's next read.",
     ),
 }
 

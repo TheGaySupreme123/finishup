@@ -511,10 +511,13 @@ process to the default service.
   `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line. Outside that folder the agent
   reads as the target's outside-read mode says: in `local` mode as a local service would, in
   `listed` mode only beneath a folder the owner listed for the target on this machine (`finishup
-  server folders mode|add`, ADR-051 decision 5; SSH and port targets default to `local`, web
-  targets to `listed`); the decision is the same for every host and changes no registration. Inside it the agent returns a file only when Git answers that it is not ignored,
-  so in a linked Git worktree or a submodule a declared test is not offered to the server's
-  reviewer, though a local service offers it (ADR-051, a parity gap).
+  server folders mode|add`, ADR-051 decision 5). Every remote kind gets the same choice, asked by
+  `finishup server add` on the owner's own terminal (an official endpoint is `local`); once
+  chosen, no hook, MCP tool or CLI call in a Claude Code session prompts for it again. The
+  decision is the same for every host and changes no registration. Inside it the agent returns a
+  file only when Git answers that it is not ignored, so in a linked Git worktree or a submodule a
+  declared test is not offered to the server's reviewer, though a local service offers it
+  (ADR-051, a parity gap).
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the

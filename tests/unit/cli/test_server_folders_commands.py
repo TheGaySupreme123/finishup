@@ -1,8 +1,10 @@
 """``finishup server folders``: what a server may read outside the owner's projects (ADR-051).
 
-``mode NAME local`` lets a remote target's server read outside the claimed project as FinishUP on
-this computer would, so it needs the typed target name on the trusted console; ``mode NAME
-listed`` is the way back and needs nothing. In ``listed`` mode the server reads only beneath the
+Every remote kind has the same two modes and no default (D2b): a target whose owner has not
+chosen reads as ``listed``, and every view says how to choose. ``mode NAME local`` lets a remote
+target's server read outside the claimed project as FinishUP on this computer would, so it needs
+the typed target name on the trusted console; ``mode NAME listed`` is the way back and needs
+nothing. In ``listed`` mode the server reads only beneath the
 folders listed for it: adding one needs the same typed confirmation and the input-root rule a
 local service uses; removing it is the way out and needs nothing. ``list``, ``status`` (text and
 JSON) and ``add`` show the mode. Refusals are fixed text with a closed reason and never echo the
@@ -15,7 +17,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from types import MappingProxyType, TracebackType
+from types import TracebackType
 from typing import Self, cast
 
 import pytest
@@ -28,6 +30,7 @@ from finishup.cli import trusted_console
 from finishup.client import targets
 from finishup.client.server_folders import (
     FolderRecord,
+    OutsideReadMode,
     OutsideReads,
     add_folder,
     folders_path,
@@ -90,10 +93,21 @@ def test_every_folders_command_renders_its_help(home: Path, command: str) -> Non
     assert "Usage" in result.output
 
 
+def _no_trusted_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse the trusted console whatever terminal runs the tests: a developer's /dev/tty would
+    otherwise prompt, or answer."""
+
+    def refused(_self: object) -> object:
+        raise trusted_console.TrustedConsoleError("trusted_console_required")
+
+    monkeypatch.setattr(trusted_console.TrustedForegroundConsole, "__enter__", refused)
+
+
 def test_adding_needs_the_trusted_console(
-    remote: tuple[targets.ServerTarget, Path], folder: str
+    remote: tuple[targets.ServerTarget, Path], folder: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record, root = remote
+    _no_trusted_console(monkeypatch)
     result = _invoke("add", "lab", folder)
     assert result.exit_code == 2
     assert result.stderr.startswith("trusted_console_required:")
@@ -269,13 +283,12 @@ def test_status_shows_the_folders_a_remote_target_may_read(
     document = server_cli.build_status_document("lab")
     assert cast(dict[str, JsonValue], document["target"])["outside_reads"] == {
         "mode": "listed",
-        "mode_source": "kind_default",
+        "mode_source": "not_chosen",
         "folders": [],
     }
     lines = server_cli.status_lines(document)
     assert (
-        "Outside your projects: reads only folders you list (mode listed, the default for a web server)"
-        in lines
+        "Outside your projects: reads only folders you list (mode listed, not chosen yet)" in lines
     )
     assert "Folders it may read outside your projects: none" in lines
     add_folder(root, record.target_id, folder)
@@ -283,7 +296,7 @@ def test_status_shows_the_folders_a_remote_target_may_read(
     validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, document))
     assert cast(dict[str, JsonValue], document["target"])["outside_reads"] == {
         "mode": "listed",
-        "mode_source": "kind_default",
+        "mode_source": "not_chosen",
         "folders": [folder],
     }
     lines = server_cli.status_lines(document)
@@ -319,17 +332,77 @@ def local_confirmed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-def _ssh(home: Path) -> tuple[targets.ServerTarget, Path]:
+def _ssh(home: Path, *, mode: str | None = None) -> tuple[targets.ServerTarget, Path]:
+    """An SSH target, with ``mode`` recorded as the owner's answer at ``server add``."""
+
     del home
     with targets.registry_lock():
-        return targets.new_remote_target("devbox", "ssh", host="devbox.example", port=22)
+        record, root = targets.new_remote_target("devbox", "ssh", host="devbox.example", port=22)
+        if mode is not None:
+            set_mode(root, record.target_id, cast(OutsideReadMode, mode))
+    return record, root
+
+
+def _of_kind(kind: str) -> tuple[targets.ServerTarget, Path]:
+    with targets.registry_lock():
+        if kind == "ssh":
+            return targets.new_remote_target("gw", "ssh", host="devbox.example", port=22)
+        if kind == "local_port":
+            return targets.new_remote_target("gw", "local_port", base_url="https://127.0.0.1:9443")
+        return targets.new_remote_target("gw", "https", base_url="https://gw.example")
+
+
+@pytest.mark.parametrize("kind", ["ssh", "local_port", "https"])
+def test_a_target_with_no_mode_reads_as_listed_and_status_says_how_to_choose(
+    home: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """D2b: no default per kind. A record without a mode (none released) is 'listed', the
+    fail-closed value, for every kind, and every view says how to choose."""
+
+    from finishup.client.server_folders import outside_reads_of
+    from finishup.client.target_runtime import ProbeResult
+
+    del home
+
+    def unreachable(_record: targets.ServerTarget | None, _root: Path | None) -> ProbeResult:
+        return ProbeResult("unavailable", reason="x")
+
+    monkeypatch.setattr(server_cli, "_probe", unreachable)
+    record, root = _of_kind(kind)
+    assert outside_reads_of(root, record) == OutsideReads("listed", (), "not_chosen")
+    document = server_cli.build_status_document("gw")
+    validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, document))
+    assert cast(dict[str, JsonValue], document["target"])["outside_reads"] == {
+        "mode": "listed",
+        "mode_source": "not_chosen",
+        "folders": [],
+    }
+    choose = (
+        "Choose what it may read there: 'finishup server folders mode gw local' (what FinishUP "
+        "on this computer would read) or 'finishup server folders mode gw listed' (only folders "
+        "you list)."
+    )
+    lines = server_cli.status_lines(document)
+    assert "Outside your projects: reads only folders you list (mode listed, not chosen yet)" in (
+        lines
+    )
+    assert choose in lines
+    listed = _invoke("list", "gw")
+    assert "(mode listed, not chosen yet)" in listed.stdout
+    assert choose in listed.stdout.splitlines()
+    # Once the owner chooses, the views stop asking.
+    assert _invoke("mode", "gw", "listed").exit_code == 0
+    assert choose not in _invoke("list", "gw").stdout
+    assert choose not in server_cli.status_lines(server_cli.build_status_document("gw"))
 
 
 def test_mode_local_needs_the_trusted_console_and_listed_is_the_way_back(
     remote: tuple[targets.ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record, root = remote
-    refused = _invoke("mode", "lab", "local")
+    with monkeypatch.context() as patched:
+        _no_trusted_console(patched)
+        refused = _invoke("mode", "lab", "local")
     assert refused.exit_code == 2
     assert refused.stderr.startswith("trusted_console_required:")
     assert read_record(root, record.target_id) == FolderRecord()
@@ -342,7 +415,9 @@ def test_mode_local_needs_the_trusted_console_and_listed_is_the_way_back(
     widened = _invoke("mode", "lab", "local")
     assert widened.exit_code == 0, widened.output
     assert seen == [record.target_id]
-    assert "as FinishUP on this computer would (mode local)" in widened.stdout
+    assert "what FinishUP on this computer would read (mode local), from its next read" in (
+        widened.stdout
+    )
     assert "'finishup server folders mode lab listed'" in widened.stdout
     assert read_record(root, record.target_id) == FolderRecord((), "local")
     again = _invoke("mode", "lab", "local")
@@ -356,7 +431,8 @@ def test_mode_local_needs_the_trusted_console_and_listed_is_the_way_back(
     monkeypatch.setattr(server_cli, "_confirm_local_mode_on_trusted_console", no_console)
     narrowed = _invoke("mode", "lab", "listed")
     assert narrowed.exit_code == 0, narrowed.output
-    assert "only beneath folders you list (mode listed)" in narrowed.stdout
+    assert "only beneath folders you list (mode listed), from its next read" in narrowed.stdout
+    assert "a read already under way may still finish" in narrowed.stdout
     assert read_record(root, record.target_id) == FolderRecord((), "listed")
     listed = _invoke("list", "lab")
     assert "(mode listed, set by you)" in listed.stdout
@@ -399,56 +475,61 @@ def test_declining_mode_local_on_the_console_changes_nothing(
     assert "Undo it with 'finishup server folders mode lab listed'" in notice
 
 
-def test_a_default_local_is_recorded_only_with_the_typed_name(
+def test_an_official_endpoints_local_is_recorded_only_with_the_typed_name(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A recorded 'local' outlives any later change of default, so an agent's shell, which has
-    no trusted console, never records it: the target keeps following its kind's default."""
+    """An official endpoint is 'local' unrecorded, following the reviewed list of official
+    hosts. An agent's shell, which has no trusted console, never records it as the owner's own
+    choice; the typed name does, and that choice outlives the list."""
 
     from finishup.client import server_folders
 
-    record, root = _ssh(home)
-    listed = _invoke("list", "devbox")
-    assert "(mode local, the default for an SSH server)" in listed.stdout
-    assert "'finishup server folders mode devbox listed'" in listed.stdout
-    # No trusted console (stdin is not a terminal here): nothing is recorded, and it says so.
-    result = _invoke("mode", "devbox", "local")
+    del home
+    monkeypatch.setattr(server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset({"fu.example"}))
+    with targets.registry_lock():
+        record, root = targets.new_remote_target("fu", "https", base_url="https://fu.example")
+    listed = _invoke("list", "fu")
+    assert "(mode local, an official FinishUP server)" in listed.stdout
+    assert "'finishup server folders mode fu listed'" in listed.stdout
+    with monkeypatch.context() as patched:
+        _no_trusted_console(patched)
+        result = _invoke("mode", "fu", "local")
     assert result.exit_code == 0, result.output
-    assert "already in mode local, the default for an SSH server" in result.stdout
+    assert "already in mode local, as an official FinishUP server" in result.stdout
     assert "nothing was recorded" in result.stdout
     assert read_record(root, record.target_id) == FolderRecord()
     assert not folders_path(root).exists()
-    # So a later change of the kind's default still applies to it.
+    # So it still follows the list: off it, it is 'listed', not chosen.
     with monkeypatch.context() as patched:
-        patched.setattr(
-            server_folders, "DEFAULT_OUTSIDE_READ_MODE", MappingProxyType({"ssh": "listed"})
-        )
+        patched.setattr(server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset[str]())
         assert server_folders.outside_reads_of(root, record) == OutsideReads(
-            "listed", (), "kind_default"
+            "listed", (), "not_chosen"
         )
-    # On the trusted console, the owner's typed name records it, and it outlives that change.
     seen: list[str] = []
 
     def confirm(target: targets.ServerTarget) -> None:
         seen.append(target.target_id)
 
     monkeypatch.setattr(server_cli, "_confirm_local_mode_on_trusted_console", confirm)
-    recorded = _invoke("mode", "devbox", "local")
+    recorded = _invoke("mode", "fu", "local")
     assert recorded.exit_code == 0, recorded.output
     assert seen == [record.target_id]
     assert "stays in mode local, now set by you" in recorded.stdout
-    assert "'finishup server folders mode devbox listed'" in recorded.stdout
+    assert "'finishup server folders mode fu listed'" in recorded.stdout
     assert read_record(root, record.target_id) == FolderRecord((), "local")
-    monkeypatch.setattr(
-        server_folders, "DEFAULT_OUTSIDE_READ_MODE", MappingProxyType({"ssh": "listed"})
-    )
+    monkeypatch.setattr(server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset[str]())
     assert server_folders.outside_reads_of(root, record) == OutsideReads("local", (), "owner")
 
 
-def test_declining_a_default_local_on_the_console_records_nothing(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("kind", ["ssh", "local_port"])
+def test_declining_mode_local_on_the_console_records_nothing_for_any_kind(
+    home: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    record, root = _ssh(home)
+    """An SSH or port server is asked exactly as a web server is: no kind is 'local' by
+    default, so declining records nothing and it stays 'listed', not chosen."""
+
+    del home
+    record, root = _of_kind(kind)
 
     class _Console:
         def __enter__(self) -> Self:
@@ -466,22 +547,24 @@ def test_declining_a_default_local_on_the_console_records_nothing(
             return None
 
         def read_choice(self, _prompt: str, allowed: tuple[bytes, ...]) -> bytes:
-            assert allowed == (b"devbox",)
+            assert allowed == (b"gw",)
             raise trusted_console.TrustedConsoleError("input_invalid")
 
     monkeypatch.setattr(trusted_console, "TrustedForegroundConsole", _Console)
-    result = _invoke("mode", "devbox", "local")
+    result = _invoke("mode", "gw", "local")
     assert result.exit_code == 2
     assert result.stderr.startswith("authorization_declined:")
     assert read_record(root, record.target_id) == FolderRecord()
 
 
-def test_a_default_listed_is_recorded_without_a_console(
-    remote: tuple[targets.ServerTarget, Path],
+def test_listed_is_recorded_without_a_console(
+    remote: tuple[targets.ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Recording 'listed' narrows, so it needs no console, and it outlives a change of default."""
+    """Recording 'listed' narrows, so it needs no console; a target with none chosen, already
+    'listed', then has it as the owner's choice."""
 
     record, root = remote
+    _no_trusted_console(monkeypatch)
     result = _invoke("mode", "lab", "listed")
     assert result.exit_code == 0, result.output
     assert "stays in mode listed, now set by you" in result.stdout
@@ -533,7 +616,7 @@ def test_mode_applies_only_to_a_remote_target_and_refuses_a_damaged_record(
 def test_in_mode_local_list_add_and_remove_say_the_folders_wait_for_mode_listed(
     home: Path, folder: str, confirmed: list[tuple[str, str]]
 ) -> None:
-    record, root = _ssh(home)
+    record, root = _ssh(home, mode="local")
     added = _invoke("add", "devbox", folder)
     assert added.exit_code == 0, added.output
     assert confirmed == [(record.target_id, folder)]
@@ -544,9 +627,9 @@ def test_in_mode_local_list_add_and_remove_say_the_folders_wait_for_mode_listed(
     removed = _invoke("remove", "devbox", folder)
     assert removed.exit_code == 0, removed.output
     assert "no longer lists that folder" in removed.stdout
-    assert "still reads as FinishUP on this computer would" in removed.stdout
+    assert "still reads what FinishUP on this computer would read" in removed.stdout
     assert "'finishup server folders mode devbox listed'" in removed.stdout
-    assert read_record(root, record.target_id) == FolderRecord()
+    assert read_record(root, record.target_id) == FolderRecord((), "local")
 
 
 def test_status_text_and_json_show_the_mode_and_its_origin(
@@ -558,19 +641,19 @@ def test_status_text_and_json_show_the_mode_and_its_origin(
         return ProbeResult("unavailable", reason="x")
 
     monkeypatch.setattr(server_cli, "_probe", unreachable)
-    record, root = _ssh(home)
+    record, root = _ssh(home, mode="local")
     add_folder(root, record.target_id, folder)
     document = server_cli.build_status_document("devbox")
     validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, document))
     assert cast(dict[str, JsonValue], document["target"])["outside_reads"] == {
         "mode": "local",
-        "mode_source": "kind_default",
+        "mode_source": "owner",
         "folders": [folder],
     }
     lines = server_cli.status_lines(document)
     assert (
-        "Outside your projects: reads as FinishUP on this computer would (mode local, the default "
-        "for an SSH server)"
+        "Outside your projects: reads what FinishUP on this computer would read (mode local, "
+        "set by you)"
     ) in lines
     at = lines.index("Folders listed for it, read only in mode listed:")
     assert lines[at + 1] == f"  {folder}"

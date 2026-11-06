@@ -19,6 +19,7 @@ import pytest
 from builders.server_targets import ambient_home
 from finishup.client import targets
 from finishup.client.remote_binding import binding_for_active_root, is_remote_active_root
+from finishup.client.server_folders import OutsideReadMode
 from finishup.client.targets import ServerTarget, TargetError
 from finishup.client.workspace_agent import WorkspaceAgentHandler
 from finishup.client.workspace_claim import workspace_claim
@@ -166,7 +167,7 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
     (``selection_override``) may change while the agent runs."""
 
     from finishup.client.remote_binding import remote_workspace_binding
-    from finishup.client.server_folders import OutsideReads, add_folder
+    from finishup.client.server_folders import OutsideReads, add_folder, set_mode
 
     del home
     first, second = _remote("ssh"), _remote("https")
@@ -174,6 +175,8 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
     for record, folder in ((first, mine), (second, theirs)):
         folder.mkdir()
         add_folder(targets.target_root(record.target_id), record.target_id, os.fspath(folder))
+    # The owner chose 'local' for the SSH target when adding it.
+    set_mode(targets.target_root(first.target_id), first.target_id, "local")
     _select(first)
     binding = await binding_for_active_root(workspace, serve_workspace=True)
     assert binding is not None and type(binding.agent) is WorkspaceAgentHandler
@@ -182,8 +185,8 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
     def admitted() -> OutsideReads:
         return agent._outside()  # pyright: ignore[reportPrivateUsage]
 
-    # The SSH target's own record: its kind's default mode, 'local', and its own folder.
-    own = OutsideReads("local", (os.fspath(mine),), "kind_default")
+    # The SSH target's own record: the mode its owner chose, 'local', and its own folder.
+    own = OutsideReads("local", (os.fspath(mine),), "owner")
     assert admitted() == own
     _select(second)
     assert admitted() == own
@@ -191,7 +194,7 @@ async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected
         assert admitted() == own
     _select(first)
     # A claim made under another target's salt than the target in use reads no folder outside,
-    # and never takes the 'local' default of the target in use.
+    # and never takes the 'local' mode of the target in use.
     other = await remote_workspace_binding(
         workspace, base64.b64decode(second.claim_salt or "", validate=True)
     )
@@ -280,3 +283,80 @@ def test_a_local_or_absent_record_needs_no_authorization(home: Path) -> None:
     with targets.registry_lock():
         record, _root = targets.new_local_target("work")
     targets.require_current_authorization(record)
+
+
+class _NoConsole:
+    """Any trusted-console prompt after setup fails the test: nothing may ask again."""
+
+    def __init__(self) -> None:
+        raise AssertionError("asked on the trusted console after setup")
+
+
+def _outside_read(agent: WorkspaceAgentHandler, folder: Path) -> tuple[str, str | None]:
+    """The outcome of the server asking the agent for ``folder/spec.md``, outside the project."""
+
+    from finishup.domain.values import JsonObject
+    from finishup.ports.control import WorkspaceCall
+    from finishup.ports.workspace_agent import (
+        ReadTextBeneathArguments,
+        WorkspaceOperation,
+        operation_spec,
+    )
+    from finishup.protocol.ids import IdKind, new_id
+
+    spec = operation_spec(WorkspaceOperation.READ_TEXT_BENEATH)
+    assert spec is not None
+    call = WorkspaceCall(
+        "workspace_call",
+        "1.0",
+        new_id(IdKind.CONTROL_RPC),
+        "svc_00000000-0000-4000-8000-000000000001",
+        "1",
+        WorkspaceOperation.READ_TEXT_BENEATH.value,
+        JsonObject(spec.encode_arguments(ReadTextBeneathArguments(os.fspath(folder), "spec.md"))),
+        10_000,
+    )
+    reply = agent.answer(call, workspace_handle="client:0123456789abcdef")
+    return reply.outcome, reply.reason
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["ssh", "local_port", "https"])
+@pytest.mark.parametrize("mode", ["local", "listed"])
+async def test_once_the_owner_chose_no_surface_asks_again(
+    home: Path,
+    workspace: WorkspaceLocator,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: targets.TargetKind,
+    mode: OutsideReadMode,
+) -> None:
+    """ADR-051 decision 5 (D2b): the mode chosen at ``server add`` is read from the record by
+    every surface, the same for every remote kind. A hook claims its workspace without an agent,
+    and the agent tools, the CLI and the terminal interface serve the agent from the same seam;
+    none of them opens the trusted console, and the agent answers as the owner chose."""
+
+    from finishup.cli import trusted_console
+    from finishup.client.server_folders import OutsideReads, set_mode
+
+    del home
+    outside = (tmp_path / "outside").resolve()
+    outside.mkdir()
+    (outside / "spec.md").write_text("SPEC\n", encoding="utf-8")
+    record = _remote(kind)
+    with targets.registry_lock():
+        set_mode(targets.target_root(record.target_id), record.target_id, mode)
+    _select(record)
+    monkeypatch.setattr(trusted_console, "TrustedForegroundConsole", _NoConsole)
+    # A hook: claims the workspace, serves nothing, asks nothing.
+    hook = await binding_for_active_root(workspace, serve_workspace=False)
+    assert hook is not None and hook.agent is None
+    # Agent tools (the MCP bridge), the CLI and the terminal interface all connect through this
+    # seam with the agent: bound to the owner's choice, read at every call.
+    binding = await binding_for_active_root(workspace, serve_workspace=True)
+    assert binding is not None and type(binding.agent) is WorkspaceAgentHandler
+    agent = binding.agent
+    assert agent._outside() == OutsideReads(mode, (), "owner")  # pyright: ignore[reportPrivateUsage]
+    expected = ("ok", None) if mode == "local" else ("refused", "root_not_admitted")
+    for _call in range(2):
+        assert _outside_read(agent, outside) == expected
