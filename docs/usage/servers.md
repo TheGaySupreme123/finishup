@@ -150,11 +150,12 @@ finishup server folders list devbox
 finishup server folders remove devbox /srv/team-specs
 ```
 
-`add` shows you which server may then read which folder and asks you to type the server's name,
-in a terminal you are typing in; an agent cannot do this. Give the folder's full path, starting
-with `/`. It must exist, with no link on the way and no hidden or system folder in it (on macOS,
-give `/private/tmp/...` rather than `/tmp/...`). Your home folder, a folder that holds it, and
-its private folders such as `Library` cannot be added: add the folder inside it that you mean. A
+`add` shows you which server may then read which folder, and what a server that does not follow
+FinishUP's rules could read and list there, and asks you to type the server's name, in a terminal
+you are typing in; an agent cannot do this. Give the folder's full path, starting with `/`. It
+must exist, with no link on the way and no hidden or system folder in it (on macOS, give
+`/private/tmp/...` rather than `/tmp/...`). Your home folder, a folder that holds it, and its
+private folders such as `Library` cannot be added: add the folder inside it that you mean. A
 server may read up to 32 such folders.
 
 Once a folder is added, that server's checks and reviews may read files beneath it: input files a
