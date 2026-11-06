@@ -20,8 +20,8 @@
   connections right after it fail at once instead of each waiting on ssh again.
 
 Nothing here runs a shell on this machine or kills a process by name: the master is stopped
-through its own control socket and the agent through its stamped pid. ssh's own output is read
-only to choose a closed reason and is never shown or logged.
+through its own control socket and the agent through its stop request file, never a signal.
+ssh's own output is read only to choose a closed reason and is never shown or logged.
 """
 
 from __future__ import annotations

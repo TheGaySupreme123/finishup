@@ -19,9 +19,12 @@ long-lived, pull-based client of the server's network API, one per target root:
   transport (``rest_runtime.restore_ssh_transport``), so a master that died while the user was
   idle (a sleep, a network blip) is restored before the server's next background call, not only
   when a foreground client happens to connect.
-* It holds ``<target root>/state/agent.lock`` (an exclusive lock stamped with its pid), ends a
-  workspace 15 minutes after its last note, and exits after 15 minutes without workspaces or on
-  ``SIGTERM`` (``stop_agent`` signals the stamped pid; nothing is killed by name).
+* It holds ``<target root>/state/agent.lock`` (an exclusive lock stamped with its pid, for
+  display), ends a workspace 15 minutes after its last note, and exits after 15 minutes without
+  workspaces, on ``SIGTERM``, or when ``stop_agent`` asks it to through an owner-only request file
+  (``<target root>/state/agent.stop``). Nothing is ever signalled by a pid read from a file, and
+  nothing is killed by name. Only the agent takes the lock exclusively; a probe takes it shared, so
+  a probe is never mistaken for a running agent.
 
 Records carry closed tokens only; no path, claim, call argument or server name is logged.
 """
@@ -59,6 +62,7 @@ from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json
 
 __all__ = [
     "AGENT_LOCK_NAME",
+    "AGENT_STOP_NAME",
     "AGENT_WORKSPACES_DIR",
     "IDLE_EXIT_SECONDS",
     "WorkspaceAgentLoop",
@@ -70,6 +74,7 @@ __all__ = [
 ]
 
 AGENT_LOCK_NAME: Final = "agent.lock"
+AGENT_STOP_NAME: Final = "agent.stop"
 AGENT_WORKSPACES_DIR: Final = "agent-workspaces"
 AGENT_WORKSPACE_SCHEMA: Final = "yoetz.agent-workspace/1"
 # A workspace stays served this long after the last client process noted it; the agent exits
@@ -90,6 +95,11 @@ _REPLY_RETRY_FIRST_SECONDS: Final = 0.1
 _REPLY_RETRY_MAX_SECONDS: Final = 1.0
 _MAX_RECORD_BYTES: Final = 16_384
 _MAX_WORK_BYTES: Final = 64 * 1024 * 1024
+# An agent starting while a probe holds the lock shared waits this long for the probe to end.
+_LOCK_RETRY_SECONDS: Final = 1.0
+_LOCK_POLL_SECONDS: Final = 0.02
+# ``stop_agent`` waits this long for the agent to end its registrations and release its lock.
+_STOP_WAIT_SECONDS: Final = 10.0
 _COMPONENT: Final = "client.agent"
 
 
@@ -190,21 +200,32 @@ def _open_lock(root: Path) -> int:
     return descriptor
 
 
+def _agent_holds_lock(descriptor: int) -> bool:
+    """Whether an agent holds the lock: only an agent takes it exclusively (a probe, shared)."""
+
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+    return False
+
+
 def agent_pid(root: Path) -> int | None:
-    """The pid stamped by the running agent of ``root``, or ``None`` when none holds the lock."""
+    """The pid the running agent of ``root`` stamped, or ``None`` when no agent holds the lock.
+
+    For display and for ``ensure_agent``'s "is one running" only: nothing signals this pid.
+    """
 
     try:
         descriptor = _open_lock(root)
     except (OSError, PathSafetyError):
         return None
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            stamp = os.pread(descriptor, 32, 0).decode("ascii", "replace").strip()
-            return int(stamp) if stamp.isdigit() else None
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        return None
+        if not _agent_holds_lock(descriptor):
+            return None
+        stamp = os.pread(descriptor, 32, 0).decode("ascii", "replace").strip()
+        return int(stamp) if stamp.isdigit() else 0
     finally:
         os.close(descriptor)
 
@@ -260,16 +281,52 @@ def ensure_agent(root: Path) -> bool:
     return True
 
 
-def stop_agent(root: Path) -> bool:
-    """Ask the running agent of ``root`` to stop by its stamped pid; ``True`` when one was."""
+def _stop_path(root: Path) -> Path:
+    return root / "state" / AGENT_STOP_NAME
 
-    pid = agent_pid(root)
-    if pid is None or pid <= 1 or pid == os.getpid():
+
+def _stop_requested(root: Path) -> bool:
+    try:
+        facts = _stop_path(root).lstat()
+    except OSError:
         return False
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.kill(pid, signal.SIGTERM)
+    return stat.S_ISREG(facts.st_mode) and facts.st_uid == os.geteuid()
+
+
+def _clear_stop_request(root: Path) -> None:
+    with contextlib.suppress(OSError):
+        _stop_path(root).unlink()
+
+
+def stop_agent(root: Path, *, wait_seconds: float = _STOP_WAIT_SECONDS) -> bool:
+    """Ask the running agent of ``root`` to stop; ``True`` when one was running.
+
+    The request is an owner-only file the agent reads on its next scan; no signal is sent, so a
+    pid stamped by an agent that died long ago (and since reused by another process) is never
+    acted on. This waits up to ``wait_seconds`` for the agent to end its registrations and
+    release its lock.
+    """
+
+    try:
+        descriptor = _open_lock(root)
+    except (OSError, PathSafetyError):
+        return False
+    try:
+        if not _agent_holds_lock(descriptor):
+            return False
+        with contextlib.suppress(OSError):
+            stop = os.open(
+                _stop_path(root),
+                os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+            )
+            os.close(stop)
+        deadline = time.monotonic() + wait_seconds
+        while _agent_holds_lock(descriptor) and time.monotonic() < deadline:
+            time.sleep(_LOCK_POLL_SECONDS)
         return True
-    return False
+    finally:
+        os.close(descriptor)
 
 
 # --- the loop -------------------------------------------------------------------------------
@@ -466,6 +523,9 @@ class WorkspaceAgentLoop:
         idle_since = self._clock()
         try:
             while not self._stopping.is_set():
+                if _stop_requested(self._root):
+                    _record("workspace_agent_exit", "stop_requested")
+                    break
                 live, idle = _noted_workspaces(self._root, now=self._wall_clock())
                 for path in idle:
                     with contextlib.suppress(OSError):
@@ -670,11 +730,21 @@ def run_workspace_agent(root: Path) -> int:
     except (OSError, PathSafetyError):
         _record("workspace_agent_start", "agent_lock_unsafe")
         return 20
+    held = False
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return 0
+        # A probe holds the lock shared for a moment; another agent holds it for good.
+        deadline = time.monotonic() + _LOCK_RETRY_SECONDS
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return 0
+                time.sleep(_LOCK_POLL_SECONDS)
+        held = True
+        # A stop asked of an earlier agent is not this one's.
+        _clear_stop_request(root)
         os.ftruncate(descriptor, 0)
         os.pwrite(descriptor, f"{os.getpid()}\n".encode("ascii"), 0)
 
@@ -685,8 +755,13 @@ def run_workspace_agent(root: Path) -> int:
                 running.add_signal_handler(signum, loop.stop)
             return await loop.run()
 
-        return asyncio.run(main())
+        try:
+            return asyncio.run(main())
+        finally:
+            _clear_stop_request(root)
     finally:
-        with contextlib.suppress(OSError):
-            os.ftruncate(descriptor, 0)
+        if held:
+            # Only the holder clears the stamp; one that lost the race leaves the agent's own.
+            with contextlib.suppress(OSError):
+                os.ftruncate(descriptor, 0)
         os.close(descriptor)

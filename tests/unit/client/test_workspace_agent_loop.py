@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import os
-import signal
 import subprocess
 import sys
 import threading
@@ -30,6 +29,7 @@ from finishup.client import agent as agent_module
 from finishup.client import targets
 from finishup.client.agent import (
     AGENT_LOCK_NAME,
+    AGENT_STOP_NAME,
     WorkspaceAgentLoop,
     agent_pid,
     ensure_agent,
@@ -377,7 +377,7 @@ def test_noting_a_workspace_keeps_its_path_local_and_owner_only(
     assert "repo" not in noted.name
 
 
-def test_the_agent_is_a_singleton_started_and_stopped_by_its_stamped_pid(
+def test_the_agent_is_a_singleton_started_and_asked_to_stop_without_a_signal(
     remote: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _record, root = remote
@@ -396,7 +396,7 @@ def test_the_agent_is_a_singleton_started_and_stopped_by_its_stamped_pid(
     assert argv == (sys.executable, "-m", "finishup", "agent", "run", "--root", os.fspath(root))
     assert "FINISHUP_ISOLATED_ROOT" not in env
 
-    # A running agent holds the lock and stamps its pid; nothing new is started beside it.
+    # A running agent holds the lock exclusively and stamps its pid; nothing starts beside it.
     holder = real_popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
     descriptor = os.open(root / "state" / AGENT_LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -404,15 +404,56 @@ def test_the_agent_is_a_singleton_started_and_stopped_by_its_stamped_pid(
         os.pwrite(descriptor, f"{holder.pid}\n".encode(), 0)
         assert agent_pid(root) == holder.pid
         assert ensure_agent(root) is False
-        assert stop_agent(root) is True
-        assert holder.wait(5) == -signal.SIGTERM
+        # Stopping asks through the request file; the stamped pid is never signalled (it may be
+        # a stale stamp whose pid another process now has).
+        assert stop_agent(root, wait_seconds=0.0) is True
+        assert (root / "state" / AGENT_STOP_NAME).exists()
+        assert holder.poll() is None
     finally:
         os.close(descriptor)
-        if holder.poll() is None:
-            holder.kill()
+        holder.kill()
+        holder.wait(5)
     assert agent_pid(root) is None
     assert stop_agent(root) is False
     assert len(launched) == 1
+
+
+def test_a_probe_is_never_taken_for_a_running_agent(remote: tuple[ServerTarget, Path]) -> None:
+    # A probe (``ensure_agent``'s, another ``stop_agent``'s) holds the lock shared for a moment.
+    # It must not read as an agent, or a stale stamp from an agent that was killed would be used.
+    _record, root = remote
+    (root / "state").mkdir(mode=0o700, exist_ok=True)
+    descriptor = os.open(root / "state" / AGENT_LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.pwrite(descriptor, b"999999\n", 0)  # a stamp left by an agent that was killed
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        assert agent_pid(root) is None
+        assert stop_agent(root, wait_seconds=0.0) is False
+        assert not (root / "state" / AGENT_STOP_NAME).exists()
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.anyio
+async def test_a_stop_request_ends_the_agent_loop(
+    remote: tuple[ServerTarget, Path],
+) -> None:
+    record, root = remote
+    note_workspace(root, _WORKSPACE)
+    (root / "state" / AGENT_STOP_NAME).touch(mode=0o600)
+    loop = WorkspaceAgentLoop(
+        root,
+        record,
+        http=httpx.AsyncClient(base_url="https://lab.example"),
+        headers={},
+        claim_factory=lambda _record, _locator: _no_claim(),
+        scan_seconds=0.02,
+    )
+    assert await asyncio.wait_for(loop.run(), 10) == 0
+
+
+async def _no_claim() -> WorkspaceClaim | None:
+    return None
 
 
 def test_the_agent_refuses_a_root_that_is_not_a_remote_target(

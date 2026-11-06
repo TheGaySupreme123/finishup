@@ -4919,7 +4919,10 @@ sent). Remote failures are `service_unavailable` with phase `remote_unreachable`
 `target.json`), learned by `server add` from `service endpoint --json`.
 
 **Workspace agent.** `finishup agent run --root <troot>` (`client_only`,
-`client.agent.run_workspace_agent`) keeps `<troot>/state/agent.lock` (stamped pid) and reads the
+`client.agent.run_workspace_agent`) holds `<troot>/state/agent.lock` exclusively (stamped with its
+pid for display; probes take it shared, so a probe never reads as an agent), stops when
+`stop_agent(root, *, wait_seconds=10.0)` writes `<troot>/state/agent.stop` (no signal is ever sent
+to a stamped pid), and reads the
 noted workspaces `<troot>/state/agent-workspaces/w_<32 hex>.json` (`yoetz.agent-workspace/1`, path
 only, never sent). `WorkspaceAgentLoop(root, record, *, claim_factory, handler_factory,
 delivery_factory, …)` serves each noted workspace with, from `client.remote_workspace`:

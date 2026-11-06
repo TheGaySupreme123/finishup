@@ -577,7 +577,10 @@ SSH (owner-equivalent, no key)
   `yoetz.agent-workspace/1` record beneath the target root; the path never leaves the machine) and
   start the agent when none runs. It holds `<troot>/state/agent.lock` stamped with its pid,
   registers each claimed workspace, long-polls its calls, answers them in worker threads, and
-  exits 15 minutes after its last workspace; `server disconnect` signals the stamped pid. For an
+  exits 15 minutes after its last workspace; `server disconnect` asks it to stop through an
+  owner-only request file (`<troot>/state/agent.stop`) and waits for its lock, never signalling a
+  stamped pid that may by now belong to another process. Only the agent takes the lock
+  exclusively; probes take it shared, so a probe is never read as a running agent. For an
   SSH target, a request the agent or its background delivery loses on the transport brings the
   master back (`rest_runtime.restore_ssh_transport`, never the remote service), so a master that
   died while the user was idle does not wait for a foreground client.
