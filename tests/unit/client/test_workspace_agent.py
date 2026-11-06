@@ -997,42 +997,120 @@ def test_a_workspace_file_git_ignores_is_never_returned(repository: Path, protec
     ) == (b"print('hello')\n", 15)
 
 
-def test_where_git_cannot_answer_a_workspace_file_reads_as_locally(
+def _probe(handler: WorkspaceAgentHandler, relative: str) -> object:
+    """What the honest broker asks first: Git's ignore answer for ``relative``, or the refusal."""
+
+    reply = _reply(
+        handler,
+        WorkspaceOperation.PROBE_REQUESTED_PATHS,
+        ProbeRequestedPathsArguments(_HANDLE, (relative,)),
+    )
+    if reply.outcome != "ok":
+        return reply.outcome, reply.reason
+    spec = operation_spec(WorkspaceOperation.PROBE_REQUESTED_PATHS)
+    assert spec is not None
+    (probe,) = spec.decode_result(reply.result)
+    return probe.ignored
+
+
+def _never_returned_where_git_cannot_answer(
+    handler: WorkspaceAgentHandler, root: Path, relative: str, marker: bytes
+) -> None:
+    """The bare readers return ``relative``; the honest broker gets no "not ignored" for it, so
+    it would never read it; and the agent returns its bytes to no server that skips the probe."""
+
+    assert read_text_beneath(os.fspath(root), relative, excluded=(), expired=_never) == (
+        marker,
+        len(marker),
+    )
+    assert read_declared_test(f"{root}/{relative}", excluded=()) == marker
+    assert _probe(handler, relative) is not False
+    for operation, arguments in (
+        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(_HANDLE, relative)),
+        (WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(f"{_HANDLE}/{relative}")),
+        (WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(f"{root}/{relative}")),
+    ):
+        assert _ok(handler, operation, arguments) is None, (relative, arguments)
+
+
+def test_in_a_linked_worktree_no_workspace_file_is_returned(
     tmp_path: Path, repository: Path, protected: Path
 ) -> None:
-    """Only Git's own "ignored" refuses: no repository, or a linked worktree whose ``.git`` file
-    the change capture refuses (``unsafe_root``), reads as a local service reads."""
+    """A linked worktree's ``.git`` is a file the change capture refuses (``unsafe_root``), so Git
+    cannot say whether a path there is ignored: the honest broker reads none of them, and the
+    agent returns none of them, an ignored settings file included, to a server that asks
+    anyway."""
+
+    _git(repository, "worktree", "add", "-q", "-b", "feature", os.fspath(tmp_path / "linked"))
+    worktree = (tmp_path / "linked").resolve()
+    (worktree / ".gitignore").write_text("local_settings.py\nignored.log\n", encoding="utf-8")
+    (worktree / "local_settings.py").write_text("DB_PASSWORD_MARKER\n", encoding="utf-8")
+    linked = _handler(worktree, protected)
+    assert _refused(linked, WorkspaceOperation.READ_TASK_BASE, WorkspaceOnlyArguments(_HANDLE)) == (
+        "unavailable",
+        "unsafe_root",
+    )
+    assert _probe(linked, "local_settings.py") == ("unavailable", "unsafe_root")
+    _never_returned_where_git_cannot_answer(
+        linked, worktree, "local_settings.py", b"DB_PASSWORD_MARKER\n"
+    )
+    _never_returned_where_git_cannot_answer(
+        linked, worktree, "tests/test_app.py", b"def test_app():\n    pass\n"
+    )
+
+
+def test_inside_a_submodule_no_workspace_file_is_returned(
+    tmp_path: Path, repository: Path, protected: Path
+) -> None:
+    """Git in the claimed repository cannot answer for a path inside a submodule (its own
+    ``.gitignore`` may ignore it): the honest broker reads none of them, nor does the agent
+    return one to a server that asks anyway. The repository's own files still read."""
+
+    library = (tmp_path / "library").resolve()
+    library.mkdir()
+    _git(library, "init", "--quiet")
+    (library / ".gitignore").write_text("local.cfg\n", encoding="utf-8")
+    (library / "lib.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(library, "add", "-A")
+    _git(library, "commit", "--quiet", "-m", "library")
+    _git(
+        repository,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        os.fspath(library),
+        "vendor",
+    )
+    _git(repository, "commit", "--quiet", "-m", "vendor")
+    (repository / "vendor" / "local.cfg").write_text("SUBMODULE_SECRET\n", encoding="utf-8")
+    handler = _handler(repository, protected)
+    _never_returned_where_git_cannot_answer(
+        handler, repository, "vendor/local.cfg", b"SUBMODULE_SECRET\n"
+    )
+    _never_returned_where_git_cannot_answer(handler, repository, "vendor/lib.py", b"VALUE = 1\n")
+    assert _probe(handler, "src/app.py") is False
+    assert _ok(
+        handler,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(_HANDLE, "src/app.py"),
+    ) == (b"print('hello')\n", 15)
+
+
+def test_in_a_directory_without_git_no_workspace_file_is_returned(
+    tmp_path: Path, protected: Path
+) -> None:
+    """With no repository Git cannot answer at all (``not_git``): nothing in the workspace is
+    returned, a declared test included, though a local service reads that test (ADR-051)."""
 
     plain = (tmp_path / "plain").resolve()
     (plain / "tests").mkdir(parents=True)
     (plain / "tests" / "test_p.py").write_text("def test_p():\n    pass\n", encoding="utf-8")
     handler = _handler(plain, protected)
-    assert (
-        _ok(
-            handler,
-            WorkspaceOperation.READ_DECLARED_TEST,
-            ReadDeclaredTestArguments(_HANDLE + "/tests/test_p.py"),
-        )
-        == b"def test_p():\n    pass\n"
-    )
-    _git(repository, "worktree", "add", "-q", "-b", "feature", os.fspath(tmp_path / "linked"))
-    linked = _handler((tmp_path / "linked").resolve(), protected)
-    assert _refused(linked, WorkspaceOperation.READ_TASK_BASE, WorkspaceOnlyArguments(_HANDLE)) == (
-        "unavailable",
-        "unsafe_root",
-    )
-    assert _ok(
-        linked,
-        WorkspaceOperation.READ_TEXT_BENEATH,
-        ReadTextBeneathArguments(_HANDLE, "src/app.py"),
-    ) == (b"print('hello')\n", 15)
-    assert (
-        _ok(
-            linked,
-            WorkspaceOperation.READ_DECLARED_TEST,
-            ReadDeclaredTestArguments(_HANDLE + "/tests/test_app.py"),
-        )
-        == b"def test_app():\n    pass\n"
+    assert _probe(handler, "tests/test_p.py") == ("unavailable", "not_git")
+    _never_returned_where_git_cannot_answer(
+        handler, plain, "tests/test_p.py", b"def test_p():\n    pass\n"
     )
 
 

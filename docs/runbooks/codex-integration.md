@@ -1493,8 +1493,10 @@ later process to the default service.
 - **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and
   the client's workspace agent serves the server's workspace reads, outside the project folder
   only beneath a folder the owner admitted for the target on this machine (`finishup server
-  folders add`, ADR-051 decision 5; the same for every host, with no registration change);
-  receipts carry the
+  folders add`, ADR-051 decision 5; the same for every host, with no registration change).
+  Inside it the agent returns a file only when Git answers that it is not ignored, so in a linked
+  Git worktree or a submodule a declared test is not offered to the server's reviewer, though a
+  local service offers it (ADR-051, a parity gap). Receipts carry the
   `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
   by the client over the ordinary control channel, not by the server's sweeper.
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
