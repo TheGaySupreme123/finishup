@@ -1488,6 +1488,23 @@ class FinishUpRuntime:
         indicator = None if record is None else f"{record.kind} {record.target_id}"
         return self._zero_network_indicator(indicator)
 
+    def policy_server_line(self, report: object | None) -> str | None:
+        """Which remote server's privacy policy the questionnaire changed (ADR-051 decision 8).
+
+        ``None`` for this computer's everyday FinishUP. ``report`` is the questionnaire's report,
+        or ``None`` when it raised: the change is then unconfirmed. The same fixed sentence the
+        questionnaire printed on the handed-over terminal, by generated id and closed kind only.
+        """
+
+        from finishup.cli.policy_server import selected_policy_server
+
+        server = selected_policy_server()
+        if server is None:
+            return None
+        if report is None:
+            return server.unconfirmed_line()
+        return server.report_line(getattr(report, "outcome", None), getattr(report, "reason", None))
+
     def _zero_network_indicator(self, indicator: str | None) -> str | None:
         """The header names the zero-network item while the selection on disk still shows it.
 

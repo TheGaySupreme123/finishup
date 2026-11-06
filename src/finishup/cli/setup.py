@@ -3116,6 +3116,18 @@ def _semantic_openai_extra_state() -> str:
     return "present (importable; wire dispatch not demonstrated)"
 
 
+def _policy_server_suffix() -> str:
+    """Names the remote server whose policy the privacy step changes (ADR-051 decision 8).
+
+    Empty for this computer's everyday FinishUP: the summary's privacy line keeps its text.
+    """
+
+    from finishup.cli.policy_server import selected_policy_server
+
+    server = selected_policy_server()
+    return "" if server is None else server.summary_suffix()
+
+
 def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     """Honestly separate binding/credential storage from undemonstrated runtime layers."""
 
@@ -3123,7 +3135,7 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     typer.echo("Other layers (ready vs not demonstrated by this path):")
     typer.echo(f"  SDK extra (semantic-openai): {_semantic_openai_extra_state()}")
     typer.echo("  Reviewer configuration: reloaded; live AI-powered review not demonstrated")
-    typer.echo(f"  Privacy policy: {privacy_outcome}")
+    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
     typer.echo("  Transport probe: not demonstrated")
     typer.echo("  Installed artifact evidence: not demonstrated")
     typer.echo(
@@ -3137,7 +3149,7 @@ def _emit_privacy_incomplete(
     """Name a declined or failed privacy step after the provider binding, and what is left."""
 
     typer.echo(f"Reason: {_privacy_block_reason(reason)}")
-    typer.echo(f"Privacy policy: {privacy_outcome}")
+    typer.echo(f"Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
     typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
     if api_key_unstored:
         typer.echo(_NEXT_CREDENTIAL_AFTER_PRIVACY)
@@ -3151,7 +3163,7 @@ def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
         "evaluator home; FinishUP never reads it."
     )
     typer.echo("Other layers (ready vs not demonstrated by this path):")
-    typer.echo(f"  Privacy policy: {privacy_outcome}")
+    typer.echo(f"  Privacy policy: {privacy_outcome}{_policy_server_suffix()}")
     typer.echo("  Live AI-powered review: not demonstrated")
     typer.echo("The binding and the sign-in are not proof that an AI-powered review ran.")
 
@@ -4459,7 +4471,7 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
             line += f"; repository grant: {grant_state}"
         if privacy.get("reason"):
             line += f"; reason: {privacy.get('reason')}"
-        typer.echo(line)
+        typer.echo(line + _policy_server_suffix())
     steps = report["next_steps"]
     if isinstance(steps, list) and steps:
         typer.echo("Next steps:")
