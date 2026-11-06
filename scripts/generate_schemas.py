@@ -185,8 +185,8 @@ def _version_manifest_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # owning ripple mirrors the enlarged inventory, then rebuilds this schema in the same
     # pass and verifies a fixed point before reporting success.
     destination = source.parents[1] / entry.relative_path
-    if entry.schema_version == "2.3.0" and not destination.exists():
-        document = _load_versioned_template(entry, "version/version-manifest-2.2.4.schema.json")
+    if entry.schema_version == "2.4.0" and not destination.exists():
+        document = _load_versioned_template(entry, "version/version-manifest-2.3.0.schema.json")
         cast(dict[str, JsonValue], document["properties"])["schema_version"] = {
             "const": entry.schema_version
         }
@@ -14100,6 +14100,15 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "version-report",
         lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
     ),
+    # ADR-051: the first inventory change after v0.3.0 shipped 2.3.0; that report is frozen.
+    _RegistryEntry(
+        "version/version-manifest-2.4.0.schema.json",
+        "version-manifest",
+        "2.4.0",
+        "version_manifest",
+        "version-report",
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
+    ),
 )
 
 
@@ -14794,9 +14803,10 @@ def build_schema_documents(
             "version/version-manifest-2.2.2.schema.json",
             "version/version-manifest-2.2.3.schema.json",
             "version/version-manifest-2.2.4.schema.json",
+            "version/version-manifest-2.3.0.schema.json",
         }:
             normalized = _frozen_version_manifest_schema(entry)
-        elif entry.relative_path == "version/version-manifest-2.3.0.schema.json":
+        elif entry.relative_path == "version/version-manifest-2.4.0.schema.json":
             normalized = _version_manifest_schema(entry)
         elif entry.relative_path == "service/control-request-2.6.1.schema.json":
             normalized = _control_request_v2_6_1_schema(entry)

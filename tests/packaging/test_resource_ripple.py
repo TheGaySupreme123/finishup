@@ -73,7 +73,7 @@ def _synthetic_checkout(root: Path, *, inventory_count: int, reviewed_count: int
         "def version_manifest_json(manifest, *, include_resources=False):\n"
         "    return b'{}'\n",
     )
-    _write(root, "schemas/version/version-manifest-2.3.0.schema.json", '{"type":"object"}')
+    _write(root, "schemas/version/version-manifest-2.4.0.schema.json", '{"type":"object"}')
     _write(
         root,
         "scripts/verify_resource_manifest.py",
@@ -521,7 +521,7 @@ def test_check_rejects_a_self_consistent_but_stale_cardinality_constant(tmp_path
 
     checkout = tmp_path / "checkout"
     _copy_checkout(checkout)
-    schema_path = checkout / "schemas/version/version-manifest-2.3.0.schema.json"
+    schema_path = checkout / "schemas/version/version-manifest-2.4.0.schema.json"
     document = cast(dict[str, Any], json.loads(schema_path.read_bytes()))
     counts = document["$defs"]["resource_counts"]["properties"]
     counts["migrations"]["const"] = str(int(counts["migrations"]["const"]) - 1)
@@ -566,9 +566,9 @@ def test_write_bootstraps_new_version_manifest_without_rewriting_released_schema
 ) -> None:
     checkout = tmp_path / "checkout"
     _copy_checkout(checkout)
-    released = checkout / "schemas/version/version-manifest-2.2.0.schema.json"
+    released = checkout / "schemas/version/version-manifest-2.3.0.schema.json"
     original = released.read_bytes()
-    current = checkout / "schemas/version/version-manifest-2.3.0.schema.json"
+    current = checkout / "schemas/version/version-manifest-2.4.0.schema.json"
     expected = current.read_bytes()
     current.unlink()
 

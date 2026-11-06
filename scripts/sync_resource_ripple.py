@@ -21,7 +21,7 @@ _SCRIPT_ROOT = Path(__file__).resolve().parent
 _DEFAULT_REPO_ROOT = _SCRIPT_ROOT.parent
 
 _MAX_PASSES: Final = 5
-_VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.3.0.schema.json"
+_VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.4.0.schema.json"
 _OWNED_ROOTS: Final = (
     "schemas",
     "src/finishup/resources",
@@ -45,7 +45,7 @@ from finishup.version import build_version_manifest, version_manifest_json
 # catalog loader used by every public request before claiming the package is usable.
 load_schema_catalog()
 schema = json.loads(
-    pathlib.Path("schemas/version/version-manifest-2.3.0.schema.json").read_bytes()
+    pathlib.Path("schemas/version/version-manifest-2.4.0.schema.json").read_bytes()
 )
 document = json.loads(version_manifest_json(build_version_manifest(), include_resources=True))
 Draft202012Validator(schema).validate(document)
