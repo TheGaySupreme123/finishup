@@ -171,12 +171,18 @@ https, local_port    in-process HTTPS binding v1 as a byte stream (finishup.clie
 | `finishup.client.transports` | Chooses the transport per root; `UnixTransport`, `SshTransport` (fixed, secret-free OpenSSH argv; closed failure phases from OpenSSH's diagnostics), `HttpsTransport`. Loads no network client. |
 | `finishup.client.https_binding` | The binding as a byte stream: sessions, calls with long-polled results, cancels, `workspace_reply` posts, the `workspace_call` long-poll; TLS by CA file or certificate pin. The only client module that imports `httpx`. |
 | `finishup.client.direct_runtime` | `server connect`/`disconnect`/`test` for remote kinds: the SSH master (`ssh -fN`, `ssh -O exit`), the gateway check, `server add ssh://…` endpoint discovery. |
-| `finishup.client.agent_session` | Where the client answers workspace calls: the claim and agent of each remote connection, the frame loop of an agent-only connection, and `server connect --agent`. |
+| `finishup.client.agent_session` | Where the client serves its workspace when no call runs: the MCP bridge's background agent connection and drain (`BridgeBackgroundWork`, a 15-minute lease renewed by the bridge's calls), and the foreground agent of `server connect --agent`. |
+| `finishup.client.remote_remedy` | The one remedy every surface names on a remote root: the remote phase and its ADR-030 directive, never a local-service command. |
+| `finishup service gateway` (server host) | The HTTPS edge, identical to approach A's: keys, scopes, sessions, long-polls. |
 
-The workspace agent runs in the client processes themselves: each remote connection answers the
-calls of its own operation, the MCP bridge's long-lived connection answers background work, and
-`finishup server connect NAME --agent` serves a CLI-only owner. Each client process that dials an
-HTTPS target reads the target credential itself (the ADR-008 amendment of this approach).
+The workspace agent runs in the client processes themselves. The CLI, the terminal interface and
+the MCP bridge connect with `service.client.serving_workspace_binding`, so each answers the
+workspace calls of its own operations on its own connection; hooks and drains are claim-bound
+without an agent. The MCP bridge also holds a background agent connection for work that outlives a
+call and delivers what hooks could not, and `finishup server connect NAME --agent` serves a
+CLI-only owner. Agents of one client share keyed opened-workspace handles, so any of them answers
+a verification another began. Each client process that dials an HTTPS target reads the target
+credential itself (the ADR-008 amendment of this approach).
 
 ## The six operations
 

@@ -273,7 +273,12 @@ answers bounded `workspace_call`s on a connection that declared it.
   serve_workspace)` builds it from the active target's `claim_salt` and returns none for a local
   root, so every approach decides the same way. A client that serves an agent answers at most four
   workspace calls at once in worker threads; a client without one still rejects a `workspace_call`
-  as a malformed frame, so a local connection is unchanged.
+  as a malformed frame, so a local connection is unchanged. Several agents of one client may serve
+  the same workspace at once (one per connection), and the hub calls the newest; so the handle an
+  agent answers `open_workspace` with is a keyed digest of its own root under a key derived from
+  the target's `claim_salt` (a client secret the server never sees), and any agent of that client
+  recomputes it and opens the workspace again when a later call names it. A handle the key never
+  made is still `handle_unknown`.
 - **Observation over claims.** Observation verification and approved checks for a `client:`
   locator route through the hub, and the client drains the outbox and spool it captured for a
   remote root over its own claim-bound connection (`ClientObservationDrain`; which long-lived
@@ -493,36 +498,80 @@ HTTPS and LOCALHOST PORT
   recorded launcher (`<launcher> service start`, pinned to `--remote-root`) inside the caller's
   on-demand budget. `server connect` starts the master (`ssh -fN`); `server disconnect` exits it
   by its control path (`ssh -O exit`).
-- **HTTPS and localhost ports.** `finishup.client.https_binding` speaks the same HTTPS binding v1
-  as approach A, against the same gateway, and re-frames it as the length-prefixed byte stream:
-  the hello becomes `POST /v1/sessions`; a call `POST …/calls` (a `202` continues with the
-  results long-poll; a call is never posted twice, and after a lost response only its result is
-  asked for); a cancel `POST …/cancel`, never ahead of its call; a `workspace_reply` `POST
-  …/frames`; `workspace_call`s arrive through the `GET …/frames` long-poll, run only for a session
-  whose hello declared the agent. A session idle past 90 s is checked before a call, so an expired
-  session fails the write and the caller's reconnect-once replays the same `request_id`. TLS trusts
-  the recorded CA file or the `sha256:` pin of the leaf certificate, checked inside the handshake
-  before any request (and so the key) is sent; environment proxies and `.netrc` are ignored.
-  `server login` checks the key against `GET /v1/server` before storing it. The server side —
-  `finishup service gateway` and its `key create|list|revoke` commands — is the same as in
-  approach A.
+- **HTTPS and localhost ports.** `finishup.client.https_binding` speaks HTTPS binding v1 to the
+  real gateway, `finishup service gateway`, which this pull request carries unchanged from approach
+  A (its commits are cherry-picked: the gateway, its key store and `key create|list|revoke`, the
+  `rest-error` and `server-info` 1.0.0 contracts), and re-frames it as the length-prefixed byte
+  stream: the hello becomes `POST /v1/sessions` (the gateway's 43-character session id comes back
+  in `Location`); a call `POST …/calls` that waits up to 2 s for its result, after which a `202`
+  continues with the 25 s results long-poll (a call is never posted twice, and after a lost
+  response only its result is asked for); a cancel `POST …/cancel`, sent once the gateway has
+  answered the call it names, so it never overtakes that call and waits at most those 2 s; a
+  `workspace_reply` `POST …/frames`; `workspace_call`s arrive through the `GET …/frames`
+  long-poll, run only for a session whose hello declared the agent, which also keeps that session
+  out of the gateway's 120 s idle expiry. A session idle past 90 s is checked before a call, so an
+  expired session fails the write and the caller's reconnect-once replays the same `request_id`.
+  TLS trusts the recorded CA file or the `sha256:` pin of the leaf certificate, checked inside the
+  handshake before any request (and so the key) is sent; environment proxies and `.netrc` are
+  ignored. `server login` checks the key against `GET /v1/server`, which must list binding `1.0`
+  and this release's schema-manifest digest, before storing it. The binding's names and bounds are
+  checked against the gateway's own (`tests/unit/client/test_https_binding_gateway.py`).
 - **Failures.** Every remote failure is a retryable `service_unavailable` whose `phase` is one of
   the five remote phases, classified from OpenSSH's fixed diagnostics or the binding's status and
   never shown. A remote root never spawns or supersedes a local service and never falls back to
-  one; a damaged target record refuses before any dial (`isolation_root_invalid`).
-- **Where the workspace agent runs.** Per connection, in the calling process: every remote
-  connection claims its workspace and declares the agent
-  (`finishup.client.agent_session.remote_workspace_binding`), so a CLI `check` answers the calls
-  of its own operation. For background work, the MCP bridge's long-lived connection is the agent.
-  For CLI-only use, `finishup server connect NAME --agent` keeps an agent connection in the
-  foreground until interrupted.
+  one; a damaged target record refuses before any dial (`isolation_root_invalid`). A workspace
+  this computer's Git cannot resolve is never sent: the claim fails before any dial, as a local
+  service's own resolution failure does (`service_unavailable`, phase `handshake` or
+  `handshake_git_version`).
+- **Remedies.** Every surface asks `finishup.client.remote_remedy` on a remote root: a failed
+  connection names its remote phase with that phase's ADR-030 directive; any other
+  `service_unavailable` there is `remote_unreachable`; a workspace that could not be claimed is
+  this folder's; a locked server vault is its owner's to unlock on the server host. The CLI
+  (errors, the menu, setup's next steps), the MCP bridge, the SessionStart hook contexts and
+  auto-attach, and the terminal interface use it; none of them names a local `service run` or
+  `service unlock`, a host or a target name, and a local root's output is unchanged.
+- **Where the workspace agent runs.**
+  - *Per connection, in the calling process.* The CLI and the terminal interface (through
+    `build_service_client`) and the MCP bridge connect with
+    `service.client.serving_workspace_binding`: the hello claims the workspace and offers the
+    agent, and `ServiceClient` answers the server's calls on that connection, so a CLI `check`
+    serves its own change capture. Every other connection that names a workspace to a remote
+    root — a hook, the startup-gate probe, a hook drain, `observe drain` — is claim-bound without
+    an agent (`service.client`'s seam), so it never becomes the agent a server calls after the
+    process exits; its observation rows still go out attested (decision 12).
+  - *Background work: the MCP bridge.* The bridge holds a background agent connection
+    (`finishup.client.agent_session.BridgeBackgroundWork`) while the session is active: each
+    service call the bridge makes, and each row it delivers, renews a 15-minute lease, and the
+    connection is released when the lease has run out and nothing waits, so the server's idle
+    relock and idle stop still apply. It dials only a service that is already running, with a
+    back-off, and never starts one. Over the same connection it delivers what hooks captured and
+    could not deliver themselves (`ClientObservationDrain`), after a read-only probe of the
+    client's store, so an idle bridge opens no connection to deliver nothing.
+  - *CLI-only use.* `finishup server connect NAME --agent` serves that target's workspace calls
+    in the foreground (the target resolved as the root whatever is selected) until interrupted,
+    and reconnects after the server closes the connection; while it runs the server counts it as
+    a connected client, so the server's idle lock waits, and the command says so.
+  - *Limit.* Hook rows delivered more than 15 minutes after the bridge's last activity are
+    verified only if an agent is connected then (a CLI command, a foreground agent); otherwise the
+    verification waits the hub's 30 s and is recorded unavailable, never a pass.
 - **Credential.** Each client process that dials an HTTPS target reads the key from its
   `CredentialSource`: the ADR-008 amendment of this approach, disclosed in ADR-008. The HTTP
   client and the credential store load only inside an HTTPS dial; a hook for a local or SSH target
   never imports them (`tests/packaging/test_hook_import_diet.py`).
+- **Evidence.** `tests/integration/service/test_direct_dial_end_to_end.py` runs a real daemon,
+  vault and ready composition behind the real gateway (HTTPS) and behind the production SSH argv
+  with a stand-in for `ssh` (SSH), with the production client above the transport: the whole
+  workflow with client-attested evidence and the client's attribution, a decoy at the claimed
+  path never read, the reviewer's `read_file` answered by the agent, the agent lost mid-review
+  (`workspace_agent_unavailable`, never a pass), a hook's row delivered by the bridge's background
+  drain and verified through its agent, a hook's claim-only connection, and remote loss as a typed
+  remote phase with no local fallback. `tests/unit/client/test_direct_transport_parity.py` and
+  `tests/capability/test_openssh_direct_dial.py` show the frames byte-identical over every
+  transport, against the real gateway and a real `sshd`.
 - **Compared with A.** No relay process to supervise and no per-target status file; the costs are
   the credential in client processes, a handshake per client process (one SSH channel on a warm
-  master, or one binding session), and a transport each hook loads lazily.
+  master, or one binding session), a transport each hook loads lazily, and several agents per
+  workspace (one per serving connection) instead of one.
 
 ## Reverse states
 
@@ -532,6 +581,7 @@ HTTPS and LOCALHOST PORT
 | `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
+| `server connect NAME --agent` (foreground workspace agent) | Ctrl-C; the connection closes | the terminal it runs in |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |
 
 Deleting a target's root removes every client-side artifact of that target. The ambient

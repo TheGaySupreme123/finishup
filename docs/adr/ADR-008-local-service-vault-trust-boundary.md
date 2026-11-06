@@ -592,3 +592,9 @@ client machine.
   `finishup server disconnect` exits it by that control path, never by process pattern.
 - **Per-process handshake.** Each client process pays its own channel open (SSH, about 16 ms p50
   on a warm master on loopback) or binding session (HTTPS); no budget is relaxed.
+- **Idle lock with remote agent connections.** A remote service counts every open control
+  connection as a connected client, which holds off its idle relock and idle stop. The MCP
+  bridge's background workspace-agent connection is held only while its 15-minute lease runs
+  (renewed by the bridge's own calls and by rows it delivers) and never starts a stopped service;
+  `finishup server connect NAME --agent` holds one until the owner interrupts it, and says so when
+  it starts. The workspace agent itself has no vault, unlock or policy authority.

@@ -17,7 +17,7 @@ as it always has.
 | Kind | Add it with | What it is |
 |---|---|---|
 | Local | `finishup server add NAME --local` | A second FinishUP on this computer, with its own tasks, vault and settings. It starts when something first needs it, like the default one. |
-| Local port | `finishup server add NAME https://127.0.0.1:PORT` | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
+| Local port | `finishup server add NAME --port PORT` | A FinishUP served over HTTPS on a port of this computer (`https://127.0.0.1:PORT`). It is treated like a web server, because a port can forward anywhere. |
 | SSH | `finishup server add NAME ssh://[user@]host[:port]` | A FinishUP on another machine that you log in to over SSH, as yourself. |
 | Web (HTTPS) | `finishup server add NAME https://host[:port][/path]` | A FinishUP hosted on the web. You sign in to it with an API key. |
 
@@ -38,7 +38,7 @@ is refused.
 finishup server add lab --local
 finishup server add devbox ssh://me@devbox.example
 finishup server add team https://finishup.example.com --ca-file team-ca.pem
-finishup server add bench https://127.0.0.1:8443 --tls-pin sha256:<64 hex digits>
+finishup server add bench --port 8443 --tls-pin sha256:<64 hex digits>
 ```
 
 A **local** server needs its own setup: select it (below) and run `finishup setup`, exactly as for a
@@ -216,16 +216,21 @@ keys. Prefer an `agent` key for everyday use.
 
 ### Using a server from the command line only
 
-The workspace agent runs inside the FinishUP clients that are connected. With an agent session
-open, its FinishUP tools stay connected and answer for your project. If you use a server only
-through the `finishup` command, keep one terminal connected in your project folder so the server
-can reach your project for work that finishes later, such as a longer review:
+The workspace agent runs inside the FinishUP clients that are connected. A `finishup` command
+answers for your project while it runs. With an agent session open, its FinishUP tools also keep
+a connection that answers for your project between calls, for work that finishes later (a longer
+review, or checking an observation your hooks delivered), and deliver anything your hooks could
+not; that connection closes 15 minutes after the session's last FinishUP call, so the server can
+still lock itself when nobody is working. If you use a server only through the `finishup`
+command, keep one terminal connected in your project folder instead:
 
 ```text
 finishup server connect devbox --agent
 ```
 
-It answers for the folder you run it in until you press Ctrl-C.
+It answers for the folder you run it in until you press Ctrl-C, and reconnects if the server
+closes the connection. While it runs, the server counts it as a connected client and does not
+lock itself for idleness.
 
 ## Things that run on the server
 
@@ -268,7 +273,7 @@ repeated safely.
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. | Start it on the server instead. |
-| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
+| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Keep the agent session open (or run `finishup server connect NAME --agent`) and check again; the receipt names what was not read. |
 | `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on your approved list. | Nothing to repair unless you meant to admit that folder or check. |
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it. |
 | `workspace_binding_conflict` | A client sent two different ways of naming the project. | Report it as a bug. |

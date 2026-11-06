@@ -496,7 +496,11 @@ process to the default service.
   selected server themselves, with no relay process: one SSH channel on the target's shared master,
   or one HTTPS binding session. For an HTTPS target each of them reads the stored key in its own
   process; for a local or SSH target none loads the HTTP client or the credential store. The
-  bridge's long-lived connection is the workspace agent for work that outlives a call.
+  bridge also holds a background workspace-agent connection for work that outlives a call, kept
+  15 minutes after its last FinishUP call, and delivers rows the hooks could not; the bridge and
+  CLI calls answer workspace calls on their own connections, while hooks connect claim-bound
+  without an agent. On a remote root every failure names its remote phase and directive, never a
+  local `service run` or `service unlock`.
 - **Budgets.** Hook budgets are not relaxed for a remote target. `finishup server test` measures
   the round trip and warns when the required startup gate would likely deny.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is

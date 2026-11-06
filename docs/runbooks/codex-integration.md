@@ -1498,7 +1498,11 @@ later process to the default service.
   selected server themselves, with no relay process: one SSH channel on the target's shared master,
   or one HTTPS binding session. For an HTTPS target each of them reads the stored key in its own
   process; for a local or SSH target none loads the HTTP client or the credential store. The
-  bridge's long-lived connection is the workspace agent for work that outlives a call.
+  bridge also holds a background workspace-agent connection for work that outlives a call, kept
+  15 minutes after its last FinishUP call, and delivers rows the hooks could not; the bridge and
+  CLI calls answer workspace calls on their own connections, while hooks connect claim-bound
+  without an agent. On a remote root every failure names its remote phase and directive, never a
+  local `service run` or `service unlock`.
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the

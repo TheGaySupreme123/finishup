@@ -4579,13 +4579,43 @@ dials its own stream.
   (`remote_service_not_running`).
 - `server login` checks the key with `GET /v1/server` before storing it; `remote_auth_failed`,
   `remote_identity_changed` and `remote_incompatible` store nothing.
-- `server connect NAME --agent` keeps one agent-only connection for the current directory in the
-  foreground (`finishup.client.agent_session.run_foreground_agent(target, root, locator)`);
-  `agent_not_applicable` for a local target.
-- `finishup.client.agent_session.remote_workspace_binding(target, locator) ->
-  RemoteWorkspaceBinding(claim, agent, answer)` decides the claim and agent of every remote
-  connection; `serve_workspace_calls(stream, session, answer)` is the frame loop of an agent-only
-  connection (each call in a worker thread, replies under one write lock).
+- `server connect NAME --agent` serves the current directory's workspace calls in the foreground
+  (`finishup.client.agent_session.run_foreground_agent(root, locator, *, connect=None,
+  binding_for=None)`, the target resolved as `root` through `config.paths.selection_override`)
+  and reconnects after the server closes the connection; it raises `AgentSessionError(reason, *,
+  phase)`: `agent_not_applicable` for a local target, `workspace_agent_unavailable` when the
+  server bound no handle (a locked vault), or the first connection's closed reason and phase.
+- Which connections serve the workspace: `service.client.serving_workspace_binding(locator) ->
+  ClientWorkspaceBinding | None` (claim plus the real `WorkspaceAgentHandler`, built for the
+  target the transport dials through `client.remote_binding.binding_for_target(target, locator, *,
+  serve_workspace)`; `None` for a local root) is what `cli.app.build_service_client` (the CLI and
+  the terminal interface) and the MCP bridge connect with. Any other connection that names a
+  workspace to a remote root is claim-bound without an agent inside `_connect_remote_attempt`; a
+  workspace the root rule cannot resolve fails before any dial as `service_unavailable`, phase
+  `handshake` (or `handshake_git_version`). `ServiceClient.closed` and `async wait_closed()` serve
+  long-lived agent connections.
+- `finishup.client.agent_session.BridgeBackgroundWork(*, lease_seconds=900.0,
+  drain_interval=30.0, connect=None, binding_for=None, pending=None, clock=time.monotonic)`: the MCP
+  bridge's background agent connection (`connect_service`, never on demand) and drain;
+  `note_activity(locator)` (each bridge service call) renews the lease, `run_pass() ->
+  BackgroundPass(connected, drained)`, `run()`, `aclose()`. `start_remote_background_work() ->
+  (work, task) | None` starts it for a remote root only; the bridge keeps it in its client slot
+  (`_ClientSlot.remote_background`). The drain probe is
+  `client.observation_outbox.capture_pending(workspace, *, state=None) -> bool` (read-only).
+- Hook drains (`cli.observe_hooks._drain_connector`) and `finishup observe drain`
+  (`cli.observe._claim_bound_drain`) name the hook's workspace on a remote root, so the drain's
+  connection is claim-bound and its rows go out attested.
+- `finishup.client.remote_remedy.remote_remedy(error, *, remote=None) -> RemoteRemedy | None`
+  (`reason`, `summary`, `directive`; `line()`), `remote_root_selected()`,
+  `remote_connection_phase(error)`, and the fixed `REMOTE_UNAVAILABLE_SUMMARY`,
+  `REMOTE_LOCKED_SUMMARY`, `REMOTE_UNCLAIMABLE_SUMMARY`: the remedy every surface names on a remote
+  root (CLI `control_failure`, menu, setup next steps, the MCP bridge's
+  `_remote_control_error_result`, the hooks' `unavailable_context`/`locked_context` and
+  `StatusOutcome.remote_reason`, the terminal interface's `_connect_failure` and doctor remedies).
+- HTTPS client bounds (`finishup.client.https_binding`): `BINDING_HEADER`, `BINDING_VERSION`,
+  `LONG_POLL_WAIT_MS` (25 000, the gateway's `MAX_WAIT_MS`), `CALL_WAIT_MS` (2 000, a call's own
+  post), `SESSION_ID_PATTERN` (the gateway's), `SESSION_IDLE_CHECK_SECONDS` (90, under the
+  gateway's 120); `GET /v1/server` must list binding `1.0`.
 
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
@@ -4758,7 +4788,11 @@ reply-too-large and internal-error cases with closed reasons; a client without o
   `WORKSPACE_CLAIM_SALT_BYTES = 32`. The salt is checked before anything on disk is read.
 - `finishup.client.remote_binding`: `remote_workspace_binding(workspace, claim_salt, *,
   serve_workspace=True, protected=None)` composes the binding (the agent's adapters load only when
-  `serve_workspace`). `binding_for_active_root(locator, *, serve_workspace)` decides from the active
+  `serve_workspace`); its agent gets `opened_handle_key`, derived from the claim salt under
+  `yoetz/opened-workspace-key/v1`, so every agent of this client keys its opened-workspace handles
+  alike (`WorkspaceAgentHandler(..., opened_handle_key=None)`: with a key, `open_workspace` answers
+  `rws_` + the first 32 hex of HMAC-SHA256 over `yoetz/opened-workspace/v1\0 ‖ flag ‖ 0x00 ‖ root`,
+  and an agent that did not open a handle recomputes it for its own root). `binding_for_active_root(locator, *, serve_workspace)` decides from the active
   root: None for the everyday installation, an isolated root that is not a target, a named local
   server, or a remote root with no workspace; otherwise the binding under the target's own
   `claim_salt`. `is_remote_active_root()` answers whether the active root is a `local_port`, `ssh`
