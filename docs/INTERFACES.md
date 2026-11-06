@@ -4843,8 +4843,10 @@ names a `workspace_locator`. Local clients keep naming their path.
 would have read. The check-time change records one of two reasons, each with its own fixed sentence
 and registered in the gap-effect tables: `check_time_change_unavailable_workspace_agent_refused`
 when the agent refused the read or never offered the operation (hub reasons `agent_refused`,
-`operation_not_declared`): "the FinishUP workspace agent on the client machine refused the
-server's read of the workspace, so the server could not see the change."; and
+`operation_not_declared`): "the FinishUP workspace agent on the client machine refused a read the
+check needed, such as a task's input file in a folder the owner has not let this server read, so
+the server could not see the change. Only the owner can let this server read a folder, with
+`finishup server folders add` on the client machine."; and
 `check_time_change_unavailable_workspace_agent_unavailable` for every other loss (no agent, a
 dropped connection, a deadline, a busy agent, an undecodable reply, an agent that failed): "the
 FinishUP workspace agent on the client machine gave no usable answer to the server's read of the
@@ -4980,7 +4982,7 @@ wait `unavailable`.
 | `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
 | `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, or a handle other than the connection's | send the connection's `workspace_handle`, or no workspace (the bridge and CLI rewrite the absolute root to the handle) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
-| `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
+| `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged. Its directive (`workspace_agent_refusal_review`) has the agent tell the user that only they can let the server read a folder, with `finishup server folders add` on the client, and never run it itself |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
 | `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
