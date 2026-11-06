@@ -521,14 +521,16 @@ def control_failure(
         return exit_code_for(code)
     if error.reason == "service_unavailable" and error.phase in REMOTE_CONNECTION_PHASES:
         # The selected server is on another machine (ADR-051): name the closed remote phase and
-        # its directive, never a local-service remedy. No host or name is in either.
+        # its directive, never a local-service remedy. No host or name is in either. A connection
+        # lost mid-call may already have delivered the call, so this line never says that
+        # nothing was recorded; the directive says how to repeat the request safely.
         from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
         from finishup.protocol.recovery import continuation_for_reason, directive_for
 
         remote_directive = directive_for(continuation_for_reason(error.phase))
         lines = [
             f"service_unavailable: {error.phase}: the selected FinishUP server could not serve "
-            "this connection, and nothing was recorded"
+            "this connection"
         ]
         if remote_directive is not None:
             lines.extend(render_recovery_directive_lines(remote_directive))

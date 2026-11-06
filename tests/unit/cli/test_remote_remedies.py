@@ -112,6 +112,29 @@ def test_a_local_root_keeps_every_local_text(home: Path) -> None:
     assert "safe_details" not in public
 
 
+@pytest.mark.parametrize("phase", sorted(REMOTE_CONNECTION_PHASES))
+def test_the_cli_never_says_nothing_was_recorded_for_a_remote_phase(
+    remote: Path, phase: str
+) -> None:
+    """A connection lost mid-call may already have delivered it; only the directive guides."""
+
+    from finishup.cli.bootstrap import control_failure
+
+    lines: list[str] = []
+    error = ControlError("service_unavailable", retryable=True, phase=phase)
+    control_failure(error, json_output=False, stderr_writer=lines.append)
+    text = "\n".join(lines)
+    first = text.splitlines()[0]
+    assert first == (
+        f"service_unavailable: {phase}: the selected FinishUP server could not serve this "
+        "connection"
+    )
+    directive = RECOVERY_DIRECTIVES[REASON_CODE_CONTINUATIONS[phase]]
+    assert directive.directive in text
+    assert "nothing was recorded" not in first
+    _clean(text)
+
+
 def test_a_locked_remote_server_is_unlocked_there_on_every_surface(remote: Path) -> None:
     from finishup.cli.bootstrap import control_failure
     from finishup.cli.hooks import locked_context
