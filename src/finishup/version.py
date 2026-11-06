@@ -140,7 +140,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # ADR-051 decision 12: +1 canonical vector (CTL-2106, a claim-bound observation ingest carrying
 # the client's attestation).
 # +1 schema: version manifest 2.4.0 reports this inventory; v0.3.0's 2.3.0 stays frozen.
-REVIEWED_RESOURCE_COUNT: Final = 358
+# ADR-051 decision D4: +1 schema (receipt-result 1.5.0 with ``workspace_provenance``).
+REVIEWED_RESOURCE_COUNT: Final = 359
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -190,7 +191,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("read-guidance-result", "1.1.0"),
     ("receipt-document", "1.3.0"),
     ("receipt-request", "1.0.0"),
-    ("receipt-result", "1.4.0"),
+    ("receipt-result", "1.5.0"),
     ("respond-request", "1.1.0"),
     ("respond-result", "1.1.0"),
     ("rest-error", "1.0.0"),

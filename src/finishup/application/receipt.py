@@ -50,6 +50,7 @@ from finishup.domain.values import (
     task_id,
     timestamp_from_datetime,
 )
+from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
 from finishup.kernel.deterministic_checks import build_deterministic_case
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_builder import (
@@ -164,6 +165,9 @@ class ReceiptInternalResult:
     # #1240 D5: the line asking the agent to tell the user this receipt's conclusion and its open
     # or declined reviewer notes. Fixed words and counts only (``domain.receipt_closing``).
     agent_closing_prompt: str | None = None
+    # ADR-051 decision D4: the receipt could not establish where its workspace evidence was read
+    # (``domain.workspace_provenance``). Every format carries it, JSON included; fixed words only.
+    workspace_provenance_unknown: bool = False
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -221,6 +225,11 @@ class ReceiptInternalResult:
                 {}
                 if not self.agent_closing_prompt
                 else {"agent_closing_prompt": self.agent_closing_prompt}
+            ),
+            **(
+                {"workspace_provenance": cast(JsonValue, workspace_provenance_unknown_wire())}
+                if self.workspace_provenance_unknown
+                else {}
             ),
         }
 
@@ -510,8 +519,9 @@ def _internal_result(
     task is claim-bound, so its text and markdown renderings end with the fixed client-attested
     workspace-evidence block (ADR-051), or ``_Provenance.UNKNOWN`` when the session's opening
     event could not be read or cannot say, so they end with the fixed provenance-unknown block
-    instead: what happened, why it matters, what to do (decision D4). The stored document never
-    carries either."""
+    instead: what happened, why it matters, what to do (decision D4), and the result of every
+    format, JSON included, carries the ``workspace_provenance`` member saying so. The stored
+    document never carries either."""
 
     document_json = cast(JsonValue, receipt_document_to_json(document))
     markdown = request.format is ReceiptFormat.MARKDOWN
@@ -561,6 +571,7 @@ def _internal_result(
         request.writer_id,
         document.correctness_advisory_counts,
         _agent_closing_prompt(document) or None,
+        attested_by is _Provenance.UNKNOWN,
     )
 
 

@@ -1539,7 +1539,8 @@ later process to the default service.
 - **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
   still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
   line it ends with the fixed provenance-unknown section (what happened, why it matters, run
-  `receipt` again or restart the server's service).
+  `receipt` again or restart the server's service), and every receipt format, JSON included,
+  carries the same words as its `workspace_provenance` member.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.
