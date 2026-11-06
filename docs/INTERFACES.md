@@ -4661,6 +4661,31 @@ list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup w
 `{reason, target_id, kind, detail, next_command}` (`next_command` is the pinned continuation of
 `server use local`). Every field is a generated id or a closed token; no owner-typed name.
 
+**Which server's policy a command changes** (ADR-051 decision 8). `cli/policy_server.py` owns it.
+`selected_policy_server() -> PolicyServer | None` reads `targets.active_target_record()` (the
+process's resolved root, not the selection read afresh) and answers only for the remote kinds
+(`ssh`, `https`, `local_port`); `None` for the everyday root, an isolated root, a named `local`
+target and a record that cannot be read. `PolicyServer(target_id, kind)` renders fixed lines:
+`before_line()` (`Privacy policy changes here apply to the selected FinishUP server <id> (<kind>),
+not to this computer's everyday FinishUP.`), `applied_line()`, `pending_line()` (decide it with
+`finishup privacy decide-policy` on that server host), `unchanged_line()`, `unconfirmed_line()`
+(points at `finishup privacy show`), `outcome_line(outcome)` for a `tightening_applied` /
+`decision_required` answer (anything else is unconfirmed), `report_line(outcome, reason)` for a
+`PrivacySetupReport` (`configured` applied; `cancelled` with `requires_server_host` pending;
+`unchanged|cancelled|failed` unchanged; `None`, a questionnaire that raised, unconfirmed), and
+`summary_suffix()` (` (on the FinishUP server <id> (<kind>))`). `privacy tighten|propose`
+(`_call_support`) print the before line, then the result line or, on any exception after it, the
+unconfirmed line, all on stderr in text and `--json` modes; the stdout document (the released
+control result body) is unchanged. `run_privacy_setup` prints them on stdout around
+`_privacy_setup_questionnaire(decide_here=)`, which on a remote target returns a widening's
+proposal as `PrivacySetupReport("cancelled", …, proposal_id, "requires_server_host", …)` without
+opening the local decision ceremony. The setup summary's privacy lines (`_emit_human_report`,
+`_emit_provider_setup_layer_report`, `_emit_codex_subscription_layer_report`,
+`_emit_privacy_incomplete`) end with the suffix. The terminal interface's
+`FinishUpRuntime.policy_server_line(report | None) -> str | None` feeds one message after each
+questionnaire handover. `privacy decide-policy` stays `server_host` (refused with
+`requires_server_host`, whose line names `<id> (<kind>)`). No output schema changes.
+
 **Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
 target's credential, so a later OAuth source can replace the API key. `KeyringOrFileCredential`
 uses the OS credential store (service `yoetz.server-credential.v1`, account = `target_id`) and,
