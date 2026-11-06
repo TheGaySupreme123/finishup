@@ -1907,10 +1907,12 @@ def _vault_initialization_required_message(include_authorize: bool) -> str:
 
 
 _REMOTE_UNAVAILABLE_MESSAGE: Final = (
-    "The selected FinishUP server on another machine could not serve this request, so nothing "
-    "was recorded. Follow the continuation for this phase, then retry this operation with the "
-    "same request_id. Never fall back to another server or a local service, and never run "
-    "local service lifecycle commands for this."
+    "The selected FinishUP server on another machine could not be reached, or the connection to "
+    "it ended before it answered. If the server already received this request it may be "
+    "recorded; retrying with the same request_id returns that record instead of a second one. "
+    "Follow the continuation for this phase, then retry this operation with the same request_id. "
+    "Never fall back to another server or a local service, and never run local service "
+    "lifecycle commands for this."
 )
 _REMOTE_UNCLAIMABLE_MESSAGE: Final = (
     "This folder could not be named to the selected FinishUP server as a workspace, because this "

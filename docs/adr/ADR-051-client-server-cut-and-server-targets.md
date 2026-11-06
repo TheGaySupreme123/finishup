@@ -524,7 +524,11 @@ HTTPS and LOCALHOST PORT
   checked against the gateway's own (`tests/unit/client/test_https_binding_gateway.py`).
 - **Failures.** Every remote failure is a retryable `service_unavailable` whose `phase` is one of
   the five remote phases, classified from OpenSSH's fixed diagnostics or the binding's status and
-  never shown. A remote root never spawns or supersedes a local service and never falls back to
+  never shown. A connection that ends while a call is in flight (a dropped network, a session the
+  gateway expired, a revoked key, a closed SSH master) fails that call the same way, with the phase
+  the stream names, never as `frame_invalid`: the call may have reached the server, so the remedy
+  never says that nothing was recorded, and the caller's reconnect-once replays the same
+  `request_id`. A remote root never spawns or supersedes a local service and never falls back to
   one; a damaged target record refuses before any dial (`isolation_root_invalid`). A workspace
   this computer's Git cannot resolve is never sent: the claim fails before any dial, as a local
   service's own resolution failure does (`service_unavailable`, phase `handshake` or

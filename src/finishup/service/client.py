@@ -90,7 +90,11 @@ from finishup.ports.privacy import (
 )
 from finishup.ports.workspace_agent import outcome_for_reason
 from finishup.protocol.canonical import parse_canonical_integer_string
-from finishup.protocol.errors import SERVICE_HANDSHAKE_PHASES, SERVICE_START_TIMEOUT_PHASE
+from finishup.protocol.errors import (
+    REMOTE_CONNECTION_PHASES,
+    SERVICE_HANDSHAKE_PHASES,
+    SERVICE_START_TIMEOUT_PHASE,
+)
 from finishup.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -1060,6 +1064,7 @@ class ServiceClient(ControlClientPort):
         "_client_kind",
         "_closed",
         "_last_project_request",
+        "_lost_phase",
         "_pending",
         "_pid",
         "_receiver",
@@ -1103,6 +1108,8 @@ class ServiceClient(ControlClientPort):
         self._pid = os.getpid()
         self._closed = False
         self._last_project_request: PreparedProjectRequest | None = None
+        # The closed remote phase that ended a remote connection (never set for ``unix``).
+        self._lost_phase: str | None = None
         self._pending: dict[str, asyncio.Future[ControlResult]] = {}
         self._retired_rpc_ids: set[str] = set()
         self._write_lock = asyncio.Lock()
@@ -1113,7 +1120,10 @@ class ServiceClient(ControlClientPort):
             self._closed = True
             raise ControlError("service_unavailable")
         if self._closed:
-            raise ControlError("service_unavailable", retryable=True)
+            lost = self._lost_phase
+            if lost is None:
+                raise ControlError("service_unavailable", retryable=True)
+            raise ControlError("service_unavailable", retryable=True, phase=lost)
 
     def _admit(self, method: ControlMethod) -> None:
         if self._client_kind is ControlClientKind.MCP_BRIDGE and method not in _WORKFLOW_METHODS:
@@ -1196,15 +1206,41 @@ class ServiceClient(ControlClientPort):
                 await self._fail_connection(_transport_error(exc))
                 raise _transport_error(exc) from exc
             except ControlProtocolError as exc:
-                error = _protocol_error(exc)
+                error = await self._remote_failure(_protocol_error(exc))
                 await self._fail_connection(error)
                 raise error from exc
 
+    async def _remote_failure(self, error: ControlError) -> ControlError:
+        """``error``; for a remote connection that was lost, the closed remote phase that ended it.
+
+        A remote stream (an ``ssh`` child, an HTTPS binding session) reports every loss of its
+        connection the same way, as the end of its byte stream: a dropped network, a session the
+        gateway expired, a revoked key, a closed SSH master. It names why through its
+        ``failure_phase``. Such a loss is a retryable ``service_unavailable`` carrying that phase
+        (``remote_unreachable`` when the stream names none), so the caller reconnects and replays
+        the same ``request_id`` instead of being told its request was malformed. A local
+        connection's failure is returned unchanged.
+        """
+
+        if (
+            self._transport == "unix"
+            or error.reason != "service_unavailable"
+            or error.phase is not None
+        ):
+            return error
+        phase = await _remote_end_phase(self._stream) or "remote_unreachable"
+        return ControlError("service_unavailable", retryable=error.retryable, phase=phase)
+
     async def _receive_results(self) -> None:
         failure = ControlError("service_unavailable", retryable=True)
+        remote = self._transport != "unix"
         try:
             while not self._closed:
-                frame = await read_control_frame(self._stream)
+                # A remote stream that ends between frames lost its connection; a local one keeps
+                # today's reading of an end of stream.
+                frame = await read_control_frame(
+                    self._stream, eof_reason="transport_failed" if remote else "frame_invalid"
+                )
                 if self._agent is not None and is_workspace_call_frame(frame):
                     # Only a connection that declared an agent answers the server's calls; on
                     # any other this frame fails as ``frame_invalid`` below, exactly as before.
@@ -1238,9 +1274,15 @@ class ServiceClient(ControlClientPort):
             failure = exc
         except ControlProtocolError as exc:
             failure = _protocol_error(exc)
+            if remote and exc.reason == "frame_invalid":
+                # A remote stream cut off inside a frame (an ``ssh`` child that exited) names why;
+                # a whole frame that is invalid on a live stream stays ``frame_invalid``.
+                phase = await _remote_end_phase(self._stream)
+                if phase is not None:
+                    failure = ControlError("service_unavailable", retryable=True, phase=phase)
         except Exception:
             failure = ControlError("service_unavailable", retryable=True)
-        await self._fail_connection(failure, from_receiver=True)
+        await self._fail_connection(await self._remote_failure(failure), from_receiver=True)
 
     def _accept_workspace_call(self, call: WorkspaceCall) -> None:
         """Start answering one workspace call; the receive loop never waits for the answer."""
@@ -1278,7 +1320,9 @@ class ServiceClient(ControlClientPort):
             except LocalControlTransportError as exc:
                 await self._fail_connection(_transport_error(exc))
             except Exception:
-                await self._fail_connection(ControlError("service_unavailable", retryable=True))
+                await self._fail_connection(
+                    await self._remote_failure(ControlError("service_unavailable", retryable=True))
+                )
 
     async def _run_workspace_call(self, agent: WorkspaceCallHandler, call: WorkspaceCall) -> bytes:
         """The encoded reply: the agent's, or ``deadline_exceeded`` once the call's deadline passes.
@@ -1319,6 +1363,13 @@ class ServiceClient(ControlClientPort):
     async def _fail_connection(self, error: ControlError, *, from_receiver: bool = False) -> None:
         if not self._closed:
             self._closed = True
+            if (
+                self._transport != "unix"
+                and error.reason == "service_unavailable"
+                and error.phase in REMOTE_CONNECTION_PHASES
+            ):
+                # Later calls on this closed connection name the same remote phase.
+                self._lost_phase = error.phase
             self._session.close()
             self._retired_rpc_ids.clear()
             for pending in tuple(self._pending.values()):
@@ -1939,8 +1990,6 @@ def _control_transport() -> ControlTransport:
 
 async def _remote_end_phase(stream: ControlStream | None) -> str | None:
     """The closed remote phase a failed remote stream names for its own end, if any."""
-
-    from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
 
     failure_phase = cast(
         Callable[[], Awaitable[str | None]] | None, getattr(stream, "failure_phase", None)

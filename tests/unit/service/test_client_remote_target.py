@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Buffer, Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -314,6 +314,114 @@ def test_a_closed_hello_takes_the_streams_own_phase(
 
     error = asyncio.run(exercise())
     assert (error.reason, error.retryable, error.phase) == ("service_unavailable", True, expected)
+
+
+class _PhasedStream:
+    """A remote stream (as an ``ssh`` child is) that names a phase once its peer is gone."""
+
+    def __init__(self, inner: ControlStream, phase: str | None) -> None:
+        self._inner = inner
+        self._phase = phase
+        self.peer_identity = inner.peer_identity
+
+    async def receive(self, max_bytes: int = 65_536) -> bytes:
+        return await self._inner.receive(max_bytes)
+
+    async def send_all(self, data: Buffer) -> None:
+        await self._inner.send_all(data)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    async def failure_phase(self) -> str | None:
+        return self._phase
+
+
+async def _serve_then_drop(stream: ControlStream, *, partial_frame: bool) -> None:
+    """Answer the hello, take one call, then lose the connection (optionally inside a frame)."""
+
+    await server_handshake(stream, stream.peer_identity, service_status())
+    await read_control_frame(stream)
+    if partial_frame:
+        # A length prefix promising a body that never arrives: cut off inside a frame.
+        await stream.send_all(b"\x00\x00\x01\x00{")
+    await stream.aclose()
+
+
+@pytest.mark.parametrize(
+    ("phase", "partial_frame", "expected"),
+    [
+        # The stream names why it ended (a key revoked under a long-poll, say).
+        ("remote_auth_failed", False, "remote_auth_failed"),
+        # It names nothing: the server is no longer reachable.
+        (None, False, "remote_unreachable"),
+        # An ``ssh`` child that exited inside a frame names its phase too.
+        ("remote_unreachable", True, "remote_unreachable"),
+    ],
+)
+def test_a_remote_connection_lost_under_a_call_is_retryable_and_names_its_phase(
+    remote: ServerTarget,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str | None,
+    partial_frame: bool,
+    expected: str,
+) -> None:
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        asyncio.get_running_loop().create_task(
+            _serve_then_drop(server_end, partial_frame=partial_frame)
+        )
+        return _PhasedStream(client_end, phase)
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> tuple[ControlError, ControlError]:
+        client = await client_module.connect_service(ControlClientKind.CLI)
+        try:
+            with pytest.raises(ControlError) as raised:
+                await client.service_status()
+            with pytest.raises(ControlError) as later:
+                await client.service_status()
+        finally:
+            await client.close()
+        return raised.value, later.value
+
+    # Never ``frame_invalid``: the request was valid and may have reached the server, so the
+    # caller reconnects and replays the same request_id.
+    for error in asyncio.run(exercise()):
+        assert (error.reason, error.retryable, error.phase) == (
+            "service_unavailable",
+            True,
+            expected,
+        )
+
+
+def test_an_invalid_whole_frame_on_a_live_remote_stream_stays_frame_invalid(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def serve(stream: ControlStream) -> None:
+        await server_handshake(stream, stream.peer_identity, service_status())
+        await read_control_frame(stream)
+        body = b'{"kind":"nonsense"}'
+        await stream.send_all(len(body).to_bytes(4, "big") + body)
+
+    async def dial() -> ControlStream:
+        client_end, server_end = memory_pair()
+        asyncio.get_running_loop().create_task(serve(server_end))
+        return _PhasedStream(client_end, None)
+
+    _use(monkeypatch, _FakeTransport(remote, dial))
+
+    async def exercise() -> ControlError:
+        client = await client_module.connect_service(ControlClientKind.CLI)
+        try:
+            with pytest.raises(ControlError) as raised:
+                await client.service_status()
+        finally:
+            await client.close()
+        return raised.value
+
+    assert asyncio.run(exercise()).reason == "frame_invalid"
 
 
 def test_a_damaged_selected_target_refuses_before_any_dial(

@@ -37,9 +37,12 @@ __all__ = [
 ]
 
 # Fixed words only (no host, user, name or path).
+# A connection can fail after a request was sent: what the server received before that may be
+# recorded, and only a repeat under the same request id recovers it without recording it twice.
 REMOTE_UNAVAILABLE_SUMMARY: Final = (
-    "the selected FinishUP server on another machine could not serve this request, so nothing "
-    "was recorded"
+    "the selected FinishUP server on another machine could not be reached, or the connection to "
+    "it ended before it answered; a request it already received may be recorded, and repeating "
+    "that request under the same request id returns that record instead of a second one"
 )
 REMOTE_LOCKED_SUMMARY: Final = (
     "the selected FinishUP server's vault is locked, so nothing was recorded; its owner unlocks "

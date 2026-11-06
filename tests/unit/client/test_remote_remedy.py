@@ -158,6 +158,27 @@ def test_the_bridge_names_the_remote_remedy(remote: None, error: ControlError) -
         assert "remote_credential_repair" in structured
 
 
+@pytest.mark.parametrize(
+    "phase", ["remote_unreachable", "remote_auth_failed", "remote_service_not_running"]
+)
+def test_a_lost_connection_never_claims_that_nothing_was_recorded(remote: None, phase: str) -> None:
+    # A remote connection can end after a call was sent (a dropped network, a revoked key), so
+    # its remedy keeps the same-request replay open instead of saying nothing was recorded.
+    del remote
+    lost = ControlError("service_unavailable", retryable=True, phase=phase)
+    remedy = remote_remedy(lost)
+    assert remedy is not None and remedy.directive is not None
+    for text in (remedy.summary, remedy.directive.directive):
+        assert "nothing was recorded" not in text, text
+    assert "same request id" in remedy.summary
+    result = bridge._control_error_result(lost, None, "publish_work")  # pyright: ignore[reportPrivateUsage]
+    text = "".join(getattr(item, "text", "") for item in result.content)
+    assert "nothing was recorded" not in text
+    structured = json.dumps(result.structuredContent)
+    assert "nothing was recorded" not in structured
+    assert "same request_id" in structured
+
+
 def test_the_hooks_name_the_remote_remedy(remote: None) -> None:
     del remote
     unavailable = hooks.unavailable_context(

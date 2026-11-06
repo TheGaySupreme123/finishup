@@ -252,21 +252,36 @@ def test_an_idle_live_session_is_checked_once_and_used() -> None:
     assert len(frames_checks) == 1
 
 
-def test_an_unknown_session_on_a_call_ends_the_stream() -> None:
+@pytest.mark.parametrize(
+    ("status", "phase"),
+    [
+        # The gateway expired or lost the session (a restart, its idle sweep).
+        (404, "remote_unreachable"),
+        # The key was revoked while the session lived.
+        (401, "remote_auth_failed"),
+        (503, "remote_service_not_running"),
+    ],
+)
+def test_a_session_lost_under_a_call_is_a_retryable_remote_phase(status: int, phase: str) -> None:
     gateway = _gateway()
 
-    async def exercise() -> ControlError:
+    async def exercise() -> tuple[ControlError, ControlError]:
         client = await _connect(_transport(httpx.ASGITransport(app=gateway)))
-        gateway.statuses["POST calls"] = 404
+        gateway.statuses["POST calls"] = status
         try:
             with pytest.raises(ControlError) as raised:
                 await client.service_status()
+            # A later call on the closed connection names the same phase.
+            with pytest.raises(ControlError) as later:
+                await client.service_status()
         finally:
             await client.close()
-        return raised.value
+        return raised.value, later.value
 
-    # The same outcome as a local service closing the connection under a pending call.
-    assert asyncio.run(exercise()).reason == "frame_invalid"
+    # Never ``frame_invalid``: the request was valid, the call may have reached the server, and
+    # the caller's reconnect-once replays the same request_id.
+    for error in asyncio.run(exercise()):
+        assert (error.reason, error.retryable, error.phase) == ("service_unavailable", True, phase)
 
 
 class _LoseFirstCallResponse(httpx.AsyncBaseTransport):
