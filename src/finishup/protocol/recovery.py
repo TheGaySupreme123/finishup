@@ -780,6 +780,16 @@ _DIRECTIVES: Final = (
         guidance_uri=_WORKFLOW_ERRORS,
     ),
     RecoveryDirective(
+        token="server_reauthorization_required",
+        directive=(
+            "The selected FinishUP server was authorized under an older disclosure, so nothing "
+            "was sent to it. Ask the owner to run 'finishup server use' with its name in their "
+            "own terminal, then repeat this request."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge="Never select or authorize a FinishUP server for the owner.",
+    ),
+    RecoveryDirective(
         token="server_selection_overridden",
         directive=(
             "An environment variable or a runtime pin chooses the FinishUP root, so the saved "

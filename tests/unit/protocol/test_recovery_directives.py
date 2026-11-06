@@ -563,6 +563,7 @@ class TestWorkspaceBindingAndServerTargetReasons:
         "workspace_agent_refused": "workspace_agent_refusal_review",
         "requires_server_host": "server_host_command_required",
         "target_root_is_remote": "remote_target_no_local_service",
+        "target_reauthorization_required": "server_reauthorization_required",
         "selection_overridden": "server_selection_overridden",
         "remote_unreachable": "remote_server_test",
         "remote_auth_failed": "remote_credential_repair",
@@ -601,7 +602,7 @@ class TestWorkspaceBindingAndServerTargetReasons:
 
         assert REMOTE_CONNECTION_PHASES == frozenset(
             reason for reason in self._EXPECTED if reason.startswith("remote_")
-        )
+        ) | {"target_reauthorization_required"}
         assert REMOTE_CONNECTION_PHASES <= PROTOCOL_REASON_CODES
         for phase in REMOTE_CONNECTION_PHASES:
             assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase)

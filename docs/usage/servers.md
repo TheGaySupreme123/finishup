@@ -229,6 +229,7 @@ repeated safely.
 | `remote_identity_changed` | The server's host key or certificate is not the one you confirmed. | Confirm the server's identity another way, then remove and add the server again. |
 | `remote_service_not_running` | The server machine answered, but its FinishUP service is not running. | SSH: `ssh -t <server> finishup service start`. Web: ask the server's operator. |
 | `remote_incompatible` | The two machines run different FinishUP releases. | Install the same release on both. |
+| `target_reauthorization_required` | This release shows a newer disclosure of what leaves your computer than the one you confirmed for that server, so nothing is sent to it. | Run `finishup server use NAME` in your own terminal and confirm again. |
 | `vault_locked` | The server's vault is locked. | SSH: `ssh -t <server> finishup service unlock`. Web: the operator unlocks it on the server. |
 | `requires_server_host` | That command belongs to the server. | Run it on the server, as shown above. |
 | `method_forbidden` | The API key's scope does not allow that call. | Use an `operator` key for management commands. |

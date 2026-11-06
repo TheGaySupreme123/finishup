@@ -4808,11 +4808,14 @@ wait `unavailable`.
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
 | `target_root_is_remote` | `service run` or `service start` is asked to serve a remote target's root | the service runs on the server; use `finishup server test` here |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
+| `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root` and `server connect`) | the owner runs `finishup server use NAME` on the trusted console |
 
-The five remote connection phases ride as `phase` on a retryable `service_unavailable`
+The remote connection phases ride as `phase` on a retryable `service_unavailable`
 (`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,
-`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running` and
-`remote_incompatible` (whose text names both releases). The check-time change gains the
+`remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running`,
+`remote_incompatible` (whose text names both releases), and the client's own refusal
+`target_reauthorization_required`. A client that catches that `TargetError` from the binding
+helpers raises it as this phase, so every surface renders its directive. The check-time change gains the
 unavailable reason `workspace_agent_unavailable`, so
 `check_time_change_unavailable_workspace_agent_unavailable` joins
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.

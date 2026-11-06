@@ -653,6 +653,36 @@ def test_remote_use_refreshes_the_recorded_authorization(
     assert authorized == [("fu", "https"), ("fu", "https")]
 
 
+def test_a_stale_disclosure_is_refused_by_connect_and_renewed_by_use(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    quiet_probe: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``connect`` sends nothing to a target confirmed under an older disclosure; ``use`` renews."""
+
+    assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
+    # A later release shows a newer disclosure than the one the owner confirmed.
+    monkeypatch.setattr(targets, "DISCLOSURE_VERSION", targets.DISCLOSURE_VERSION + 1)
+
+    refused = _invoke("connect", "lab")
+    assert refused.exit_code == 2
+    assert refused.stderr.startswith("target_reauthorization_required:")
+    assert "lab.example" not in refused.stderr
+    # Seeing, stopping and removing a stale target stay possible.
+    status = _status_json("lab")
+    authorization = cast(
+        dict[str, JsonValue], cast(dict[str, JsonValue], status["target"])["authorization"]
+    )
+    assert authorization["current"] is False
+    assert _invoke("disconnect", "lab").stderr.startswith("runtime_unavailable:")
+
+    assert _invoke("use", "lab").exit_code == 0
+    (renewed,) = targets.list_targets()
+    assert not renewed.needs_reauthorization
+    assert authorized == [("lab", "ssh"), ("lab", "ssh")]
+
+
 # -- registrations and upgrade with a selection ---------------------------------------------
 
 

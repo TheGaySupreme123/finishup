@@ -147,3 +147,40 @@ async def test_a_tampered_remote_record_fails_closed(
     assert refused.value.reason == "target_record_invalid"
     with pytest.raises(TargetError):
         await binding_for_active_root(workspace, serve_workspace=True)
+
+
+def _release_with_a_newer_disclosure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This release shows disclosure 2; targets confirmed under 1 need a fresh confirmation."""
+
+    monkeypatch.setattr(targets, "DISCLOSURE_VERSION", targets.DISCLOSURE_VERSION + 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("with_workspace", [True, False])
+async def test_a_target_confirmed_under_an_older_disclosure_is_refused_before_any_hop(
+    home: Path, workspace: WorkspaceLocator, with_workspace: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051 section 8: a new disclosure version needs a fresh confirmation before use."""
+
+    stale = _remote("ssh")
+    _select(stale)
+    _release_with_a_newer_disclosure(monkeypatch)
+    assert stale.needs_reauthorization
+    with pytest.raises(TargetError) as refused:
+        is_remote_active_root()
+    assert refused.value.reason == "target_reauthorization_required"
+    with pytest.raises(TargetError) as refused:
+        await binding_for_active_root(workspace if with_workspace else None, serve_workspace=True)
+    assert refused.value.reason == "target_reauthorization_required"
+
+    # The owner's fresh confirmation (``server use NAME``) is the way back.
+    renewed = targets.reauthorized(stale)
+    targets.write_target(targets.target_root(stale.target_id), renewed)
+    assert is_remote_active_root() is True
+
+
+def test_a_local_or_absent_record_needs_no_authorization(home: Path) -> None:
+    targets.require_current_authorization(None)
+    with targets.registry_lock():
+        record, _root = targets.new_local_target("work")
+    targets.require_current_authorization(record)

@@ -343,6 +343,10 @@ answers bounded `workspace_call`s on a connection that declared it.
 - `server add` and `server use` for a remote kind need the trusted foreground console, a versioned
   disclosure and the owner typing the target name. `target.json` records `authorized_at` and
   `disclosure_version`; a new disclosure version requires a fresh confirmation before use.
+  `targets.require_current_authorization` enforces it at every hop decision
+  (`is_remote_active_root`, `binding_for_active_root`, `server connect`), with or without a
+  workspace, and refuses with `target_reauthorization_required`; `server status`, `list`, `test`,
+  `remove` and `logout` stay usable so the owner can see and remove a stale target.
 - The disclosure says what leaves the machine: task statements, published work, evidence, check,
   respond and receipt traffic, the workspace claim (a keyed digest, not a path), observation rows,
   and the workspace evidence the server asks the workspace agent for — the task base and

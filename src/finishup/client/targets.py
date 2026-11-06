@@ -83,6 +83,7 @@ __all__ = [
     "reauthorized",
     "registry_lock",
     "remove_target_root",
+    "require_current_authorization",
     "selection_path",
     "selection_source",
     "servers_dir",
@@ -143,6 +144,7 @@ _REASONS: Final = frozenset(
         "target_unknown",
         "target_selected",
         "target_record_invalid",
+        "target_reauthorization_required",
         "target_url_invalid",
         "target_tls_invalid",
         "target_path_invalid",
@@ -765,6 +767,21 @@ def reauthorized(record: ServerTarget, *, now: str | None = None) -> ServerTarge
     if not record.is_remote:
         raise TargetError("target_record_invalid")
     return replace(record, authorized_at=now or _now(), disclosure_version=DISCLOSURE_VERSION)
+
+
+def require_current_authorization(record: ServerTarget | None) -> None:
+    """Refuse a remote target the owner authorized under an older disclosure (ADR-051 section 8).
+
+    A new disclosure version needs a fresh typed confirmation before anything is sent to that
+    target: ``finishup server use NAME`` on the trusted console shows the current disclosure and
+    records it (``reauthorized``). Raises ``target_reauthorization_required``; ``None`` and a local
+    record pass. Every path that opens a connection to a remote target calls this; the display and
+    reverse paths (``server status``, ``list``, ``test``, ``remove``, ``logout``) do not, so the
+    owner can still see and remove a stale target.
+    """
+
+    if record is not None and record.needs_reauthorization:
+        raise TargetError("target_reauthorization_required")
 
 
 def remove_target_root(record: ServerTarget) -> None:

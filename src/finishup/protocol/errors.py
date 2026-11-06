@@ -424,6 +424,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "start_runtime_rebind_retry_ready",
     "start_state_inconsistent",
     "stored_result_shape_invalid",
+    "target_reauthorization_required",
     "target_root_is_remote",
     "timestamp_not_utc",
     "timestamp_out_of_range",
@@ -461,9 +462,12 @@ SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_gi
 # update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
 SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
 # A selected remote FinishUP server could not serve the connection (ADR-051): ``phase`` on a
-# retryable ``service_unavailable`` error a client raises for a remote target. Each phase is also
-# the protocol reason code a surface reports for it, so its recovery directive resolves the same
-# way on every surface; no host, user or path rides on it.
+# ``service_unavailable`` error a client raises for a remote target. Each phase is also the
+# protocol reason code a surface reports for it, so its recovery directive resolves the same way
+# on every surface; no host, user or path rides on it. Besides the five ``remote_*`` connection
+# failures, the client itself refuses a target the owner authorized under an older disclosure
+# (``target_reauthorization_required``) before anything is sent. Every phase is retryable: the
+# same request succeeds once that phase's own repair is made.
 REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
     {
         "remote_auth_failed",
@@ -471,11 +475,13 @@ REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
         "remote_incompatible",
         "remote_service_not_running",
         "remote_unreachable",
+        "target_reauthorization_required",
     }
 )
 # #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check; ADR-051:
-# the twelve workspace-binding, server-target and remote-connection reasons.
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 368
+# the twelve workspace-binding, server-target and remote-connection reasons, plus the stale
+# disclosure refusal (``target_reauthorization_required``).
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 369
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -641,6 +647,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "remote_service_start_required",
         "remote_target_no_local_service",
         "server_host_command_required",
+        "server_reauthorization_required",
         "server_selection_overridden",
         "workspace_agent_reconnect",
         "workspace_agent_refusal_review",
@@ -830,6 +837,7 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "workspace_agent_refused": "workspace_agent_refusal_review",
         "requires_server_host": "server_host_command_required",
         "target_root_is_remote": "remote_target_no_local_service",
+        "target_reauthorization_required": "server_reauthorization_required",
         "selection_overridden": "server_selection_overridden",
         "remote_unreachable": "remote_server_test",
         "remote_auth_failed": "remote_credential_repair",

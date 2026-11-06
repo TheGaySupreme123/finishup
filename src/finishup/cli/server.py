@@ -50,6 +50,7 @@ from finishup.client.targets import (
     read_selected_target_id,
     reauthorized,
     registry_lock,
+    require_current_authorization,
     selection_source,
     target_root,
     validate_name,
@@ -178,6 +179,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     "runtime_unavailable": (
         "this FinishUP build has no client runtime for that kind of server target",
         _UNAVAILABLE,
+    ),
+    "target_reauthorization_required": (
+        "this server target was authorized under an older disclosure of what leaves this "
+        "computer; run 'finishup server use NAME' in your own terminal to read the current one "
+        "and confirm it",
+        _USAGE,
     ),
     "selection_active": (
         "another server is selected, so this computer's everyday server cannot be started from "
@@ -1031,6 +1038,9 @@ def server_logout(name: Annotated[str, typer.Argument(help="An HTTPS server targ
 def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> str:
     record, root, everyday = _resolve(name)
     kind: TargetKind = "local" if record is None else record.kind
+    if action == "ensure_ready":
+        # Nothing is sent to a target confirmed under an older disclosure; 'stop' stays usable.
+        require_current_authorization(record)
     if action == "ensure_ready" and everyday:
         try:
             if read_selected_target_id() is not None and _source() not in _EXPLICIT_SOURCES:
