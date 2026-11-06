@@ -502,6 +502,35 @@ class _HookDrainClient(Protocol):
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
 
 
+def _drain_connector(
+    connect: HookDrainConnector | None, workspace_locator: str | None
+) -> HookDrainConnector | None:
+    """The drains' connector: claim-bound to this hook's workspace on a remote root (ADR-051).
+
+    A drain connects without naming a workspace, which a local service needs no more than that.
+    A server on another machine accepts this client's rows only on a connection bound to the
+    claim they were captured under (each row is attested from this client's own store), so on a
+    remote root the drain names the hook's workspace and ``service.client`` claims it without an
+    agent; the path itself is never sent. A local root, and an injected connector, connect
+    exactly as before.
+    """
+
+    if connect is not None or workspace_locator is None:
+        return connect
+    locator = workspace_locator
+
+    async def drain_connect(kind: ControlClientKind) -> _HookDrainClient:
+        from finishup.client.remote_remedy import remote_root_selected
+        from finishup.ports.control import WorkspaceLocator
+
+        real = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
+        if not remote_root_selected():
+            return await real(kind)
+        return await real(kind, workspace_locator=WorkspaceLocator(locator))
+
+    return drain_connect
+
+
 class _StartClient(Protocol):
     async def start(self, request: object, *, deadline_ms: int | None = None) -> object: ...
 
@@ -3517,6 +3546,12 @@ async def _try_auto_start(
         from finishup.service.client import handshake_failure
 
         if handshake_failure(error) is not None:
+            from finishup.client.remote_remedy import remote_root_selected
+
+            if remote_root_selected():
+                # A server on another machine: the client could not claim this workspace before
+                # dialling (ADR-051); no local service closed anything.
+                return AutoAttachOutcome(None, "service_unavailable")
             # A running service of this installation closed the hello (#1040 follow-up): not a
             # service that still has to start, and not another installation to replace.
             return AutoAttachOutcome(None, "service_handshake_failed")
@@ -4894,13 +4929,11 @@ def _session_start_attach(
     # SessionStart-only status/attach helpers: they drag protocol.models
     # and service.client, which no other event needs (#242).
     from finishup.cli.hooks import (
-        _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-        _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         SessionWorkspace,
@@ -4909,7 +4942,9 @@ def _session_start_attach(
         _read_status,  # pyright: ignore[reportPrivateUsage]
         _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
         bound_connector,
+        locked_context,
         resolve_session_workspace,
+        unavailable_context,
     )
 
     additional = ""
@@ -5049,7 +5084,7 @@ def _session_start_attach(
                         record_hook_diagnostic(f"status_{kind}", event, _state=_state)
                         record_hook_diagnostic(selection.diagnostic_reason, event, _state=_state)
                 elif kind == "locked":
-                    additional = _LOCKED_CONTEXT
+                    additional = locked_context(outcome)
                 elif kind == "retry":
                     additional = _RETRY_CONTEXT
                 elif kind == "privacy":
@@ -5066,7 +5101,7 @@ def _session_start_attach(
                     with contextlib.suppress(Exception):
                         record_hook_diagnostic(kind, event, _state=_state)
                 else:
-                    additional = _UNAVAILABLE_CONTEXT
+                    additional = unavailable_context(outcome)
     return _SessionStartAttach(
         mapping=mapping,
         pending_mapping_deferred=pending_mapping_deferred,
@@ -6480,7 +6515,9 @@ def handle_observe(
                         codex_session_id=codex_session_id,
                         content_by_source_identity=content_map,
                         content_capture_profile=service_content_profile,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(
+                            cast(HookDrainConnector | None, connect), workspace_locator
+                        ),
                         event_name=resolved_event,
                         _state=_state,
                         budget_seconds=native_content_drain_budget,
@@ -6551,7 +6588,9 @@ def handle_observe(
                     codex_session_id=codex_session_id,
                     content_by_source_identity=content_map,
                     content_capture_profile=service_content_profile,
-                    connect=cast(HookDrainConnector | None, connect),
+                    connect=_drain_connector(
+                        cast(HookDrainConnector | None, connect), workspace_locator
+                    ),
                     event_name=resolved_event,
                     _state=_state,
                     budget_seconds=(
@@ -6586,7 +6625,9 @@ def handle_observe(
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
                         finishup_session_id=stop_mapping.finishup_session_id,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(
+                            cast(HookDrainConnector | None, connect), workspace_locator
+                        ),
                         _state=_state,
                         deadline=stop_drain_deadline,
                         monotonic=_monotonic,

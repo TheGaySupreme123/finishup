@@ -112,7 +112,7 @@ from finishup.domain.observation_settings import (
 )
 from finishup.domain.values import JsonObject, Timestamp, validate_sha256_digest
 from finishup.domain.values import JsonValue as DomainJsonValue
-from finishup.ports.control import ControlClientKind, ControlError
+from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 from finishup.ports.integrations import IntegrationScope, IntegrationTarget
 from finishup.ports.subject_state import SubjectStateCaptureCommand, SubjectStateFormat
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
@@ -1787,6 +1787,7 @@ async def _drain_observation_async(
     """
 
     store = LocalObservationStore(_state=_state)
+    workspace, connect = _claim_bound_drain(workspace, connect)
     if workspace is None:
         workspaces = store.pending_workspaces()
     else:
@@ -1843,6 +1844,33 @@ async def _drain_observation_async(
     if pending_after == 0:
         terminal = _DRAIN_TERMINAL_DRAINED
     return 0, tally.summary(passes=passes, pending_after=pending_after, terminal=terminal)
+
+
+def _claim_bound_drain(
+    workspace: str | None, connect: DrainConnector
+) -> tuple[str | None, DrainConnector]:
+    """On a remote root, drain this folder's workspace over a connection that claims it (ADR-051).
+
+    A server on another machine accepts this client's rows only on a connection bound to the
+    claim they were captured under, and a connection claims exactly one workspace, so the drain
+    covers the named folder (this one by default) and names it to the connector; the claim, not
+    the path, is what is sent. Other workspaces' rows wait for their own drains. Every local root
+    drains as before.
+    """
+
+    from finishup.client.remote_remedy import remote_root_selected
+
+    if not remote_root_selected():
+        return workspace, connect
+    selected = str(_resolve_workspace(workspace))
+    locator = WorkspaceLocator(selected)
+
+    async def claim_bound(kind: ControlClientKind) -> _DrainClient:
+        return await cast(Callable[..., Awaitable[_DrainClient]], connect)(
+            kind, workspace_locator=locator
+        )
+
+    return selected, cast(DrainConnector, claim_bound)
 
 
 @_bounded_operation("drain")

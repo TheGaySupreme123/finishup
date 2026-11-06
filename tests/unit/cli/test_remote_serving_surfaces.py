@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -204,3 +204,64 @@ def test_each_bridge_service_call_renews_the_background_lease(
         )
     )
     assert noted and noted[0] == WorkspaceLocator(str(tmp_path.resolve()))
+
+
+def _recording_connect(calls: list[dict[str, Any]]) -> Any:  # noqa: ANN401
+    async def connect(kind: ControlClientKind, **kwargs: Any) -> object:  # noqa: ANN401
+        calls.append({"kind": kind, **kwargs})
+        return object()
+
+    return connect
+
+
+def test_hook_drains_claim_the_hooks_workspace_on_a_remote_root(
+    remote: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.cli import observe_hooks
+
+    del remote
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(observe_hooks, "connect_service", _recording_connect(calls), raising=False)
+    connector = observe_hooks._drain_connector(None, str(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    assert connector is not None
+    asyncio.run(connector(ControlClientKind.CLI))  # type: ignore[arg-type]
+    assert calls == [
+        {"kind": ControlClientKind.CLI, "workspace_locator": WorkspaceLocator(str(tmp_path))}
+    ]
+
+
+def test_hook_drains_connect_as_before_on_a_local_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.cli import observe_hooks
+
+    calls: list[dict[str, Any]] = []
+    with ambient_home(monkeypatch):
+        monkeypatch.setattr(
+            observe_hooks, "connect_service", _recording_connect(calls), raising=False
+        )
+        connector = observe_hooks._drain_connector(None, str(tmp_path))  # pyright: ignore[reportPrivateUsage]
+        assert connector is not None
+        asyncio.run(connector(ControlClientKind.CLI))  # type: ignore[arg-type]
+        # An injected connector is used exactly as given.
+        injected = _recording_connect(calls)
+        assert observe_hooks._drain_connector(injected, str(tmp_path)) is injected  # pyright: ignore[reportPrivateUsage]
+    assert calls == [{"kind": ControlClientKind.CLI}]
+
+
+def test_observe_drain_claims_this_folder_on_a_remote_root(
+    remote: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.cli import observe
+
+    del remote
+    calls: list[dict[str, Any]] = []
+    workspace, connect = observe._claim_bound_drain(str(tmp_path), _recording_connect(calls))  # pyright: ignore[reportPrivateUsage]
+    assert workspace == str(tmp_path.resolve())
+    asyncio.run(cast(Any, connect(ControlClientKind.CLI)))
+    assert calls == [
+        {
+            "kind": ControlClientKind.CLI,
+            "workspace_locator": WorkspaceLocator(str(tmp_path.resolve())),
+        }
+    ]

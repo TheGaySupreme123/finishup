@@ -115,6 +115,9 @@ class StatusOutcome:
     # Set only for an ``active`` read made for a post-compaction start (ADR-044): the facts the
     # same status result carried, plus the declared deliverables when the second read answered.
     recap: RecapFacts | None = None
+    # Set only when the selected server is on another machine (ADR-051): the closed reason a
+    # surface names instead of any local-service remedy (a remote phase, or ``vault_locked``).
+    remote_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +167,38 @@ _LOCKED_CONTEXT: Final = (
     "FinishUP vault is locked for this mapped session; no live receipt can be promised."
     + render_hook_recovery_suffix("vault_locked")
 )
+# ADR-051: the selected server is on another machine, so no local service or vault remedy applies.
+_REMOTE_UNAVAILABLE_CONTEXT: Final = (
+    "The selected FinishUP server could not serve this mapped session; no live receipt can be "
+    "promised. Never fall back to another server or a local service."
+)
+_REMOTE_LOCKED_CONTEXT: Final = (
+    "The selected FinishUP server's vault is locked for this mapped session; no live receipt "
+    "can be promised. Its owner unlocks it on the server host."
+)
+
+
+def unavailable_context(outcome: StatusOutcome) -> str:
+    """The unavailable hook context: the remote phase and its continuation on a remote root."""
+
+    if outcome.remote_reason is None:
+        return _UNAVAILABLE_CONTEXT
+    return _REMOTE_UNAVAILABLE_CONTEXT + render_hook_recovery_suffix(outcome.remote_reason)
+
+
+def locked_context(outcome: StatusOutcome) -> str:
+    """The locked hook context; a remote server's vault is its owner's to unlock."""
+
+    return _LOCKED_CONTEXT if outcome.remote_reason is None else _REMOTE_LOCKED_CONTEXT
+
+
+def _remote_reason(error: ControlError) -> str | None:
+    if error.reason not in {"service_unavailable", "vault_locked"}:
+        return None
+    from finishup.client.remote_remedy import remote_remedy
+
+    remedy = remote_remedy(error)
+    return None if remedy is None else remedy.reason
 
 
 def _stale_mapping_context(
@@ -1593,7 +1628,10 @@ async def _read_status(
         )
         return StatusOutcome("active", mapping=updated, recap=facts)
     except ControlError as error:
-        return StatusOutcome(_CONTROL_ERROR_CLASSES.get(error.reason, "unavailable"))
+        return StatusOutcome(
+            _CONTROL_ERROR_CLASSES.get(error.reason, "unavailable"),
+            remote_reason=_remote_reason(error),
+        )
     except Exception:
         return StatusOutcome("unavailable")
     finally:
@@ -1873,7 +1911,7 @@ def handle_session_start(
                 )
                 return 0
             if kind == "locked":
-                _stdout_json(_context_output("SessionStart", _LOCKED_CONTEXT), stdout)
+                _stdout_json(_context_output("SessionStart", locked_context(outcome)), stdout)
                 return 0
             if kind == "retry":
                 _stdout_json(_context_output("SessionStart", _RETRY_CONTEXT), stdout)
@@ -1896,7 +1934,7 @@ def handle_session_start(
                     stdout,
                 )
                 return 0
-            _stdout_json(_context_output("SessionStart", _UNAVAILABLE_CONTEXT), stdout)
+            _stdout_json(_context_output("SessionStart", unavailable_context(outcome)), stdout)
             return 0
     except Exception as exc:
         _note_oversize_hook_ingress(exc, "SessionStart", workspace=workspace, _state=_state)

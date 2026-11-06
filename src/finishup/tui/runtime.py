@@ -2870,12 +2870,18 @@ class FinishUpRuntime:
             # names it instead of the earlier verdict.
             entries[-1] = _path_refusal_entry(error.reason_code)
             return DoctorReport(entries=tuple(entries))
+        from finishup.client.remote_remedy import REMOTE_LOCKED_SUMMARY, remote_root_selected
+
+        remote = remote_root_selected()
         remediation = {
             "harness_detected": "install Codex, or use FinishUP locally with /check",
             "mcp_verified": "run /connect to inspect or repair the integration",
             "plugin_installed": "run /connect and choose Repair",
-            "service_reachable": "start the service with 'finishup service run'",
-            "vault_ready": "run /service and choose Unlock",
+            # A server on another machine is started and unlocked on its own host (ADR-051).
+            "service_reachable": "run /server and test the selected server"
+            if remote
+            else "start the service with 'finishup service run'",
+            "vault_ready": REMOTE_LOCKED_SUMMARY if remote else "run /service and choose Unlock",
             "provider_binding": "run /provider to choose a provider and model",
             "credential_stored": "run /provider to store an API key",
             "privacy_permission": "run /privacy if you want external review",
@@ -2913,6 +2919,17 @@ def _connect_failure(error: BaseException) -> RuntimeError_:
             path_reason,
             "FinishUP's local folders cannot be used safely",
             details=() if remedy is None else (remedy,),
+        )
+    from finishup.client.remote_remedy import remote_remedy
+
+    remote = remote_remedy(error)
+    if remote is not None:
+        # The selected server is on another machine (ADR-051): its phase and directive, never a
+        # local-service remedy, and never a host or name.
+        return RuntimeError_(
+            remote.reason,
+            remote.summary,
+            details=() if remote.directive is None else (remote.directive.directive,),
         )
     return RuntimeError_(
         str(getattr(error, "reason", "service_unavailable")),

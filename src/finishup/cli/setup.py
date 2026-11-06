@@ -121,6 +121,30 @@ _HARNESS_DISPLAY_NAMES: Final[dict[HarnessId, str]] = {HarnessId.CODEX: "Codex"}
 
 _NEXT_SERVICE: Final = "run 'finishup service run' under your selected user supervisor"
 _NEXT_UNLOCK: Final = "run 'finishup service unlock' from a local terminal if the vault is locked"
+
+
+def _service_next_steps(service: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """The service's next steps; on a server on another machine, never a local command (ADR-051)."""
+
+    from finishup.client.remote_remedy import REMOTE_LOCKED_SUMMARY, remote_root_selected
+
+    if not remote_root_selected():
+        steps: list[str] = []
+        if not service.get("reachable"):
+            steps.append(_NEXT_SERVICE)
+        if service.get("state") != "ready":
+            steps.append(_NEXT_UNLOCK)
+        return tuple(steps)
+    if not service.get("reachable"):
+        from finishup.protocol.recovery import directive_for
+
+        directive = directive_for("remote_server_test")
+        return () if directive is None else (directive.directive,)
+    if service.get("state") != "ready":
+        return (REMOTE_LOCKED_SUMMARY,)
+    return ()
+
+
 _NEXT_PRIVACY: Final = "run 'finishup --privacy' to review or change the privacy policy"
 _NEXT_PROVIDER_TOML: Final = (
     "run 'finishup provider endpoint' for an API provider, or "
@@ -2608,6 +2632,13 @@ async def _service_reachability_observed(
         refusal = path_refusal_reason(error)
         if refusal is not None:
             return unreachable, refusal
+        from finishup.client.remote_remedy import remote_remedy
+
+        remedy = remote_remedy(error)
+        if remedy is not None:
+            # A server on another machine: name its phase, never a local service (ADR-051).
+            typer.echo(remedy.line(), err=True)
+            return unreachable, None
         # The service this command started exited while starting: name its stage and record
         # (#1040) before the caller reports the service as unreachable.
         startup_line = spawned_startup_failure_line(error)
@@ -4113,10 +4144,8 @@ async def _run_setup_wizard(
         _append_next_step(next_steps, registration_next)
     if not interactive:
         _append_next_step(next_steps, _NEXT_AGENT_GUIDE)
-    if not service.get("reachable"):
-        _append_next_step(next_steps, _NEXT_SERVICE)
-    if service.get("state") != "ready":
-        _append_next_step(next_steps, _NEXT_UNLOCK)
+    for step in _service_next_steps(service):
+        _append_next_step(next_steps, step)
     if review_mode == "semantic":
         status_steps = (
             _semantic_status_next_steps(cast(Mapping[str, object], semantic_status))
