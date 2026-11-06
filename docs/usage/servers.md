@@ -151,8 +151,10 @@ When you use a server on another machine, a port or the web, these travel to it:
 - a fingerprint of your project folder (a keyed digest, not its path);
 - what the server asks your workspace agent for (below): the change since the task started,
   facts about files the task names, files the reviewer asks to read, task input files, declared
-  test files, observation checks and the results of checks you approved — each within the same
-  size limits FinishUP uses on one computer.
+  test files inside your project folder, observation checks and the results of checks you
+  approved — each within the same size limits FinishUP uses on one computer. On one computer the
+  reviewer may also read a test file your agent declared outside the project folder; a server on
+  another machine is not offered one.
 
 These do not leave: your project folder's full path, your API key, your vault passphrase, and
 the secure unlock and consent prompts, which only ever run on the server's own machine.

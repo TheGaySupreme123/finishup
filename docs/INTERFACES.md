@@ -4656,6 +4656,11 @@ worker thread. Its confinement rules:
   and never enter a protected directory, whatever the server lists as excluded; an `lstat`
   candidate inside either is reported as not found. An exclusion naming a directory this user
   cannot examine does not empty the read.
+- `read_declared_test` reads only strictly beneath the claimed root: a handle-relative location,
+  or an absolute one under the root's exact spelling; any other location is `root_not_admitted`.
+  The call names no admitted root, and the agent cannot tell whether its agent declared the path,
+  so a declared test outside the workspace, which a local service reads (#1220), is not read on
+  the server's word; on a remote target it is not listed.
 - `lstat_candidates` answers only for a candidate the local outside-input rule
   (`outside_input_candidates`) would look at: no hidden component, not credential-named, in no
   system directory, at or beneath a path an owner may admit. Any other candidate is reported as
