@@ -87,9 +87,12 @@ _CORRELATION: Final = "err_"
 _STOP_POLL_SECONDS: Final = 0.05
 # The connector's scrubbed environment: what OpenSSH and the interpreter need, nothing secret.
 # ``SSH_AUTH_SOCK`` lets an SSH target use the owner's agent; the key itself stays in OpenSSH.
-# The XDG base directories decide where this machine's server registry lives, so the connector
-# resolves the same target root its client did.
+# ``DBUS_SESSION_BUS_ADDRESS`` (a bus address, not a secret) lets an HTTPS target read the key
+# ``server login`` stored in the desktop's Secret Service: the Linux keyring backend finds the
+# session bus only through it. The XDG base directories decide where this machine's server
+# registry lives, so the connector resolves the same target root its client did.
 _ENVIRONMENT_NAMES: Final = (
+    "DBUS_SESSION_BUS_ADDRESS",
     "HOME",
     "LANG",
     "LC_ALL",

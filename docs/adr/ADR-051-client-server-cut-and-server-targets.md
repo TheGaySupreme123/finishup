@@ -494,7 +494,8 @@ through the same relay; human-control and secret channels never leave the server
   schema-manifest digest; binds `run/control.sock` through the existing Unix-socket listener,
   clearing a stale endpoint only while it holds that lock; runs with a scrubbed environment (no
   FinishUP variable and nothing secret-shaped; `SSH_AUTH_SOCK` is kept so OpenSSH can use the
-  owner's agent); refuses any hello that names a `workspace_locator`; and exits after 15 idle
+  owner's agent, and `DBUS_SESSION_BUS_ADDRESS` so an HTTPS target's key stored in a Linux
+  desktop's Secret Service can be read); refuses any hello that names a `workspace_locator`; and exits after 15 idle
   minutes. It writes `<troot>/state/connector-status.json` (`yoetz.connector-status/1`:
   `generation`, `phase` of `starting|ready|unavailable|stopped`, a closed `reason`, a
   `correlation_id`, `pid`, `started_at`). A client whose connection the connector accepted and

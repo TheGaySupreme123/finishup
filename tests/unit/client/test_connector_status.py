@@ -122,6 +122,7 @@ def test_the_environment_carries_no_product_variable_or_secret(
     # The XDG base directories travel so the connector resolves its client's registry.
     assert environment.get("XDG_STATE_HOME") == os.environ["XDG_STATE_HOME"]
     assert set(environment) <= {
+        "DBUS_SESSION_BUS_ADDRESS",
         "HOME",
         "LANG",
         "LC_ALL",
@@ -137,3 +138,34 @@ def test_the_environment_carries_no_product_variable_or_secret(
         "XDG_RUNTIME_DIR",
         "XDG_STATE_HOME",
     }
+
+
+def test_the_environment_lets_the_platform_keyring_find_the_session_bus(
+    monkeypatch: pytest.MonkeyPatch, root: Path
+) -> None:
+    """``server login`` stores an HTTPS key in the Secret Service on a Linux desktop; the
+    connector reads it under its scrubbed environment, where the keyring's D-Bus client must
+    still find the session bus (it reads only ``DBUS_SESSION_BUS_ADDRESS``)."""
+
+    import subprocess
+    import sys
+
+    pytest.importorskip("jeepney")
+    address = "unix:path=/run/user/1000/bus"
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", address)
+    environment = connector_environment(root)
+    assert environment.get("DBUS_SESSION_BUS_ADDRESS") == address
+    found = subprocess.run(  # noqa: S603 - fixed interpreter and program
+        (
+            sys.executable,
+            "-I",
+            "-c",
+            "from jeepney.bus import find_session_bus; print(find_session_bus())",
+        ),
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert found.returncode == 0
+    assert found.stdout.strip() == b"/run/user/1000/bus"
