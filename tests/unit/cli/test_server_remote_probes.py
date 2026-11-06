@@ -33,7 +33,7 @@ from finishup.protocol.schemas import schema_manifest_digest
 _RUNNER = CliRunner()
 
 
-def _confirmed(_name: str, _kind: str) -> None:
+def _confirmed(_name: str, _kind: str, **_question: object) -> None:
     return None
 
 
