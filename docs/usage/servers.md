@@ -329,24 +329,34 @@ FinishUP workspace agent and attested over the connection, and a line naming the
 that answered by its id (such as `svc_…`) and how this computer reached it (for example `ssh` or
 `https`). This holds in the `finishup` command, in what your agent reads, and in the terminal
 interface; JSON output does not carry these lines. A text or markdown receipt says where the
-evidence was read in its own workspace evidence section and never leaves that section out. When
-your agent receives a long receipt in pages, every page names the service, and the receipt's
-workspace evidence section, on one of those pages, is the only place it says where the evidence
-was read. A receipt is never refused because the server cannot tell where the evidence was read.
-If the server cannot read the record of how the task's session was opened, for whatever reason (a
-passing storage fault, a record that was redacted or whose key is no longer available, or one the
-server could not load), the receipt is still made and says so, in three lines: what happened (that
-record could not be read from the server's ledger), why it matters (FinishUP cannot confirm
-whether the task's workspace evidence was read on your computer) and what to do: run the receipt
-again, and if this persists, restart the server's FinishUP service with `finishup service
-restart` on the server host, then run the receipt again. Every receipt format says this: a text
-or markdown receipt in its workspace evidence section, and a receipt in JSON format in its
-`workspace_provenance` entry (`status` `unknown`, `reason` `session_opening_unreadable`, and
-the same three lines), which the `finishup` command and the terminal interface show as the same
-section and which leads the first page of a long receipt your agent receives in pages. Such a
-receipt leaves out the line saying the evidence was read on your computer, and still names the
-service. Once the server can read that record again, for example after a passing fault clears or
-after it restarts, asking for the same receipt again shows where the evidence was read.
+evidence was read in its own workspace evidence section and never leaves that section out, even
+when a long receipt has its other sections shortened to fit. When your agent receives a long
+receipt in pages, every page names the service, and the receipt's workspace evidence section, on
+one of those pages, is the only place it says where the evidence was read. A receipt is never
+refused because the server cannot tell where the evidence was read. If the server cannot read the
+record of how the task's session was opened, for whatever reason (a passing storage fault, a
+record that was redacted or whose key is no longer available, or one the server could not load),
+the receipt is still made and says so, in three lines: what happened (that record could not be
+read from the server's ledger), why it matters (FinishUP cannot confirm whether the task's
+workspace evidence was read on your computer) and what to do: run the receipt again, and if this
+persists, restart the server's FinishUP service with `finishup service restart` on the server
+host, then run the receipt again. Every receipt format says this: a text or markdown receipt in
+its workspace evidence section, and a receipt in JSON format in its `workspace_provenance` entry
+(`status` `unknown`, `reason` `session_opening_unreadable`, and the same three lines), which the
+`finishup` command and the terminal interface show as the same section and which leads the first
+page of a long receipt your agent receives in pages. Such a receipt leaves out the line saying the
+evidence was read on your computer, and still names the service. Once the server can read that
+record again, for example after a passing fault clears or after it restarts, asking for the same
+receipt again shows where the evidence was read.
+
+Running the receipt again or restarting the service helps only when the cause passes. A record that
+was redacted or erased is never readable again, so every receipt of that task keeps saying that its
+provenance is unknown, however often you retry or restart. A record whose key is no longer available
+stays unreadable until the server has that key again, and one written in a format the server's
+FinishUP version does not know becomes readable once the server runs a version that does. The
+receipt's `reason` is the same in every one of these cases and in a passing fault, so it cannot tell
+you which one you have; a section that is still there after a restart most likely means one of these
+lasting causes.
 
 ## The workspace agent
 
