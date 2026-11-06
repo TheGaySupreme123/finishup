@@ -52,13 +52,13 @@ from finishup.adapters.git_version import (
 )
 from finishup.adapters.home_project_reads import home_private_path
 from finishup.adapters.input_summary import declared_binary_format
-from finishup.adapters.repository_identity import root_owned_checkout
 from finishup.adapters.task_input_read import (
     MAX_TASK_INPUT_READ_BYTES,
     read_ends_beneath,
     task_input_from_bytes,
     task_input_from_ends,
 )
+from finishup.adapters.workspace_root import root_owned_checkout
 from finishup.config.foreign_write import owner_private_group
 from finishup.domain.repository_excerpt import credential_named_bytes
 from finishup.observability.logging import record_unexpected_exception_without_raising

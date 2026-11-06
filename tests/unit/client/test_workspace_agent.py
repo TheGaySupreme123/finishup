@@ -298,6 +298,12 @@ def test_the_default_protected_directories_are_this_clients_own(
 
     monkeypatch.setattr(agent_module.config_paths, "log_dir", unresolvable)
     monkeypatch.setattr(agent_module.config_paths, "runtime_dir", lambda: root / "run")
+    ambient = tmp_path / "ambient"
+    monkeypatch.setattr(
+        agent_module.config_paths,
+        "ambient_installation_dirs",
+        lambda: (ambient / "finishup", root / "state", ambient / "yoetz"),
+    )
     assert client_protected_directories() == tuple(
         os.fspath(path)
         for path in (
@@ -307,6 +313,8 @@ def test_the_default_protected_directories_are_this_clients_own(
             root / "cache",
             root / "state",
             root / "run",
+            ambient / "finishup",
+            ambient / "yoetz",
         )
     )
 

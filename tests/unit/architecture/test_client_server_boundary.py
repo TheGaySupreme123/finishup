@@ -168,12 +168,12 @@ def test_every_module_has_exactly_one_side() -> None:
 def test_map_keys_are_real_modules_or_reserved_packages() -> None:
     """A stale map key would silently classify nothing; reserved names are listed here.
 
-    ``finishup.resources`` holds packaged data only; the gateway package and the shared
-    workspace-root rule are reserved for the stages that add them.
+    ``finishup.resources`` holds packaged data only; the gateway package is reserved for the
+    approaches that add one.
     """
 
     modules = set(source_modules())
-    reserved = {"finishup.resources", "finishup.gateway", "finishup.adapters.workspace_root"}
+    reserved = {"finishup.resources", "finishup.gateway"}
     stale = sorted(key for key in MODULE_SIDES if key not in modules and key not in reserved)
     assert stale == []
 
@@ -204,10 +204,34 @@ def test_ledger_entries_are_unique_real_crossings_with_closed_dispositions() -> 
         assert bool(entry.commands) == (entry.disposition == "server_host_only"), entry
 
 
-def test_the_new_client_package_starts_with_no_crossing() -> None:
-    """New client code lives in ``finishup.client``; it may never borrow server internals."""
+def test_the_new_client_package_borrows_no_server_internals() -> None:
+    """New client code lives in ``finishup.client``; it may never borrow server internals.
 
-    assert not [entry for entry in _all_entries() if entry.importer.startswith("finishup.client")]
+    Its one crossing is ``client_outbox``: the drain that delivers the client's own captured rows
+    opens the outbox module the service's observation store shares. That disposition names that
+    one module and is open to no other importer.
+    """
+
+    client_entries = [
+        entry for entry in _all_entries() if entry.importer.startswith("finishup.client")
+    ]
+    assert {entry.disposition for entry in client_entries} <= {"client_outbox"}
+    outbox_entries = [entry for entry in _all_entries() if entry.disposition == "client_outbox"]
+    assert outbox_entries == client_entries
+    assert {entry.imported for entry in outbox_entries} == {
+        "finishup.adapters.integrations.observation_local"
+    }
+
+
+def test_the_workspace_readers_import_only_workspace_and_shared_modules() -> None:
+    """A workspace reader runs on whichever host holds the workspace (the client's agent for a
+    remote server), so none may reach storage, the vault, providers, the service or a surface;
+    no ledger entry may excuse one."""
+
+    workspace = [module for module in source_modules() if side_of(module) == "WORKSPACE"]
+    assert "finishup.adapters.git_change_capture" in workspace
+    assert "finishup.application.observation_check_policy" in workspace
+    assert not [entry for entry in _all_entries() if side_of(entry.importer) == "WORKSPACE"]
 
 
 def test_relative_and_dynamic_imports_resolve(tmp_path: Path) -> None:
@@ -248,6 +272,14 @@ def test_relative_and_dynamic_imports_resolve(tmp_path: Path) -> None:
         ("finishup.client.targets", "finishup.config.paths", True),
         ("finishup.client.targets", "finishup.adapters.keys.owner_file_store", True),
         ("finishup.client.targets", "finishup.adapters.keys.encrypted_vault", False),
+        ("finishup.client.workspace_agent", "finishup.adapters.git_change_capture", True),
+        ("finishup.service.workspace_routing", "finishup.adapters.task_input_read", True),
+        ("finishup.adapters.git_change_capture", "finishup.adapters.workspace_root", True),
+        ("finishup.adapters.git_change_capture", "finishup.adapters.repository_identity", False),
+        ("finishup.adapters.approved_checks", "finishup.service.daemon", False),
+        ("finishup.application.observation_check_policy", "finishup.cli.app", False),
+        ("finishup.protocol.errors", "finishup.adapters.git_version", False),
+        ("finishup.gateway.app", "finishup.adapters.workspace_inspect", False),
     ],
 )
 def test_the_side_rules(importer: str, imported: str, expected: bool) -> None:

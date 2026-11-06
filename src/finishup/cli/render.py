@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Final, cast
 
+from finishup.client.attribution import ServiceAttribution, attribution_lines
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
@@ -887,8 +888,14 @@ def _status_task_lifecycle_lines(result: StatusSuccessModel) -> tuple[str, ...]:
     return (line,) if line else ()
 
 
-def render_human_status(result: StatusSuccessModel) -> str:
-    """Render current structural status without dumping the ledger."""
+def render_human_status(
+    result: StatusSuccessModel, *, attribution: ServiceAttribution | None = None
+) -> str:
+    """Render current structural status without dumping the ledger.
+
+    ``attribution`` is the connection's (``finishup.client.attribution``): a claim-bound
+    connection's status ends with the fixed workspace-evidence line and the producing service.
+    """
 
     if type(result) is not StatusSuccessModel:
         raise TypeError("status_result_invalid")
@@ -1140,6 +1147,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
         lines.append(DEFERRED_BEFORE_FIRST_EDIT_TEXT)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))
+    lines.extend(attribution_lines(attribution))
     return "\n".join(lines)
 
 
@@ -1219,8 +1227,15 @@ def _render_lineage(page: StatusLineagePageModel) -> list[str]:
     return lines
 
 
-def render_human_receipt(result: ReceiptSuccessModel) -> str:
-    """Render the receipt conclusion without claiming stronger assurance."""
+def render_human_receipt(
+    result: ReceiptSuccessModel, *, attribution: ServiceAttribution | None = None
+) -> str:
+    """Render the receipt conclusion without claiming stronger assurance.
+
+    ``attribution`` is the connection's (``finishup.client.attribution``): a claim-bound
+    connection's receipt ends with the fixed workspace-evidence line, unless the service's own
+    text already carries it, and the producing service.
+    """
 
     if type(result) is not ReceiptSuccessModel:
         raise TypeError("receipt_result_invalid")
@@ -1285,6 +1300,7 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if result.agent_closing_prompt is not None:
         # #1240 D5: the same closing line the MCP reply carries (fixed words and counts only).
         lines.append(result.agent_closing_prompt)
+    lines.extend(attribution_lines(attribution, shown=shown))
     return "\n".join(lines)
 
 
