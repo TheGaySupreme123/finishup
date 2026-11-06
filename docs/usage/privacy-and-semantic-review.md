@@ -11,8 +11,10 @@ live on that server, and what travels to it is listed under
 [What leaves this computer](servers.md#what-leaves-this-computer). With such a server chosen,
 `finishup privacy tighten`, `finishup privacy propose` and the privacy step of `finishup setup`
 change that server's policy, and each says so before and after, naming the server by its id and
-kind. A change that sends more waits for `finishup privacy decide-policy` on the server's own
-machine. See [Whose privacy policy a command changes](servers.md#whose-privacy-policy-a-command-changes).
+kind. A change that sends more waits for `finishup privacy decide-policy` with the proposal's id
+on the server's own machine; FinishUP prints that exact command and the time (UTC, about five
+minutes away) after which the proposal expires unchanged and you can make the change again. See
+[Whose privacy policy a command changes](servers.md#whose-privacy-policy-a-command-changes).
 
 ## Two defaults, deliberately separate
 
@@ -345,7 +347,7 @@ finishup privacy setup             # equivalent guided policy review
 finishup privacy show              # current effective policy
 finishup privacy tighten           # tighten (proceeds through gates); names a chosen server
 finishup privacy propose           # propose a change for decision; names a chosen server
-finishup privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal (on the server's machine)
+finishup privacy decide-policy ID  # approve or deny one exact pending policy proposal on the terminal (on the server's machine)
 finishup privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 finishup privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
 finishup privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository

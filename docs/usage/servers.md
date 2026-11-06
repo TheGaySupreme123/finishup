@@ -422,17 +422,32 @@ Privacy policy changes here apply to the selected FinishUP server t_1a2b3c4d (ss
 Changed the privacy policy of the FinishUP server t_1a2b3c4d (ssh); this computer's everyday FinishUP was not changed.
 ```
 
-- **A change that sends more waits on the server.** It needs your decision on the machine that
-  runs the server, so FinishUP says the change waits there and has not taken effect yet. Decide it
-  on that machine with `finishup privacy decide-policy`. On this computer that command stops with
-  `requires_server_host` and names the server, and setup's privacy step leaves the change waiting
-  instead of opening a decision here.
+- **A change that sends more waits on the server.** It needs your decision, and that decision is
+  made only on the machine that runs the server. FinishUP says the change waits there and has not
+  taken effect yet, and names the proposal and how long it waits:
+
+  ```text
+  The change waits for a decision on the FinishUP server t_1a2b3c4d (ssh): its policy has not changed yet, because a trusted decision runs only on that server host. Run 'finishup privacy decide-policy ppr_…' on that host before 2026-11-06 22:40 UTC; after that it expires unchanged, and making the change again here proposes it anew.
+  ```
+
+  Run that exact command on the server's machine before the time shown (in UTC; a proposal waits
+  about five minutes). `finishup privacy pending` lists disclosure decisions, not policy proposals,
+  so use the id FinishUP printed. If it expires first, nothing changed: run `finishup setup` (or
+  the command you used) here again for a new proposal. On this computer `finishup privacy
+  decide-policy` stops with `requires_server_host` and names the server, and setup's privacy step
+  leaves the change waiting instead of opening a decision here.
+- **Setup's next steps.** With such a server chosen, `finishup --privacy` and `finishup --set` run
+  only on the server's machine, so setup never points you at them here. After a change left
+  waiting, its next step is the same `finishup privacy decide-policy` command with the proposal's
+  id and time; otherwise it is to run `finishup setup` here again.
 - **When a command fails.** If the server never confirmed a change, FinishUP says no change was
   confirmed; `finishup privacy show` shows the server's policy as it is now, and you can run the
   command again.
 - **With `--json`.** `privacy tighten` and `privacy propose` print the same document as always, and
   the same sentences go to standard error. The setup summary names the server on its privacy line,
-  and the terminal interface says it again once the privacy step returns.
+  and the terminal interface says it again once the privacy step returns, with the proposal's id
+  and time when the change waits. Both name the server whose policy the step changed, even if you
+  switched to this computer's own FinishUP while the step ran.
 
 To change this computer's own policy instead, run `finishup server use local` first.
 

@@ -613,9 +613,30 @@ answers bounded `workspace_call`s on a connection that declared it.
   target, because a trusted decision runs only on the server host (decisions 7 and 11). For the
   same reason the questionnaire on a remote target no longer opens the local decision ceremony
   for a widening (it could only fail, the human-control channel never leaving the server host): it
-  reports the waiting proposal (`outcome` `cancelled`, its `proposal_id`, `reason`
-  `requires_server_host`). A named local target is this computer's own server host and is not
-  named; a target record that cannot be read is left to the connection, which refuses it.
+  reports the waiting proposal (`outcome` `cancelled`, its `proposal_id` and the server's
+  `expires_at`, `reason` `requires_server_host`). A named local target is this computer's own
+  server host and is not named; a target record that cannot be read is left to the connection,
+  which refuses it.
+
+  *Amended 2026-11-06 (review):* a waiting proposal must be one the owner can act on, following
+  "be clear on what happened, why, and that a retry can help". Every surface that reports one
+  (the `privacy propose` stderr line, the questionnaire, the setup summary, the terminal
+  interface) prints the same sentence: the change waits and the policy has not changed, because a
+  trusted decision runs only on the server host; run `finishup privacy decide-policy <proposal
+  id>` there before `<expiry, rounded down to the minute> UTC`; after that it expires unchanged
+  and making the change again here proposes it anew. The id and the expiry come from the
+  server's `decision_required` answer and are printed only in their closed shapes (`ppr_<uuid>`,
+  `YYYY-MM-DDTHH:MM:SS.mmmZ`); anything else is left out and the line says to make the change
+  again. The proposal lives `PrivacyPolicyApplication.proposal_ttl_seconds` (300 s); nothing on
+  the server host lists policy proposals (`privacy_pending_list` carries disclosures only, a
+  released body), so the printed id is how the owner finds it. On a remote target setup's next
+  steps never name `finishup --privacy` or `finishup --set` (both `server_host`): the privacy step
+  is that decide-policy continuation for a waiting proposal, otherwise "rerun `finishup setup
+  run` here", and the API-key step says both run only on that server's host. Every caller that
+  prints a result after the questionnaire (setup run, the provider step `setup run --host` runs,
+  the terminal interface's four hand-overs) reads the server once before it and keeps that value:
+  the zero-network choice inside the questionnaire may switch the selection to this computer, and
+  the change stays the remote server's.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -902,7 +923,10 @@ installation is never touched by a target operation.
 - Every path on this computer that changes a remote target's privacy policy names the target
   (id and kind) before and after (decision 8). A widening proposed there waits on the server host
   for its decision; setup's privacy step reports it as waiting instead of failing on a local
-  ceremony it cannot reach.
+  ceremony it cannot reach, names the proposal id and its expiry (about five minutes) with the
+  exact `privacy decide-policy` command for that host, and setup's next steps say the same rather
+  than naming `--privacy` or `--set`. The server host offers no list of policy proposals, so a
+  proposal whose id was lost is retried by making the change again once it expires.
 - A Linux server whose runtime directory belongs to the login session loses its sockets at the
   last logout; `service endpoint --json` reports this, and the server needs linger or its own
   isolated root.

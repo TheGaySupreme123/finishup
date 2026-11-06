@@ -4666,25 +4666,46 @@ list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup w
 `selected_policy_server() -> PolicyServer | None` reads `targets.active_target_record()` (the
 process's resolved root, not the selection read afresh) and answers only for the remote kinds
 (`ssh`, `https`, `local_port`); `None` for the everyday root, an isolated root, a named `local`
-target and a record that cannot be read. `PolicyServer(target_id, kind)` renders fixed lines:
-`before_line()` (`Privacy policy changes here apply to the selected FinishUP server <id> (<kind>),
-not to this computer's everyday FinishUP.`), `applied_line()`, `pending_line()` (decide it with
-`finishup privacy decide-policy` on that server host), `unchanged_line()`, `unconfirmed_line()`
-(points at `finishup privacy show`), `outcome_line(outcome)` for a `tightening_applied` /
-`decision_required` answer (anything else is unconfirmed), `report_line(outcome, reason)` for a
-`PrivacySetupReport` (`configured` applied; `cancelled` with `requires_server_host` pending;
-`unchanged|cancelled|failed` unchanged; `None`, a questionnaire that raised, unconfirmed), and
-`summary_suffix()` (` (on the FinishUP server <id> (<kind>))`). `privacy tighten|propose`
-(`_call_support`) print the before line, then the result line or, on any exception after it, the
-unconfirmed line, all on stderr in text and `--json` modes; the stdout document (the released
-control result body) is unchanged. `run_privacy_setup` prints them on stdout around
-`_privacy_setup_questionnaire(decide_here=)`, which on a remote target returns a widening's
-proposal as `PrivacySetupReport("cancelled", …, proposal_id, "requires_server_host", …)` without
-opening the local decision ceremony. The setup summary's privacy lines (`_emit_human_report`,
+target and a record that cannot be read. `PendingProposal(proposal_id, expires_at=None)` is a
+proposal waiting on the server host (`of(id, expiry)`, `from_answer(answer)` for a
+`decision_required` body, `from_report(report)` for a `PrivacySetupReport`); `decide_command()`
+is `finishup privacy decide-policy <id>` only for an id of the closed `ppr_<uuid>` shape and
+`deadline()` is `before <YYYY-MM-DD> <HH:MM> UTC` (rounded down) only for an expiry of the closed
+`YYYY-MM-DDTHH:MM:SS.mmmZ` shape, else `before it expires`; a value of another shape is never
+printed. `PolicyServer(target_id, kind)` renders fixed lines: `before_line()` (`Privacy policy
+changes here apply to the selected FinishUP server <id> (<kind>), not to this computer's everyday
+FinishUP.`), `applied_line()`, `pending_line(pending)` (the change waits and the policy has not
+changed, because a trusted decision runs only on that server host; `Run '<decide command>' on
+that host <deadline>; after that it expires unchanged, and making the change again here proposes
+it anew.`, or `Make the change again here to propose it anew.` without a usable id),
+`unchanged_line()`, `unconfirmed_line()` (points at `finishup privacy show`),
+`answer_line(answer)` for a `tightening_applied` / `decision_required` answer (anything else is
+unconfirmed), `result_line(report | None)` for a `PrivacySetupReport` (`configured` applied;
+`cancelled` with `requires_server_host` pending with the report's `proposal_id` and `expires_at`;
+`unchanged|cancelled|failed` unchanged; `None`, a questionnaire that raised, unconfirmed),
+`summary_suffix()` (` (on the FinishUP server <id> (<kind>))`), `privacy_next_step(pending)`
+(setup's privacy next step in place of `finishup --privacy`: the decide-policy continuation with
+the deadline or `rerun 'finishup setup run' here`) and `credential_next_step()` (in place of
+`finishup --set`: both it and `finishup provider credential set` run only on that server's
+host). `privacy tighten|propose` (`_call_support`) print the before line, then the answer line
+or, on any exception after it, the unconfirmed line, all on stderr in text and `--json` modes;
+the stdout document (the released control result body) is unchanged. `run_privacy_setup` prints
+them on stdout around `_privacy_setup_questionnaire(decide_here=)`, which proposes through
+`_propose_pending() -> PendingProposal | None` (`_propose()` returns its id for the other callers)
+and on a remote target returns a widening's proposal as `PrivacySetupReport("cancelled", …,
+proposal_id, "requires_server_host", …, expires_at)` without opening the local decision ceremony.
+Setup reads the server once, before the provider and privacy steps (`_setup_policy_server()` in
+setup run and in `run_provider_setup`), and keeps it with the step's waiting proposal: the
+summary's privacy lines (`_emit_human_report(report, policy_server=)`,
 `_emit_provider_setup_layer_report`, `_emit_codex_subscription_layer_report`,
-`_emit_privacy_incomplete`) end with the suffix. The terminal interface's
-`FinishUpRuntime.policy_server_line(report | None) -> str | None` feeds one message after each
-questionnaire handover. `privacy decide-policy` stays `server_host` (refused with
+`_emit_privacy_incomplete(…, policy_server=, pending=)`) end with that server's suffix, and on a
+remote server `_NEXT_PRIVACY` in `next_steps` (the JSON report's list too, a free-text list) and
+the closing `--privacy` / `--set` lines become `privacy_next_step(pending)` and
+`credential_next_step()`. The terminal interface's `_hand_over_privacy(operation)` reads
+`FinishUpRuntime.selected_policy_server() -> PolicyServer | None` before each of its four
+questionnaire hand-overs (`/privacy`, local-only, Codex subscription, API provider binding) and
+says `result_line(report | None)` for that server afterwards, also when the questionnaire raised
+or the owner switched servers inside it. `privacy decide-policy` stays `server_host` (refused with
 `requires_server_host`, whose line names `<id> (<kind>)`). No output schema changes.
 
 **Credentials.** `finishup.client.credentials.CredentialSource` reads, stores and deletes one
