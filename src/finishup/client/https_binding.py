@@ -234,10 +234,17 @@ def binding_client(
 
 
 def phase_for_status(status: int) -> str:
-    """The closed remote phase of an unexpected binding status (``rest-error`` reasons)."""
+    """The closed remote phase of an unexpected binding status (``rest-error`` reasons).
+
+    ``400`` (``frame_invalid``) and ``413`` (``frame_too_large``) answer a frame or binding header
+    this client built correctly, so the gateway speaks another release (its control envelopes or
+    its binding version differ): ``remote_incompatible``, never a network fault.
+    """
 
     if status in {401, 403}:
         return "remote_auth_failed"
+    if status in {400, 413}:
+        return "remote_incompatible"
     if status == 503:
         return "remote_service_not_running"
     return "remote_unreachable"

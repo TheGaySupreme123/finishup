@@ -139,7 +139,14 @@ def test_service_client_runs_unchanged_over_the_binding() -> None:
 
 @pytest.mark.parametrize(
     ("status", "phase"),
-    [(401, "remote_auth_failed"), (403, "remote_auth_failed"), (503, "remote_service_not_running")],
+    [
+        (401, "remote_auth_failed"),
+        (403, "remote_auth_failed"),
+        # The gateway refused a hello this client built correctly: another release.
+        (400, "remote_incompatible"),
+        (413, "remote_incompatible"),
+        (503, "remote_service_not_running"),
+    ],
 )
 def test_a_refused_session_is_a_closed_remote_phase(status: int, phase: str) -> None:
     gateway = _gateway()
@@ -502,10 +509,12 @@ def test_server_info_checks_the_manifest_and_keeps_only_closed_values() -> None:
 
 
 def test_status_and_error_phases_are_closed() -> None:
-    assert [phase_for_status(code) for code in (401, 403, 404, 429, 500, 503)] == [
+    assert [phase_for_status(code) for code in (400, 401, 403, 404, 413, 429, 500, 503)] == [
+        "remote_incompatible",
         "remote_auth_failed",
         "remote_auth_failed",
         "remote_unreachable",
+        "remote_incompatible",
         "remote_unreachable",
         "remote_unreachable",
         "remote_service_not_running",

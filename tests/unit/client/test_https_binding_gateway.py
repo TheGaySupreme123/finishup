@@ -132,6 +132,37 @@ def test_server_info_from_the_real_gateway_is_this_release(keys: Path) -> None:
     assert gateway.requests[-1][:2] == ("GET", "/base/v1/server")
 
 
+def test_a_hello_from_another_release_is_remote_incompatible(keys: Path) -> None:
+    # The real gateway validates the hello against its own control envelopes before the daemon
+    # can answer; a field this gateway's release does not know is refused as ``frame_invalid``.
+    import struct
+
+    from finishup.protocol.canonical import canonical_encode
+
+    gateway = real_gateway(keys, _upstream)
+    hello = {
+        "client_kind": "cli",
+        "client_version": __version__,
+        "connection_nonce": "2e" * 32,
+        "protocol_version": "1.0",
+        "schema_manifest_digest": schema_manifest_digest(),
+        "workspace_lease": {"schema_version": "9.0.0"},
+    }
+    payload = canonical_encode(hello)
+
+    async def exercise() -> str:
+        stream = await _transport(gateway, gateway.key).connect()
+        try:
+            with pytest.raises(TransportError) as raised:
+                await stream.send_all(struct.pack(">I", len(payload)) + payload)
+        finally:
+            await stream.aclose()
+        return raised.value.phase
+
+    assert asyncio.run(exercise()) == "remote_incompatible"
+    assert ("POST", "/base/v1/sessions") in [request[:2] for request in gateway.requests]
+
+
 def test_a_key_the_gateway_does_not_know_or_revoked_is_an_auth_failure(keys: Path) -> None:
     gateway = real_gateway(keys, _upstream)
     other = "fuk_" + "0" * 12 + "_" + "A" * 43

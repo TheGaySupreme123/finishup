@@ -4615,7 +4615,10 @@ dials its own stream.
 - HTTPS client bounds (`finishup.client.https_binding`): `BINDING_HEADER`, `BINDING_VERSION`,
   `LONG_POLL_WAIT_MS` (25 000, the gateway's `MAX_WAIT_MS`), `CALL_WAIT_MS` (2 000, a call's own
   post), `SESSION_ID_PATTERN` (the gateway's), `SESSION_IDLE_CHECK_SECONDS` (90, under the
-  gateway's 120); `GET /v1/server` must list binding `1.0`.
+  gateway's 120); `GET /v1/server` must list binding `1.0`. `phase_for_status(status)` names an
+  unexpected binding status: `401`/`403` `remote_auth_failed`, `400`/`413` (a frame or binding
+  header this client built correctly, refused by another release) `remote_incompatible`, `503`
+  `remote_service_not_running`, anything else `remote_unreachable`.
 
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
