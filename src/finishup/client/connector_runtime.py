@@ -76,7 +76,13 @@ class ConnectorTargetRuntime:
 
     def stop(self, root: Path | None) -> None:
         from finishup.client.connector_status import stop_connector
-        from finishup.client.ssh_upstream import MASTER_NAME, UpstreamUnavailable, control_argv
+        from finishup.client.ssh_upstream import (
+            MASTER_NAME,
+            UPSTREAM_NAME,
+            UpstreamUnavailable,
+            control_argv,
+            remove_owned_socket,
+        )
         from finishup.client.targets import TargetError, read_target
 
         target = _remote_root(root)
@@ -86,24 +92,28 @@ class ConnectorTargetRuntime:
             record = read_target(target)
         except TargetError:
             return
-        if record is None or record.kind != "ssh" or not (target / "run" / MASTER_NAME).exists():
+        if record is None or record.kind != "ssh":
             return
-        # A master that outlived its connector (killed hard) is asked to exit through its own
-        # control socket.
-        try:
-            from finishup.client.ssh_upstream import resolve_ssh
+        if (target / "run" / MASTER_NAME).exists():
+            # A master that outlived its connector (killed hard) is asked to exit through its
+            # own control socket.
+            try:
+                from finishup.client.ssh_upstream import resolve_ssh
 
-            argv = control_argv(resolve_ssh(), target, record, "exit")
-        except UpstreamUnavailable:
-            return
-        subprocess.run(  # noqa: S603 - fixed argv, no shell
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5.0,
-            check=False,
-        )
+                argv = control_argv(resolve_ssh(), target, record, "exit")
+            except UpstreamUnavailable:
+                argv = None
+            if argv is not None:
+                subprocess.run(  # noqa: S603 - fixed argv, no shell
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5.0,
+                    check=False,
+                )
+        # OpenSSH leaves the forwarded socket behind when its master exits.
+        remove_owned_socket(target / "run" / UPSTREAM_NAME)
 
     def probe(self, root: Path | None) -> ProbeResult:
         import anyio

@@ -261,3 +261,97 @@ def test_a_master_that_outlived_its_connector_is_asked_to_exit_first(
         if orphan.poll() is None:
             orphan.kill()
             orphan.wait()
+
+
+def test_only_an_owner_owned_socket_is_removed(tmp_path: Path) -> None:
+    from finishup.client.ssh_upstream import remove_owned_socket
+
+    socket_path = tmp_path / "s.sock"
+    _stale_socket(socket_path)
+    regular = tmp_path / "regular"
+    regular.write_bytes(b"")
+    linked = tmp_path / "linked.sock"
+    target_socket = tmp_path / "target.sock"
+    _stale_socket(target_socket)
+    linked.symlink_to(target_socket)
+
+    remove_owned_socket(socket_path)
+    remove_owned_socket(regular)
+    remove_owned_socket(linked)
+    remove_owned_socket(tmp_path / "absent.sock")
+
+    assert not socket_path.exists()
+    assert regular.exists()
+    assert linked.is_symlink() and target_socket.exists()
+
+
+def test_a_stopped_master_leaves_no_forward_behind(
+    target: tuple[targets.ServerTarget, Path, Path],
+) -> None:
+    """OpenSSH leaves ``-L`` stream-local sockets behind when a master exits (as the stand-in
+    does); the connector removes the forward itself, so no reader takes it for a live one."""
+
+    record, root, home = target
+    ssh = write_fake_ssh(home / "bin")
+    upstream = root / "run" / "upstream.sock"
+
+    async def exercise() -> None:
+        master = SshMaster(
+            root, replace(record, remote_endpoint=str(home / "absent.sock")), ssh=str(ssh)
+        )
+        for _lifecycle in range(2):
+            await master.ensure()
+            assert _connectable(upstream)
+            await master.close()
+            assert not upstream.exists()
+            assert not (root / "run" / "m").exists()
+
+    asyncio.run(exercise())
+
+
+def test_readiness_is_a_new_forward_never_a_path_that_already_existed(
+    target: tuple[targets.ServerTarget, Path, Path],
+) -> None:
+    """A stale forward the connector could not remove never counts as the new master's bind."""
+
+    record, root, home = target
+    upstream = root / "run" / "upstream.sock"
+    _stale_socket(upstream)
+    # A master that authenticates slowly and never binds before it is stopped.
+    slow = home / "slow-ssh"
+    slow.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    slow.chmod(0o700)
+
+    async def exercise() -> None:
+        import finishup.client.ssh_upstream as ssh_upstream
+
+        def keep(path: Path) -> None:
+            del path
+
+        master = SshMaster(root, record, ssh=str(slow))
+        with pytest.MonkeyPatch.context() as patch:
+            # Keep the stale socket in place (as if it could not be removed), and wait briefly.
+            patch.setattr(ssh_upstream, "remove_owned_socket", keep)
+            patch.setattr(ssh_upstream, "_MASTER_START_SECONDS", 0.5)
+            with pytest.raises(UpstreamUnavailable) as failed:
+                await master.ensure()
+        assert failed.value.reason == "remote_unreachable"
+
+    asyncio.run(exercise())
+
+
+def test_disconnect_removes_the_forward_a_hard_killed_connector_left(
+    target: tuple[targets.ServerTarget, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+
+    _record, root, home = target
+    write_fake_ssh(home / "bin")
+    monkeypatch.setenv("PATH", f"{home / 'bin'}:/usr/bin:/bin")
+    upstream = root / "run" / "upstream.sock"
+    _stale_socket(upstream)
+    _stale_socket(root / "run" / "m")
+
+    ConnectorTargetRuntime().stop(root)
+
+    assert not upstream.exists()

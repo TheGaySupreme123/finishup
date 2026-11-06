@@ -203,3 +203,75 @@ def test_real_openssh_forwards_the_connector_session_byte_for_byte(
             received = asyncio.run(exercise())
         assert received == expected
         assert not (root / "run" / "m").exists()
+
+
+def test_real_openssh_serves_one_connector_after_another_and_after_a_killed_master(
+    sshd: tuple[Path, int, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenSSH leaves the forwarded ``upstream.sock`` behind when its master exits.
+
+    Each new connector must still bind its own forward and relay, after a clean exit and after a
+    master killed hard (which also leaves its control socket); a stopped connector leaves no
+    forward behind.
+    """
+
+    directory, port, user = sshd
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            record, root = targets.new_remote_target(
+                "lab",
+                "ssh",
+                user=user,
+                host="127.0.0.1",
+                port=port,
+                remote_launcher="/bin/true",
+            )
+        endpoint = directory / "d.sock"
+        record = replace(record, remote_endpoint=str(endpoint))
+        upstream = root / "run" / "upstream.sock"
+        control = root / "run" / "m"
+
+        async def one_lifecycle(*, kill_master: bool) -> int:
+            daemon = ScriptedDaemon()
+            server = await serve_unix(endpoint, daemon)
+            connector = Connector(root, record, ssh=str(directory / "bin" / "ssh"))
+            left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            client = AuthenticatedUnixStream(left, authenticate_peer(left))
+            local = AuthenticatedUnixStream(right, authenticate_peer(right))
+            relay = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
+            master = connector._ssh  # pyright: ignore[reportPrivateUsage]
+            assert master is not None
+            try:
+                async with asyncio.timeout(30):
+                    await run_scripted_session(client)
+                    await client.shutdown_write()
+                    await relay
+                if kill_master:
+                    process = master._process  # pyright: ignore[reportPrivateUsage]
+                    assert process is not None
+                    process.kill()
+                    await process.wait()
+                    assert upstream.exists() and control.exists()
+                else:
+                    await master.close()
+                    assert not upstream.exists() and not control.exists()
+                return daemon.connections
+            finally:
+                await client.aclose()
+                if kill_master:
+                    master._process = None  # pyright: ignore[reportPrivateUsage]
+                server.cancel()
+                await asyncio.gather(server, return_exceptions=True)
+                endpoint.unlink(missing_ok=True)
+
+        async def exercise() -> list[int]:
+            return [
+                await one_lifecycle(kill_master=False),
+                await one_lifecycle(kill_master=False),
+                await one_lifecycle(kill_master=True),
+                await one_lifecycle(kill_master=False),
+            ]
+
+        with selection_override(root):
+            assert asyncio.run(exercise()) == [1, 1, 1, 1]
+        assert not upstream.exists() and not control.exists()

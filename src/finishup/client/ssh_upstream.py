@@ -22,6 +22,7 @@ import contextlib
 import os
 import shlex
 import shutil
+import stat
 import time
 from collections import deque
 from pathlib import Path
@@ -42,6 +43,7 @@ __all__ = [
     "remote_argv",
     "remote_command",
     "remote_command_line",
+    "remove_owned_socket",
     "resolve_ssh",
     "ssh_root_fits",
 ]
@@ -240,6 +242,30 @@ def probe_argv(
     )
 
 
+def _owned_socket(path: Path) -> tuple[int, int] | None:
+    """``(device, inode)`` of an owner-owned socket at ``path`` itself (never followed)."""
+
+    try:
+        facts = path.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISSOCK(facts.st_mode) or facts.st_uid != os.geteuid():
+        return None
+    return facts.st_dev, facts.st_ino
+
+
+def remove_owned_socket(path: Path) -> None:
+    """Unlink ``path`` when it is an owner-owned socket; anything else is left where it is.
+
+    OpenSSH does not unlink a ``-L`` stream-local socket when the master exits, so every master
+    that stops leaves ``upstream.sock`` behind; a master killed hard leaves its control socket.
+    """
+
+    if _owned_socket(path) is not None:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
 def classify_ssh_failure(stderr_tail: bytes) -> str:
     """A closed reason for a failed OpenSSH run, chosen by fixed phrases only."""
 
@@ -297,6 +323,9 @@ class SshMaster:
             if not ssh_root_fits(self._root):
                 raise UpstreamUnavailable(_UNREACHABLE)
             await self._clear_stale_endpoints()
+            # Anything still at the forward's path was not this master's: readiness is a new
+            # socket there, never the path existing.
+            stale = _owned_socket(self.upstream_path)
             argv = master_argv(self._executable(), self._root, self._record)
             self._stderr.clear()
             process = await asyncio.create_subprocess_exec(
@@ -312,7 +341,8 @@ class SshMaster:
             while time.monotonic() < deadline:
                 if process.returncode is not None:
                     break
-                if self.upstream_path.exists():
+                bound = _owned_socket(self.upstream_path)
+                if bound is not None and bound != stale:
                     return
                 await asyncio.sleep(_POLL_SECONDS)
             if process.returncode is None:
@@ -335,7 +365,7 @@ class SshMaster:
         """
 
         control = self._root / "run" / MASTER_NAME
-        if control.is_socket():
+        if _owned_socket(control) is not None:
             exiting = await asyncio.create_subprocess_exec(
                 *control_argv(self._executable(), self._root, self._record, "exit"),
                 stdin=asyncio.subprocess.DEVNULL,
@@ -350,9 +380,7 @@ class SshMaster:
                     exiting.kill()
                 await exiting.wait()
         for path in (control, self.upstream_path):
-            with contextlib.suppress(FileNotFoundError):
-                if path.is_socket():
-                    path.unlink()
+            remove_owned_socket(path)
 
     async def run_remote(self, *arguments: str) -> int:
         """Run one fixed remote command over the master; its exit status (output discarded)."""
@@ -393,7 +421,11 @@ class SshMaster:
             await asyncio.gather(task, return_exceptions=True)
 
     async def close(self) -> None:
-        """Ask the master to exit through its control socket, then reap the child we started."""
+        """Ask the master to exit through its control socket, reap it, remove its forward.
+
+        OpenSSH leaves the forwarded ``upstream.sock`` behind when the master exits; it is
+        removed here so no later reader takes it for a live forward.
+        """
 
         if self._alive():
             exiting = await asyncio.create_subprocess_exec(
@@ -411,3 +443,4 @@ class SshMaster:
                 await exiting.wait()
         async with self._lock:
             await self._stop_process()
+            remove_owned_socket(self.upstream_path)

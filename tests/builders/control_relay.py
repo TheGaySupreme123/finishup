@@ -13,7 +13,8 @@
   the payload bytes the client received, so every transport can be compared byte for byte.
 * ``write_fake_ssh`` — an ``ssh`` stand-in on ``PATH``: ``-M … -L LOCAL:REMOTE`` binds the local
   socket (mode 0600) and pumps each connection to the remote socket; ``-O exit|check`` talks to
-  its control socket; any other invocation runs the remote command locally.
+  its control socket, and an exiting master leaves its forwarded socket behind as OpenSSH does;
+  any other invocation runs the remote command locally.
 """
 
 from __future__ import annotations
@@ -544,11 +545,11 @@ if "-M" in args:
         while True:
             conn, _ = master.accept()
             if conn.recv(16) == b"exit":
-                for path in (local, control):
-                    try:
-                        os.unlink(path)
-                    except FileNotFoundError:
-                        pass
+                # Like OpenSSH: the control socket is removed, the -L forward is left behind.
+                try:
+                    os.unlink(control)
+                except FileNotFoundError:
+                    pass
                 os._exit(0)
             conn.close()
 
