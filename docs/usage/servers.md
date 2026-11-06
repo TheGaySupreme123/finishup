@@ -236,8 +236,8 @@ reads the key afterwards; your agent and its tools never see it.
   operations and the service status. An `operator` key also allows project and review commands,
   privacy reads and tightening, and locking the service. Stopping the service, backup, restore,
   migration and integration changes are never possible over the web; run them on the server.
-- **Other key commands.** `finishup service gateway key list` shows each key's id, label, scope
-  and when it was last used, never the key itself. `finishup service gateway key revoke KEY_ID`
+- **Other key commands.** `finishup service gateway key list` shows each key's id, label, scope,
+  whether it is active, expired or revoked, and when it was last used, never the key itself. `finishup service gateway key revoke KEY_ID`
   stops a key at once, including connections already open with it. To replace a key, create the
   new one with `--rotate KEY_ID`, log your computers in with it, then revoke the old one.
 - **Without your own certificate.** Behind a web server or proxy that handles TLS, run the gateway

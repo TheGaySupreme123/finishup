@@ -129,3 +129,33 @@ def test_connector_run_refuses_a_root_that_is_not_a_remote_targets_own(home: Pat
     assert result.exit_code == 2
     assert result.stderr.startswith("connector_root_invalid:")
     assert str(home) not in result.stderr
+
+
+def test_key_list_shows_an_expired_key_as_expired(home: Path) -> None:
+    """The gateway refuses an expired key (``api_key_expired``); the list must not call it
+    active."""
+
+    from datetime import UTC, datetime, timedelta
+
+    from finishup.gateway.keys import create_key, revoke_key
+
+    directory = _keys(home)
+    expired, _secret = create_key(
+        directory,
+        label="old-laptop",
+        scope="agent",
+        expires_in_days=1,
+        now=datetime.now(UTC) - timedelta(days=2),
+    )
+    active, _secret = create_key(directory, label="laptop", scope="agent", expires_in_days=30)
+    revoked, _secret = create_key(directory, label="lost", scope="operator")
+    revoke_key(directory, revoked.key_id)
+
+    listed = _invoke("service", "gateway", "key", "list")
+    assert listed.exit_code == 0, listed.output
+    states = {line.split()[0]: line.split()[2] for line in listed.stdout.splitlines()}
+    assert states == {
+        expired.key_id: "expired",
+        active.key_id: "active",
+        revoked.key_id: "revoked",
+    }
