@@ -5185,6 +5185,16 @@ user-controlled is ever rendered beside it.
   `finishup service restart` on the server host, then run receipt again), never with no section.
   The words live in `domain.workspace_provenance` (standard library only, so the protocol models
   admit exactly them) and `domain.receipts` re-exports them.
+  Either "Workspace evidence" section is rendered with the receipt, never appended to it:
+  `_internal_result` passes it as `render_receipt_human(document, markdown=, trailer=)`, and the
+  renderer reserves the section's room (`"\n\n"` plus the section, at most
+  `_HUMAN_TEXT_TRAILER_MAX` = 2,048 characters; an empty or longer one is
+  `invalid_receipt_document`) inside the 32,768-character `human_text` bound before it places the
+  other sections. A receipt whose other sections leave that room is unchanged with the section
+  after it; a longer one has those sections shortened, the truncation marker naming them, and
+  still ends with the whole section, so its result validates for every client. Appended after the
+  bound, the section pushed such a receipt past it and every projection, replays included, failed
+  as a retryable `response_projection_failed`.
   Every receipt format, JSON included, also carries the result member `workspace_provenance`
   (receipt-result 1.5.0, `ReceiptSuccessModel.workspace_provenance`,
   `ReceiptWorkspaceProvenanceModel`; 1.4.0 shipped in v0.3.0 and is never amended; control-result

@@ -10,6 +10,7 @@ over the memory and SQLite ledgers of the respond/status/receipt harness.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any, Literal, cast
 
 import pytest
@@ -384,6 +385,130 @@ async def test_a_receipt_whose_binding_was_read_carries_no_provenance_member(
         ),
     )
     assert projected.workspace_provenance is None
+
+
+_CONTEXTS: dict[str, ClientProjectionContext] = {
+    "cli_owner": ClientProjectionContext(
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True, owner_view=True
+    ),
+    "cli_agent": ClientProjectionContext(
+        ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+    ),
+    "mcp": ClientProjectionContext(
+        ControlClientKind.MCP_BRIDGE, ProjectionRenderMode.MACHINE_READABLE, False
+    ),
+}
+
+
+def _render_long(monkeypatch: pytest.MonkeyPatch, length: int) -> None:
+    """Every receipt renders ``length`` characters before its closing section.
+
+    The first section's body is padded so the real renderer, bound included, runs on a receipt
+    whose other sections already fill the 32,768-character ``human_text`` bound (or nearly).
+    """
+
+    from finishup.application import receipt as receipt_module
+
+    real = receipt_module.render_receipt_human
+
+    def render(document: Any, *, markdown: bool, trailer: str | None = None) -> str:  # noqa: ANN401
+        first = document.sections[0]
+
+        def with_body(size: int) -> Any:  # noqa: ANN401
+            return replace(
+                document, sections=(replace(first, body="x" * size), *document.sections[1:])
+            )
+
+        padded = with_body(1 + length - len(real(with_body(1), markdown=markdown)))
+        assert len(real(padded, markdown=markdown)) == length
+        return real(padded, markdown=markdown, trailer=trailer)
+
+    monkeypatch.setattr(receipt_module, "render_receipt_human", render)
+
+
+@pytest.mark.parametrize("length", [32_400, 32_768])
+@pytest.mark.parametrize("receipt_format", ["text", "markdown"])
+async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_section(
+    receipt_format: Literal["text", "markdown"],
+    length: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decision D4 at the wire bound: the closing section's room is reserved, so a receipt whose
+    text already fills the bound still validates for every client and ends with the section."""
+
+    from finishup.application import receipt as receipt_module
+
+    unknown = getattr(receipt_module, "_Provenance").UNKNOWN
+
+    async def opening_cannot_say(runtime: object, *, request_id: str | None = None) -> object:
+        del runtime, request_id
+        return unknown
+
+    monkeypatch.setattr(receipt_module, "_attested_by", opening_cannot_say)
+    _render_long(monkeypatch, length)
+    app, _runtime, _ = _build_app(seed_offset=52)
+    started, checked, _obligation = await _bootstrap_finding(app, seed=5900)
+    request = ReceiptRequest.model_validate(
+        {
+            **_receipt_wire(
+                5910,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=checked.result_frontier,
+            ),
+            "format": receipt_format,
+        }
+    )
+    block = workspace_provenance_unknown_block(markdown=receipt_format == "markdown")
+
+    result = await app.receipt(request)
+
+    assert result.human_text is not None
+    assert len(result.human_text) <= 32_768
+    assert result.human_text.endswith("\n\n" + block)
+    for context in _CONTEXTS.values():
+        projected = await _project(app, request, result, context)
+        assert isinstance(projected.human_text, str)
+        assert projected.human_text.endswith("\n\n" + block)
+        assert projected.workspace_provenance is not None
+
+
+@pytest.mark.parametrize("receipt_format", ["text", "markdown"])
+async def test_a_long_claim_bound_receipt_is_delivered_with_its_attested_section(
+    receipt_format: Literal["text", "markdown"], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _render_long(monkeypatch, 32_768)
+    app, _runtime, _ = _build_app(seed_offset=53)
+    started = await app.start(
+        start_request(5950, title="Long claim-bound receipt"), repository_privacy_context=_CLAIM
+    )
+    request = ReceiptRequest.model_validate(
+        {
+            **_receipt_wire(
+                5960,
+                task_id=started.task_id,
+                session=started.session_id,
+                writer=started.writer_id,
+                frontier=started.frontier,
+            ),
+            "format": receipt_format,
+        }
+    )
+    block = client_attested_receipt_block(
+        ownership_fence().service_instance_id, markdown=receipt_format == "markdown"
+    )
+
+    result = await app.receipt(request)
+
+    assert result.human_text is not None
+    assert len(result.human_text) <= 32_768
+    assert result.human_text.endswith("\n\n" + block)
+    for context in _CONTEXTS.values():
+        projected = await _project(app, request, result, context)
+        assert isinstance(projected.human_text, str)
+        assert projected.human_text.endswith("\n\n" + block)
+        assert projected.workspace_provenance is None
 
 
 async def _project(
