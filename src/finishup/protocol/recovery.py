@@ -764,14 +764,14 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="workspace_agent_refusal_review",
         directive=(
-            "The FinishUP workspace agent on your machine refused a read this server needed, "
-            "often a task input in a folder not allowed for it; the gap is recorded. Tell the "
-            "user: only they can allow a folder, via 'finishup server folders add'."
+            "Your FinishUP workspace agent refused a read this server needed, often a task input "
+            "in a folder not allowed for it. Tell the user only they can allow it: 'finishup "
+            "server folders add', or 'finishup server folders mode NAME local'."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
         nudge=(
-            "Do not run that command yourself, move files, or widen admitted roots to get past "
-            "a refusal."
+            "Do not run either command yourself, move files, or widen admitted roots; mode local "
+            "is only for a server the user trusts."
         ),
     ),
     RecoveryDirective(
