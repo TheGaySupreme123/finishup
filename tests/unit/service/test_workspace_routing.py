@@ -351,6 +351,86 @@ def test_a_claimed_workspace_is_opened_hashed_and_listed_by_its_agent() -> None:
     ]
 
 
+def test_a_workspace_the_answering_agent_forgot_is_reopened_once_and_kept() -> None:
+    """Another connection of the same client now serves the claim: it opens the workspace anew."""
+
+    from finishup.domain.values import SubjectStateRef
+    from finishup.ports.subject_state import SubjectStateCaptureResult, SubjectStateStatus
+
+    state = SubjectStateCaptureResult(
+        SubjectStateStatus.CAPTURED,
+        SubjectStateRef("sha256:" + "1" * 64, "sha256:" + "2" * 64, "git_structural_v1"),
+        SubjectStateFormat.GIT_STRUCTURAL_V1,
+        (),
+        10,
+        1,
+    )
+    reopened = "rws_" + "1" * 32
+
+    class _ForgettingHub(_Hub):
+        """The first agent opened ``_OPENED``; the agent answering now knows only its own."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.opens = 0
+
+        def call_blocking(
+            self,
+            handle: str,
+            operation: WorkspaceOperation,
+            arguments: object,
+            *,
+            timeout_seconds: float,
+        ) -> object:
+            self.calls.append((handle, operation, arguments, timeout_seconds))
+            if operation is WorkspaceOperation.OPEN_WORKSPACE:
+                self.opens += 1
+                return _OPENED if self.opens == 1 else reopened
+            if operation is WorkspaceOperation.SUBJECT_STATE_CAPTURE:
+                if cast(SubjectStateCaptureArguments, arguments).handle != reopened:
+                    raise WorkspaceAgentUnavailable("agent_unavailable", "handle_unknown")
+                return state
+            if cast(ListChangedPathsArguments, arguments).handle != reopened:
+                raise WorkspaceAgentUnavailable("agent_unavailable", "handle_unknown")
+            return ("src/app.py",)
+
+    hub = _ForgettingHub()
+    access = _observation(hub)
+    handle = access.open(_HANDLE)
+    command = SubjectStateCaptureCommand(handle, SubjectStateFormat.GIT_STRUCTURAL_V1)
+    assert access.subject_state().capture(command) == state
+    # The new handle is kept: the next call names it at once.
+    assert access.list_changed(handle) == ("src/app.py",)
+    assert [call[1] for call in hub.calls] == [
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.SUBJECT_STATE_CAPTURE,
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.SUBJECT_STATE_CAPTURE,
+        WorkspaceOperation.LIST_CHANGED_PATHS,
+    ]
+    assert hub.calls[2][2] == OpenWorkspaceArguments(_HANDLE, True)
+    assert repr(handle) == "LocalWorkspaceHandle(<redacted>)"
+
+
+def test_any_other_agent_answer_is_never_retried() -> None:
+    hub = _ScriptedHub(
+        {
+            WorkspaceOperation.OPEN_WORKSPACE: _OPENED,
+            WorkspaceOperation.LIST_CHANGED_PATHS: WorkspaceAgentUnavailable(
+                "agent_unavailable", "workspace_not_claimed"
+            ),
+        }
+    )
+    access = _observation(hub)
+    handle = access.open(_HANDLE)
+    with pytest.raises(WorkspaceAgentUnavailable):
+        access.list_changed(handle)
+    assert [call[1] for call in hub.calls] == [
+        WorkspaceOperation.OPEN_WORKSPACE,
+        WorkspaceOperation.LIST_CHANGED_PATHS,
+    ]
+
+
 def test_an_agent_without_a_policy_is_the_ordinary_opt_out() -> None:
     hub = _ScriptedHub(
         {

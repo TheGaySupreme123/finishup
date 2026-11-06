@@ -489,16 +489,24 @@ _OBSERVATION_SECONDS: Final = 60.0
 _CHECK_GRACE_SECONDS: Final = 30.0
 
 
-@dataclass(frozen=True, slots=True)
 class _ClientOpenedWorkspace:
     """Held inside a ``LocalWorkspaceHandle``: a claim-bound workspace its agent opened.
 
     ``workspace`` is the claim handle (the route to the agent), ``opened`` the agent's own
-    opaque handle for the workspace it opened. Neither is a path on this machine.
+    opaque handle for the workspace it opened. Neither is a path on this machine. Several
+    connections of one client may serve the same claim, and an agent may restart: an agent that
+    does not know ``opened`` answers ``handle_unknown``, and ``_opened_call`` then opens the
+    workspace again on the agent now serving the claim and keeps its new handle here.
     """
+
+    __slots__ = ("opened", "workspace")
 
     workspace: str
     opened: str
+
+    def __init__(self, workspace: str, opened: str) -> None:
+        self.workspace = workspace
+        self.opened = opened
 
     def __repr__(self) -> str:
         return "_ClientOpenedWorkspace(<redacted>)"
@@ -519,6 +527,47 @@ def _observation_call(
     return _call(hub, handle, operation, arguments, timeout_seconds)
 
 
+def _open_on_agent(hub: WorkspaceAgentHub | None, workspace: str) -> str:
+    return cast(
+        str,
+        _observation_call(
+            hub,
+            workspace,
+            WorkspaceOperation.OPEN_WORKSPACE,
+            OpenWorkspaceArguments(workspace, admitted_home_project=True),
+            _READ_SECONDS,
+        ),
+    )
+
+
+def _opened_call(
+    hub: WorkspaceAgentHub | None,
+    client: _ClientOpenedWorkspace,
+    operation: WorkspaceOperation,
+    arguments: Callable[[str], object],
+    timeout_seconds: float = _OBSERVATION_SECONDS,
+) -> Any:  # noqa: ANN401 - the operation's own result type
+    """One call naming the agent-opened workspace; reopened once if the agent forgot it.
+
+    The agent answering may not be the one that opened the workspace (another connection of the
+    same client now serves the claim, or the agent restarted). It says ``handle_unknown``, and
+    the workspace is opened again on it, exactly as first opened, before the call is retried
+    once. Every other outcome is the call's own.
+    """
+
+    try:
+        return _observation_call(
+            hub, client.workspace, operation, arguments(client.opened), timeout_seconds
+        )
+    except WorkspaceAgentUnavailable as exc:
+        if exc.agent_reason != "handle_unknown":
+            raise
+    client.opened = _open_on_agent(hub, client.workspace)
+    return _observation_call(
+        hub, client.workspace, operation, arguments(client.opened), timeout_seconds
+    )
+
+
 class _RoutedSubjectState:
     """``SubjectStateCapturePort``: a client-opened workspace is hashed by its agent."""
 
@@ -534,11 +583,11 @@ class _RoutedSubjectState:
             return self._local.capture(command)
         return cast(
             SubjectStateCaptureResult,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.SUBJECT_STATE_CAPTURE,
-                SubjectStateCaptureArguments(client.opened, command.expected_format),
+                lambda opened: SubjectStateCaptureArguments(opened, command.expected_format),
             ),
         )
 
@@ -558,11 +607,11 @@ class _RoutedInspect:
             return self._local.inspect(command)
         return cast(
             WorkspaceInspectResult,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.INSPECT,
-                InspectArguments(client.opened, command.relative_paths),
+                lambda opened: InspectArguments(opened, command.relative_paths),
             ),
         )
 
@@ -602,12 +651,12 @@ class RoutedApprovedCheckRunner(ApprovedCheckRunner):
             return super().run(command)
         run = cast(
             ApprovedCheckRun,
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.RUN_APPROVED_CHECK,
-                RunApprovedCheckArguments(
-                    client.opened,
+                lambda opened: RunApprovedCheckArguments(
+                    opened,
                     approval,
                     command.subject_state_digest,
                     command.expected_subject_state_digest,
@@ -645,18 +694,8 @@ class RoutedObservationWorkspace:
     def open(self, locator: str) -> LocalWorkspaceHandle:
         if not client_bound(locator):
             return self._local.open(locator)
-        opened = cast(
-            str,
-            _observation_call(
-                self._hub,
-                locator,
-                WorkspaceOperation.OPEN_WORKSPACE,
-                OpenWorkspaceArguments(locator, admitted_home_project=True),
-                _READ_SECONDS,
-            ),
-        )
         return LocalWorkspaceHandle._from_validated_descriptor(  # pyright: ignore[reportPrivateUsage]
-            _ClientOpenedWorkspace(locator, opened)
+            _ClientOpenedWorkspace(locator, _open_on_agent(self._hub, locator))
         )
 
     def load_policy(self, locator: str) -> tuple[ObservationCheckPolicy, bytes]:
@@ -694,11 +733,11 @@ class RoutedObservationWorkspace:
             return self._local.list_changed(workspace)
         return cast(
             tuple[str, ...],
-            _observation_call(
+            _opened_call(
                 self._hub,
-                client.workspace,
+                client,
                 WorkspaceOperation.LIST_CHANGED_PATHS,
-                ListChangedPathsArguments(client.opened),
+                ListChangedPathsArguments,
             ),
         )
 
