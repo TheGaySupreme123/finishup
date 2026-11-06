@@ -206,7 +206,9 @@ class Connector:
 
     # -- status -----------------------------------------------------------------------------
 
-    def _write_status(self, phase: ConnectorPhase, reason: str | None) -> None:
+    def _write_status(
+        self, phase: ConnectorPhase, reason: str | None, *, detail: str | None = None
+    ) -> None:
         previous = self._status
         if (
             previous is not None
@@ -219,7 +221,10 @@ class Connector:
             from finishup.observability.logging import record_public_error_without_raising
 
             correlation_id = record_public_error_without_raising(
-                component="client.connector", operation="connector_upstream", reason=reason
+                component="client.connector",
+                operation="connector_upstream",
+                reason=reason,
+                reason_code=detail,
             )
         status = new_status(
             self._status, phase, reason, correlation_id=correlation_id, started_at=self._started_at
@@ -227,11 +232,11 @@ class Connector:
         write_connector_status(self._root, status)
         self._status = status
 
-    async def _unavailable(self, reason: str) -> None:
+    async def _unavailable(self, reason: str, detail: str | None = None) -> None:
         if reason == "remote_auth_failed":
             # A key rotated with ``server login`` is read again on the next connection.
             self._credential.forget()
-        self._write_status("unavailable", reason)
+        self._write_status("unavailable", reason, detail=detail)
 
     async def _ready(self) -> None:
         self._write_status("ready", None)
@@ -270,7 +275,7 @@ class Connector:
                 if info.get("schema_manifest_digest") != schema_manifest_digest():
                     raise UpstreamUnavailable("remote_incompatible")
         except UpstreamUnavailable as error:
-            await self._unavailable(error.reason)
+            await self._unavailable(error.reason, error.detail)
             return
         await self._ready()
 
@@ -348,9 +353,15 @@ class Connector:
             else:
                 from finishup.client.https_upstream import HttpsUpstream, relay_https_connection
 
+                try:
+                    # Built on first use and kept; a failure is named and tried again next time.
+                    upstream = cast(HttpsUpstream, self._https_upstream())
+                except UpstreamUnavailable as error:
+                    await self._unavailable(error.reason, error.detail)
+                    return
                 await relay_https_connection(
                     local,
-                    cast(HttpsUpstream, self._https_upstream()),
+                    upstream,
                     hello,
                     encoded[4:],
                     on_unavailable=self._unavailable,

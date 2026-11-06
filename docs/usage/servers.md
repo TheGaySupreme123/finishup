@@ -274,7 +274,7 @@ repeated safely.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `remote_unreachable` | The server could not be reached. | Run `finishup server test`. |
+| `remote_unreachable` | The server could not be reached, or the certificate authority file given with `--ca-file` was moved, cannot be read or holds no certificate. | Run `finishup server test`. If you moved or replaced that file, put it back or add the server again with the new file. |
 | `remote_auth_failed` | The server did not accept you. | SSH: load your key (`ssh-add`) or check your SSH configuration. Web: run `finishup server login NAME`. |
 | `remote_identity_changed` | The server's host key or certificate is not the one you confirmed. | Confirm the server's identity another way, then remove and add the server again. |
 | `remote_service_not_running` | The server machine answered, but its FinishUP service is not running. | SSH: `ssh -t <server> finishup service start`. Web: ask the server's operator. |

@@ -161,9 +161,15 @@ def _transport_for(record: ServerTarget) -> httpx.AsyncBaseTransport:
     if record.tls_pin is not None:
         return PinnedTlsTransport(record.tls_pin)
     if record.ca_file is not None:
-        return httpx.AsyncHTTPTransport(
-            verify=ssl.create_default_context(cafile=record.ca_file), trust_env=False
-        )
+        try:
+            context = ssl.create_default_context(cafile=record.ca_file)
+        except (OSError, ssl.SSLError):
+            # The recorded CA file was moved, is unreadable or holds no certificate: no server
+            # can be verified, so nothing is sent.
+            raise UpstreamUnavailable(
+                "remote_unreachable", detail="tls_material_unavailable"
+            ) from None
+        return httpx.AsyncHTTPTransport(verify=context, trust_env=False)
     return httpx.AsyncHTTPTransport(verify=True, trust_env=False)
 
 

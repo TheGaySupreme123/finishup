@@ -71,9 +71,14 @@ _AUTH_PHRASES: Final = (b"Permission denied", b"Too many authentication failures
 
 
 class UpstreamUnavailable(Exception):
-    """The server could not be reached; ``reason`` is one closed remote connection phase."""
+    """The server could not be reached; ``reason`` is one closed remote connection phase.
 
-    def __init__(self, reason: str) -> None:
+    ``detail``, a closed token, names a local cause behind the phase for the connector's
+    diagnostic record (``tls_material_unavailable``: the target's recorded CA file is gone,
+    unreadable or not a certificate).
+    """
+
+    def __init__(self, reason: str, *, detail: str | None = None) -> None:
         if reason not in {
             "remote_auth_failed",
             "remote_identity_changed",
@@ -82,7 +87,10 @@ class UpstreamUnavailable(Exception):
             "remote_unreachable",
         }:
             raise ValueError("upstream_reason_invalid")
+        if detail is not None and detail not in {"tls_material_unavailable"}:
+            raise ValueError("upstream_detail_invalid")
         self.reason = reason
+        self.detail = detail
         super().__init__(reason)
 
 

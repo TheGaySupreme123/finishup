@@ -438,3 +438,46 @@ def test_a_plain_http_port_is_unreachable_not_an_identity_change(home: Path) -> 
             await server.wait_closed()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("material", ["missing", "not_a_certificate"])
+def test_unusable_tls_material_is_named_not_left_starting(home: Path, material: str) -> None:
+    """The owner moved or replaced the CA file recorded by ``server add --ca-file``: the
+    connector names the outage (never sitting at ``starting``) and builds the client again on
+    the next connection, so a restored file takes effect without a restart."""
+
+    ca_file = home / "ca.pem"
+    if material == "not_a_certificate":
+        ca_file.write_text("not a certificate\n", encoding="utf-8")
+    with targets.registry_lock():
+        record, root = targets.new_remote_target(
+            "gw", "https", base_url="https://gw.example", ca_file=str(ca_file)
+        )
+    connector = Connector(root, record, credential=lambda: "fuk_000000000000_secret")
+
+    async def exercise() -> None:
+        await connector.warm()
+        status = read_connector_status(root)
+        assert status is not None
+        assert (status.phase, status.reason) == ("unavailable", "remote_unreachable")
+        assert status.correlation_id is not None
+        client, local = _pair()
+        relay = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
+        await client.send_all(
+            encode_control_frame(
+                {
+                    "protocol_version": "1.0",
+                    "client_kind": "cli",
+                    "client_version": "0.1.0",
+                    "connection_nonce": "8b" * 32,
+                    "schema_manifest_digest": load_schema_catalog().manifest_digest,
+                }
+            )
+        )
+        async with asyncio.timeout(5):
+            assert await client.receive(65_536) == b""
+            await relay
+        assert connector._https is None  # pyright: ignore[reportPrivateUsage]
+
+    with selection_override(root):
+        asyncio.run(exercise())
