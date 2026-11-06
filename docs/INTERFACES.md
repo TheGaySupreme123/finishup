@@ -4926,7 +4926,9 @@ A session id is 32 random bytes bound to its key and holds one upstream control 
 expires after 120 seconds idle, and one key holds at most 64 sessions. A session whose hello
 declared `workspace_agent` also ends once no `GET …/frames` long-poll has begun for 40 seconds
 (`AGENT_POLL_GRACE_SECONDS`, the 25-second wait plus a margin), so a client that died without
-`DELETE` stops being the agent the daemon routes workspace calls to. Workflow outcomes —
+`DELETE` stops being the agent the daemon routes workspace calls to. The gateway starts an
+idle-stopped service while it holds `POST /v1/sessions`; when the client left before that answer,
+the session is closed at once instead of being kept. Workflow outcomes —
 `vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
 a `200` control-result, byte-identical to the socket. Transport and authentication failures use
 `rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:

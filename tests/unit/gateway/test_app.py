@@ -13,7 +13,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -60,6 +60,7 @@ class _Gateway:
     agent_key: str
     operator_key: str
     served: list[asyncio.Task[None]] = field(default_factory=list[asyncio.Task[None]])
+    app: object = None
 
     def headers(self, key: str | None = None, **extra: str) -> dict[str, str]:
         return {
@@ -95,7 +96,7 @@ async def _gateway(home: Path, **options: object) -> _Gateway:
         **options,  # type: ignore[arg-type]
     )
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE)
-    return _Gateway(state, client, daemon, audit, keys, agent_key, operator_key, served)
+    return _Gateway(state, client, daemon, audit, keys, agent_key, operator_key, served, app)
 
 
 @pytest.fixture
@@ -495,6 +496,50 @@ async def test_an_agent_session_whose_client_stopped_polling_is_closed(gateway: 
         f"/v1/sessions/{dead}/calls?wait_ms=0", content=_call(9), headers=gateway.headers()
     )
     assert response.status_code == 404 and _reason(response) == "session_unknown"
+
+
+@pytest.mark.anyio
+async def test_a_session_whose_client_left_during_the_hello_is_never_kept(
+    gateway: _Gateway,
+) -> None:
+    # The client gave up while the daemon started or answered: nobody can learn the session id.
+    body = _hello(agent=True)
+    inbound: list[dict[str, object]] = [{"type": "http.request", "body": body, "more_body": False}]
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        return inbound.pop(0) if inbound else {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/v1/sessions",
+        "raw_path": b"/v1/sessions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"gw.example"),
+            (b"authorization", f"Bearer {gateway.agent_key}".encode("ascii")),
+            (b"finishup-binding", b"1.0"),
+            (b"content-type", b"application/json"),
+        ],
+        "server": ("gw.example", 443),
+        "client": ("127.0.0.1", 40_000),
+    }
+    app = cast(Any, gateway.app)
+    await app(scope, receive, send)
+    assert len(gateway.state.sessions) == 0
+    assert sent[0]["status"] == 503
+    # The daemon saw the hello, and its connection was closed with the session.
+    assert gateway.daemon.connections == 1
+    async with asyncio.timeout(5):
+        await asyncio.gather(*gateway.served)
 
 
 @pytest.mark.anyio

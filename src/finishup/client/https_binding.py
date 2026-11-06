@@ -47,7 +47,7 @@ import re
 import ssl
 import struct
 import time
-from collections.abc import Buffer, Coroutine, Iterable, Mapping
+from collections.abc import Awaitable, Buffer, Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, cast
 from urllib.parse import urlsplit
@@ -267,6 +267,9 @@ async def _bounded_body(response: httpx.Response, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+type _Trace = Callable[[str, Mapping[str, object]], Awaitable[None]]
+
+
 async def _request(
     client: httpx.AsyncClient,
     method: str,
@@ -275,8 +278,12 @@ async def _request(
     content: bytes | None = None,
     wait_ms: int | None = None,
     limit: int = MAX_CONTROL_FRAME_BYTES,
+    trace: _Trace | None = None,
 ) -> tuple[int, httpx.Headers, bytes]:
-    """One bounded request; every ``httpx`` failure becomes a closed phase, never its text."""
+    """One bounded request; every ``httpx`` failure becomes a closed phase, never its text.
+
+    ``trace`` receives the connection's progress events (``httpcore``'s ``trace`` extension).
+    """
 
     params = None if wait_ms is None else {"wait_ms": str(wait_ms)}
     read = _REQUEST_SECONDS if wait_ms is None else wait_ms / 1_000 + _POLL_MARGIN_SECONDS
@@ -288,6 +295,7 @@ async def _request(
             params=params,
             headers=_JSON if content is not None else None,
             timeout=httpx.Timeout(read, connect=_CONNECT_SECONDS),
+            extensions=None if trace is None else {"trace": trace},
         ) as response:
             body = await _bounded_body(response, limit)
             return response.status_code, response.headers, body
@@ -322,6 +330,7 @@ class BindingControlStream:
         "_closed",
         "_ended",
         "_failure",
+        "_hello",
         "_inbound",
         "_last_activity",
         "_open_calls",
@@ -338,6 +347,7 @@ class BindingControlStream:
     _closed: bool
     _ended: bool
     _failure: str | None
+    _hello: str
     _inbound: bytearray
     _last_activity: float
     _open_calls: set[str]
@@ -355,6 +365,7 @@ class BindingControlStream:
         self._closed = False
         self._ended = False
         self._failure = None
+        self._hello = "unsent"
         self._inbound = bytearray()
         self._last_activity = time.monotonic()
         self._open_calls = set()
@@ -369,7 +380,21 @@ class BindingControlStream:
         return self._peer
 
     async def failure_phase(self) -> str | None:
+        """Why this stream ended; ``None`` when it ended cleanly.
+
+        A hello the gateway received and has not answered means its service is not answering
+        yet (the gateway starts an idle-stopped service inside ``POST /v1/sessions`` and answers
+        ``503`` when that fails): a caller that gives up waiting reads ``remote_service_not_running``,
+        never a network fault.
+        """
+
+        if self._failure is None and self._hello == "delivered":
+            return "remote_service_not_running"
         return self._failure
+
+    async def _trace_hello(self, event: str, _info: Mapping[str, object]) -> None:
+        if event.endswith(".send_request_body.complete") and self._hello == "unsent":
+            self._hello = "delivered"
 
     def _deliver(self, body: bytes) -> None:
         if self._ended:
@@ -460,7 +485,10 @@ class BindingControlStream:
             raise TransportError("remote_unreachable")
 
     async def _open_session(self, payload: bytes) -> None:
-        status, headers, body = await self._request("POST", "/v1/sessions", content=payload)
+        status, headers, body = await self._request(
+            "POST", "/v1/sessions", content=payload, trace=self._trace_hello
+        )
+        self._hello = "answered"
         if status == 409:
             # A manifest mismatch: the daemon's hello-result lets the handshake name it.
             self._deliver(body)
@@ -482,8 +510,11 @@ class BindingControlStream:
         *,
         content: bytes | None = None,
         wait_ms: int | None = None,
+        trace: _Trace | None = None,
     ) -> tuple[int, httpx.Headers, bytes]:
-        answer = await _request(self._client, method, path, content=content, wait_ms=wait_ms)
+        answer = await _request(
+            self._client, method, path, content=content, wait_ms=wait_ms, trace=trace
+        )
         self._last_activity = time.monotonic()
         return answer
 

@@ -534,8 +534,12 @@ HTTPS and LOCALHOST PORT
   gateway expired, a revoked key, a closed SSH master) fails that call the same way, with the phase
   the stream names, never as `frame_invalid`: the call may have reached the server, so the remedy
   never says that nothing was recorded, and the caller's reconnect-once replays the same
-  `request_id`. A remote root never spawns or supersedes a local service and never falls back to
-  one; a damaged target record refuses before any dial (`isolation_root_invalid`). A workspace
+  `request_id`. The HTTPS gateway starts an idle-stopped service while it holds the hello, so an
+  on-demand HTTPS hello may take the caller's whole remaining budget, not one 5 s handshake; a
+  hello the gateway received but did not answer within the budget is `remote_service_not_running`,
+  never a network fault, and the gateway closes a session whose client left during its hello. A
+  remote root never spawns or supersedes a local service and never falls back to one; a damaged
+  target record refuses before any dial (`isolation_root_invalid`). A workspace
   this computer's Git cannot resolve is never sent: the claim fails before any dial, as a local
   service's own resolution failure does (`service_unavailable`, phase `handshake` or
   `handshake_git_version`).

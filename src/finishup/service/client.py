@@ -2463,7 +2463,9 @@ async def _connect_remote_on_demand(
 
     A remote service that is not running (stopped after its idle period, say) is started once
     through the target's recorded launcher when its transport can (SSH), then dialled again
-    inside the same budget. Any other remote failure is reported as it is.
+    inside the same budget. An HTTPS gateway starts its own idle-stopped service while it holds
+    the hello, so an HTTPS hello may take the whole remaining budget rather than one handshake's.
+    Any other remote failure is reported as it is.
     """
 
     from finishup.client.transports import start_remote_service
@@ -2477,7 +2479,11 @@ async def _connect_remote_on_demand(
             workspace_locator=workspace_locator,
             projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
             output_is_controlling_tty=False,
-            timeout_seconds=min(_CONNECT_HANDSHAKE_TIMEOUT_SECONDS, remaining),
+            timeout_seconds=(
+                remaining
+                if transport.kind == "https"
+                else min(_CONNECT_HANDSHAKE_TIMEOUT_SECONDS, remaining)
+            ),
             workspace_binding=workspace_binding,
             transport=transport,
         )

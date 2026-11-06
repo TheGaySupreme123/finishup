@@ -16,6 +16,7 @@ import ipaddress
 import json
 import ssl
 import tempfile
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from pathlib import Path
@@ -346,6 +347,81 @@ def test_a_cancel_for_a_call_its_own_post_answered_is_never_sent() -> None:
 
     asyncio.run(exercise())
     assert seen == ["call", "call"]
+
+
+class _HoldTheHello(httpx.AsyncBaseTransport):
+    """A gateway that never answers the hello; ``delivered`` says whether its body went out."""
+
+    def __init__(self, *, delivered: bool) -> None:
+        self.delivered = delivered
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        trace = request.extensions.get("trace")
+        if self.delivered and trace is not None:
+            await trace("http11.send_request_body.complete", {})
+        await asyncio.Event().wait()  # held: a service that is still starting, or a dead network
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.parametrize(
+    ("delivered", "phase"),
+    [
+        # The gateway holds a hello it received while it starts its service.
+        (True, "remote_service_not_running"),
+        # Nothing reached the server.
+        (False, "remote_unreachable"),
+    ],
+)
+def test_a_hello_held_past_the_budget_names_where_it_stopped(delivered: bool, phase: str) -> None:
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await client_module._connect_service_attempt(  # pyright: ignore[reportPrivateUsage]
+                ControlClientKind.CLI,
+                workspace_locator=None,
+                projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
+                output_is_controlling_tty=False,
+                timeout_seconds=0.2,
+                transport=_transport(_HoldTheHello(delivered=delivered)),
+            )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == ("service_unavailable", True, phase)
+
+
+@pytest.mark.parametrize(("kind", "bounded"), [("https", False), ("ssh", True)])
+def test_an_https_hello_on_demand_may_take_the_whole_budget(
+    monkeypatch: pytest.MonkeyPatch, kind: str, bounded: bool
+) -> None:
+    # The gateway starts an idle-stopped service while it holds the hello, so an HTTPS hello is
+    # not cut at one handshake's 5 s; an SSH service is started explicitly instead.
+    budgets: list[float] = []
+
+    async def attempt(_kind: ControlClientKind, **kwargs: object) -> object:
+        budgets.append(cast(float, kwargs["timeout_seconds"]))
+        return object()
+
+    class _Transport:
+        target = https_target()
+
+        @property
+        def kind(self) -> str:
+            return kind
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", attempt)
+
+    async def exercise() -> None:
+        await client_module._connect_remote_on_demand(  # pyright: ignore[reportPrivateUsage]
+            cast(Any, _Transport()),
+            ControlClientKind.MCP_BRIDGE,
+            workspace_locator=None,
+            deadline=time.monotonic() + 20.0,
+        )
+
+    asyncio.run(exercise())
+    (budget,) = budgets
+    assert (budget <= 5.0) is bounded
+    assert budget <= 20.0
 
 
 class _LoseFirstCallResponse(httpx.AsyncBaseTransport):
