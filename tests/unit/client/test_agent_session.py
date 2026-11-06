@@ -241,6 +241,63 @@ def test_captured_rows_keep_or_bring_back_the_connection_after_the_lease(
     assert drained == [dialled[0], dialled[0]]
 
 
+def test_a_workspace_switch_releases_the_connection_that_claims_the_earlier_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _Clock()
+    dialled: list[_Connection] = []
+    bound_for: dict[int, WorkspaceLocator] = {}
+    drained: list[tuple[WorkspaceLocator, int]] = []
+    first, second = WorkspaceLocator("/w/a"), WorkspaceLocator("/w/b")
+    bindings = {
+        first: ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "a" * 64)),
+        second: ClientWorkspaceBinding(WorkspaceClaim("directory", "sha256:" + "b" * 64)),
+    }
+
+    async def bind(workspace: WorkspaceLocator) -> ClientWorkspaceBinding:
+        return bindings[workspace]
+
+    async def dial(binding: ClientWorkspaceBinding) -> _Connection:
+        connection = _Connection()
+        bound_for[id(connection)] = next(key for key, item in bindings.items() if item is binding)
+        dialled.append(connection)
+        return connection
+
+    async def drain_over(
+        _self: BridgeBackgroundWork, workspace: WorkspaceLocator, connection: object
+    ) -> object:
+        drained.append((workspace, id(connection)))
+        from finishup.client.observation_outbox import ClientDrainSummary
+
+        return ClientDrainSummary(0, None)
+
+    monkeypatch.setattr(BridgeBackgroundWork, "_drain_over", drain_over)
+    work = BridgeBackgroundWork(
+        lease_seconds=60.0,
+        drain_interval=30.0,
+        connect=dial,
+        binding_for=bind,
+        pending=lambda _workspace: True,
+        clock=clock,
+    )
+
+    async def exercise() -> None:
+        work.note_activity(first)
+        assert (await work.run_pass()).connected
+        work.note_activity(second)  # the bridge now serves another folder
+        assert (await work.run_pass()).connected
+        work.note_activity(second)  # the same folder again: the connection is kept
+        assert (await work.run_pass()).connected
+        await work.aclose()
+
+    asyncio.run(exercise())
+    assert len(dialled) == 2
+    assert dialled[0].closed_by_owner  # the connection that claims the earlier workspace
+    assert [bound_for[id(item)] for item in dialled] == [first, second]
+    # Each workspace's rows went over the connection that claims that workspace.
+    assert drained == [(first, id(dialled[0])), (second, id(dialled[1])), (second, id(dialled[1]))]
+
+
 def test_a_server_that_is_away_is_dialled_again_only_after_a_back_off() -> None:
     clock = _Clock()
     dialled: list[_Connection] = []

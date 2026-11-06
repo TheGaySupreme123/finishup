@@ -223,6 +223,10 @@ class BridgeBackgroundWork:
     * rows waiting for this workspace are delivered over that connection, and delivered rows
       renew the lease (the server verifies them through this agent);
     * once the lease has run out and nothing waits, the connection is closed.
+
+    A connection claims the workspace it was opened for. When the bridge names another workspace
+    (a Cursor folder change, say), the next pass closes the connection that claims the earlier
+    one and opens one that claims the new workspace before it delivers that workspace's rows.
     """
 
     __slots__ = (
@@ -231,6 +235,7 @@ class BridgeBackgroundWork:
         "_clock",
         "_connect",
         "_connection",
+        "_connection_workspace",
         "_drain",
         "_drain_interval",
         "_last_activity",
@@ -264,6 +269,8 @@ class BridgeBackgroundWork:
         self._workspace: WorkspaceLocator | None = None
         self._last_activity = clock()
         self._connection: AgentConnection | None = None
+        # The workspace ``_connection`` claims: a connection serves only the one it was opened for.
+        self._connection_workspace: WorkspaceLocator | None = None
         self._drain: ClientObservationDrain | None = None
         self._attempt = 0
         self._retry_at = 0.0
@@ -334,8 +341,10 @@ class BridgeBackgroundWork:
 
     async def _ensure_connection(self, workspace: WorkspaceLocator) -> AgentConnection | None:
         live = self.connection
-        if live is not None:
+        if live is not None and self._connection_workspace == workspace:
             return live
+        # Closed by the server, or claiming a workspace the bridge no longer serves: its claim
+        # would attribute this workspace's rows and calls to the earlier one.
         await self._release()
         now = self._clock()
         if now < self._retry_at:
@@ -354,6 +363,7 @@ class BridgeBackgroundWork:
         self._attempt = 0
         self._retry_at = 0.0
         self._connection = connection
+        self._connection_workspace = workspace
         return connection
 
     async def _drain_over(
@@ -370,6 +380,7 @@ class BridgeBackgroundWork:
 
     async def _release(self) -> None:
         connection, self._connection = self._connection, None
+        self._connection_workspace = None
         if connection is not None:
             with contextlib.suppress(Exception):
                 await connection.close()
