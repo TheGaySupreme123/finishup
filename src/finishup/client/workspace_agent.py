@@ -570,21 +570,25 @@ class WorkspaceAgentHandler:
         an outside root beneath which neither the workspace nor FinishUP's own directories are
         ever entered.
 
-        An outside root must have the shape an owner may admit and lie outside FinishUP's own
-        directories. In ``local`` mode that is all, as for a local service. In ``listed`` mode it
-        must also lie inside the claimed worktree or at or beneath a listed folder, or the path
-        the read reaches (``root`` joined with ``relative``, normalized as the read normalizes
-        it) must lie at or beneath a listed folder: a folder narrower than the server's root
-        admits what lies beneath it, and a listing of the root above it stays
+        An outside root must have the shape an owner may admit. In ``local`` mode that is all, as
+        for a local service: a root in FinishUP's own directories is not refused but excluded,
+        so the read answers nothing there, as a local service's read, which excludes them, does.
+        In ``listed`` mode a root in FinishUP's own directories is ``root_not_admitted``, and the
+        root must also lie inside the claimed worktree or at or beneath a listed folder, or the
+        path the read reaches (``root`` joined with ``relative``, normalized as the read
+        normalizes it) must lie at or beneath a listed folder: a folder narrower than the
+        server's root admits what lies beneath it, and a listing of the root above it stays
         ``root_not_admitted``.
         """
 
         if not root.startswith("/"):
             return self._location(root, call), self._excluded(excluded, call, outside=False)
-        if not admitted_input_root_valid(root) or _folded_within(root, self._protected):
+        if not admitted_input_root_valid(root):
             raise _Outcome("root_not_admitted")
         outside = self._outside()
         if outside.mode != "local":
+            if _folded_within(root, self._protected):
+                raise _Outcome("root_not_admitted")
             folders = outside.folders
             reached = posixpath.normpath(posixpath.join(root, relative)) if relative else root
             if not (

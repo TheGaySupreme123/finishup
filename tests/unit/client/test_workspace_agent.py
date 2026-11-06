@@ -550,13 +550,57 @@ def test_a_root_the_owner_could_never_admit_is_refused(
 
 
 def test_finishup_directories_are_never_a_read_root(repository: Path, protected: Path) -> None:
-    # Even admitted on this client, FinishUP's own directories are never a read root.
+    # In mode listed, even a listed folder never makes FinishUP's own directories a read root.
     handler = _handler(repository, protected, folders=(protected,))
     assert _refused(
         handler,
         WorkspaceOperation.LIST_BENEATH,
         ListBeneathArguments(os.fspath(protected), ""),
     ) == ("refused", "root_not_admitted")
+    assert _refused(
+        handler,
+        WorkspaceOperation.READ_TEXT_BENEATH,
+        ReadTextBeneathArguments(os.fspath(protected), "vault.txt"),
+    ) == ("refused", "root_not_admitted")
+
+
+def test_in_mode_local_finishup_directories_read_as_nothing_as_a_local_service_reads_them(
+    repository: Path, protected: Path
+) -> None:
+    """A local service excludes FinishUP's own directories from every outside read rather than
+    refuse it, so in mode local a read rooted there answers what the local reader answers with
+    them excluded: nothing, and no refusal."""
+
+    handler = _handler(repository, protected, mode="local")
+    root = os.fspath(protected)
+    excluded = (os.fspath(repository), root)
+    local_text = read_text_beneath(root, "vault.txt", excluded=excluded, expired=_never)
+    local_listing = list_beneath(root, "", excluded=excluded, expired=_never)
+    assert local_text is None and local_listing is None
+    # Unexcluded, the bare reader would read the vault: the exclusion is what keeps it out.
+    assert read_text_beneath(root, "vault.txt", excluded=(), expired=_never) is not None
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(root, "vault.txt"),
+        )
+        == local_text
+    )
+    assert (
+        _ok(handler, WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, ""))
+        == local_listing
+    )
+    values = (f"{root}/vault.txt",)
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_OUTSIDE_INPUTS,
+            ReadOutsideInputsArguments((root,), values, limit=4),
+        )
+        == read_outside_inputs((root,), values, limit=4, excluded=excluded)
+        == ()
+    )
 
 
 def test_reviewer_reads_of_the_workspace_equal_the_local_reader(
@@ -985,9 +1029,11 @@ def test_local_mode_keeps_every_fence_of_the_outside_read(
             )
             is None
         )
-    assert _refused(
-        local, WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(os.fspath(protected), "")
-    ) == ("refused", "root_not_admitted")
+    # Rooted in FinishUP's own directories, a listing reads nothing, as a local service's does.
+    assert (
+        _ok(local, WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(os.fspath(protected), ""))
+        is None
+    )
     hidden = tmp_path / "outside" / ".hidden"
     hidden.mkdir(parents=True)
     (hidden / "test_h.py").write_text("def test_h():\n    pass\n", encoding="utf-8")
