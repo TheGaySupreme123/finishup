@@ -62,7 +62,11 @@ from finishup.ports.control import (
     WorkspaceReply,
 )
 from finishup.ports.runtime import RouteAccess, RouteCommand, RuntimeCapability
-from finishup.ports.workspace_agent import ReadTextBeneathArguments, WorkspaceOperation
+from finishup.ports.workspace_agent import (
+    ListBeneathArguments,
+    ReadTextBeneathArguments,
+    WorkspaceOperation,
+)
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -589,7 +593,9 @@ async def test_linked_worktrees_on_one_target_each_get_their_own_handle_agent_an
 
     The main checkout's task base is its HEAD. The linked worktree's base is that worktree's own
     answer: the local Git capture refuses a checkout whose ``.git`` is a file (``unsafe_root``),
-    on one computer exactly as here, so its task records the gap and never the main HEAD.
+    on one computer exactly as here, so its task records the gap and never the main HEAD. For the
+    same reason Git cannot answer the ignore question there, so a reviewer tells the worktrees
+    apart by their listings and reads no file's bytes from the linked one.
     """
 
     del network
@@ -621,7 +627,7 @@ async def test_linked_worktrees_on_one_target_each_get_their_own_handle_agent_an
         assert await _task_base_commit(service, main_started) == main_head
         assert await _task_base_ref(service, linked_started) is None
 
-        # A reviewer's read of one task's file is answered from that task's worktree.
+        # A reviewer's reads of one task's files are answered from that task's worktree.
         async def read(handle: str, relative: str) -> bytes | None:
             answer = await service.hub.call(
                 handle,
@@ -631,10 +637,27 @@ async def test_linked_worktrees_on_one_target_each_get_their_own_handle_agent_an
             )
             return None if answer is None else cast(tuple[bytes, int], answer)[0]
 
+        async def names(handle: str) -> set[str]:
+            listing = await service.hub.call(
+                handle,
+                WorkspaceOperation.LIST_BENEATH,
+                ListBeneathArguments(handle, ""),
+                timeout_seconds=_DEADLINE_SECONDS,
+            )
+            assert listing is not None
+            entries, _truncated = cast(tuple[tuple[tuple[str, bool], ...], bool], listing)
+            return {name for name, _directory in entries}
+
         assert await read(main_handle, "app.py") == b"print('main, edited')\n"
-        assert await read(linked_handle, "app.py") == b"print('main')\n"
-        assert await read(linked_handle, "feature.py") == b"print('feature, edited')\n"
         assert not await read(main_handle, "feature.py")
+        # Each worktree's listing shows its own files. A file read returns bytes only where Git
+        # answers that the file is not ignored, which it cannot in the linked worktree (its
+        # ``.git`` is a file): that agent returns none, as an honest server's reviewer never
+        # reads one there.
+        assert "feature.py" in await names(linked_handle)
+        assert "feature.py" not in await names(main_handle)
+        assert await read(linked_handle, "app.py") is None
+        assert await read(linked_handle, "feature.py") is None
 
         # A check's workspace calls go to its own worktree's agent and to no other.
         main_count, linked_count = len(main_agent.operations), len(linked_agent.operations)
