@@ -499,8 +499,8 @@ CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
     "attested over the connection; the server did not read the repository itself."
 )
 # ADR-051: the line a human receipt ends with instead when its session's opening event is
-# redacted, has no readable key, or is a version this service cannot read, so whether the task
-# is claim-bound is unknown. The section is never silently left out.
+# redacted, has no readable key, could not be read, or is a version this service cannot decode,
+# so whether the task is claim-bound is unknown. The section is never silently left out.
 WORKSPACE_PROVENANCE_UNKNOWN_LINE: Final = (
     "Where this task's workspace evidence was read is unknown: the record that opened its "
     "session is redacted or unreadable here, so this receipt cannot say whether the server read "
@@ -3661,9 +3661,10 @@ def client_attested_receipt_block(
 def workspace_provenance_unknown_block(*, markdown: bool) -> str:
     """The section a text or markdown receipt ends with when its claim binding is unknown.
 
-    The session's opening event is redacted, has no readable key, or is a version this service
-    cannot read (ADR-051), so the receipt says it cannot tell whose reads its workspace evidence
-    came from rather than leave the section out. Fixed words; nothing user-controlled.
+    The session's opening event is redacted, has no readable key, could not be read, or is a
+    version this service cannot decode (ADR-051), so the receipt says it cannot tell whose reads
+    its workspace evidence came from rather than leave the section out. Fixed words; nothing
+    user-controlled.
     """
 
     heading = "## Workspace evidence" if markdown else "Workspace evidence"

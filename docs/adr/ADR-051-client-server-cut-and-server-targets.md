@@ -438,17 +438,22 @@ answers bounded `workspace_call`s on a connection that declared it.
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
     client_claim).` The stored receipt document and JSON receipts are unchanged. The service
     finds the opening event by its schema name and reads it before the receipt stages or appends
-    anything, so a read it cannot finish refuses the receipt with no write and the section is
-    never dropped: a read that fails, or an opening event whose envelope says `present` but that
-    comes back without its payload (a recovering ledger keeps a payload object it could not read
-    that way), is a retryable `STORAGE_UNSAFE`, and a malformed record is `STORAGE_CORRUPT`. An
-    opening event that is redacted, whose key is unavailable, or whose version the service
-    cannot read cannot say whether the task is claim-bound, and no retry changes that. Refusing
-    every receipt of such a task for good would be a one-way door, so the receipt is built and
-    its "Workspace evidence" section holds one fixed line instead: "Where this task's workspace
-    evidence was read is unknown: the record that opened its session is redacted or unreadable
-    here, so this receipt cannot say whether the server read the repository itself or a client's
-    workspace agent attested it."
+    anything, so a ledger read that fails refuses the receipt with no write and the section is
+    never dropped: an environmental fault is a retryable `STORAGE_UNSAFE`, and a malformed record
+    is `STORAGE_CORRUPT`. An opening event that is redacted, whose key is unavailable, whose
+    version the service cannot read, or whose payload object the ledger could not read when it
+    recovered the task (the object is missing, fails verification, or hit an environmental fault;
+    the recovered ledger keeps the event as present with no payload, does not say which, and
+    keeps that gap for as long as it holds the task) cannot say whether the task is claim-bound,
+    and no retry of the receipt changes that. A retryable refusal would promise what a retry
+    cannot do, and any refusal would shut such a task out of receipts — a task that is not
+    claim-bound got a correct one before — until the service reopens it, and for good when the
+    object is gone. So the receipt is built and its "Workspace evidence" section holds one fixed
+    line instead: "Where this task's workspace evidence was read is unknown: the record that
+    opened its session is redacted or unreadable here, so this receipt cannot say whether the
+    server read the repository itself or a client's workspace agent attested it." A replay reads
+    the opening event again, so after the service reopens the task (it drops an idle task, or
+    restarts) and the object reads, the same receipt renders the binding the event records.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
     text, the MCP status and receipt text, the terminal interface's task views and receipt — with
     the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
