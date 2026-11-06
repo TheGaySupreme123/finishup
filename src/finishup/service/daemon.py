@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import contextvars
 import hashlib
 import hmac
 import os
@@ -2965,18 +2966,23 @@ class ServiceDaemon:
             return False
         task = self._soft_reready_task
         if task is None or task.done():
-            task = asyncio.create_task(self._try_soft_lock_auto_ready())
-            # Retrieved here too, so an attempt whose callers all stopped waiting never logs an
-            # unretrieved failure; a waiting caller still receives it.
-            task.add_done_callback(_consume_task_outcome)
+            # A clean context: the attempt and the READY maintenance it starts are background
+            # work, never the triggering call's (its live-call scope and agent channel, its read
+            # stages), and they outlive that call.
+            task = asyncio.create_task(
+                self._try_soft_lock_auto_ready(), context=contextvars.Context()
+            )
+            # Recorded here, so a failure is seen even when every caller has stopped waiting; a
+            # caller still waiting receives it as well.
+            task.add_done_callback(_record_soft_reready_failure)
             self._soft_reready_task = task
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if task.cancelled() and current is not None and current.cancelling() == 0:
-                return False  # a lock or shutdown cancelled the attempt, not this caller
-            raise
+        # ``asyncio.wait`` never passes this caller's cancellation on to the attempt, and raises
+        # only for this caller's own. Unlike ``asyncio.shield`` it does not also hand the
+        # attempt's failure to the loop's exception handler once this caller stopped waiting.
+        await asyncio.wait((task,))
+        if task.cancelled():
+            return False  # a lock or shutdown cancelled the attempt, not this caller
+        return task.result()
 
     async def _cancel_soft_reready(self) -> None:
         task, self._soft_reready_task = self._soft_reready_task, None
@@ -3129,7 +3135,7 @@ class ServiceDaemon:
             return False
 
         store = AutoUnlockPassphraseStore(bundle)
-        candidates, load_reason = await asyncio.to_thread(store.load_candidates_with_reason)
+        candidates, load_reason = await _load_auto_unlock_candidates(store)
         if not candidates:
             reason = (
                 load_reason
@@ -3177,9 +3183,7 @@ class ServiceDaemon:
             )
             return False
         finally:
-            for candidate, _slot in candidates:
-                for index in range(len(candidate)):
-                    candidate[index] = 0
+            _overwrite_candidates(candidates)
         # The vault is ready from here on. Reconciling the staged keyring entries is
         # credential-store hygiene only: a promote/discard failure must never relock a ready
         # vault, so log it and continue activation (#492 review).
@@ -3303,11 +3307,53 @@ def _soft_reready_deadline() -> asyncio.Timeout:
     return asyncio.timeout(_SOFT_REREADY_DEADLINE_SECONDS)
 
 
-def _consume_task_outcome(task: asyncio.Task[bool]) -> None:
-    """Retrieve a finished task's failure so an unawaited one is never reported as lost."""
+def _record_soft_reready_failure(task: asyncio.Task[bool]) -> None:
+    """Record a re-ready attempt's unexpected failure, whether or not a caller still waits.
 
-    if not task.cancelled():
-        task.exception()
+    Retrieving it here also keeps a failure that no caller awaited from being reported as lost.
+    """
+
+    if task.cancelled():
+        return
+    failure = task.exception()
+    if failure is not None:
+        record_unexpected_exception_without_raising(
+            failure, component="service.daemon", operation="soft_lock_reready"
+        )
+
+
+type _AutoUnlockCandidates = tuple[tuple[tuple[bytearray, str], ...], str]
+
+
+async def _load_auto_unlock_candidates(store: AutoUnlockPassphraseStore) -> _AutoUnlockCandidates:
+    """Read the scoped auto-unlock entries in a worker thread, never leaving them unzeroed.
+
+    Cancelling the wait cannot stop the worker thread, and ``asyncio.to_thread`` would drop the
+    passphrase bytes it returns afterwards without overwriting them. The read's own future is
+    shielded instead, and on a cancel whatever it returns is overwritten as it arrives.
+    """
+
+    read = asyncio.get_running_loop().run_in_executor(
+        None, contextvars.copy_context().run, store.load_candidates_with_reason
+    )
+    try:
+        return await asyncio.shield(read)
+    except asyncio.CancelledError:
+        read.add_done_callback(_overwrite_unclaimed_candidates)
+        raise
+
+
+def _overwrite_unclaimed_candidates(read: asyncio.Future[_AutoUnlockCandidates]) -> None:
+    if read.cancelled() or read.exception() is not None:
+        return
+    candidates, _reason = read.result()
+    _overwrite_candidates(candidates)
+
+
+def _overwrite_candidates(candidates: tuple[tuple[bytearray, str], ...]) -> None:
+    for candidate, _slot in candidates:
+        for index in range(len(candidate)):
+            candidate[index] = 0
 
 
 @dataclass(frozen=True, slots=True)
