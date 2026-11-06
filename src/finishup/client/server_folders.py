@@ -1,0 +1,346 @@
+"""The folders outside a project that a server on another machine may read here (ADR-051).
+
+A FinishUP server on another machine reads nothing on this computer by itself: the workspace
+agent (``finishup.client.workspace_agent``) answers its bounded calls. Inside the claimed worktree
+the agent reads under the existing fences. Outside it, it reads only beneath a folder this
+computer's owner admitted for that server target with ``finishup server folders add``. Which
+folders those are is this client's own fact, as approved-check trust is (ADR-051 decisions 5 and
+12): it is never sent to the server, and nothing the server sends changes it.
+
+The record is ``<target root>/config/folders.json`` (``yoetz.server-folders/1``): an owner-only
+regular file of canonical JSON with exactly ``schema``, ``target_id`` (the root's own id) and
+``folders`` (sorted, unique, at most ``MAX_FOLDERS``). Each folder is an absolute path an owner
+could admit as an input root (``admitted_input_root_valid``) that is neither the home directory
+nor one that holds it. Only a remote target has such a record; removing the target removes it
+with its root. Every failure is a closed reason, never a path. Standard library and lean shared
+modules only.
+"""
+
+from __future__ import annotations
+
+import os
+import posixpath
+import secrets
+import stat
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Final, cast
+
+from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
+from finishup.domain.privacy import admitted_input_root_valid
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+
+__all__ = [
+    "FOLDERS_FILE_NAME",
+    "FOLDERS_SCHEMA",
+    "MAX_FOLDERS",
+    "FolderError",
+    "active_target_folders",
+    "add_folder",
+    "clear_folders",
+    "folder_covers",
+    "folder_holds_home",
+    "folders_path",
+    "read_folders",
+    "remove_folder",
+]
+
+FOLDERS_SCHEMA: Final = "yoetz.server-folders/1"
+FOLDERS_FILE_NAME: Final = "folders.json"
+# Well above the eight input roots one repository's policy may admit: one server target serves
+# every project this computer works on.
+MAX_FOLDERS: Final = 32
+_MAX_RECORD_BYTES: Final = 16_384
+_FIELDS: Final = frozenset({"schema", "target_id", "folders"})
+_REASONS: Final = frozenset(
+    {
+        "folder_invalid",
+        "folder_limit",
+        "folders_record_invalid",
+        "folders_record_unsafe",
+    }
+)
+
+
+class FolderError(Exception):
+    """A bounded failure of the folders record; ``reason`` is a closed token, never a path."""
+
+    reason: str
+
+    def __init__(self, reason: str) -> None:
+        if reason not in _REASONS:
+            raise ValueError("folder_reason_invalid")
+        self.reason = reason
+        super().__init__(reason)
+
+
+def folders_path(root: Path) -> Path:
+    """``<target root>/config/folders.json``."""
+
+    return root / "config" / FOLDERS_FILE_NAME
+
+
+def folder_covers(path: str, folders: Sequence[str]) -> bool:
+    """Whether absolute, normalized ``path`` is one of ``folders`` or lies beneath one.
+
+    Exact spelling: a differently cased or linked spelling of an admitted folder is not covered,
+    so the comparison errs toward refusing.
+    """
+
+    return any(path == folder or path.startswith(folder.rstrip("/") + "/") for folder in folders)
+
+
+def folder_holds_home(folder: str, *, home: str | None = None) -> bool:
+    """Whether ``folder`` is the home directory or one of its ancestors, by spelling.
+
+    Such a folder would open the home directory's private trees (``Library``, dot folders) to a
+    read beneath it, which the outside read's own home rule leaves to a root at the home
+    directory itself; it is never admitted for a server here. The filesystem root holds every
+    home directory and is refused by the input-root rule already.
+    """
+
+    base = posixpath.normpath(home if home is not None else os.path.expanduser("~"))
+    if not base.startswith("/"):
+        return True  # no usable home: refuse rather than guess
+    return folder == base or base.startswith(folder.rstrip("/") + "/")
+
+
+def _well_formed(folder: object) -> bool:
+    return (
+        type(folder) is str
+        and admitted_input_root_valid(folder)
+        and posixpath.normpath(folder) == folder
+    )
+
+
+def _identity(path: str) -> tuple[int, int] | None:
+    try:
+        facts = os.stat(path)
+    except OSError:
+        return None
+    return facts.st_dev, facts.st_ino
+
+
+def _holds_home_by_identity(folder: str) -> bool:
+    """Whether ``folder`` is the home directory or an ancestor of it under another spelling
+    (another case on a case-insensitive volume, a bind mount); unexaminable counts as holding."""
+
+    found = _identity(folder)
+    if found is None:
+        return True
+    current = posixpath.normpath(os.path.expanduser("~"))
+    while current not in {"", "/"}:
+        if _identity(current) == found:
+            return True
+        current = posixpath.dirname(current)
+    return False
+
+
+def _decode(encoded: bytes, target_id: str) -> tuple[str, ...]:
+    try:
+        if not encoded.endswith(b"\n"):
+            raise ValueError("trailer")
+        value = strict_json_parse(encoded[:-1])
+    except ValueError:
+        raise FolderError("folders_record_invalid") from None
+    if type(value) is not dict:
+        raise FolderError("folders_record_invalid")
+    source = cast(dict[str, JsonValue], value)
+    folders = source.get("folders")
+    if (
+        frozenset(source) != _FIELDS
+        or source.get("schema") != FOLDERS_SCHEMA
+        or source.get("target_id") != target_id
+        or type(folders) is not list
+    ):
+        raise FolderError("folders_record_invalid")
+    items = cast(list[object], folders)
+    if len(items) > MAX_FOLDERS or not all(_well_formed(item) for item in items):
+        raise FolderError("folders_record_invalid")
+    ordered = tuple(sorted(set(cast(list[str], items)), key=str.encode))
+    if list(ordered) != items or _encode(target_id, ordered) != encoded:
+        raise FolderError("folders_record_invalid")
+    return ordered
+
+
+def _encode(target_id: str, folders: tuple[str, ...]) -> bytes:
+    document: dict[str, JsonValue] = {
+        "schema": FOLDERS_SCHEMA,
+        "target_id": target_id,
+        "folders": list(folders),
+    }
+    return canonical_encode(document) + b"\n"
+
+
+def _read_owner_only(path: Path) -> bytes | None:
+    """The bytes of an owner-only regular file; ``None`` when absent; fail closed otherwise."""
+
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError:
+        raise FolderError("folders_record_unsafe") from None
+    try:
+        facts = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(facts.st_mode)
+            or facts.st_uid != os.geteuid()
+            or stat.S_IMODE(facts.st_mode) & 0o077
+            or facts.st_size > _MAX_RECORD_BYTES
+        ):
+            raise FolderError("folders_record_unsafe")
+        chunks: list[bytes] = []
+        remaining = _MAX_RECORD_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError:
+        raise FolderError("folders_record_unsafe") from None
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    if len(data) > _MAX_RECORD_BYTES:
+        raise FolderError("folders_record_unsafe")
+    return data
+
+
+def _write(root: Path, target_id: str, folders: tuple[str, ...]) -> None:
+    """Atomically replace the record (owner-only temporary file, fsync, rename)."""
+
+    path = folders_path(root)
+    try:
+        ensure_owner_only_dir(path.parent)
+    except PathSafetyError:
+        raise FolderError("folders_record_unsafe") from None
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    encoded = _encode(target_id, folders)
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        try:
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short_write")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise FolderError("folders_record_unsafe") from None
+
+
+def read_folders(root: Path, target_id: str) -> tuple[str, ...]:
+    """The folders the owner admitted for the target at ``root``; ``()`` when none were.
+
+    Raises ``FolderError`` (``folders_record_unsafe`` or ``folders_record_invalid``) for a record
+    that is not owner-only, a link, too large, malformed, or another target's.
+    """
+
+    encoded = _read_owner_only(folders_path(root))
+    if encoded is None:
+        return ()
+    return _decode(encoded, target_id)
+
+
+def add_folder(root: Path, target_id: str, folder: str) -> bool:
+    """Admit ``folder`` for the target at ``root``; False when it already was.
+
+    ``folder`` is already canonical (the caller applied the input-root rule on the trusted
+    console). A damaged record is refused, never replaced: ``clear_folders`` is its way out.
+    Callers hold ``targets.registry_lock()``.
+    """
+
+    from finishup.adapters.home_project_reads import home_private_location
+
+    if (
+        not _well_formed(folder)
+        or folder_holds_home(folder)
+        or _holds_home_by_identity(folder)
+        or home_private_location(folder)
+    ):
+        raise FolderError("folder_invalid")
+    current = read_folders(root, target_id)
+    if folder in current:
+        return False
+    if len(current) >= MAX_FOLDERS:
+        raise FolderError("folder_limit")
+    _write(root, target_id, tuple(sorted({*current, folder}, key=str.encode)))
+    return True
+
+
+def remove_folder(root: Path, target_id: str, folder: str) -> bool:
+    """Stop admitting ``folder`` (compared in normal form); False when it was not admitted."""
+
+    wanted = posixpath.normpath(folder) if folder else folder
+    current = read_folders(root, target_id)
+    if wanted not in current:
+        return False
+    _write(root, target_id, tuple(item for item in current if item != wanted))
+    return True
+
+
+def clear_folders(root: Path) -> bool:
+    """Remove the whole record, also one that cannot be read; False when there was none.
+
+    The way back from a damaged record. Unlinking a link removes the link, never its target;
+    anything but a file or a link is refused.
+    """
+
+    path = folders_path(root)
+    try:
+        facts = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        raise FolderError("folders_record_unsafe") from None
+    if not (stat.S_ISREG(facts.st_mode) or stat.S_ISLNK(facts.st_mode)):
+        raise FolderError("folders_record_unsafe")
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise FolderError("folders_record_unsafe") from None
+    return True
+
+
+def active_target_folders() -> tuple[str, ...]:
+    """The folders admitted for the remote target this process uses; ``()`` otherwise. Never raises.
+
+    The workspace agent asks this on every outside read, in its worker thread, so a removal takes
+    effect at once. It fails closed: a root that cannot be resolved, a target record or folders
+    record that cannot be read, and a root that is not a remote target all admit nothing.
+    """
+
+    from finishup.client.targets import read_target
+    from finishup.config.paths import active_root
+
+    try:
+        root = active_root()
+        if root is None:
+            return ()
+        record = read_target(root)
+        if record is None or not record.is_remote:
+            return ()
+        folders = read_folders(root, record.target_id)
+    except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
+        return ()
+    # A folder that holds the home directory is never admitted here; one recorded under another
+    # home directory than this process's is left out rather than read.
+    return tuple(folder for folder in folders if not folder_holds_home(folder))

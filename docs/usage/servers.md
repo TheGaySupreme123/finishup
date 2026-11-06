@@ -108,8 +108,9 @@ finishup server test devbox
 ```
 
 `list` shows every server and which one is in use. `status` shows which setting chose the server
-in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready, and
-whether a key is stored and where (never the key itself). The key's scope is set by the server's
+in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready,
+whether a key is stored and where (never the key itself), and the folders outside your projects
+it may read on this computer (see below; `status --json` does not list them). The key's scope is set by the server's
 operator and is not shown here. `test` connects, measures the round trip
 and warns when it is slow enough that a startup check required by your agent setup would likely
 time out.
@@ -137,6 +138,39 @@ for that server. It refuses the server you are using unless you add `--select-lo
 switches back to the default first. Removing a local server deletes its tasks and vault; removing
 a server on another machine leaves that server untouched.
 
+## Let a server read a folder outside your project
+
+A server on another machine, a port or the web reads your project folder through the workspace
+agent (below). Outside your project folder it reads nothing on this computer unless you let it,
+one folder at a time:
+
+```text
+finishup server folders add devbox /srv/team-specs
+finishup server folders list devbox
+finishup server folders remove devbox /srv/team-specs
+```
+
+`add` shows you which server may then read which folder and asks you to type the server's name,
+in a terminal you are typing in; an agent cannot do this. Give the folder's full path, starting
+with `/`. It must exist, with no link on the way and no hidden or system folder in it (on macOS,
+give `/private/tmp/...` rather than `/tmp/...`). Your home folder, a folder that holds it, and
+its private folders such as `Library` cannot be added: add the folder inside it that you mean. A
+server may read up to 32 such folders.
+
+Once a folder is added, that server's checks and reviews may read files beneath it: input files a
+task names there (when the server's own privacy policy also lets it read task inputs from that
+folder), files its reviewer asks to read there, and test files your agent declared there. Hidden
+and credential-named files are never read and links are never followed.
+
+`remove` stops it at once; `remove NAME --all` removes every folder for that server, and also
+clears a list FinishUP can no longer read (FinishUP then lets the server read no folder at all).
+`list` and `server status` show the folders. When a check or review reports
+`workspace_agent_refused` for a folder you meant that server to read, add it with `server folders
+add`; "the folders you admitted" in that message are these. The list stays on this computer and
+is never sent to the server. Removing the server removes its list too. A server on this computer does not use this
+list: there, the privacy settings decide which folders a review may read (`finishup privacy
+input-roots`).
+
 ## What leaves this computer
 
 When you use a server on another machine, a port or the web, these travel to it:
@@ -147,10 +181,9 @@ When you use a server on another machine, a port or the web, these travel to it:
 - a fingerprint of your project folder (a keyed digest, not its path);
 - what the server asks your workspace agent for (below): the change since the task started,
   facts about files the task names, files the reviewer asks to read, task input files, declared
-  test files inside your project folder, observation checks and the results of checks you
-  approved — each within the same size limits FinishUP uses on one computer. On one computer the
-  reviewer may also read a test file your agent declared outside the project folder; a server on
-  another machine is not offered one.
+  test files, observation checks and the results of checks you approved — from your project
+  folder and from the folders outside it that you let that server read, each within the same size
+  limits FinishUP uses on one computer.
 
 These do not leave: your project folder's full path, your API key, your vault passphrase, and
 the secure unlock and consent prompts, which only ever run on the server's own machine.
@@ -172,11 +205,17 @@ files, so a small part of FinishUP on your computer — the **workspace agent** 
 server's questions about them.
 
 The workspace agent answers only a fixed list of questions, only about the project folder your
-session is working in, only within the folders you admitted, and only within the usual size
-limits. It runs only check commands from your project's approved check list. It reads files with
-the same safety checks FinishUP uses on one computer, and it never reads FinishUP's own folders on
-this computer — including the vault and settings of your everyday FinishUP — whichever server you
-use.
+session is working in and the folders outside it that you let that server read (`finishup server
+folders`), and only within the usual size limits. It runs only check commands from your project's
+approved check list. It reads files with the same safety checks FinishUP uses on one computer,
+and it never reads FinishUP's own folders on this computer — including the vault and settings of
+your everyday FinishUP — whichever server you use.
+
+The workspace agent cannot tell an honest question from any other. A server that does not follow
+FinishUP's own rules could ask it for any file in your project folder, or in a folder you let that
+server read, that passes these safety checks, not only the files a task names. It could also learn
+whether a file exists elsewhere on this computer, and its size and dates, but never its contents.
+Use a server you trust with your project, and let it read only folders you would let it see.
 
 It runs inside your FinishUP clients while they are connected to the server, and keeps running
 after a call returns, because some work — a longer review, an approved check — happens later. If
@@ -319,6 +358,10 @@ repeated safely.
 | `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on the check list you approved and trusted on this computer. A receipt says so where the refusal kept the server from seeing your change. | Nothing to repair unless you meant to admit that folder or trust that check list. |
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
+| `folder_invalid` | `server folders add` was given a folder it cannot admit: not a full path, missing, reached through a link, hidden, a system folder, or your home folder, a folder that holds it or one of its private folders. | Give the full path of the existing folder you mean, inside your home folder if it is there. |
+| `folders_record_invalid`, `folders_record_unsafe` | The list of folders a server may read on this computer is damaged or not private to you, so that server reads no folder outside your projects. | Run `finishup server folders remove NAME --all`, then add the folders again. |
 
 In the terminal interface, the header shows which server is in use, and `/server` lists your
-servers and can switch between them with the same confirmation.
+servers and can switch between them with the same confirmation. Its status view lists the folders
+the server may read, and it prints the `finishup server folders` commands for you to run in your
+shell.

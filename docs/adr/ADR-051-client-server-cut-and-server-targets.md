@@ -282,17 +282,14 @@ answers bounded `workspace_call`s on a connection that declared it.
 - **Real adapters, existing fences.** The agent runs each operation against the same local
   adapters the service uses today, with all their fences: owner-UID checks, ignore rules, link
   refusal, object verification, size and time bounds, the approved-check sandbox. Two
-  confinements are added: an operation's workspace must be the agent's own claimed root, and
-  outside reads stay inside the admitted roots the server names and the existing exclusions. The
-  server names the claimed workspace by its handle, never by its path: a read root or an exclusion
-  may be the handle, and a declared-test location may be `client:<16 hex>/<relative>`; the agent
-  maps them to its own root and refuses any other handle (`workspace_not_claimed`). A declared test
-  is read only inside the claimed workspace: the call names no admitted root, and the agent cannot
-  tell whether its agent declared the path, so an outside location is `root_not_admitted` rather
-  than read on the server's word (amended 2026-11-06, review of the three pull requests; a local
-  service still reads a declared test outside the workspace, #1220, so on a remote target such a
-  test is not offered to the reviewer). An outside read
-  never enters the claimed workspace through an outside root, nor the client's protected
+  confinements are added: an operation's workspace must be the agent's own claimed root, and an
+  outside read goes only where this client's owner admitted it (next item) and never past the
+  existing exclusions. The server names the claimed workspace by its handle, never by its path: a
+  read root or an exclusion may be the handle, and a declared-test location may be
+  `client:<16 hex>/<relative>`; the agent maps them to its own root and refuses any other handle
+  (`workspace_not_claimed`). No agent and no claim is ever made for the filesystem root (`/`), as
+  hooks and MCP roots never bind it: a CLI or bridge started there names no workspace. An outside
+  read never enters the claimed workspace through an outside root, nor the client's protected
   directories — its own FinishUP directories and the everyday installation's under both
   application names — whatever the server excludes. Where a local service's own caller narrowed
   an operation, the agent narrows it itself: `inspect` excerpts only the workspace's own changed
@@ -305,6 +302,39 @@ answers bounded `workspace_call`s on a connection that declared it.
   on every call, so a misbehaving server cannot run an untrusted or edited policy. HOME decisions are made by the agent on the
   client, never by the server's own home directory. Every non-`ok` reply carries one closed reason,
   and change capture's own reasons keep their exact `ChangeCaptureUnavailable` tokens.
+- **Outside admission is the client's own fact** (amended 2026-11-06 by maintainer decision, after
+  the review of the three pull requests found that the agent admitted any root the server named
+  by its shape alone). Which folders outside the claimed worktree a server may read is recorded on
+  the client, per server target, as approved-check trust is (decision 12). `finishup server
+  folders add NAME FOLDER` needs the trusted foreground console and the owner typing the target
+  name; it records FOLDER canonicalized by the local service's own input-root rule (an existing
+  directory named by its absolute, normalized, link-free path; never hidden or a system tree),
+  and never the home directory, a folder that holds it, or one in its private trees. `server
+  folders remove NAME FOLDER|--all` is the way out and takes effect at the next call; `server
+  folders list NAME` and `server status` show the folders. The record is owner-only
+  (`<target root>/config/folders.json`), never sent to the server, and read by the agent off the
+  event loop on every outside read; a record that cannot be read admits nothing. A read root the
+  server names must have the shape an owner may admit and lie inside the claimed worktree or at or
+  beneath an admitted folder. Beyond that, a single-root read (`read_text_beneath`,
+  `list_beneath`) is `root_not_admitted`; a task-input read (`read_outside_inputs`,
+  `snapshot_outside_inputs`) reads beneath its admitted roots only and passes over the others like
+  a file that fails a fence, so the check-time change it rides on stays available. The server's
+  own privacy policy still decides which roots it asks for: the client's record narrows it, never
+  widens it. A declared test is read strictly beneath the claimed root, or beneath an admitted
+  folder, so the local parity of #1220 holds within what the owner admitted; anywhere else it is
+  `root_not_admitted`, never read on the server's word, and the reviewer is not offered it. Both
+  comparisons use the spelling the local read walks: a first component that is a link root owns
+  (macOS `/tmp`, `/var`) counts as its target, so such a spelling never falsely refuses.
+- **Honest limit: what a server that breaks the protocol can still obtain.** The agent cannot tell
+  an honest server's question from any other. Within the claimed worktree, such a server can
+  obtain any file the adapters' fences pass, whether or not a task names it. Beneath a folder the
+  owner admitted for it, it can obtain any file that is not hidden, not credential-named and in no
+  system or protected directory, and list the names in its directories. Anywhere on this machine,
+  it can learn the metadata (existence, type, size and times, never content) of a path the local
+  outside-input candidate rule would look at (`lstat_candidates`), which the server's
+  outside-input hint needs. The owner admits only folders they would let that server see. When
+  the server's policy admits a root the client has not, the task input is passed over without a
+  hint naming the client's record; a hint is later work.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a
   connection that declared the agent registers at handshake and unregisters on close.
   `WorkspaceAgentHub.call(handle, operation, arguments, *, timeout_seconds)` sends a
@@ -718,6 +748,7 @@ HTTPS and LOCALHOST PORT
 | `server add NAME …` | `server remove NAME [--select-local]` (disconnects, deletes the credential, disposes of the root; refuses the selected target unless `--select-local`) | `server list` |
 | `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
+| `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record; takes effect at the next workspace call) | `server folders list NAME`, `server status` |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
 | `server connect NAME --agent` (foreground workspace agent) | Ctrl-C; the connection closes | the terminal it runs in |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |

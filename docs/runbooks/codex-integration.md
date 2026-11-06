@@ -1491,7 +1491,10 @@ later process to the default service.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks and shell
   calls follow a new selection at once. Restart open Codex sessions after `finishup server use`.
 - **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and
-  the client's workspace agent serves the server's workspace reads; receipts carry the
+  the client's workspace agent serves the server's workspace reads, outside the project folder
+  only beneath a folder the owner admitted for the target on this machine (`finishup server
+  folders add`, ADR-051 decision 5; the same for every host, with no registration change);
+  receipts carry the
   `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
   by the client over the ordinary control channel, not by the server's sweeper.
 - **Transport (direct dial, ADR-051 approach B).** The hooks and the MCP bridge Codex runs, and agent-shell CLI calls, dial the

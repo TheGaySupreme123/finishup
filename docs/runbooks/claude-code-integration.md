@@ -483,7 +483,10 @@ process to the default service.
   project path, and the bridge rewrites an absolute `workspace_ref` to the connection's handle
   before `start`. The client's workspace agent serves the server's change capture, reviewer reads,
   task inputs, declared tests, observation verification and approved checks for
-  `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line.
+  `${CLAUDE_PROJECT_DIR}`; receipts carry the `client_attested` line. Outside that folder the agent
+  reads only beneath a folder the owner admitted for the target on this machine (`finishup server
+  folders add`, ADR-051 decision 5); the decision is the same for every host and changes no
+  registration.
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the

@@ -198,6 +198,20 @@ async def test_an_unresolvable_locator_raises_its_closed_token(tmp_path: Path) -
 
 
 @pytest.mark.anyio
+async def test_the_filesystem_root_is_never_claimed(tmp_path: Path) -> None:
+    # A CLI or bridge started at ``/`` sends ``/`` as its locator; the shared root rule would
+    # resolve it as a plain directory, but no claim (and so no agent) is ever made for it, as a
+    # hook or an MCP root never binds it (ADR-051). The refusal comes before anything is read.
+    with pytest.raises(RepositoryIdentityError) as raised:
+        await workspace_claim(WorkspaceLocator("/"), _SALT_A)
+    assert raised.value.reason == "repository_locator_invalid"
+    with pytest.raises(ValueError, match="workspace_worktree_invalid"):
+        worktree_digest("/", _SALT_A)
+    with pytest.raises(ValueError, match="workspace_worktree_invalid"):
+        workspace_claim_for_root(CanonicalWorkspaceRoot("directory", Path("/")), _SALT_A, "/")
+
+
+@pytest.mark.anyio
 async def test_the_salt_is_checked_before_anything_is_read(tmp_path: Path) -> None:
     # A bad salt is refused even for a locator that would not resolve: nothing is read first.
     with pytest.raises(ValueError, match="workspace_claim_salt_invalid"):

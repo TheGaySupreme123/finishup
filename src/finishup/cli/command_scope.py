@@ -121,6 +121,9 @@ COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "integrate plugin": "client_only",
         "integrate project-mcp": "client_only",
         "server": "client_only",
+        # The folders outside a project a remote target's server may read: this client's own
+        # record, never sent to that server (ADR-051 decision 5).
+        "server folders": "client_only",
         "setup disconnect": "client_only",
     }
 )
