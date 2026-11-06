@@ -15,6 +15,7 @@ on this machine, and only the keyed claim travels.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 from finishup.client.targets import ServerTarget
@@ -26,7 +27,12 @@ from finishup.ports.control import (
     WorkspaceReply,
 )
 
-__all__ = ["WorkspaceCallHandler", "claim_for_workspace", "handler_for_workspace"]
+__all__ = [
+    "WorkspaceCallHandler",
+    "claim_for_workspace",
+    "drain_captured_observations",
+    "handler_for_workspace",
+]
 
 
 class WorkspaceCallHandler(Protocol):
@@ -68,3 +74,18 @@ def handler_for_workspace(locator: WorkspaceLocator) -> WorkspaceCallHandler | N
 
     del locator
     return None
+
+
+async def drain_captured_observations(record: ServerTarget, root: Path) -> None:
+    """Deliver what this client captured for a remote target: its outbox and legacy spool.
+
+    The workspace agent calls this on every scan, so captured observations reach the server in
+    the background as well as on each hook pass.
+
+    INTEGRATION POINT — wired after split/client and split/server merge: run the shared drain
+    helper over ``root``'s outbox and spool, delivering each row with ``observation_ingest`` on a
+    claim-bound ``RestServiceClient`` (``client.rest_client.connect_rest_service``). Until then
+    nothing is drained here and hooks drain per pass as before.
+    """
+
+    del record, root

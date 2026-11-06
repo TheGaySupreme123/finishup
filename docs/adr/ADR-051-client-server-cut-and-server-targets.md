@@ -447,8 +447,8 @@ connections, 25-second long-polls).
 
 **Integration points** (wired after the workspace-remoting tracks merge):
 `ServiceDaemon._network_api_bindings()` (claim resolver, workspace hub, live-call scope) on the
-server, and `finishup.client.remote_workspace.claim_for_workspace` /
-`handler_for_workspace` on the client. Until then a claim header binds no repository and agent
+server, and `finishup.client.remote_workspace.claim_for_workspace`, `handler_for_workspace` and
+`drain_captured_observations` (the agent's background outbox and spool drain) on the client. Until then a claim header binds no repository and agent
 registration answers `workspace_agent_unavailable`.
 
 | Way in | Way out | Way to see it |

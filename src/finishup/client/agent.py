@@ -40,6 +40,7 @@ from typing import Any, Final, cast
 from finishup.client.remote_workspace import (
     WorkspaceCallHandler,
     claim_for_workspace,
+    drain_captured_observations,
     handler_for_workspace,
 )
 from finishup.client.targets import ServerTarget, TargetError, read_target
@@ -337,6 +338,7 @@ class _AgentRetry(Exception):
 
 type _ClaimFactory = Callable[[ServerTarget, WorkspaceLocator], Awaitable[WorkspaceClaim | None]]
 type _HandlerFactory = Callable[[WorkspaceLocator], WorkspaceCallHandler | None]
+type _Drain = Callable[[ServerTarget, Path], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -357,6 +359,7 @@ class WorkspaceAgentLoop:
         headers: dict[str, str] | None = None,
         claim_factory: _ClaimFactory = claim_for_workspace,
         handler_factory: _HandlerFactory = handler_for_workspace,
+        drain: _Drain = drain_captured_observations,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         scan_seconds: float = _SCAN_SECONDS,
@@ -368,6 +371,7 @@ class WorkspaceAgentLoop:
         self._headers = headers
         self._claim_factory = claim_factory
         self._handler_factory = handler_factory
+        self._drain = drain
         self._clock = clock
         self._wall_clock = wall_clock
         self._scan_seconds = scan_seconds
@@ -406,6 +410,13 @@ class WorkspaceAgentLoop:
                         )
                 if self._served:
                     idle_since = self._clock()
+                    try:
+                        # Background delivery of what this client captured for the target.
+                        await self._drain(self._record, self._root)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        _record("workspace_agent_drain", "drain_failed")
                 elif self._clock() - idle_since >= self._idle_exit_seconds:
                     _record("workspace_agent_exit", "idle")
                     break

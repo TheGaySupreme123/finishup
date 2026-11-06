@@ -140,7 +140,12 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
         transport=httpx.ASGITransport(app=api.asgi("https")),  # type: ignore[arg-type]
         base_url="https://lab.example",
     )
-    loop = _loop(root, record, http, token, workspace=workspace, handler=handler)
+    drained: list[Path] = []
+
+    async def drain(_record: ServerTarget, drained_root: Path) -> None:
+        drained.append(drained_root)
+
+    loop = _loop(root, record, http, token, workspace=workspace, handler=handler, drain=drain)
     running = asyncio.create_task(loop.run())
     try:
         inline = await hub.call(handle, "capture", {"workspace": handle})
@@ -153,6 +158,8 @@ async def test_a_workspace_call_flows_to_the_agent_and_its_reply_back_to_the_hub
     # The handler ran off the event loop and answered for the handle the server named.
     assert handler.handles == [handle, handle]
     assert threading.get_ident() not in handler.threads
+    # While it serves a workspace, the agent delivers what this client captured in the background.
+    assert drained and set(drained) == {root}
     # Stopping ended the registration: the hub's channel closed and the idle hold released.
     assert all(channel.closed for channel in hub.channels)
     assert service.active == 0
