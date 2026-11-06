@@ -461,6 +461,15 @@ real-environment runs, and a cell is claimed only from that evidence.
   forwarding. The human-control and secret endpoints are never forwarded. An approach that tunnels
   to a loopback TCP port instead needs `AllowTcpForwarding`; its topology section says which
   applies.
+- **Direct dial over SSH (ADR-051 approach B).** Each client process opens one `ssh -W <remote
+  control.sock>` channel, a stdio stream to the server's Unix socket (sshd's `direct-streamlocal`
+  channel, so `AllowStreamLocalForwarding` must allow `local`), over a master at
+  `<target root>/run/m` that persists for 15 idle minutes. No helper runs on the server and no
+  forced command is involved. Verified with OpenSSH 9.6 on both ends against a real `sshd`; on
+  loopback a cold hello plus status took 234 ms and a warm one 16 ms p50 and 22.5 ms p95. A refused
+  channel (no service listening on the remote endpoint) reads as `remote_service_not_running`; when
+  the target recorded a launcher, the client runs `<launcher> service start` once over the master
+  and retries.
 - **macOS as a server.** Remote Login must be on. A service started from an SSH login runs outside
   the desktop session: it cannot show the Touch ID dialog (`presence_unavailable`), so the owner
   receipt view over SSH uses `--use-passphrase`, and the login keychain may be unavailable to it, in

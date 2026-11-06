@@ -661,6 +661,11 @@ default service.
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an
   unreachable local service; nothing falls back to the local service.
+- **Transport (direct dial, ADR-051 approach B).** The hooks and the MCP bridge Cursor runs dial the
+  selected server themselves, with no relay process: one SSH channel on the target's shared master,
+  or one HTTPS binding session. For an HTTPS target each of them reads the stored key in its own
+  process; for a local or SSH target none loads the HTTP client or the credential store. The
+  bridge's long-lived connection is the workspace agent for work that outlives a call.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
   `remote_incompatible`, naming both releases.
 - **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment

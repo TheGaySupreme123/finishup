@@ -559,19 +559,36 @@ ceremonies are unchanged on whichever host runs the service.
   holds: owner-written target configuration alone selects the endpoint, and nothing an agent,
   request body, repository or environment variable supplies can switch it.
 
-<!-- APPROACH-TOPOLOGY: each approach's pull request replaces or adjusts the items below. -->
-The items below carry the edge-relay wording of the design (approach A). Approach B keeps the
-gateway row and moves the credential into client processes; approach C replaces invariant 6 at
-its root, because its service is itself network-reachable.
+The items below carry the direct-dial wording of ADR-051 approach B (client SDK, direct dial):
+every client process opens its own stream to the selected server, and no relay process runs on the
+client machine.
 
 - **Invariant 6 becomes:** "The *service's* control transport is never TCP or network-reachable.
   Another machine reaches it only through sshd stream-local forwarding into the owner-only
-  endpoint, or through a same-user gateway that authenticates a key, applies a scope and re-enters
-  through that endpoint. Human-control and secret endpoints are never forwarded."
-- **Trust table rows added.** *Target connector* (client host, per target, no vault): narrowly
-  trusted to relay control frames for one owner-selected target and to hold its target
-  credential; no storage, vault, policy or provider authority. *Service gateway* (server host,
-  same UID as the service): narrowly trusted to authenticate API keys, apply their scope, refuse
-  locators and `Origin` headers, and re-enter through the owner-only control endpoint as an
-  ordinary client; no vault, storage or policy authority.
-- **Who reads the target credential:** only the connector, started with a scrubbed environment.
+  endpoint (one `ssh -W` channel per client stream), or through a same-user gateway that
+  authenticates a key, applies a scope and re-enters through that endpoint. Human-control and
+  secret endpoints are never forwarded."
+- **Trust table rows added.** *Client transport* (in-process in every client process; no new
+  process): narrowly trusted to carry the control frames of its own connection to the one
+  owner-selected target, to run the owner's own OpenSSH with a fixed, secret-free argv
+  (`BatchMode=yes`, `StrictHostKeyChecking=yes`) over the target's persistent master, and, for an
+  HTTPS target, to read the target credential for that dial; no storage, vault, policy or provider
+  authority, and it never spawns or supersedes a local service for a remote root. *Service
+  gateway* (server host, same UID as the service): narrowly trusted to authenticate API keys,
+  apply their scope, refuse locators and `Origin` headers, and re-enter through the owner-only
+  control endpoint as an ordinary client; no vault, storage or policy authority.
+- **Who reads the target credential (this approach's amendment).** Every client process that
+  dials an HTTPS or localhost-port target — hooks, the MCP bridge, the CLI and the terminal
+  interface — reads the key from its `CredentialSource` and holds it in memory for the dial.
+  Same-user software could already read the credential store or the owner-only file (ADR-051
+  decision 7); what this adds is that agent-facing processes hold the key while they dial. It still
+  never appears in argv, the environment, `target.json`, a registration, a log, hook output, an MCP
+  frame, an error or JSON output, and no agent-reachable surface reveals or switches it. An
+  `agent`-scoped key is the least-privilege choice; the HTTP client and the credential store load
+  only inside an HTTPS dial, never for a local or SSH target.
+- **The persistent SSH master.** `<target root>/run/m` is an owner-only control socket in an
+  owner-only directory. Any process of the owner can use it, as it can already use the owner's
+  `ssh-agent`; FinishUP adds a warm connection, not authority. It idles out after 15 minutes and
+  `finishup server disconnect` exits it by that control path, never by process pattern.
+- **Per-process handshake.** Each client process pays its own channel open (SSH, about 16 ms p50
+  on a warm master on loopback) or binding session (HTTPS); no budget is relaxed.

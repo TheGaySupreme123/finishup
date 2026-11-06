@@ -336,7 +336,80 @@ an HTTPS target).
 
 ## Topology (approach-specific)
 
-<!-- APPROACH-TOPOLOGY -->
+This pull request implements **approach B — client SDK, direct dial**.
+
+```
+LOCAL and NAMED LOCAL (unchanged)
+  hook / MCP / CLI / TUI ──AF_UNIX, peer-UID check──► <root>/run/control.sock ──► service
+
+SSH (owner-equivalent)
+  client host                                                    server host (same owner)
+  hook / MCP / CLI / TUI
+    └─ in-process SshTransport: ssh -S <troot>/run/m … -W <remote control.sock> [user@]host
+       stdio = the control stream ═══ one channel of the persistent master ═══►
+                                                   sshd child (as owner) ─AF_UNIX─► control.sock ─► service
+
+HTTPS and LOCALHOST PORT
+  hook / MCP / CLI / TUI
+    └─ in-process HttpsTransport (key read here): HTTPS binding v1 as a byte stream ═══►
+                                 finishup service gateway (same UID; key + scope) ─AF_UNIX─► service
+
+  workspace_call ◄══ the calling process's own connection (and the MCP bridge's, for background work)
+  human-control and secret channels: never leave the server host
+```
+
+- **One seam, no relay.** `finishup.client.transports.transport_for_active_root()` replaces the
+  hardcoded Unix connect in `service.client._connect_service_attempt`. It reads the active root's
+  `target.json`: every local root dials its owner-only endpoint exactly as before (through
+  `service.client.connect_control`, byte for byte); a remote root dials its own transport.
+  `ServiceClient` runs the unchanged control protocol above the stream, so the MCP bridge, hooks,
+  the CLI and the terminal interface need no change. No process runs on the client machine besides
+  the client surfaces themselves.
+- **SSH.** Each stream is one `ssh -S <troot>/run/m -o ControlMaster=auto -o ControlPersist=15m
+  -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o
+  ServerAliveCountMax=3 -p <port> -W <remote control.sock> [user@]host`, whose standard input and
+  output carry the frames. OpenSSH's `-W` forwards to a Unix socket path, so no `attach-stdio`
+  helper runs on the server (verified against a real `sshd` by
+  `tests/capability/test_openssh_direct_dial.py`). The first stream leaves a master that persists
+  for 15 idle minutes, so a later hook pays one channel open: on loopback a cold hello plus status
+  took 234 ms and a warm one 16 ms p50 and 22.5 ms p95, inside the 0.65 s startup gate and the
+  1.0 s hook connect. `server add ssh://…` asks the server's own `finishup service endpoint
+  --json` once the owner has authorized the target, through `--remote-launcher` or a launcher
+  found at a fixed list of install paths (never a bare `finishup` on the remote `PATH`), records
+  the endpoint and refuses another release. A stopped remote service is started once through the
+  recorded launcher (`<launcher> service start`, pinned to `--remote-root`) inside the caller's
+  on-demand budget. `server connect` starts the master (`ssh -fN`); `server disconnect` exits it
+  by its control path (`ssh -O exit`).
+- **HTTPS and localhost ports.** `finishup.client.https_binding` speaks the same HTTPS binding v1
+  as approach A, against the same gateway, and re-frames it as the length-prefixed byte stream:
+  the hello becomes `POST /v1/sessions`; a call `POST …/calls` (a `202` continues with the
+  results long-poll; a call is never posted twice, and after a lost response only its result is
+  asked for); a cancel `POST …/cancel`, never ahead of its call; a `workspace_reply` `POST
+  …/frames`; `workspace_call`s arrive through the `GET …/frames` long-poll, run only for a session
+  whose hello declared the agent. A session idle past 90 s is checked before a call, so an expired
+  session fails the write and the caller's reconnect-once replays the same `request_id`. TLS trusts
+  the recorded CA file or the `sha256:` pin of the leaf certificate, checked inside the handshake
+  before any request (and so the key) is sent; environment proxies and `.netrc` are ignored.
+  `server login` checks the key against `GET /v1/server` before storing it. The server side —
+  `finishup service gateway` and its `key create|list|revoke` commands — is the same as in
+  approach A.
+- **Failures.** Every remote failure is a retryable `service_unavailable` whose `phase` is one of
+  the five remote phases, classified from OpenSSH's fixed diagnostics or the binding's status and
+  never shown. A remote root never spawns or supersedes a local service and never falls back to
+  one; a damaged target record refuses before any dial (`isolation_root_invalid`).
+- **Where the workspace agent runs.** Per connection, in the calling process: every remote
+  connection claims its workspace and declares the agent
+  (`finishup.client.agent_session.remote_workspace_binding`), so a CLI `check` answers the calls
+  of its own operation. For background work, the MCP bridge's long-lived connection is the agent.
+  For CLI-only use, `finishup server connect NAME --agent` keeps an agent connection in the
+  foreground until interrupted.
+- **Credential.** Each client process that dials an HTTPS target reads the key from its
+  `CredentialSource`: the ADR-008 amendment of this approach, disclosed in ADR-008. The HTTP
+  client and the credential store load only inside an HTTPS dial; a hook for a local or SSH target
+  never imports them (`tests/packaging/test_hook_import_diet.py`).
+- **Compared with A.** No relay process to supervise and no per-target status file; the costs are
+  the credential in client processes, a handshake per client process (one SSH channel on a warm
+  master, or one binding session), and a transport each hook loads lazily.
 
 ## Reverse states
 

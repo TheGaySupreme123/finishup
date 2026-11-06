@@ -182,7 +182,45 @@ never passes because a read was missing.
   unless lingering is on for your account (`loginctl enable-linger`), or FinishUP runs in its own
   folder on the server. `finishup service endpoint --json`, run on the server, reports both.
 
-<!-- APPROACH-TOPOLOGY -->
+## How this computer reaches a server
+
+Each FinishUP client on this computer — your agents' hooks and FinishUP tools, the `finishup`
+command and the terminal interface — connects to the server itself. Nothing else needs to run on
+this computer.
+
+**SSH servers.** FinishUP runs your own `ssh`, with your keys, `ssh-agent` and known hosts. It never
+asks a question and never accepts a host key it does not already know, so connect to the server
+once with `ssh` yourself before adding it. The first connection leaves a shared SSH connection open
+for 15 idle minutes; later calls only open a channel on it, which takes tens of milliseconds instead
+of a full SSH login. `finishup server connect` opens it ahead of time and `finishup server
+disconnect` closes it.
+
+When you add an SSH server, FinishUP asks the FinishUP on the server where its service listens. It
+uses `--remote-launcher` when you give it, and otherwise looks in the usual install locations on
+the server (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`); it never runs
+whatever `finishup` happens to be first on the server's search path. If the FinishUP service on
+the server has stopped, FinishUP starts it there and carries on.
+
+**Web and port servers.** FinishUP connects over HTTPS and trusts only the certificate authority or
+certificate pin you gave, or your system's usual certificate trust when you gave neither. It ignores
+proxy settings from the environment. `finishup server login` checks the key with the server before
+keeping it: a key the server refuses is not stored. Each FinishUP client on this computer reads the
+stored key when it connects. No message your agent can read ever contains the key, but software
+running as you on this computer can read your credential store, as it can for your other saved
+keys. Prefer an `agent` key for everyday use.
+
+### Using a server from the command line only
+
+The workspace agent runs inside the FinishUP clients that are connected. With an agent session
+open, its FinishUP tools stay connected and answer for your project. If you use a server only
+through the `finishup` command, keep one terminal connected in your project folder so the server
+can reach your project for work that finishes later, such as a longer review:
+
+```text
+finishup server connect devbox --agent
+```
+
+It answers for the folder you run it in until you press Ctrl-C.
 
 ## Things that run on the server
 

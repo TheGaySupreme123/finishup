@@ -1494,6 +1494,11 @@ later process to the default service.
   the client's workspace agent serves the server's workspace reads; receipts carry the
   `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
   by the client over the ordinary control channel, not by the server's sweeper.
+- **Transport (direct dial, ADR-051 approach B).** The hooks and the MCP bridge Codex runs, and agent-shell CLI calls, dial the
+  selected server themselves, with no relay process: one SSH channel on the target's shared master,
+  or one HTTPS binding session. For an HTTPS target each of them reads the stored key in its own
+  process; for a local or SSH target none loads the HTTP client or the credential store. The
+  bridge's long-lived connection is the workspace agent for work that outlives a call.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.

@@ -4548,6 +4548,45 @@ login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
 kind; the foundation registers `local` and each approach registers its remote kinds. The
 server-host commands `finishup service start` and `finishup service endpoint --json` are added.
 
+**Direct dial (approach B).** No relay process runs on the client machine; each client process
+dials its own stream.
+
+- `finishup.client.transports.transport_for_active_root(unix_dial) -> ControlTransport` is the one
+  seam `service.client._connect_service_attempt` dials through. A local root (no `target.json`, or
+  kind `local`) gets `UnixTransport(unix_dial)`, the unchanged owner-only endpoint; a remote root
+  gets `SshTransport` or `HttpsTransport` (`transport_for_target(target, root)`); an unreadable
+  record raises its `TargetError`, which the client reports as `endpoint_unsafe` with path reason
+  `isolation_root_invalid` before any dial. `ControlTransport`: `kind` (`unix|ssh|https`),
+  `target` (`None` for local), `async connect() -> ControlStream`. Remote streams also answer
+  `async failure_phase() -> str | None`.
+- `TransportError(phase)`: `phase` is one of `REMOTE_CONNECTION_PHASES`. Every remote connection
+  failure reaches callers as a retryable `ControlError("service_unavailable", phase=<phase>)`.
+  `classify_ssh_failure(returncode, stderr)` maps OpenSSH's fixed diagnostics (host key, refused
+  credentials, refused stream channel, unreachable host) to a phase; the diagnostic text itself is
+  never surfaced.
+- SSH argv (fixed, secret-free; the host and user passed record validation): stream
+  `ssh -S <root>/run/m -o ControlMaster=auto -o ControlPersist=15m -o BatchMode=yes
+  -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -p <port>
+  -W <remote_endpoint> [user@]host`; master `ssh -f -N -S <root>/run/m …` with the same options;
+  stop `ssh -S <root>/run/m -O exit -p <port> [user@]host`; remote start `… -T [user@]host --
+  [env FINISHUP_ISOLATED_ROOT=<remote_root>] <remote_launcher> service start --json` (each word
+  shell-quoted). An `ssh` child never inherits a `FINISHUP_`/`YOETZ_` variable.
+- `server add ssh://…` records `remote_endpoint` from the server's own `service endpoint --json`
+  (schema `yoetz.service-endpoint/1`, whose `schema_manifest_digest` must equal this client's),
+  run after authorization through `--remote-launcher` or the first executable of
+  `$HOME/.local/bin/finishup`, `/opt/homebrew/bin/finishup`, `/usr/local/bin/finishup`,
+  `/usr/bin/finishup`; with neither a launcher nor `--remote-root` it is refused
+  (`remote_service_not_running`).
+- `server login` checks the key with `GET /v1/server` before storing it; `remote_auth_failed`,
+  `remote_identity_changed` and `remote_incompatible` store nothing.
+- `server connect NAME --agent` keeps one agent-only connection for the current directory in the
+  foreground (`finishup.client.agent_session.run_foreground_agent(target, root, locator)`);
+  `agent_not_applicable` for a local target.
+- `finishup.client.agent_session.remote_workspace_binding(target, locator) ->
+  RemoteWorkspaceBinding(claim, agent, answer)` decides the claim and agent of every remote
+  connection; `serve_workspace_calls(stream, session, answer)` is the frame loop of an agent-only
+  connection (each call in a worker thread, replies under one write lock).
+
 **Command scope.** `cli/command_scope.py` labels every Typer and terminal-interface command `any`,
 `server_host` or `client_only`. `require_server_host()` refuses a `server_host` command while the
 active root is a remote target, with `requires_server_host`.
@@ -4650,8 +4689,6 @@ unavailable reason `workspace_agent_unavailable`, so
 `check_time_change_unavailable_workspace_agent_unavailable` joins
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
 
-<!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with
-its resource-shaped API. -->
 **HTTPS binding v1** (`https` and `local_port` targets). Each body is the exact canonical JSON a
 socket frame carries after its length prefix. Every request carries `Authorization: Bearer
 fuk_<12 hex key id>_<43 base64url secret>` and `FinishUP-Binding: 1.0`; a request with an `Origin`
@@ -4670,6 +4707,12 @@ an HTTP body to its frame bytes; where this table and those artifacts differ, th
 | `POST /v1/sessions/{sid}/frames` | control-request (`kind: workspace_reply`) | `202` |
 | `POST /v1/sessions/{sid}/cancel` | control-request (`kind: cancel`) | `202` |
 | `DELETE /v1/sessions/{sid}` | none | `204`; closes the session's one upstream control connection |
+
+`GET …/frames` answers `200` with exactly one frame's body, or `204` when none arrived within
+`wait_ms`. When the daemon closes a session's upstream connection the session ends: every later
+request on it, a pending long-poll included, answers `404` `session_unknown`. A client posts a
+`cancel` only after the call it names was posted, and never posts a call twice: after a lost
+response it asks `GET …/results/{rpc_id}` instead.
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
 expires after 120 seconds idle, and one key holds at most 64 sessions. Workflow outcomes —

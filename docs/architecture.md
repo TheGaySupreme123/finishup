@@ -150,7 +150,30 @@ REMOTE (local_port, ssh, https; the owner's own server)
   human-control and secret channels: never leave the server host
 ```
 
-<!-- APPROACH-TOPOLOGY -->
+**Direct dial (approach B of [ADR-051](adr/ADR-051-client-server-cut-and-server-targets.md)).**
+No relay runs on the client machine. Every client process opens its own control stream:
+`finishup.client.transports` picks it from the active root's `target.json`, in place of the fixed
+Unix connect in `service.client`, and `ServiceClient` runs the unchanged protocol above it.
+
+```
+local, named local   in-process connect_control ─AF_UNIX─► <root>/run/control.sock
+ssh                  in-process `ssh -W <remote control.sock>` over a persistent master
+                     (<troot>/run/m, ControlPersist 15 min) ─► sshd as owner ─► control.sock
+https, local_port    in-process HTTPS binding v1 as a byte stream (finishup.client.https_binding)
+                     ─► finishup service gateway (same UID; key + scope) ─► control.sock
+```
+
+| Module | Role |
+|---|---|
+| `finishup.client.transports` | Chooses the transport per root; `UnixTransport`, `SshTransport` (fixed, secret-free OpenSSH argv; closed failure phases from OpenSSH's diagnostics), `HttpsTransport`. Loads no network client. |
+| `finishup.client.https_binding` | The binding as a byte stream: sessions, calls with long-polled results, cancels, `workspace_reply` posts, the `workspace_call` long-poll; TLS by CA file or certificate pin. The only client module that imports `httpx`. |
+| `finishup.client.direct_runtime` | `server connect`/`disconnect`/`test` for remote kinds: the SSH master (`ssh -fN`, `ssh -O exit`), the gateway check, `server add ssh://…` endpoint discovery. |
+| `finishup.client.agent_session` | Where the client answers workspace calls: the claim and agent of each remote connection, the frame loop of an agent-only connection, and `server connect --agent`. |
+
+The workspace agent runs in the client processes themselves: each remote connection answers the
+calls of its own operation, the MCP bridge's long-lived connection answers background work, and
+`finishup server connect NAME --agent` serves a CLI-only owner. Each client process that dials an
+HTTPS target reads the target credential itself (the ADR-008 amendment of this approach).
 
 ## The six operations
 
