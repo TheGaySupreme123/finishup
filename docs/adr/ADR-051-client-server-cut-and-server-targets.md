@@ -569,7 +569,11 @@ answers bounded `workspace_call`s on a connection that declared it.
     was read on the client machine." (why), and "What to do: run receipt again. If this
     persists, restart the server's FinishUP service (`finishup service restart` on the server
     host), then run receipt again." The section is never dropped and never says the evidence was
-    read on the client. Every receipt format, JSON included, also carries the result member
+    read on the client. Either section is rendered inside the receipt text's 32,768-character
+    bound, its room reserved before the other sections are placed, so a long receipt has those
+    sections shortened and still ends with the whole section: appended after the bound, it made a
+    receipt near the bound fail validation on every delivery, which is a refusal in effect.
+    Every receipt format, JSON included, also carries the result member
     `workspace_provenance` (receipt-result 1.5.0; 1.4.0 shipped in v0.3.0 and is never amended):
     `status` `unknown`, the closed `reason` `session_opening_unreadable`, and `notice`, the same
     three lines; it is absent whenever the binding was read. A receipt the service pages for an
