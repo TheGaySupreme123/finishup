@@ -2988,6 +2988,10 @@ def _declared_none_reason_for_render(document: ReceiptDocument) -> str | None:
 
 _HUMAN_TEXT_MAX: Final = 32_768
 _HUMAN_TEXT_MARKER_RESERVE: Final = 900
+# The longest closing section ``render_receipt_human`` admits (the "Workspace evidence" section a
+# claim-bound or provenance-unknown receipt ends with). Its room is taken from the bound before
+# any other section is placed, so the section is never cut and never pushes the text past it.
+_HUMAN_TEXT_TRAILER_MAX: Final = 2_048
 _HUMAN_TEXT_MARKER_NAMES: Final = 10
 # Who is granted room first when a long receipt must be shortened (tb4n3 RC-2, A7). Every section
 # keeps at least its heading and a "not shown" line, so no section silently disappears; these
@@ -3064,7 +3068,7 @@ def _human_block_variants(block: str) -> tuple[str, ...]:
     return tuple(variants)
 
 
-def _bound_human_text(parts: list[str], history_title: str) -> str:
+def _bound_human_text(parts: list[str], history_title: str, *, trailer: str = "") -> str:
     """Join the blocks, shortening by section when they exceed the bound (tb4n3 RC-2, A7).
 
     The old cut took the head of the joined text, so a long receipt silently lost whichever
@@ -3072,11 +3076,17 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     -- under a generic marker. Each block now keeps at least its heading and a line saying its
     content was not shown, disclosures and limitations are shortened last, and the marker names
     every shortened section.
+
+    A non-empty ``trailer`` is the closing section, kept whole after everything else: its room is
+    reserved first, so the joined text, the truncation marker included, plus the trailer never
+    exceed the bound (ADR-051, decision D4).
     """
 
+    tail = "\n\n" + trailer if trailer else ""
+    limit = _HUMAN_TEXT_MAX - len(tail)
     text = "\n\n".join(parts)
-    if len(text) <= _HUMAN_TEXT_MAX:
-        return text
+    if len(text) <= limit:
+        return text + tail
     names = [_human_block_name(part) for part in parts]
     blocks = [
         Part(
@@ -3088,7 +3098,7 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     ]
     composed = compose_parts(
         blocks,
-        _HUMAN_TEXT_MAX - _HUMAN_TEXT_MARKER_RESERVE,
+        limit - _HUMAN_TEXT_MARKER_RESERVE,
         sep="\n\n",
         ascii_only=False,
     )
@@ -3103,8 +3113,9 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
         + "The structured receipt (format json) holds every section in full.]"
     )
     return (
-        clip_to_limit(composed.text, _HUMAN_TEXT_MAX - len(marker), marker="...", ascii_only=False)
+        clip_to_limit(composed.text, limit - len(marker), marker="...", ascii_only=False)
         + marker
+        + tail
     )
 
 
@@ -3126,15 +3137,30 @@ def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
     return [f"Continuation: {directive.token}", f"Next: {directive.directive}"]
 
 
-def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
+def render_receipt_human(
+    document: ReceiptDocument, *, markdown: bool, trailer: str | None = None
+) -> str:
     """Project the canonical receipt sections into markdown or plain-text ``human_text``.
 
     JSON receipts carry the structured document; markdown/text receipts keep ``document``
     null by format and must still expose limitations and finding-count distinctions here
     (#437, #429). Compact one-line wording remains ``render_receipt_compact``.
+
+    ``trailer`` is a closing section that is not part of the stored document: the fixed
+    "Workspace evidence" section of a claim-bound or provenance-unknown receipt (ADR-051,
+    decision D4). The text ends with it whole, and the other sections are shortened around it, so
+    the result still fits the 32,768-character wire bound; appending it afterwards could push a
+    long receipt past the bound and make it undeliverable.
     """
 
-    if type(document) is not ReceiptDocument or type(markdown) is not bool:
+    if (
+        type(document) is not ReceiptDocument
+        or type(markdown) is not bool
+        or not (
+            trailer is None
+            or (type(trailer) is str and 0 < len(trailer) <= _HUMAN_TEXT_TRAILER_MAX)
+        )
+    ):
         raise ProtocolValueError("invalid_receipt_document")
     parts: list[str] = []
     for section in document.sections:
@@ -3415,13 +3441,13 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
+    if not parts:
+        compact = render_receipt_compact(document)
+        parts = [compact] if compact else []
     text = (
-        _bound_human_text(
-            parts,
-            HISTORICAL_GAPS_SECTION_TITLE,
-        )
+        _bound_human_text(parts, HISTORICAL_GAPS_SECTION_TITLE, trailer=trailer or "")
         if parts
-        else render_receipt_compact(document)
+        else ""
     )
     if not text:
         raise ProtocolValueError("invalid_receipt_document")

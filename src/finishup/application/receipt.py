@@ -525,25 +525,24 @@ def _internal_result(
 
     document_json = cast(JsonValue, receipt_document_to_json(document))
     markdown = request.format is ReceiptFormat.MARKDOWN
+    trailer: str | None = None
+    if attested_by is _Provenance.UNKNOWN:
+        trailer = workspace_provenance_unknown_block(markdown=markdown)
+    elif type(attested_by) is str:
+        trailer = client_attested_receipt_block(
+            attested_by,
+            markdown=markdown,
+            hook_observed=(
+                PublicationChannel.HOOK_OBSERVED in document.coverage.publication_channels
+            ),
+        )
+    # The renderer reserves the closing section's room inside the 32,768-character wire bound,
+    # so a long receipt still fits it and is delivered with the section whole (decision D4).
     human = (
         None
         if request.format is ReceiptFormat.JSON
-        else render_receipt_human(document, markdown=markdown)
+        else render_receipt_human(document, markdown=markdown, trailer=trailer)
     )
-    if human is not None and attested_by is _Provenance.UNKNOWN:
-        human = human + "\n\n" + workspace_provenance_unknown_block(markdown=markdown)
-    elif human is not None and type(attested_by) is str:
-        human = (
-            human
-            + "\n\n"
-            + client_attested_receipt_block(
-                attested_by,
-                markdown=markdown,
-                hook_observed=(
-                    PublicationChannel.HOOK_OBSERVED in document.coverage.publication_channels
-                ),
-            )
-        )
     return ReceiptInternalResult(
         "0.1",
         document.schema_version,
