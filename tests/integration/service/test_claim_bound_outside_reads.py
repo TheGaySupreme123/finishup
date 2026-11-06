@@ -5,11 +5,14 @@ the client's workspace agent (the product's own handler, behind the test agent) 
 beneath a folder the owner admitted for that server on the client (``finishup server folders
 add``). Not admitted, the server never pins the test and the reviewer is never offered it, though
 the very same file is there and readable; admitted, it is pinned and offered as a local service
-offers it.
+offers it. A task input the task names beneath a root the server's own policy admits is refused
+by the agent until the owner admits it on the client, and the server records that refusal as the
+check's ``workspace_agent_refused``, never as a silent absence.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -85,3 +88,44 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
         assert listed == []
         assert declared_roots == []
         assert os.fspath(test) not in first[1][1]
+
+
+@pytest.mark.parametrize("admitted", [False, True], ids=["not-admitted", "admitted"])
+async def test_a_task_input_beneath_a_root_the_owner_did_not_admit_is_a_recorded_refusal(
+    tmp_path: Path, admitted: bool
+) -> None:
+    from finishup.application.check_change import (
+        _agent_loss_reason,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
+    from finishup.service.workspace_routing import WorkspaceRouting
+
+    specs = (tmp_path / "specs").resolve()
+    specs.mkdir(mode=0o700)
+    (specs / "spec.md").write_text("SPEC_MARKER\n")
+    (specs / "spec.md").chmod(0o600)
+    hub = WorkspaceAgentHub(inline_wait_seconds=0.5, background_wait_seconds=0.5)
+    agent = FakeWorkspaceAgent(claim_bound._reviewed_repository(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    if admitted:
+        agent.admitted_folders.append(os.fspath(specs))
+    await claim_bound._attach(hub, agent)  # pyright: ignore[reportPrivateUsage]
+    assert agent.handle is not None
+    routing = WorkspaceRouting.compose(hub, claim_bound.SpyLocalCapture())
+    # The server's own policy admits the root; the check-time reader the service composes.
+    reader = getattr(ready_composition_module, "_outside_input_reader")(
+        (os.fspath(specs),), (), routing
+    )
+    values = (f"{specs}/spec.md",)
+    if admitted:
+        found = await asyncio.to_thread(reader, values, 4, agent.handle, frozenset())
+        assert [(item.path, item.root) for item in found] == [(values[0], os.fspath(specs))]
+        return
+    with pytest.raises(WorkspaceAgentUnavailable) as refused:
+        await asyncio.to_thread(reader, values, 4, agent.handle, frozenset())
+    assert (refused.value.reason, refused.value.agent_reason) == (
+        "agent_refused",
+        "root_not_admitted",
+    )
+    # The check-time change is then unavailable with the refusal's own reason and sentence.
+    assert _agent_loss_reason(refused.value) == "workspace_agent_refused"
+    assert "read_outside_inputs" in agent.operations

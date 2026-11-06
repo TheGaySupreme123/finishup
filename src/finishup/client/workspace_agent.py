@@ -13,15 +13,16 @@ These confinements hold on top of the adapters':
   claimed. The server names that workspace by the connection's ``client:`` handle; the handler
   maps the handle to its own root and refuses any other handle (``workspace_not_claimed``).
 * **Outside reads only where this client's owner admitted them.** A read root the server names
-  must have the shape an owner may admit (``admitted_input_root_valid``) and lie inside the
-  claimed worktree or at or beneath a folder this computer's owner admitted for the server target
-  in use (``finishup server folders add``; ``client.server_folders``). That record is this
-  client's own, read on every call and never sent to the server; one that cannot be read admits
-  nothing. A single-root read beyond it is refused (``root_not_admitted``); a multi-root task
-  input read reads beneath the admitted roots only. A declared test is read inside the claimed
-  workspace, or beneath an admitted folder, and nowhere else. Outside reads never enter the
-  claimed workspace through an outside root, or this client's own FinishUP directories at all,
-  whatever the server lists as excluded.
+  must have the shape an owner may admit (``admitted_input_root_valid``), and what the read
+  reaches must lie inside the claimed worktree or at or beneath a folder this computer's owner
+  admitted for the server target in use (``finishup server folders add``;
+  ``client.server_folders``). That record is this client's own, read on every call and never
+  sent to the server; one that cannot be read admits nothing. Anything else is refused
+  (``root_not_admitted``): a reviewer read or listing, a declared test, and a task-input read
+  that names a path beneath a root the owner did not admit here, so the server records the
+  refusal rather than a silent absence. Outside reads never enter the claimed workspace through
+  an outside root, or this client's own FinishUP directories at all, whatever the server lists
+  as excluded.
 * **Ignore rules on the agent.** A file read inside the claimed workspace (a reviewer read or a
   declared test) that Git says is ignored reads as nothing, as the server's own broker asks
   first: a server that skips that question still never receives an ignored file's bytes.
@@ -475,20 +476,37 @@ class WorkspaceAgentHandler:
     def _inside_claimed(self, path: str) -> bool:
         return path == self._root or path.startswith(self._root.rstrip("/") + "/")
 
-    def _admitted_roots(self, roots: Sequence[str]) -> tuple[str, ...]:
-        """The named roots this client admits: in the claimed worktree, or at or beneath a folder
-        the owner admitted for this server. A root of a shape no owner could admit is refused."""
+    def _input_roots(self, roots: Sequence[str], values: Sequence[str]) -> tuple[str, ...]:
+        """The roots a task-input read walks, once every path it could reach is admitted here.
+
+        Each named root must have the shape an owner may admit. Each value the task names at or
+        beneath a named root (the paths the read could open, as ``read_outside_inputs`` locates
+        them) must lie inside the claimed worktree, which the read never enters, or at or beneath
+        a folder the owner admitted; otherwise the whole call is ``root_not_admitted``, which the
+        server records as the check's ``workspace_agent_refused``: an input the owner did not let
+        this server read is never passed over in silence. A named root beneath which the task
+        names nothing is never opened and is left out; one that holds an admitted folder is
+        walked only to the values beneath that folder, so the record narrows the server's roots.
+        """
 
         if any(not admitted_input_root_valid(root) for root in roots):
             raise _Outcome("root_not_admitted")
         folders = self._folders()
+        for value in values:
+            if not value.startswith("/") or "\x00" in value:
+                continue  # never located beneath a root, so never read
+            path = posixpath.normpath(value)
+            if not any(folder_covers(path, (root,)) for root in roots):
+                continue
+            if not (self._inside_claimed(path) or folder_covers(path, folders)):
+                raise _Outcome("root_not_admitted")
         return tuple(
-            root for root in roots if self._inside_claimed(root) or folder_covers(root, folders)
+            root
+            for root in roots
+            if self._inside_claimed(root)
+            or folder_covers(root, folders)
+            or any(folder_covers(folder, (root,)) for folder in folders)
         )
-
-    def _admitted(self, root: str) -> None:
-        if self._admitted_roots((root,)) != (root,):
-            raise _Outcome("root_not_admitted")
 
     def _ignored(self, relative: str) -> bool:
         """Whether Git says the claimed-workspace-relative path ``relative`` is ignored.
@@ -524,16 +542,30 @@ class WorkspaceAgentHandler:
         return None
 
     def _read_root(
-        self, root: str, excluded: Sequence[str], call: _Call
+        self, root: str, relative: str, excluded: Sequence[str], call: _Call
     ) -> tuple[str, tuple[str, ...]]:
         """A reviewer read's root and exclusions: the claimed workspace, named by its handle, or
-        an admitted outside root, beneath which neither the workspace nor FinishUP's own
-        directories are ever entered."""
+        an outside root beneath which neither the workspace nor FinishUP's own directories are
+        ever entered.
+
+        An outside root must have the shape an owner may admit and lie inside the claimed
+        worktree or at or beneath an admitted folder, or the path the read reaches (``root``
+        joined with ``relative``, normalized as the read normalizes it) must lie at or beneath
+        an admitted folder: a folder narrower than the server's root admits what lies beneath
+        it, and a listing of the root above it stays ``root_not_admitted``.
+        """
 
         if not root.startswith("/"):
             return self._location(root, call), self._excluded(excluded, call, outside=False)
-        self._admitted(root)
-        if _folded_within(root, self._protected):
+        if not admitted_input_root_valid(root) or _folded_within(root, self._protected):
+            raise _Outcome("root_not_admitted")
+        folders = self._folders()
+        reached = posixpath.normpath(posixpath.join(root, relative)) if relative else root
+        if not (
+            self._inside_claimed(root)
+            or folder_covers(root, folders)
+            or folder_covers(reached, folders)
+        ):
             raise _Outcome("root_not_admitted")
         return root, self._excluded(excluded, call, outside=True)
 
@@ -627,15 +659,11 @@ class WorkspaceAgentHandler:
     # --- reads ------------------------------------------------------------------------------
 
     def _read_outside_inputs(self, arguments: ReadOutsideInputsArguments, call: _Call) -> object:
-        """Task inputs beneath the named roots this client admits, and only those.
-
-        A root the owner did not admit here is passed over like a file that fails a fence, not
-        refused: the call reads what lies beneath the others, so the check-time change it rides
-        on stays available. A local service reads beneath its policy's roots alone.
-        """
+        """Task inputs beneath the named roots, when every path the task names there is admitted
+        here (``_input_roots``); otherwise ``root_not_admitted``."""
 
         return read_outside_inputs(
-            self._admitted_roots(arguments.roots),
+            self._input_roots(arguments.roots, arguments.values),
             arguments.values,
             limit=arguments.limit,
             excluded=self._excluded(arguments.excluded, call, outside=True),
@@ -646,7 +674,7 @@ class WorkspaceAgentHandler:
         self, arguments: SnapshotOutsideInputsArguments, call: _Call
     ) -> object:
         return snapshot_outside_inputs(
-            self._admitted_roots(arguments.roots),
+            self._input_roots(arguments.roots, arguments.values),
             arguments.values,
             limit=arguments.limit,
             max_bytes=arguments.max_bytes,
@@ -666,7 +694,10 @@ class WorkspaceAgentHandler:
         ``root_not_admitted``, never read on the server's word. Both comparisons are made on the
         spelling the local read walks too: a first component that is a link root owns (``/tmp``
         on macOS) counts as its target. They are exact otherwise: a differently cased spelling is
-        refused, never let in. The read itself is the local one, with all its fences.
+        refused, never let in. The read itself is the local one, with all its fences; one let in
+        through a folder is an outside read, so it never enters the claimed workspace under
+        another spelling (another case on a case-insensitive volume, a bind mount), by
+        case-folded path or by device and inode, where Git's ignore rule would not be asked.
         """
 
         location = self._location(arguments.location, call)
@@ -680,16 +711,22 @@ class WorkspaceAgentHandler:
         if relative is not None:
             if self._ignored(relative):
                 return None  # Git ignores it: read as a test that could not be read
-        elif not any(folder_covers(spelling, self._folders()) for spelling in spellings):
-            raise _Outcome("root_not_admitted")
+        else:
+            folders = self._folders()
+            if not any(folder_covers(spelling, folders) for spelling in spellings):
+                raise _Outcome("root_not_admitted")
         return read_declared_test(
             location,
-            excluded=self._excluded(arguments.excluded, call, outside=False),
+            # Let in through a folder, it is an outside read: the claimed workspace is excluded
+            # by identity and case-folded spelling, so no alias of it reaches an ignored file.
+            excluded=self._excluded(arguments.excluded, call, outside=relative is None),
             expired=call.expired,
         )
 
     def _read_text_beneath(self, arguments: ReadTextBeneathArguments, call: _Call) -> object:
-        root, excluded = self._read_root(arguments.root, arguments.excluded, call)
+        root, excluded = self._read_root(
+            arguments.root, arguments.relative, arguments.excluded, call
+        )
         if not arguments.root.startswith("/"):
             # A workspace file Git ignores reads as nothing, as the broker's own rule has it.
             relative = self._claimed_relative(
@@ -705,7 +742,9 @@ class WorkspaceAgentHandler:
             raise _Outcome("read_deadline") from None
 
     def _list_beneath(self, arguments: ListBeneathArguments, call: _Call) -> object:
-        root, excluded = self._read_root(arguments.root, arguments.excluded, call)
+        root, excluded = self._read_root(
+            arguments.root, arguments.relative, arguments.excluded, call
+        )
         try:
             return list_beneath(
                 root,

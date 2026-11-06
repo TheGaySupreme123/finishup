@@ -160,18 +160,26 @@ its private folders such as `Library` cannot be added: add the folder inside it 
 server may read up to 32 such folders.
 
 Once a folder is added, that server's checks and reviews may read files beneath it: input files a
-task names there (when the server's own privacy policy also lets it read task inputs from that
-folder), files its reviewer asks to read there, and test files your agent declared there. Hidden
-and credential-named files are never read and links are never followed.
+task names there, files its reviewer asks to read there, and test files your agent declared
+there. Hidden and credential-named files are never read and links are never followed. Input files
+are read only where both sides allow it: beneath a folder you added here and beneath a folder the
+server's own privacy policy lets it read task inputs from. Adding a folder inside one the server's
+policy names lets it read that folder alone.
 
 `remove` stops it at once; `remove NAME --all` removes every folder for that server, and also
 clears a list FinishUP can no longer read (FinishUP then lets the server read no folder at all).
-`list` and `server status` show the folders. When a check or review reports
-`workspace_agent_refused` for a folder you meant that server to read, add it with `server folders
-add`; "the folders you admitted" in that message are these. The list stays on this computer and
-is never sent to the server. Removing the server removes its list too. A server on this computer does not use this
+`list` and `server status` show the folders. The list stays on this computer and is never sent to
+the server. Removing the server removes its list too. A server on this computer does not use this
 list: there, the privacy settings decide which folders a review may read (`finishup privacy
 input-roots`).
+
+When a task names a file in a folder that the server's privacy policy covers but you have not
+added for that server here, the workspace agent refuses to read it, and the check reports
+`workspace_agent_refused`: the server then checks without seeing your change, rather than without
+the file and without saying so. Add the folder with `server folders add` if you mean that server
+to read it. A file the reviewer asks for, or a test your agent declared, in a folder you have not
+added is skipped without a message; if a review seems to miss one, run `finishup server folders
+list NAME` to see what that server may read.
 
 ## What leaves this computer
 
