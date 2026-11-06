@@ -480,8 +480,10 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
             "failed), so the server could not see the change."
         ),
         "workspace_agent_refused": (
-            "the FinishUP workspace agent on the client machine refused the server's read of the "
-            "workspace, so the server could not see the change."
+            "the FinishUP workspace agent on the client machine refused a read the check needed, "
+            "such as a task's input file in a folder the owner has not let this server read, so "
+            "the server could not see the change. Only the owner can let this server read a "
+            "folder, with `finishup server folders add` on the client machine."
         ),
     }
 )
