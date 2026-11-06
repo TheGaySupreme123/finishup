@@ -232,17 +232,25 @@ def test_an_unreachable_server_is_recorded_with_a_closed_reason_only(home: Path)
         asyncio.run(exercise())
 
 
+class _Agent:
+    """A background agent stand-in that records its drains and its close."""
+
+    def __init__(self) -> None:
+        self.alive = True
+        self.drains = 0
+
+    async def drain(self) -> None:
+        self.drains += 1
+
+    async def aclose(self) -> None:
+        self.alive = False
+
+
 def test_each_claimed_workspace_gets_one_background_agent_lease(home: Path) -> None:
     record, root = _ssh_target(home)
     opened: list[WorkspaceClaim] = []
 
-    class _Agent:
-        alive = True
-
-        async def aclose(self) -> None:
-            self.alive = False
-
-    async def opener(_root: Path, claim: WorkspaceClaim) -> _Agent:
+    async def opener(_root: Path, claim: WorkspaceClaim, _dial: object) -> _Agent:
         opened.append(claim)
         return _Agent()
 
@@ -263,14 +271,19 @@ def test_each_claimed_workspace_gets_one_background_agent_lease(home: Path) -> N
 
 def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
     record, root = _ssh_target(home)
-    drained: list[Path] = []
+    agent = _Agent()
 
-    async def drainer(target: Path) -> None:
-        drained.append(target)
+    async def opener(_root: Path, _claim: WorkspaceClaim, _dial: object) -> _Agent:
+        return agent
 
     async def exercise() -> None:
         listener = await bind_control_listener()
-        connector = Connector(root, record, idle_seconds=0.3, drainer=drainer, drain_interval=0.05)
+        connector = Connector(
+            root, record, idle_seconds=0.3, agent_opener=opener, drain_interval=0.05
+        )
+        await connector._observe_claim(  # pyright: ignore[reportPrivateUsage]
+            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST)
+        )
         master = _StubMaster(root, restarts=[])
         master.failure = "remote_unreachable"
         connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
@@ -282,8 +295,10 @@ def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
         assert status is not None and (status.phase, status.reason) == ("stopped", "idle_timeout")
         with pytest.raises(Exception):
             await connect_control()
-        # The client-captured outbox is drained while it runs and once more as it stops.
-        assert len(drained) >= 2 and set(drained) == {root}
+        # Each leased workspace's captures are delivered while it runs and once more as it
+        # stops, before its background agent is closed.
+        assert agent.drains >= 2
+        assert agent.alive is False
 
     with selection_override(root):
         asyncio.run(exercise())

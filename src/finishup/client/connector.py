@@ -12,7 +12,10 @@ local service. For a remote target that endpoint is served by this process, one 
   HTTPS binding v1 against ``finishup service gateway`` on the server host;
 * it alone reads an HTTPS target's API key;
 * it writes ``state/connector-status.json`` (closed tokens only) so a client whose connection
-  failed can name the remote phase, and it exits after 15 idle minutes.
+  failed can name the remote phase, and it exits after 15 idle minutes;
+* for every workspace whose claim it relayed it keeps a background workspace agent for 15 minutes
+  after that workspace's last hello, and delivers that workspace's hook-captured observations
+  over it every 30 seconds and once more as it stops (``finishup.client.connector_agent``).
 
 A hello that names a ``workspace_locator`` is refused here for every kind: a path on this machine
 never travels to a server on another one. Server-to-client frames (``workspace_call``) and the
@@ -29,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import socket
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -41,6 +45,7 @@ from finishup.adapters.control.unix_socket import (
     EndpointKind,
     LocalControlTransportError,
     UnixEndpointListener,
+    authenticate_peer,
     bind_control_listener,
     connect_owner_only_endpoint,
     remove_stale_endpoint,
@@ -71,7 +76,7 @@ __all__ = [
     "DRAIN_INTERVAL_SECONDS",
     "BackgroundAgent",
     "Connector",
-    "drain_captured_observations",
+    "Dial",
     "open_background_agent",
     "run_connector",
     "run_connector_process",
@@ -79,7 +84,7 @@ __all__ = [
 
 # How long the connector keeps a background workspace agent after that workspace's last hello.
 AGENT_LEASE_SECONDS: Final = 900.0
-# How often the connector drains the client-captured observation outbox for its root.
+# How often the connector delivers what this client's hooks captured, per leased workspace.
 DRAIN_INTERVAL_SECONDS: Final = 30.0
 _HELLO_SECONDS: Final = 10.0
 _LOCK_RETRY_SECONDS: Final = 0.5
@@ -90,46 +95,37 @@ _PUMP_CHUNK: Final = 65_536
 _RESTART_WINDOW_SECONDS: Final = 30.0
 
 
+type Dial = Callable[[], Awaitable[AuthenticatedUnixStream]]
+
+
 class BackgroundAgent(Protocol):
     """A long-lived connection that answers workspace calls for one claimed workspace."""
 
     @property
     def alive(self) -> bool: ...
 
+    async def drain(self) -> None: ...
+
     async def aclose(self) -> None: ...
 
 
-async def open_background_agent(root: Path, claim: WorkspaceClaim) -> BackgroundAgent | None:
+async def open_background_agent(
+    root: Path, claim: WorkspaceClaim, dial: Dial
+) -> BackgroundAgent | None:
     """Open the connector's long-lived workspace agent for ``claim``; ``None`` when none can be.
 
-    Integration point — wired after split/client and split/server merge. The connector holds one
-    background agent per claimed workspace it has relayed, for ``AGENT_LEASE_SECONDS`` after that
-    workspace's last hello, so a detached server job (the AI-powered review loop, observation
-    verification) still reaches the workspace after the client call that started it returned.
-    The split/client implementation resolves ``claim`` to the workspace root this client claimed
-    (client-side state; the claim is a keyed digest, never a path), builds its
-    ``WorkspaceAgentHandler`` and connects a ``ServiceClient`` to ``root``'s own control endpoint
-    (through this connector) with ``workspace_claim=claim`` and the handler's
-    ``workspace_agent`` declaration, serving ``workspace_call`` frames until closed.
+    The connector holds one background agent per claimed workspace it has relayed, for
+    ``AGENT_LEASE_SECONDS`` after that workspace's last hello, so a detached server job (the
+    AI-powered review loop, observation verification) still reaches the workspace after the
+    client call that started it returned. ``claim`` is resolved to the workspace this client
+    claimed through the root's claimed-workspace index and derived again before it is served
+    (``finishup.client.connector_agent``); ``dial`` connects to this connector without passing
+    through its endpoint, so the agent never counts as client activity.
     """
 
-    del root, claim
-    return None
+    from finishup.client.connector_agent import open_connector_agent
 
-
-async def drain_captured_observations(root: Path) -> None:
-    """Deliver what this client captured for ``root`` (observation outbox and spool) to the server.
-
-    Integration point — wired after split/client and split/server merge. For a remote target the
-    client drains what it captured (ADR-051, F5): hooks drain once per pass as today, and the
-    connector, the long-lived process of approach A, calls this every
-    ``DRAIN_INTERVAL_SECONDS`` while it runs and once more before it stops. The split/client
-    implementation runs its outbox/spool drain helper against ``root``'s own control endpoint
-    (through this connector) under ``root``'s selection; it must return without raising when
-    there is nothing to send or the server cannot take it now.
-    """
-
-    del root
+    return await open_connector_agent(root, claim, dial)
 
 
 @dataclass(slots=True)
@@ -181,9 +177,8 @@ class Connector:
         ssh: str | None = None,
         https_transport: object | None = None,
         credential: Callable[[], str] | None = None,
-        agent_opener: Callable[[Path, WorkspaceClaim], Awaitable[BackgroundAgent | None]]
+        agent_opener: Callable[[Path, WorkspaceClaim, Dial], Awaitable[BackgroundAgent | None]]
         | None = None,
-        drainer: Callable[[Path], Awaitable[None]] | None = None,
         drain_interval: float = DRAIN_INTERVAL_SECONDS,
     ) -> None:
         if not record.is_remote:
@@ -196,7 +191,6 @@ class Connector:
         self._credential = _Credential(credential or self._stored_credential)
         self._https: object | None = None
         self._agent_opener = agent_opener or open_background_agent
-        self._drainer = drainer or drain_captured_observations
         self._drain_interval = drain_interval
         self._last_drain = time.monotonic()
         self._status: ConnectorStatus | None = read_connector_status(root)
@@ -292,7 +286,7 @@ class Connector:
             return
         lease.opening = True
         try:
-            lease.agent = await self._agent_opener(self._root, claim)
+            lease.agent = await self._agent_opener(self._root, claim, self._dial_own)
         except Exception:
             lease.agent = None
         finally:
@@ -308,11 +302,32 @@ class Connector:
                 with contextlib.suppress(Exception):
                     await lease.agent.aclose()
 
+    async def _dial_own(self) -> AuthenticatedUnixStream:
+        """A connection to this connector's relay that bypasses its endpoint (background agents).
+
+        It is relayed exactly like a client's, but it is not client activity: it neither keeps
+        the connector from going idle nor renews the lease of the claim its hello carries.
+        """
+
+        ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            relayed = AuthenticatedUnixStream(theirs, authenticate_peer(theirs))
+            dialled = AuthenticatedUnixStream(ours, authenticate_peer(ours))
+        except BaseException:
+            ours.close()
+            theirs.close()
+            raise
+        task = asyncio.create_task(self._serve_local(relayed, own=True))
+        self._connections.add(task)
+        task.add_done_callback(self._connections.discard)
+        return dialled
+
     # -- one local connection ---------------------------------------------------------------
 
-    async def _serve_local(self, local: AuthenticatedUnixStream) -> None:
-        self._active += 1
-        self._last_activity = time.monotonic()
+    async def _serve_local(self, local: AuthenticatedUnixStream, *, own: bool = False) -> None:
+        if not own:
+            self._active += 1
+            self._last_activity = time.monotonic()
         try:
             try:
                 async with asyncio.timeout(_HELLO_SECONDS):
@@ -323,7 +338,7 @@ class Connector:
                 # Not a hello, or a hello naming a path on this machine: never forwarded.
                 return
             claim = _claim_from(hello)
-            if claim is not None:
+            if claim is not None and not own:
                 asyncio.ensure_future(self._observe_claim(claim))
             encoded = encode_control_frame(hello)
             if self._ssh is not None:
@@ -345,8 +360,9 @@ class Connector:
         finally:
             with contextlib.suppress(Exception):
                 await local.aclose()
-            self._active -= 1
-            self._last_activity = time.monotonic()
+            if not own:
+                self._active -= 1
+                self._last_activity = time.monotonic()
 
     async def _open_ssh_channel(self, hello: bytes) -> tuple[AuthenticatedUnixStream, bytes]:
         """Connect one channel, send the hello, and return it with the first answered bytes."""
@@ -413,9 +429,14 @@ class Connector:
             task.add_done_callback(self._connections.discard)
 
     async def _drain(self) -> None:
+        """Deliver what this client captured, over each leased workspace's agent connection."""
+
         self._last_drain = time.monotonic()
-        with contextlib.suppress(Exception):
-            await self._drainer(self._root)
+        for lease in tuple(self._claims.values()):
+            agent = lease.agent
+            if agent is not None and agent.alive:
+                with contextlib.suppress(Exception):
+                    await agent.drain()
 
     async def _watch(self) -> None:
         while not self._stop.is_set():
@@ -444,13 +465,14 @@ class Connector:
             await self._drain()
             with contextlib.suppress(Exception):
                 await listener.aclose()
-            for task in tuple(self._connections):
-                task.cancel()
-            await asyncio.gather(*self._connections, return_exceptions=True)
+            # Background agents first, so none dials again while the relays are torn down.
             for lease in self._claims.values():
                 if lease.agent is not None:
                     with contextlib.suppress(Exception):
                         await lease.agent.aclose()
+            for task in tuple(self._connections):
+                task.cancel()
+            await asyncio.gather(*self._connections, return_exceptions=True)
             if self._ssh is not None:
                 with contextlib.suppress(Exception):
                     await self._ssh.close()
