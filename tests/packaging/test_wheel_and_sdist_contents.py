@@ -54,6 +54,22 @@ def _is_attestation_schema_member(name: str) -> bool:
     }
 
 
+def _is_observation_attestation_member(name: str) -> bool:
+    """The reviewed ADR-051 observation attestation names contain ``test`` in ``attest``.
+
+    The client module builds a remote target's attested observation rows, and the golden vector
+    is the attested ``observation_ingest`` frame; both are named for their subject.
+    """
+
+    return name in {
+        "finishup/client/observation_attestation.py",
+        "src/finishup/client/observation_attestation.py",
+        "finishup/resources/fixtures/canonical/control-observation-ingest-attested-2.10.case.json",
+        "src/finishup/resources/fixtures/canonical/control-observation-ingest-attested-2.10.case.json",
+        "fixtures/canonical/control-observation-ingest-attested-2.10.case.json",
+    }
+
+
 def _is_test_edit_visibility_module(name: str) -> bool:
     """The reviewed runtime module that classifies test-file edits is named for its subject."""
 
@@ -75,6 +91,7 @@ def _is_test_record_module(name: str) -> bool:
 def _is_reviewed_name_exemption(name: str) -> bool:
     return (
         _is_attestation_schema_member(name)
+        or _is_observation_attestation_member(name)
         or _is_test_edit_visibility_module(name)
         or _is_test_record_module(name)
     )
