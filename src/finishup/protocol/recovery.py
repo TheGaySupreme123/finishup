@@ -754,12 +754,15 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="workspace_agent_refusal_review",
         directive=(
-            "The FinishUP workspace agent on your machine refused a server read outside the "
-            "claimed workspace or the admitted roots, so nothing was read and the gap is "
-            "recorded. Report the refusal to the user."
+            "The FinishUP workspace agent on your machine refused a read this server needed, "
+            "often a task input in a folder not allowed for it; the gap is recorded. Tell the "
+            "user: only they can allow a folder, via 'finishup server folders add'."
         ),
         guidance_uri=_SEMANTIC_COVERAGE,
-        nudge="Do not move files or widen admitted roots to get past a refusal.",
+        nudge=(
+            "Do not run that command yourself, move files, or widen admitted roots to get past "
+            "a refusal."
+        ),
     ),
     RecoveryDirective(
         token="server_host_command_required",
