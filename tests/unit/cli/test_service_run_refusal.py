@@ -238,3 +238,41 @@ def test_target_root_is_remote_names_the_way_out(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 20
     assert result.stderr.startswith("target_root_is_remote: this FinishUP root belongs to")
     assert "'finishup server use local'" in result.stderr
+
+
+@pytest.mark.parametrize("ambient", [True, False])
+def test_ambient_root_serves_the_everyday_installation_whatever_is_selected(
+    monkeypatch: pytest.MonkeyPatch, ambient: bool
+) -> None:
+    """ADR-051: ``--ambient-root`` (from an everyday spawner) reads no server selection.
+
+    It takes effect before the server-host guard, so a remote selection written after the
+    spawner resolved its root neither refuses the everyday start nor redirects it.
+    """
+
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+
+    monkeypatch.setattr(paths, "_selection_ignored", False)  # restored after the test
+    served: list[Path | None] = []
+
+    def serve(**_kwargs: object) -> None:
+        served.append(paths.active_root())
+
+    monkeypatch.setattr(daemon_module, "main", serve)
+    with ambient_home(monkeypatch):
+        with targets.registry_lock():
+            record, _root = targets.new_remote_target(
+                "lab", "ssh", user="owner", host="lab.example", port=22
+            )
+        targets.write_selection(record)
+        arguments = ["service", "run", *(["--ambient-root"] if ambient else [])]
+        result = CliRunner().invoke(cli.app, arguments)
+
+    if ambient:
+        assert result.exit_code == 0, result.output
+        assert served == [None]
+    else:
+        assert result.exit_code == 2
+        assert result.stderr.startswith("requires_server_host:")
+        assert served == []

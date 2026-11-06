@@ -2808,6 +2808,20 @@ def service_restart(json_output: _JSON = False) -> None:
     _finish(run_async(lambda: _service_restart(json_output)))
 
 
+def _serve_ambient_root(value: bool) -> bool:
+    """``--ambient-root``: never read the server selection in this process (ADR-051).
+
+    A parameter callback, so it takes effect while the options are parsed: before the server-host
+    guard and the command resolve any path.
+    """
+
+    if value:
+        from finishup.config.paths import ignore_server_selection
+
+        ignore_server_selection()
+    return value
+
+
 @service_app.command("run")
 def service_run(
     startup_correlation_id: Annotated[
@@ -2818,9 +2832,19 @@ def service_run(
             help="Internal: the err_… id the spawning process looks a startup failure up under.",
         ),
     ] = None,
+    ambient_root: Annotated[
+        bool,
+        typer.Option(
+            "--ambient-root",
+            hidden=True,
+            callback=_serve_ambient_root,
+            help="Internal: serve the everyday installation its spawner uses; read no selection.",
+        ),
+    ] = False,
 ) -> None:
     """Run the persistent service in the foreground."""
 
+    del ambient_root  # applied by its parameter callback, before the server-host guard runs
     if startup_correlation_id is not None:
         from finishup.protocol.ids import IdKind, validate_id
 

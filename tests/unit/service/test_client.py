@@ -607,6 +607,7 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
 
     monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(client_module, "active_root", lambda: tmp_path / "isolated")
 
     spawned = client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
 
@@ -621,6 +622,48 @@ def test_on_demand_spawn_passes_the_id_it_will_look_a_failure_up_under(
         spawned.startup_correlation_id,
     )
     assert spawned.startup_correlation_id.startswith("err_")
+
+
+def test_an_everyday_spawner_tells_its_service_to_read_no_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051: the service serves the spawner's root, even after a selection appears.
+
+    The spawner resolved the everyday installation (its memo holds ``None``); another process
+    then selected a named server. The service it starts is told to read no selection, so it does
+    not start in that target's root while this spawner polls the everyday endpoint.
+    """
+
+    import finishup.service.client as client_module
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+    from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, SERVER_SELECTION_SCHEMA
+
+    observed: list[tuple[object, dict[str, str]]] = []
+
+    def popen(command: object, **kwargs: object) -> object:
+        observed.append((command, cast(dict[str, str], kwargs["env"])))
+        return _ExitedProcess(None)
+
+    with ambient_home(monkeypatch):
+        assert client_module.active_root() is None  # memoized: the everyday installation
+        with targets.registry_lock():
+            record, _root = targets.new_local_target("dev")
+        # Another process selects it: the file changes, this process's memo does not.
+        path = targets.selection_path()
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.write_bytes(
+            f'{{"schema":"{SERVER_SELECTION_SCHEMA}","target_id":"{record.target_id}"}}\n'.encode()
+        )
+        path.chmod(0o600)
+        monkeypatch.setattr(client_module, "log_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(client_module.subprocess, "Popen", popen)
+        client_module._spawn_service_process()  # pyright: ignore[reportPrivateUsage]
+
+    ((command, environment),) = observed
+    assert isinstance(command, tuple)
+    assert command[-1] == "--ambient-root"
+    assert not any(name in environment for name in ISOLATED_ROOT_ENV_NAMES)
 
 
 @pytest.mark.anyio

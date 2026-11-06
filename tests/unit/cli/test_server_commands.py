@@ -524,12 +524,25 @@ def test_connect_and_disconnect_dispatch_to_the_local_runtime(
     assert calls == [("ensure_ready", root), ("stop", root), ("ensure_ready", None)]
 
 
-def test_the_everyday_server_is_not_started_while_another_is_selected(home: Path) -> None:
+def test_the_everyday_server_starts_while_another_is_selected(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``connect local`` starts the everyday server: its spawn reads no selection (ADR-051)."""
+
+    calls: list[Path | None] = []
+
+    def ensure_ready(_self: object, root: Path | None) -> None:
+        calls.append(root)
+
+    monkeypatch.setattr(
+        "finishup.client.target_runtime.LocalTargetRuntime.ensure_ready", ensure_ready
+    )
     assert _invoke("add", "work", "--local").exit_code == 0
     assert _invoke("use", "work").exit_code == 0
     result = _invoke("connect", "local")
-    assert result.exit_code == 2
-    assert result.stderr.startswith("selection_active:")
+    assert result.exit_code == 0, result.output
+    assert calls == [None]
+    assert "this computer's everyday server" in result.stdout
 
 
 def _dangling_selection(home: Path) -> None:

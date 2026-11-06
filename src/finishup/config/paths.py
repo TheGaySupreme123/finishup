@@ -455,6 +455,25 @@ def reset_selection_memo() -> None:
     _SELECTION_MEMO.clear()
 
 
+# Set once by ``finishup service run --ambient-root``: this process never reads the selection.
+_selection_ignored: bool = False
+
+
+def ignore_server_selection() -> None:
+    """Resolve the server selection as absent for the rest of this process (ADR-051).
+
+    A client whose own root is the everyday installation starts its service with
+    ``finishup service run --ambient-root``, which calls this before anything resolves a path. The
+    service then serves the everyday installation its spawner uses, never a target that a
+    selection written after the spawner resolved its root names. The isolation variable and the
+    runtime pin still outrank this, exactly as they outrank the selection; nothing undoes it
+    within the process, and ``reset_selection_memo`` leaves it in force.
+    """
+
+    global _selection_ignored
+    _selection_ignored = True
+
+
 def ambient_registry_dirs(*, _probe: _PathProbe | None = None) -> tuple[Path, Path]:
     """Return ``(ambient config dir, ambient state dir)``, where the server registry lives.
 
@@ -538,7 +557,7 @@ def _selected_root(probe: _PathProbe) -> Path | None:
     already fails closed with ``installation_root_ambiguous`` there.
     """
 
-    if probe.installation_naming == "ambiguous":
+    if probe.installation_naming == "ambiguous" or _selection_ignored:
         return None
     dirs = probe.platform_dirs
     path = Path(dirs.user_config_dir) / SERVER_SELECTION_NAME

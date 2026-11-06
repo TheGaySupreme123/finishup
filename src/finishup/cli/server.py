@@ -186,11 +186,6 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "and confirm it",
         _USAGE,
     ),
-    "selection_active": (
-        "another server is selected, so this computer's everyday server cannot be started from "
-        "here; run 'finishup server use local' first",
-        _USAGE,
-    ),
     "usage": (
         "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
         _USAGE,
@@ -1041,12 +1036,8 @@ def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> 
     if action == "ensure_ready":
         # Nothing is sent to a target confirmed under an older disclosure; 'stop' stays usable.
         require_current_authorization(record)
-    if action == "ensure_ready" and everyday:
-        try:
-            if read_selected_target_id() is not None and _source() not in _EXPLICIT_SOURCES:
-                raise ServerCommandRefused("selection_active")
-        except TargetError as error:
-            raise ServerCommandRefused(error.reason)
+    # The everyday server starts here even while another is selected: a spawned service is told
+    # its spawner's root (``service run --ambient-root``) and never reads the selection itself.
     try:
         runtime = runtime_for(kind)
         if action == "ensure_ready":

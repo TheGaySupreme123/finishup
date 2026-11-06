@@ -150,6 +150,9 @@ __all__ = [
 ]
 
 _MAX_IN_FLIGHT: Final = 32
+# The hidden ``service run`` option a spawner whose root is the everyday installation passes, so the
+# service never reads a server selection its spawner did not use (``config.paths``).
+_AMBIENT_ROOT_OPTION: Final = "--ambient-root"
 # At most this many workspace calls run at once on one connection (ADR-051). A call beyond them is
 # answered ``agent_busy`` at once, so a slow read never holds the connection's other calls back,
 # and a slot stays taken until its worker thread has actually finished.
@@ -305,7 +308,7 @@ def _spawn_service_process() -> _SpawnedService:
 
     _refuse_remote_target_root()
     startup_correlation_id = new_id(IdKind.CORRELATION)
-    command = (
+    command: tuple[str, ...] = (
         sys.executable,
         "-m",
         "finishup",
@@ -315,6 +318,12 @@ def _spawn_service_process() -> _SpawnedService:
         startup_correlation_id,
     )
     with _open_service_stderr_log() as stderr_log:
+        environment = _service_environment()
+        if not any(name in environment for name in ISOLATED_ROOT_ENV_NAMES):
+            # No variable, pin or selection decided this process's root, so it uses the everyday
+            # installation; the service it starts must too, whatever the selection file says by
+            # the time that service reads it (ADR-051). A resolved root rides in the variable.
+            command = (*command, _AMBIENT_ROOT_OPTION)
         if os.name == "nt":
             creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
                 getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -323,7 +332,7 @@ def _spawn_service_process() -> _SpawnedService:
                 command,
                 close_fds=True,
                 creationflags=creationflags,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,
@@ -332,7 +341,7 @@ def _spawn_service_process() -> _SpawnedService:
             process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,

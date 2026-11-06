@@ -150,6 +150,13 @@ typed outcomes when the client side cannot be reached.
 - **No new variable or argv token.** The entry fast paths, the Claude Code, Cursor and Codex
   registration classifiers, the Cursor live-process classifier and the configuration variable
   allowlist are untouched.
+- **A spawned service serves its spawner's root.** A client that starts its service on demand
+  forwards the root it resolved: a resolved root in the isolation variable, as before, and the
+  everyday installation as one hidden internal `service run --ambient-root` flag, which makes the
+  service read no selection (`config.paths.ignore_server_selection`, applied while options are
+  parsed, before the server-host guard). A bridge that resolved the everyday installation and
+  later restarts its service therefore never starts a target that a newer selection names. The
+  flag names no target and appears in no registration, launch line or classifier.
 - **Propagation.** Claude Code hooks and MCP (no environment in the registration) learn the target
   from the selection file. Cursor hooks and MCP, and Codex external and cache MCP, use their
   stamped root when they were connected under explicit isolation, and the selection file
