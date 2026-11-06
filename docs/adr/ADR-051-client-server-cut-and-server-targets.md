@@ -78,17 +78,32 @@ typed outcomes when the client side cannot be reached.
 
 ### 1. The cut line is an enforced contract, not a package move
 
-- Every module under `src/finishup/` is labelled CLIENT, SERVER, SHARED or GATEWAY in one boundary
-  map. GATEWAY is reserved for a same-user control client of the daemon on the server host
-  (`finishup.gateway`), used only by the approaches that run one. CLIENT covers `cli`, `mcp`, `tui`,
-  `service.client`, `service.confidential_client`, the host integration adapters (except the
+- Every module under `src/finishup/` is labelled CLIENT, SERVER, SHARED, WORKSPACE or GATEWAY in
+  one boundary map. GATEWAY is reserved for a same-user control client of the daemon on the server
+  host (`finishup.gateway`), used only by the approaches that run one. CLIENT covers `cli`, `mcp`,
+  `tui`, `service.client`, `service.confidential_client`, the host integration adapters (except the
   observation store the service also opens), the client-side application modules and the new
   `finishup.client` package. SHARED covers `protocol`, `ports`, `domain`, `config`,
-  `observability`, `resources`, `version`, the control-protocol framing, the Unix-socket adapter,
-  the pure Git helpers and the new `adapters/workspace_root.py`. Everything else is SERVER.
+  `observability`, `resources`, `version`, the control-protocol framing and the Unix-socket
+  adapter. Everything else is SERVER.
+- WORKSPACE is the layer of workspace readers, which run wherever the workspace is: in the local
+  service for a local root and in the client's workspace agent (decision 5) for a remote one. It
+  holds the Git capture, task-input, approved-check, sandbox, inspection, home-project and
+  input-summary adapters, the Git subject-state, `rev-parse` and version helpers, the shared
+  `adapters/workspace_root.py` rule and the repository check-policy parser
+  (`application.observation_check_policy`). CLIENT and SERVER modules may import it; a WORKSPACE
+  module may import only WORKSPACE and SHARED modules, so a workspace reader never reaches storage,
+  the vault, providers, the service or a client surface, and no ledger entry may excuse one.
+  SHARED and GATEWAY modules may not import it.
 - An AST test walks every module, including imports inside functions, and fails on any crossing
   not recorded in a ledger. The ledger is seeded with today's crossings, measured by the test
-  itself, and may only shrink: a ledger entry that no longer occurs also fails.
+  itself, and may only shrink: a ledger entry that no longer occurs also fails. Each entry carries
+  a closed disposition: `server_host_only`, `shared_pure`, `to_rpc` or `client_outbox`. The last is
+  the only one a `finishup.client` module may carry, and it names one module: the client's drain
+  opens its own root's observation outbox to deliver what that root's hooks captured to a remote
+  server, which never opens that root. The import crosses only because the outbox and the
+  service's observation store still share `adapters.integrations.observation_local`; it closes
+  when the outbox moves out of that module.
 - A command-scope registry labels every CLI and terminal-interface command `any`, `server_host`
   or `client_only`. One guard, `require_server_host()`, refuses a `server_host` command while a
   remote target is active, with `requires_server_host`. A test walks the command tree and the
