@@ -177,7 +177,13 @@ REST_ERROR_STATUS: Final[Mapping[str, int]] = {
     "frame_too_large": 413,
     "operation_limit": 429,
     "agent_limit": 429,
+    # An unexpected failure of the API itself (a request it could not serve, an answer it could
+    # not frame): a defect of this service, never "not running".
+    "internal_failure": 500,
     "service_unavailable": 503,
+    # The service's key file is unusable (permissions, damage): no key can be checked until the
+    # owner repairs it on the server host.
+    "server_keys_unusable": 503,
     "workspace_agent_unavailable": 503,
 }
 

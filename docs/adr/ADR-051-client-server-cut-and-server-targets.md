@@ -522,7 +522,9 @@ SSH (owner-equivalent, no key)
 - Refusals: `rest-error` reasons (`api_key_invalid|revoked|expired`, `origin_forbidden`,
   `header_invalid`, `frame_invalid`, `frame_too_large`, `route_unknown`, `operation_unknown`,
   `agent_unknown`, `method_not_allowed`, `operation_limit`, `agent_limit`,
-  `workspace_claim_required`, `workspace_agent_unavailable`, `service_unavailable`). Any `Origin`
+  `workspace_claim_required`, `workspace_agent_unavailable`, `service_unavailable`,
+  `server_keys_unusable` for a key file the service cannot use, and `internal_failure` for a
+  request the API itself failed to serve). Any `Origin`
   header is refused before authentication, and nothing answers before authentication. Audit
   records carry closed tokens only; uvicorn's own logs are discarded because they would carry
   addresses and request lines.
@@ -540,7 +542,15 @@ SSH (owner-equivalent, no key)
   at all, which keeps its local failure). HTTPS trusts the target's `--ca-file`, its
   `--tls-pin` (checked inside the TLS handshake, so a key is never sent to a mismatching server), or
   the public store; proxy variables are ignored. Failures carry the remote phases on
-  `service_unavailable`.
+  `service_unavailable` only when the call was never dispatched (nothing was sent: connecting, TLS,
+  the pin; or the server refused it before dispatch), so every surface may say nothing was
+  recorded. A call that may have been admitted and whose answer was lost — a failure after the
+  request went out, a failed long-poll, `operation_unknown` for the call's own id — is
+  `request_timeout`, whose ADR-030 continuation recovers it under the same identity. A call
+  refused for its key's running-operation limit (never dispatched) is sent again after growing
+  waits for up to 30 seconds or its deadline. `server_keys_unusable` is `remote_auth_failed` (the
+  owner repairs the key file on the server host) and `internal_failure` is `internal_error`; neither
+  is reported as a service that is not running.
 - **Who reads the target credential:** each client process that dials an HTTPS or `local_port`
   target reads it from `CredentialSource` (as in approach B). Same-user software can read it as
   well, as it can read today's auto-unlock custody; no surface an agent reaches reveals or switches

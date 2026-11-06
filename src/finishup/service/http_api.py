@@ -468,7 +468,7 @@ class NetworkApi:
             reason = error.reason
             if reason not in {"api_key_invalid", "api_key_revoked", "api_key_expired"}:
                 # The key file itself is unusable: no request is authenticated until it is fixed.
-                raise _Refusal("service_unavailable") from None
+                raise _Refusal("server_keys_unusable") from None
             raise _Refusal(reason) from None
         return _Caller(record.key_id, record.scope, record.principal, transport)
 
@@ -487,7 +487,7 @@ class NetworkApi:
     def _endpoint(
         handler: Callable[[Request], Awaitable[Response]],
     ) -> Callable[[Request], Awaitable[Response]]:
-        """Answer a refusal with its closed reason and anything unexpected with a bounded 503."""
+        """Answer a refusal with its closed reason and anything unexpected with a bounded 500."""
 
         async def run(request: Request) -> Response:
             try:
@@ -499,7 +499,7 @@ class NetworkApi:
                 record_unexpected_exception_without_raising(
                     exc, component=_COMPONENT, operation="network_request"
                 )
-                return _error_response("service_unavailable")
+                return _error_response("internal_failure")
 
         return run
 
@@ -534,7 +534,7 @@ class NetworkApi:
             or context.identity_kind != "client_claim"
             or context.workspace_locator is not None
         ):
-            raise _Refusal("service_unavailable")
+            raise _Refusal("internal_failure")
         return "client_claim", context
 
     # --- GET /v1/server -----------------------------------------------------------------------
@@ -949,7 +949,7 @@ class NetworkApi:
     ) -> Response:
         if answer.body is None:
             # A result this service cannot frame is its own defect; the socket would drop it too.
-            raise _Refusal("service_unavailable")
+            raise _Refusal("internal_failure")
         headers = {
             "cache-control": "no-store",
             HEADER_OUTCOME: answer.outcome,

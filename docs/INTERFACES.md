@@ -4870,7 +4870,13 @@ authentication refusals are `{reason, schema_version: "1.0.0"}` with closed reas
 | 405 | `method_not_allowed` |
 | 413 | `frame_too_large` |
 | 429 | `operation_limit` (32 running per key), `agent_limit` (16 per key) |
-| 503 | `service_unavailable`, `workspace_agent_unavailable` |
+| 500 | `internal_failure` (a request the API itself failed to serve, or an answer it could not frame) |
+| 503 | `service_unavailable`, `server_keys_unusable` (the key file is unusable), `workspace_agent_unavailable` |
+
+`RestServiceClient` reports a remote phase on `service_unavailable` only for a call that was never
+dispatched; a call that may have been admitted and whose answer was lost is `request_timeout`
+(outcome unknown). `server_keys_unusable` maps to `remote_auth_failed` and `internal_failure` to
+`internal_error`; `operation_limit` is retried for up to 30 seconds before it is `request_timeout`.
 
 **API keys** (`service.api_keys.ApiKeyStore`): `<state>/network/api-keys.json`
 (`yoetz.api-keys/1`, owner-only canonical JSON) holds per key `key_id`, `label`, `scope`,

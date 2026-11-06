@@ -287,8 +287,9 @@ repeated safely.
 
 | You see | What it means | What to do |
 |---|---|---|
-| `remote_unreachable` | The server could not be reached. | Run `finishup server test`. |
-| `remote_auth_failed` | The server did not accept you. | SSH: load your key (`ssh-add`) or check your SSH configuration. Web: run `finishup server login NAME`. |
+| `remote_unreachable` | The server could not be reached, so nothing was sent. | Run `finishup server test`. |
+| `request_timeout` | The request reached the server, or may have, but its answer was lost on the way back. It may have been recorded. | Follow the shown continuation: it repeats the request safely under its original identity. |
+| `remote_auth_failed` | The server did not accept you, or cannot check keys until its operator repairs its key file. | SSH: load your key (`ssh-add`) or check your SSH configuration. Web: run `finishup server login NAME`, or ask the server's operator. |
 | `remote_identity_changed` | The server's host key or certificate is not the one you confirmed. | Confirm the server's identity another way, then remove and add the server again. |
 | `remote_service_not_running` | The server machine answered, but its FinishUP service is not running. | SSH: `ssh -t <server> finishup service start`. Web: ask the server's operator. |
 | `remote_incompatible` | The two machines run different FinishUP releases. | Install the same release on both. |

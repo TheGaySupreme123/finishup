@@ -18,8 +18,13 @@ is followed at ``/v1/operations/{id}``.
 
 The server is never named in an error, a log or an MCP text: failures are the control protocol's
 closed reasons, with a remote phase (``remote_unreachable``, ``remote_auth_failed``,
-``remote_identity_changed``, ``remote_service_not_running``, ``remote_incompatible``). Proxy
-variables are ignored: the server hop goes only where the owner's target record says.
+``remote_identity_changed``, ``remote_service_not_running``, ``remote_incompatible``). A remote
+phase means the call was never dispatched (nothing was sent, or the server refused it before
+dispatch), so every surface may say that nothing was recorded. A call that may have been admitted
+— its answer lost after the request was sent, a long-poll that failed, an operation whose answer
+the server no longer keeps — is ``request_timeout`` instead: its outcome is unknown, and the
+ADR-030 timeout continuation says how to recover it under the same identity. Proxy variables are
+ignored: the server hop goes only where the owner's target record says.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import os
 import secrets
 import ssl
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -96,6 +102,11 @@ _CONNECT_SECONDS: Final = 5.0
 _MAX_RESPONSE_BYTES: Final = 6_291_456 + 65_536
 _SSH_BASE_URL: Final = "http://finishup.invalid"
 _CANCEL_SECONDS: Final = 2.0
+# A call refused because this key has too many running operations was never dispatched; it is
+# sent again after a growing wait, for at most this long (or the call's own deadline).
+_BUSY_FIRST_SECONDS: Final = 0.25
+_BUSY_MAX_SECONDS: Final = 2.0
+_BUSY_TOTAL_SECONDS: Final = 30.0
 _PRIVATE: Final = object()
 _WORKFLOW: Final = frozenset(
     {
@@ -295,6 +306,18 @@ def _certificate_failure(error: BaseException) -> bool:
     return False
 
 
+def _outcome_unknown() -> ControlError:
+    """A call that may have been admitted and whose answer this client did not get."""
+
+    return ControlError("request_timeout", retryable=True)
+
+
+def _never_sent(error: BaseException) -> bool:
+    """Whether an HTTP failure happened before any request byte could reach the server."""
+
+    return isinstance(error, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
+
+
 def _transport_failure(error: BaseException, endpoint: RestEndpoint) -> ControlError:
     if endpoint.pin_mismatch is not None and endpoint.pin_mismatch.seen:
         return _remote("remote_identity_changed", retryable=False)
@@ -304,9 +327,24 @@ def _transport_failure(error: BaseException, endpoint: RestEndpoint) -> ControlE
 
 
 def _refusal_error(response: httpx.Response) -> ControlError:
-    """The control reason for a transport refusal (never echoing anything the server sent)."""
+    """The control reason for a transport refusal (never echoing anything the server sent).
+
+    Every refusal here came before dispatch, except ``operation_unknown`` for a call's own id:
+    that id was dispatched earlier and its answer is gone, so its outcome is unknown.
+    """
 
     reason = parse_rest_error(response.content)
+    if reason == "operation_unknown":
+        return _outcome_unknown()
+    if reason == "server_keys_unusable":
+        # The server cannot check any key until its owner repairs its key file there.
+        return _remote("remote_auth_failed", retryable=False)
+    if reason == "internal_failure":
+        return ControlError("internal_error")
+    if reason in {"operation_limit", "agent_limit"}:
+        # Refused before dispatch while this key has too many running operations; the caller
+        # already waited its share, so the outcome is the timeout's (nothing was sent to run).
+        return _outcome_unknown()
     if response.status_code == 401:
         return _remote("remote_auth_failed", retryable=False)
     if reason in {"frame_too_large"}:
@@ -482,12 +520,29 @@ class RestServiceClient(ServiceClient):
         return headers
 
     async def _send_request(
-        self, method: str, path: str, *, content: bytes | None = None, headers: dict[str, str]
+        self,
+        method: str,
+        path: str,
+        *,
+        content: bytes | None = None,
+        headers: dict[str, str],
+        admitted: bool = False,
     ) -> httpx.Response:
+        """One request; a lost answer of a call that may have been admitted is outcome-unknown.
+
+        ``admitted`` says the server already accepted the call (a long-poll of its operation).
+        Otherwise only a failure before any byte was sent (connecting, TLS, the pin) is a remote
+        phase; one after the request went out may have reached the server.
+        """
+
         try:
             response = await self._http.request(method, path, content=content, headers=headers)
         except httpx.HTTPError as error:
-            failure = _transport_failure(error, self._endpoint)
+            failure = (
+                _transport_failure(error, self._endpoint)
+                if not admitted and _never_sent(error)
+                else _outcome_unknown()
+            )
             await self._fail_connection(failure)
             raise failure from None
         if len(response.content) > _MAX_RESPONSE_BYTES:
@@ -567,21 +622,19 @@ class RestServiceClient(ServiceClient):
                 raise TimeoutError
             return min(MAX_WAIT_MS, remaining)
 
+        admitted = False
         try:
             async with asyncio.timeout(
                 None if request.deadline_ms is None else request.deadline_ms / 1_000
             ):
-                response = await self._send_request(
-                    "POST",
-                    f"/v1/{request.method.value}?wait_ms={wait_ms()}",
-                    content=body,
-                    headers=headers,
-                )
+                response = await self._post_when_admitted(request, body, headers, wait_ms)
                 while response.status_code == 202:
+                    admitted = True
                     response = await self._send_request(
                         "GET",
                         f"/v1/operations/{request.rpc_id}?wait_ms={wait_ms()}",
                         headers=_base_headers(self._endpoint, self._claim),
+                        admitted=True,
                     )
         except TimeoutError as exc:
             # As on the socket: a check keeps running for a later status read; anything else
@@ -595,7 +648,9 @@ class RestServiceClient(ServiceClient):
                     await asyncio.shield(self._cancel_remote(request.rpc_id))
             raise
         if response.status_code != 200:
-            error = _refusal_error(response)
+            # Once admitted, any refusal (the answer expired, the key was revoked meanwhile, the
+            # service restarted) leaves the call's outcome unknown.
+            error = _outcome_unknown() if admitted else _refusal_error(response)
             if error.reason == "service_unavailable" and error.phase == "remote_auth_failed":
                 await self._fail_connection(error)
             raise error
@@ -617,6 +672,38 @@ class RestServiceClient(ServiceClient):
                 body=ControlError("service_unavailable", retryable=True),
             )
         return result
+
+    async def _post_when_admitted(
+        self,
+        request: ControlCallRequest,
+        body: bytes,
+        headers: dict[str, str],
+        wait_ms: Callable[[], int],
+    ) -> httpx.Response:
+        """POST the call; one refused for this key's running-operation limit is sent again.
+
+        That refusal comes before dispatch, so sending the same operation id again is safe; the
+        waits grow and stop at ``_BUSY_TOTAL_SECONDS`` or the call's own deadline.
+        """
+
+        waited = 0.0
+        delay = _BUSY_FIRST_SECONDS
+        while True:
+            response = await self._send_request(
+                "POST",
+                f"/v1/{request.method.value}?wait_ms={wait_ms()}",
+                content=body,
+                headers=headers,
+            )
+            if (
+                response.status_code != 429
+                or parse_rest_error(response.content) != "operation_limit"
+                or waited + delay > _BUSY_TOTAL_SECONDS
+            ):
+                return response
+            await asyncio.sleep(delay)
+            waited += delay
+            delay = min(delay * 2, _BUSY_MAX_SECONDS)
 
     async def cancel(self, request: ControlCancelRequest) -> None:
         self._ensure_live()

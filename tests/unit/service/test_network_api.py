@@ -30,13 +30,13 @@ from builders.network_api import (
     make_api,
 )
 from finishup.domain.values import JsonObject
-from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.control import ControlClientKind, ControlMethod, ServiceStatus
 from finishup.ports.workspace_agent import workspace_handle_for_commitment
 from finishup.protocol.canonical import canonical_encode, strict_json_parse
 from finishup.protocol.ids import IdKind, new_id
 from finishup.service.api_keys import ApiKeyStore
 from finishup.service.control_protocol import encode_control_frame
-from finishup.service.http_api import NetworkApi
+from finishup.service.http_api import NetworkApi, NetworkApiBindings
 from finishup.service.network_protocol import (
     AGENT_SCOPE_METHODS,
     NEVER_OVER_NETWORK_METHODS,
@@ -760,3 +760,31 @@ async def test_expired_answers_are_dropped_on_the_sweeper_too(
         while api._operations:  # pyright: ignore[reportPrivateUsage]
             await asyncio.sleep(0.01)
     await api.close()
+
+
+@pytest.mark.anyio
+async def test_an_unusable_key_file_and_a_defect_are_not_a_stopped_service(
+    keys: ApiKeyStore,
+) -> None:
+    _record, token = keys.create("laptop", "agent")
+    service = FakeService()
+    api = make_api(service, keys)
+    async with _client(api) as client:
+        keys.path.chmod(0o640)
+        try:
+            unusable = await client.get("/v1/server", headers=_bearer(token))
+        finally:
+            keys.path.chmod(0o600)
+        assert (unusable.status_code, _reason(unusable)) == (503, "server_keys_unusable")
+
+    def broken() -> ServiceStatus:
+        raise RuntimeError("defect")
+
+    defective = NetworkApi(
+        NetworkApiBindings(status=broken, dispatch=service.dispatch, activity=service.activity),
+        keys,
+    )
+    async with _client(defective) as client:
+        failed = await client.get("/v1/server", headers=_bearer(token))
+    assert (failed.status_code, _reason(failed)) == (500, "internal_failure")
+    assert "defect" not in failed.text

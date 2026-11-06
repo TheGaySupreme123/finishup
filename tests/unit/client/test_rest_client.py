@@ -319,3 +319,131 @@ def test_a_remote_target_root_is_recognized(monkeypatch: pytest.MonkeyPatch) -> 
         remote = service_client._remote_target()  # pyright: ignore[reportPrivateUsage]
         assert remote is not None
         assert (remote[0].target_id, remote[1]) == (record.target_id, root)
+
+
+class _Interrupting(httpx.AsyncBaseTransport):
+    """The API in process, with one chosen request's answer lost after it was sent."""
+
+    def __init__(self, api: NetworkApi, lose: str, error: type[httpx.TransportError]) -> None:
+        self._inner = httpx.ASGITransport(app=api.asgi("https"))  # type: ignore[arg-type]
+        self._lose = lose
+        self._error = error
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if f"{request.method} {request.url.path}".startswith(self._lose):
+            if self._error in (httpx.ConnectError, httpx.ConnectTimeout):
+                raise self._error("never sent", request=request)
+            # The server got the request (and may have run it); its answer is lost.
+            await self._inner.handle_async_request(request)
+            raise self._error("answer lost", request=request)
+        return await self._inner.handle_async_request(request)
+
+
+async def _connect_through(
+    api: NetworkApi, token: str, transport: _Interrupting
+) -> RestServiceClient:
+    endpoint = RestEndpoint("https", "https://api.test", transport, token)
+    return await connect_rest_service(
+        ControlClientKind.CLI, record=_RECORD, root=Path("/x"), _endpoint=endpoint
+    )
+
+
+@pytest.mark.anyio
+async def test_a_call_whose_answer_was_lost_after_sending_has_an_unknown_outcome(
+    keys: ApiKeyStore,
+) -> None:
+    # "Nothing was recorded" is said only of calls that never reached the server. A call that
+    # was sent (and may have run) and whose answer was lost is outcome-unknown: the timeout's
+    # continuation then says how to recover it under its own identity.
+    _record, token = keys.create("laptop", "operator")
+    service = FakeService()
+    for error in (httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError):
+        api = make_api(service, keys)
+        client = await _connect_through(api, token, _Interrupting(api, "POST /v1/", error))
+        with pytest.raises(ControlError) as raised:
+            await client.service_status()
+        assert (raised.value.reason, raised.value.phase) == ("request_timeout", None), error
+        assert raised.value.retryable is True
+    # Never sent: a remote phase, and nothing was dispatched.
+    seen = len(service.seen)
+    api = make_api(service, keys)
+    client = await _connect_through(api, token, _Interrupting(api, "POST /v1/", httpx.ConnectError))
+    with pytest.raises(ControlError) as refused:
+        await client.service_status()
+    assert (refused.value.reason, refused.value.phase) == (
+        "service_unavailable",
+        "remote_unreachable",
+    )
+    assert len(service.seen) == seen
+
+
+@pytest.mark.anyio
+async def test_an_admitted_call_whose_long_poll_fails_has_an_unknown_outcome(
+    keys: ApiKeyStore,
+) -> None:
+    _record, token = keys.create("laptop", "operator")
+    gate = asyncio.Event()
+    service = FakeService(gate=gate)
+    api = make_api(service, keys)
+    # Even a connection failure on the long-poll: the call was admitted and may finish.
+    client = await _connect_through(
+        api, token, _Interrupting(api, "GET /v1/operations/", httpx.ConnectError)
+    )
+    original = rest_client.MAX_WAIT_MS
+    try:
+        rest_client.MAX_WAIT_MS = 0  # type: ignore[misc]
+        with pytest.raises(ControlError) as raised:
+            await client.service_status()
+    finally:
+        rest_client.MAX_WAIT_MS = original  # type: ignore[misc]
+        gate.set()
+    assert (raised.value.reason, raised.value.phase) == ("request_timeout", None)
+    # The server admitted it: the call runs on there whatever this client concluded.
+    assert len(api._operations) == 1  # pyright: ignore[reportPrivateUsage]
+    await api.close()
+
+
+@pytest.mark.anyio
+async def test_refusals_name_what_the_server_said_not_a_stopped_service(
+    keys: ApiKeyStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.service.network_protocol import rest_error_document
+
+    def refusal(reason: str, status: int) -> httpx.Response:
+        return httpx.Response(status, content=rest_error_document(reason))
+
+    unusable = rest_client._refusal_error(refusal("server_keys_unusable", 503))  # pyright: ignore[reportPrivateUsage]
+    assert (unusable.reason, unusable.phase, unusable.retryable) == (
+        "service_unavailable",
+        "remote_auth_failed",
+        False,
+    )
+    internal = rest_client._refusal_error(refusal("internal_failure", 500))  # pyright: ignore[reportPrivateUsage]
+    assert (internal.reason, internal.phase) == ("internal_error", None)
+    busy = rest_client._refusal_error(refusal("operation_limit", 429))  # pyright: ignore[reportPrivateUsage]
+    assert (busy.reason, busy.phase) == ("request_timeout", None)
+    spent = rest_client._refusal_error(refusal("operation_unknown", 404))  # pyright: ignore[reportPrivateUsage]
+    assert (spent.reason, spent.phase) == ("request_timeout", None)
+    # A call refused only because this key has too many running operations is sent again.
+    _record, token = keys.create("laptop", "operator")
+    api = make_api(FakeService(), keys)
+    calls: list[str] = []
+    real = api._admit  # pyright: ignore[reportPrivateUsage]
+
+    async def admit(*args: object, **kwargs: object) -> object:
+        calls.append("admit")
+        if len(calls) < 3:
+            from finishup.service import http_api
+
+            raise http_api._Refusal("operation_limit")  # pyright: ignore[reportPrivateUsage]
+        return await real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(api, "_admit", admit)
+    monkeypatch.setattr(rest_client, "_BUSY_FIRST_SECONDS", 0.01)
+    client = await _connect(api, token)
+    try:
+        status = await client.service_status()
+    finally:
+        await client.close()
+    assert status.state is ServiceState.READY
+    assert calls == ["admit", "admit", "admit"]
