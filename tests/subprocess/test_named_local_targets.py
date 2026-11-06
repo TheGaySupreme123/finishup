@@ -19,7 +19,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -28,30 +29,45 @@ import pytest
 _TIMEOUT = 90
 
 
-@pytest.fixture
-def selection_environment() -> Iterator[dict[str, str]]:
-    """The hermetic environment with a short owner-only config and state home.
+@contextmanager
+def _private_everyday_folders(prefix: str) -> Generator[dict[str, str]]:
+    """The environment with every everyday folder (data, state, config, cache, runtime) moved.
 
-    Target roots live beneath the ambient state directory and must keep their socket paths
-    under ``sun_path``; the hermetic tree is too deep for that, so state and config move to a
-    short private directory beneath the account's real home (outside shared temp).
+    One short owner-only tree beneath the account's real home (outside shared temp): target
+    roots live beneath the ambient state directory and must keep their socket paths under
+    ``sun_path``, and no folder may resolve to this account's real installation, whose
+    everyday service a probe of the ``local`` server would otherwise find.
     """
 
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    base = Path(tempfile.mkdtemp(prefix=".yz-nlt-", dir=real_home))
+    base = Path(tempfile.mkdtemp(prefix=prefix, dir=real_home))
     base.chmod(0o700)
     environment = {
         name: value
         for name, value in os.environ.items()
         if not name.startswith(("FINISHUP_", "YOETZ_"))
     }
-    for variable, leaf in (("XDG_STATE_HOME", "s"), ("XDG_CONFIG_HOME", "c")):
+    for variable, leaf in (
+        ("XDG_STATE_HOME", "s"),
+        ("XDG_CONFIG_HOME", "c"),
+        ("XDG_DATA_HOME", "d"),
+        ("XDG_CACHE_HOME", "k"),
+        ("XDG_RUNTIME_DIR", "r"),
+    ):
         (base / leaf).mkdir(mode=0o700)
         environment[variable] = str(base / leaf)
     try:
         yield environment
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture
+def selection_environment() -> Iterator[dict[str, str]]:
+    """The hermetic environment for two named local servers; ``local`` reaches nothing real."""
+
+    with _private_everyday_folders(".yz-nlt-") as environment:
+        yield environment
 
 
 def _finishup(environment: dict[str, str], *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -131,33 +147,10 @@ def test_cli_calls_follow_the_selection_between_two_named_local_servers(
 
 @pytest.fixture
 def hermetic_everyday_environment() -> Iterator[dict[str, str]]:
-    """Every everyday folder (data, state, config, cache, runtime) in one short private tree.
+    """The everyday service is started here, so none of its folders may be the account's own."""
 
-    The everyday service is started here, so none of its folders may resolve to this account's
-    real installation.
-    """
-
-    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    base = Path(tempfile.mkdtemp(prefix=".yz-amb-", dir=real_home))
-    base.chmod(0o700)
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith(("FINISHUP_", "YOETZ_"))
-    }
-    for variable, leaf in (
-        ("XDG_STATE_HOME", "s"),
-        ("XDG_CONFIG_HOME", "c"),
-        ("XDG_DATA_HOME", "d"),
-        ("XDG_CACHE_HOME", "k"),
-        ("XDG_RUNTIME_DIR", "r"),
-    ):
-        (base / leaf).mkdir(mode=0o700)
-        environment[variable] = str(base / leaf)
-    try:
+    with _private_everyday_folders(".yz-amb-") as environment:
         yield environment
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_the_everyday_server_starts_in_its_own_root_while_another_is_selected(

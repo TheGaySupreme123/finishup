@@ -21,6 +21,7 @@ import pytest
 
 import finishup.observability.diagnostics as diagnostics
 import finishup.service.daemon as daemon_module
+from builders.server_targets import ambient_home
 from finishup.adapters.control.unix_socket import LocalControlTransportError
 from finishup.adapters.sqlite.connection import StorageUnsafeError
 from finishup.config.installation import InstanceIdentityError
@@ -477,25 +478,27 @@ def _target_root(tmp_path: Path, record: bytes | None, mode: int = 0o600) -> Pat
     ],
 )
 async def test_a_remote_target_root_is_refused_before_anything_is_created(
-    tmp_path: Path, ring: Path, monkeypatch: pytest.MonkeyPatch, record: bytes, mode: int
+    ring: Path, monkeypatch: pytest.MonkeyPatch, record: bytes, mode: int
 ) -> None:
     """ADR-051: a service never runs in a remote target's root (``target_root_is_remote``)."""
 
     from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, reset_selection_memo
 
-    root = _target_root(tmp_path, record, mode)
-    for name in ISOLATED_ROOT_ENV_NAMES:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(root))
-    reset_selection_memo()
-    real_composition = daemon_module._production_composition
-    _patch_run_service(monkeypatch, composition=real_composition)
+    # The root sits outside shared temp, where the runtime accepts an isolated root at all: under
+    # ``/tmp`` it would refuse the path (``path_shared_temp``) before reaching the target check.
+    with ambient_home(monkeypatch) as home:
+        root = _target_root(home, record, mode)
+        monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(root))
+        reset_selection_memo()
+        real_composition = daemon_module._production_composition
+        _patch_run_service(monkeypatch, composition=real_composition)
 
-    with pytest.raises(LifecycleError) as raised:
-        await daemon_module.run_service(_SPAWN_ID)
+        with pytest.raises(LifecycleError) as raised:
+            await daemon_module.run_service(_SPAWN_ID)
+        contents = [path.name for path in root.iterdir()]
 
     assert raised.value.reason == "target_root_is_remote"
-    assert [path.name for path in root.iterdir()] == ["target.json"]  # no bundle, state, lock
+    assert contents == ["target.json"]  # no bundle, state, lock
     (recorded,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
     assert recorded["reason_code"] == "target_root_is_remote"
     assert recorded["phase"] == "composition"
