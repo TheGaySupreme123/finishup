@@ -52,7 +52,7 @@ async def test_only_a_claim_bound_ingest_receives_its_connection_identity() -> N
         _COMMITMENT, "client_claim", workspace_handle="client:0123456789abcdef"
     )
     local = RepositoryPrivacyContext(
-        _COMMITMENT, "git_common_root", WorkspaceLocator("/home/dev/project")
+        _COMMITMENT, "git_common_root", WorkspaceLocator("/srv/dev/project")
     )
     await invoke(handler, _ingest(), None)
     await invoke(handler, _ingest(), local)

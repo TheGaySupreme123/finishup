@@ -157,7 +157,7 @@ def _drop_route(raw: dict[str, Any]) -> None:
 
 
 def _add_path(raw: dict[str, Any]) -> None:
-    raw["path"] = "/home/dev/project"
+    raw["path"] = "/srv/dev/project"
 
 
 def _bump_version(raw: dict[str, Any]) -> None:
@@ -165,7 +165,7 @@ def _bump_version(raw: dict[str, Any]) -> None:
 
 
 def _route_path(raw: dict[str, Any]) -> None:
-    raw["route"] = {**raw["route"], "workspace": "/home/dev"}
+    raw["route"] = {**raw["route"], "workspace": "/srv/dev"}
 
 
 @pytest.mark.parametrize("mutate", [_drop_route, _add_path, _bump_version, _route_path])

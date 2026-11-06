@@ -29,7 +29,7 @@ _OTHER = "client:fedcba9876543210"
 @pytest.mark.parametrize(
     ("value", "relative", "valid"),
     (
-        ("/home/dev/project", False, True),
+        ("/srv/dev/project", False, True),
         (_HANDLE, False, True),
         (_HANDLE + "/tests/test_a.py", True, True),
         (_HANDLE + "/tests/test_a.py", False, False),
@@ -50,7 +50,7 @@ def test_a_location_is_an_absolute_path_or_beneath_the_handle(
 
 
 def test_the_agent_resolves_only_its_own_handle_against_its_own_root() -> None:
-    root = "/home/dev/project"
+    root = "/srv/dev/project"
     assert resolve_client_location(_HANDLE, _HANDLE, root) == root
     assert resolve_client_location(_HANDLE + "/src/a.py", _HANDLE, root) == root + "/src/a.py"
     assert resolve_client_location("/srv/shared/data", _HANDLE, root) == "/srv/shared/data"

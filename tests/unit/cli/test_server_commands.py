@@ -952,7 +952,7 @@ def test_ssh_add_records_what_the_server_reports_after_authorization(
         assert authorized == [("lab", "ssh")]  # nothing reaches the server before consent
         asked.append(arguments)
         return direct_runtime.SshEndpoint(
-            "/run/user/1001/finishup/control.sock", "/home/owner/.local/bin/finishup", True
+            "/run/user/1001/finishup/control.sock", "/srv/owner/.local/bin/finishup", True
         )
 
     monkeypatch.setattr(direct_runtime, "discover_ssh_endpoint", discover)
@@ -969,7 +969,7 @@ def test_ssh_add_records_what_the_server_reports_after_authorization(
     ]
     (record,) = targets.list_targets()
     assert record.remote_endpoint == "/run/user/1001/finishup/control.sock"
-    assert record.remote_launcher == "/home/owner/.local/bin/finishup"
+    assert record.remote_launcher == "/srv/owner/.local/bin/finishup"
     assert "enable linger" in added.stdout
 
 

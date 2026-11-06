@@ -226,13 +226,13 @@ def test_a_session_bound_endpoint_without_linger_is_flagged() -> None:
 
 
 def test_a_launcher_is_found_at_a_fixed_install_path_never_on_path() -> None:
-    runner = _Runner((0, b"/home/owner/.local/bin/finishup\n", b""), (0, _report(), b""))
+    runner = _Runner((0, b"/srv/owner/.local/bin/finishup\n", b""), (0, _report(), b""))
     found = _discover(runner, remote_launcher=None)
-    assert found.launcher == "/home/owner/.local/bin/finishup"
+    assert found.launcher == "/srv/owner/.local/bin/finishup"
     probe, ask = runner.calls
     assert probe[-1].startswith('for candidate in "$HOME/.local/bin/finishup"')
     assert "command -v" not in probe[-1] and "which" not in probe[-1]
-    assert ask[-1] == "/home/owner/.local/bin/finishup service endpoint --json"
+    assert ask[-1] == "/srv/owner/.local/bin/finishup service endpoint --json"
 
 
 def test_no_launcher_falls_back_to_the_recorded_root_or_refuses() -> None:

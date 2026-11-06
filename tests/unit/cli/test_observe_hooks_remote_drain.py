@@ -27,7 +27,7 @@ from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLoc
 
 _drain_connector: Any = getattr(observe_hooks, "_drain_connector")
 _claim_bound_drain: Any = getattr(observe, "_claim_bound_drain")
-_PATH = "/home/dev/private-project"
+_PATH = "/srv/dev/private-project"
 
 
 class _Recorder:

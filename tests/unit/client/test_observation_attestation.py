@@ -202,5 +202,5 @@ def test_an_invalid_handle_is_refused(tmp_path: Path) -> None:
     request = _request(store, workspace, path)
     with pytest.raises(ValueError, match="workspace_handle_invalid"):
         attest_ingest_request(
-            request, handle="/home/dev", store=store, workspace_commitment=workspace, state=state
+            request, handle="/srv/dev", store=store, workspace_commitment=workspace, state=state
         )

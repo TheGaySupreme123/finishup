@@ -17,7 +17,7 @@ from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest
 
 _HANDLE = "client:0123456789abcdef"
-_PATH = "/home/dev/private-project"
+_PATH = "/srv/dev/private-project"
 _START = json.dumps(
     {
         "protocol_version": "0.1",

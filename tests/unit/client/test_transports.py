@@ -40,7 +40,7 @@ from finishup.client.transports import (
 from finishup.config.paths import reset_selection_memo, selection_override
 
 _REPO_SRC = Path(__file__).resolve().parents[3] / "src"
-_ROOT = Path("/home/owner/.local/state/finishup/servers/t_0c0c0c0c")
+_ROOT = Path("/srv/owner/.local/state/finishup/servers/t_0c0c0c0c")
 _TRUST = ("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes")
 _LIVENESS = ("-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
 _MASTER = (
