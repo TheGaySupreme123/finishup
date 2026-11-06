@@ -562,10 +562,18 @@ class AutoAttachOutcome:
     reason: str | None
     recovered: bool = False
     candidate_count: int | None = None
+    # ADR-051: the remote connection phase when the selected server is on another machine. The
+    # diagnostic keeps its closed ``reason``; only the agent's context names the phase.
+    remote_phase: str | None = None
 
     def __post_init__(self) -> None:
         if (self.mapping is None) == (self.reason is None):
             raise ValueError("auto_attach_outcome_invalid")
+        if self.remote_phase is not None:
+            from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+            if self.mapping is not None or self.remote_phase not in REMOTE_CONNECTION_PHASES:
+                raise ValueError("auto_attach_outcome_invalid")
         if self.candidate_count is not None and (
             self.reason != "auto_attach_binding_ambiguous"
             or type(self.candidate_count) is not int
@@ -621,9 +629,19 @@ _AUTO_ATTACH_CONTROL_REASONS: Final[Mapping[str, str]] = MappingProxyType(
 )
 
 
-def _attachment_recovery_context(reason: str) -> str:
+def _attachment_recovery_context(reason: str, *, remote_phase: str | None = None) -> str:
     """Render only trusted classifications, never host/error payload text."""
 
+    if remote_phase is not None:
+        # ADR-051: no service of this machine serves a remote root, so no startup or restart
+        # advice applies; the closed phase and its continuation say what to do instead.
+        from finishup.cli.render import render_hook_recovery_suffix
+
+        return (
+            f"FinishUP attachment pending: {remote_phase}. The selected FinishUP server could not "
+            "serve the attachment, so no task is mapped; never fall back to another server or a "
+            "local service." + render_hook_recovery_suffix(remote_phase) + " "
+        )
     if reason == "service_incompatible":
         return (
             "FinishUP attachment pending: service_incompatible. The selected service has an "
@@ -3552,8 +3570,12 @@ async def _try_auto_start(
         # A validated local predecessor selects recovery before admission. An
         # ordinary create attempt would now succeed and strand predecessor work.
     except ControlError as error:
+        from finishup.client.remote_remedy import remote_remedy
         from finishup.service.client import handshake_failure
 
+        remedy = remote_remedy(error)
+        if remedy is not None and remedy.directive is not None:
+            return AutoAttachOutcome(None, "service_unavailable", remote_phase=remedy.reason)
         if handshake_failure(error) is not None:
             # A running service of this installation closed the hello (#1040 follow-up): not a
             # service that still has to start, and not another installation to replace.
@@ -4953,6 +4975,7 @@ def _session_start_attach(
     additional = ""
     recap_text = ""
     attach_reason: str | None = None
+    attach_remote_phase: str | None = None
     attach_advisory_only = False
     session_lifecycle_lock = (
         contextlib.nullcontext(True)
@@ -4990,6 +5013,7 @@ def _session_start_attach(
 
                     attach_outcome = cast(AutoAttachOutcome, resolve_runner()(_attach))
                     attach_reason = attach_outcome.reason
+                    attach_remote_phase = attach_outcome.remote_phase
                     mapping = _record_auto_attach(
                         attach_outcome,
                         event,
@@ -5006,7 +5030,12 @@ def _session_start_attach(
                         "before substantive material work. " + _STARTUP_RECOVERY_CONTEXT
                     )
                     if attach_reason is not None:
-                        additional = _attachment_recovery_context(attach_reason) + additional
+                        additional = (
+                            _attachment_recovery_context(
+                                attach_reason, remote_phase=attach_remote_phase
+                            )
+                            + additional
+                        )
                     attach_advisory_only = True
                 else:
                     additional = _active_context(mapping, mapping.last_frontier)

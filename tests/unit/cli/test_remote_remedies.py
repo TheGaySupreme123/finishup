@@ -237,6 +237,65 @@ def test_the_hook_contexts_are_unchanged_on_a_local_root(home: Path) -> None:
     assert hooks_module.locked_context(outcome) == hooks_module._LOCKED_CONTEXT  # pyright: ignore[reportPrivateUsage]
 
 
+def _auto_attach(error: ControlError) -> Any:  # noqa: ANN401
+    import asyncio
+
+    from finishup.cli import observe_hooks
+
+    async def connect(_kind: object) -> object:
+        raise error
+
+    return asyncio.run(
+        observe_hooks._try_auto_start(  # pyright: ignore[reportPrivateUsage]
+            "claude:qzx-session",
+            _state=None,
+            harness_id="claude",
+            workspace_locator="/qzx/workspace",
+            connect=connect,  # type: ignore[arg-type]
+        )
+    )
+
+
+@pytest.mark.parametrize(("phase", "token"), _PHASES)
+def test_a_failed_auto_attach_names_the_remote_phase(home: Path, phase: str, token: str) -> None:
+    # Found in the real-environment run: SessionStart told the agent to "finish service startup"
+    # while an HTTPS server was down, a remedy no command on this machine can apply.
+    from finishup.cli import observe_hooks
+
+    del home
+    outcome = _auto_attach(_phase_error(phase))
+    assert (outcome.mapping, outcome.reason, outcome.remote_phase) == (
+        None,
+        "service_unavailable",
+        phase,
+    )
+    context = observe_hooks._attachment_recovery_context(  # pyright: ignore[reportPrivateUsage]
+        outcome.reason, remote_phase=outcome.remote_phase
+    )
+    assert context.startswith(f"FinishUP attachment pending: {phase}.")
+    assert context.endswith(f" Continuation: {token}. ")
+    assert "service startup" not in context
+    _assert_remote_words(context)
+
+
+@pytest.mark.usefixtures("remote_root")
+def test_a_closed_auto_attach_connection_on_a_remote_root_is_unreachable() -> None:
+    outcome = _auto_attach(ControlError("service_unavailable", retryable=True))
+    assert outcome.remote_phase == "remote_unreachable"
+
+
+def test_a_failed_auto_attach_keeps_its_local_context_on_a_local_root(home: Path) -> None:
+    from finishup.cli import observe_hooks
+
+    del home
+    outcome = _auto_attach(ControlError("service_unavailable", retryable=True))
+    assert (outcome.reason, outcome.remote_phase) == ("service_unavailable", None)
+    context = observe_hooks._attachment_recovery_context(outcome.reason)  # pyright: ignore[reportPrivateUsage]
+    assert context.startswith("FinishUP attachment pending: service_unavailable.")
+    with pytest.raises(ValueError, match="auto_attach_outcome_invalid"):
+        observe_hooks.AutoAttachOutcome(None, "service_unavailable", remote_phase="vault_locked")
+
+
 # --- the terminal interface ---------------------------------------------------------------------
 
 
