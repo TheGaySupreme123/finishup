@@ -4167,9 +4167,10 @@ uninitialized vault). CLI-side staging, promotion, and proof-based discard seria
 bundle-scoped advisory lock held by the initializing process for its whole
 stage→ceremony→promote span and re-checked by discard-only callers while held, so a stale status
 read can never delete a credential whose vault commit is in flight, and generated-passphrase
-installations cannot be stranded. That lock covers initialization only. Known limit: rotation
-staging and promotion run in the trusted helper's process under no lock the service's reconcile
-honours, so the accepting unlock's proof does not cover a rotation in flight there. The generated
+installations cannot be stranded. That lock covers initialization only. Known limit, tracked in
+issue #1319: rotation staging and promotion run in the trusted helper's process under no lock the
+service's reconcile honours, so the accepting unlock's proof does not cover a rotation in flight
+there. The generated
 rotation (`vault_passphrase_rotate`, ADR-015) stages its replacement before it opens the ceremony;
 a reconcile at service start or after a soft re-ready that reads that entry and returns before the
 ceremony opens discards it, the rewrap still goes through, the helper's promotion fails with
