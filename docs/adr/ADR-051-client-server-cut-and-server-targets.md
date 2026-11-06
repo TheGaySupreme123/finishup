@@ -267,8 +267,13 @@ answers bounded `workspace_call`s on a connection that declared it.
   it waits a bounded time for one — 5 seconds inside a live control call, 30 seconds for
   background work such as the detached review and recovered jobs — then raises the typed
   `WorkspaceAgentUnavailable`, whose reason is closed. Each call is bounded by the catalog's call
-  deadline, a channel serves at most four calls at once, and pending argument bytes are bounded. A
-  dropped channel fails its pending calls, except that a read whose channel dropped is sent once
+  deadline, and by the deadline of the control call it serves, whose cancellation or timeout
+  cancels it at once (a call blocked in a worker thread included); the agent is told only the
+  time left once the call holds a slot, and the reply is awaited that long after the frame is
+  written. A frame is never cut off part-way: the write is shielded, and a connection whose write
+  a timeout or cancellation interrupted is ended rather than written on again. A channel serves
+  at most four calls at once, and pending argument bytes are bounded. A dropped channel fails its
+  pending calls, except that a read whose channel dropped is sent once
   more to another live channel of the same handle (never an approved check, which may already have
   run); a pending call keeps its connection out of idle close; a reply on a connection that
   declared no agent closes it. The hub logs closed tokens only. Every channel under one handle

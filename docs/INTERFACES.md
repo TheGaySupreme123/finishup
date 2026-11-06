@@ -4675,6 +4675,22 @@ a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(
   `live_call_scope(channel=None)` (`in_live_call()` reads it), naming the agent the serving
   connection itself offered: a live call for that channel's handle goes to it first. Each call is
   then bounded by the catalog's call deadline.
+- **The control call bounds its workspace calls.** The daemon runs each ready handler inside
+  `workspace_call_deadline(deadline_at=None)` (the handler's own deadline on the loop clock, or
+  none). A workspace call made there never waits past that deadline and is not sent when no time
+  is left (`deadline_exceeded`); when the handler is cancelled or times out, every workspace call
+  it left in flight is cancelled at once, a blocking one in a worker thread included, which then
+  fails `call_cancelled` and frees its worker thread and agent slot. Work the handler started that
+  outlives it (a task that copied its context) is no longer bounded or cancelled by it.
+- **Deadlines and whole frames.** The slot wait and the frame write share a call's
+  `timeout_seconds`; the agent is told what is left of it as `deadline_ms`, and the reply is
+  awaited that long after the frame is fully written, plus a 1 s grace, so an answer given in the
+  agent's own time is never dropped as late. The frame write is shielded: a caller that stops
+  waiting never cuts a frame off part-way. The daemon writes every frame of a connection (control
+  results and workspace calls) one at a time, and a write that a timeout, a cancellation or a
+  transport failure interrupts leaves the connection out of step: its write side is shut, so the
+  peer reads the end of the stream rather than a spliced frame, and no later frame is written on
+  it.
 - **Channel bounds.** A channel serves `MAX_CALLS_PER_CHANNEL = 4` calls at once with at most
   `MAX_PENDING_ARGUMENT_BYTES_PER_CHANNEL` argument bytes in flight. A pending call keeps its
   connection out of idle close, and a `workspace_reply` on a connection that declared no agent
@@ -4698,7 +4714,7 @@ a worker thread, never from the hub's own loop. `has_agent(handle)`, `bind_loop(
   agent_reason=None)`, `reason` in `WORKSPACE_AGENT_UNAVAILABLE_REASONS`: `no_agent`,
   `agent_disconnected`, `deadline_exceeded`, `agent_busy`, `operation_not_declared`,
   `reply_invalid`, `agent_unavailable`, `agent_refused`, `agent_failed` (the last three carry the
-  agent's own closed `agent_reason`), `arguments_invalid` or `hub_unavailable`. `.refused` is true
+  agent's own closed `agent_reason`), `arguments_invalid`, `hub_unavailable` or `call_cancelled`. `.refused` is true
   for `agent_refused`, whose public token is `workspace_agent_refused`. The hub logs closed tokens
   only and records each delivered answer under the `client_attested` label.
 

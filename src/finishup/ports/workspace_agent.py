@@ -310,6 +310,8 @@ WORKSPACE_AGENT_UNAVAILABLE_REASONS: Final[frozenset[str]] = frozenset(
         "arguments_invalid",
         # No hub serves this process, or a blocking call came from the event loop's own thread.
         "hub_unavailable",
+        # The control call this call served was cancelled or ran out of time; it was abandoned.
+        "call_cancelled",
     }
 )
 
