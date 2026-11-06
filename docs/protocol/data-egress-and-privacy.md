@@ -24,8 +24,13 @@ Setting the policy to that state does not by itself stop a target already select
 not consult the policy before each connection. The owner is told instead and decides (ADR-051
 decision 8): after the change, the trusted console offers switching to this computer's everyday
 FinishUP (`finishup server use local`) or keeping the target, and keeping is the default; without
-that console the facts and the command are printed and nothing switches. While the owner keeps the
-target, and after switching until open agent sessions restart, traffic to it continues.
+that console the facts and the command are printed and nothing switches. While a remote target is
+selected, a fresh command does not set this computer's policy (the server-host privacy commands
+are refused with `requires_server_host`; `privacy tighten|propose` reach the selected server), so
+the choice arises when a process that resolved this computer's server before the selection
+changed commits the change. The owner displays name the state only while this computer's service
+is running and unlocked, the one source of its policy. While the owner keeps the target, and after
+switching until open agent sessions restart, traffic to it continues.
 
 ## Content classes
 
