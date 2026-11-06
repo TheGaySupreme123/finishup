@@ -605,7 +605,8 @@ connections, 25-second long-polls).
   and ready composition behind their own network API (loopback HTTP, and the owner-only API
   socket for an SSH target) against the real connect seam, `RestServiceClient`, hook drain and
   `WorkspaceAgentLoop` with the real handler on a temporary repository: the whole workflow with
-  the client-attested lines, the reviewer's `read_file`, the agent lost mid-review (typed
+  the client-attested lines (with a decoy repository at the claimed path on the server's own
+  filesystem, whose commit is never the recorded task base), the reviewer's `read_file`, the agent lost mid-review (typed
   `workspace_agent_unavailable`), a hook row attested and verified through the agent, background
   delivery, and the server lost (`remote_unreachable`, never a local service). Spies show the
   server's own readers never see the workspace, and a recording transport shows no request
