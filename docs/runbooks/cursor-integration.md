@@ -700,6 +700,10 @@ default service.
   in UTC), and setup's next steps name it instead of `--privacy` / `--set`. Host
   decision: supported, same code path for Cursor; no MCP tool or hook changes a privacy policy, so
   none carries these lines.
+- **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
+  still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
+  line it ends with the fixed provenance-unknown section (what happened, why it matters, run
+  `receipt` again or restart the server's service).
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an

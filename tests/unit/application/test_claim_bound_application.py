@@ -23,7 +23,10 @@ from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASONS,
     CLIENT_ATTESTED_OBSERVATION_LINE,
     CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
@@ -315,7 +318,7 @@ def test_both_agent_gaps_are_classified_beside_their_siblings() -> None:
 class _Ledger:
     """A task ledger whose event read yields ``records`` and then fails with ``failure``."""
 
-    def __init__(self, records: tuple[object, ...], failure: Exception | None = None) -> None:
+    def __init__(self, records: tuple[object, ...], failure: BaseException | None = None) -> None:
         self._records = records
         self._failure = failure
 
@@ -414,38 +417,104 @@ def test_an_opening_event_that_cannot_say_leaves_the_binding_unknown(record: obj
 
 
 def test_the_unknown_provenance_block_is_fixed_words() -> None:
+    """Decision D4: what happened, why it matters and what to do, in fixed words only."""
+
     assert workspace_provenance_unknown_block(markdown=False).splitlines() == [
         "Workspace evidence",
         WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     ]
     assert workspace_provenance_unknown_block(markdown=True).splitlines() == [
         "## Workspace evidence",
-        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+        *WORKSPACE_PROVENANCE_UNKNOWN_LINES,
     ]
-    assert "/" not in WORKSPACE_PROVENANCE_UNKNOWN_LINE
+    assert WORKSPACE_PROVENANCE_UNKNOWN_LINES == (
+        "Provenance unknown: the record of how this task's session was opened could not be "
+        "read from the server's ledger.",
+        "Why it matters: FinishUP cannot confirm whether this task's workspace evidence was "
+        "read on the client machine.",
+        "What to do: run receipt again. If this persists, restart the server's FinishUP service "
+        "(`finishup service restart` on the server host), then run receipt again.",
+    )
+    # Nothing in the section says the evidence was read on the client: it says that is unknown.
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in workspace_provenance_unknown_block(markdown=False)
+
+
+class _Recorded:
+    """Captures the bounded diagnostics the attestation read records instead of refusing."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[type[BaseException], dict[str, object]]] = []
+
+    def __call__(self, exc: BaseException, **fields: object) -> str:
+        self.calls.append((type(exc), fields))
+        return "cor_00000000-0000-4000-8000-000000051003"
 
 
 @pytest.mark.parametrize(
-    ("failure", "code", "retryable"),
+    "failure",
     [
-        (OSError(5, "input/output error"), PublicErrorCode.STORAGE_UNSAFE, True),
-        (ValueError("ledger_chain_invalid"), PublicErrorCode.STORAGE_CORRUPT, False),
+        OSError(5, "input/output error"),
+        ValueError("ledger_chain_invalid"),
+        KeyError("object_missing"),
+        PublicOperationError(PublicErrorCode.STORAGE_CORRUPT, "The ledger is unreadable.", False),
+        PublicOperationError(PublicErrorCode.STORAGE_UNSAFE, "The ledger is unavailable.", True),
+        RuntimeError("ledger_unavailable"),
     ],
+    ids=["os_error", "malformed", "missing", "classified_corrupt", "classified_unsafe", "other"],
 )
-def test_a_failed_attestation_read_is_a_storage_error_never_an_unattested_receipt(
-    failure: Exception, code: PublicErrorCode, retryable: bool
+def test_a_failed_attestation_read_leaves_the_binding_unknown_and_never_refuses(
+    failure: Exception, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A claim-bound receipt would otherwise render without its client-attested block."""
+    """Decision D4: the receipt is built and says the provenance is unknown; nothing refuses.
+
+    The failure is recorded as one bounded diagnostic under ``receipt_attestation_read`` so an
+    operator can find it; the caller gets the unknown binding, never an error.
+    """
+
+    from finishup.application import receipt
+
+    recorded = _Recorded()
+    monkeypatch.setattr(receipt, "record_classified_exception_without_raising", recorded)
+    attested_by: Any = getattr(receipt, "_attested_by")
+    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    request_id = "req_00000000-0000-4000-8000-000000051002"
+    for records in ((), (_record(None, name="session_resumed"),)):
+        recorded.calls.clear()
+        answer = asyncio.run(
+            attested_by(_runtime(_Ledger(records, failure)), request_id=request_id)
+        )
+        assert answer is unknown
+        assert recorded.calls == [
+            (
+                type(failure),
+                {
+                    "component": "application.receipt",
+                    "operation": "receipt_attestation_read",
+                    "request_id": request_id,
+                },
+            )
+        ]
+
+
+def test_a_failed_attestation_read_recovers_on_the_next_read() -> None:
+    """The next receipt or replay reads the opening again, so a cleared fault restores it."""
 
     from finishup.application import receipt
 
     attested_by: Any = getattr(receipt, "_attested_by")
-    with pytest.raises(PublicOperationError) as raised:
-        asyncio.run(
-            attested_by(
-                _runtime(_Ledger((), failure)),
-                request_id="req_00000000-0000-4000-8000-000000051002",
-            )
-        )
-    assert raised.value.code is code
-    assert raised.value.retryable is retryable
+    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    ledger = _Ledger((), OSError(5, "input/output error"))
+    runtime = _runtime(ledger)
+    assert asyncio.run(attested_by(runtime)) is unknown
+    runtime.ledger = _Ledger((_opened(_HANDLE),))
+    assert asyncio.run(attested_by(runtime)) == _INSTANCE
+
+
+def test_a_cancelled_attestation_read_is_never_turned_into_an_answer() -> None:
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(attested_by(_runtime(_Ledger((), asyncio.CancelledError()))))
