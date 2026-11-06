@@ -1384,14 +1384,21 @@ def server_folders_add(
     """Let a server read files beneath FOLDER on this computer (you confirm it here)."""
 
     from finishup.cli.privacy_setup import admitted_root_from_path
-    from finishup.client.server_folders import MAX_FOLDERS, FolderError, add_folder
+    from finishup.client.server_folders import (
+        MAX_FOLDERS,
+        FolderError,
+        add_folder,
+        folder_admissible,
+    )
 
     _require_selection_in_force()
     record = _remote_target_or_fail(name)
     # The rule the local service uses for an admitted input root: an existing directory named
     # by its absolute, normalized path with no link on the way, never hidden or a system tree.
+    # Then the home rules 'add_folder' applies again under the lock, checked before the owner is
+    # asked, so consent is never collected for a folder that would then be refused.
     canonical = admitted_root_from_path(folder)
-    if canonical is None:
+    if canonical is None or not folder_admissible(canonical):
         raise ServerCommandRefused("folder_invalid")
     current = _folders_of(record)
     if canonical in current:

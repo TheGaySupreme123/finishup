@@ -4555,9 +4555,13 @@ server-host guard runs, so the service never reads a selection its spawner did n
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` and `finishup server folders add NAME FOLDER|list NAME|remove
-NAME FOLDER|--all` (`cli/server.py`). `server status --json` emits
-`server-target-status-1.0.0` and names the deciding root source, never a credential; the text
-form also lists the remote target's admitted folders, which the JSON contract does not carry.
+NAME FOLDER|--all` (`cli/server.py`). `server folders add` refuses a folder that
+`client.server_folders.folder_admissible` rejects (`folder_invalid`: not the input-root shape, the
+home directory, a folder holding it by spelling or identity, or one in its private trees) before
+it asks on the trusted console, and `add_folder` applies the same rule again under the registry
+lock. `server status --json` emits `server-target-status-1.0.0` and names the deciding root
+source, never a credential; the text form also lists the remote target's admitted folders, which
+the JSON contract does not carry.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds. The

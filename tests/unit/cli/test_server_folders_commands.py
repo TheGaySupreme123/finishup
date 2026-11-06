@@ -176,6 +176,33 @@ def test_a_folder_the_input_root_rule_refuses_is_refused_before_asking(
     assert read_folders(root, record.target_id) == ()
 
 
+@pytest.mark.parametrize("which", ["home", "holds_home", "private"])
+def test_a_folder_the_home_rules_refuse_is_refused_before_asking(
+    remote: tuple[targets.ServerTarget, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    confirmed: list[tuple[str, str]],
+    which: str,
+) -> None:
+    """The owner is never asked to consent to a folder that would then be refused."""
+
+    record, root = remote
+    user_home = (tmp_path / "users" / "me").resolve()
+    (user_home / "Library" / "Mail").mkdir(parents=True)
+    monkeypatch.setenv("HOME", os.fspath(user_home))
+    value = {
+        "home": user_home,
+        "holds_home": user_home.parent,
+        "private": user_home / "Library" / "Mail",
+    }[which]
+    result = _invoke("add", "lab", os.fspath(value))
+    assert result.exit_code == 2
+    assert result.stderr.startswith("folder_invalid:")
+    assert os.fspath(value) not in result.output
+    assert confirmed == []
+    assert read_folders(root, record.target_id) == ()
+
+
 def test_a_local_or_unknown_target_has_no_folders(
     home: Path, folder: str, confirmed: list[tuple[str, str]]
 ) -> None:

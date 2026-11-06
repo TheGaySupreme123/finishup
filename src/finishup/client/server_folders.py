@@ -40,6 +40,7 @@ __all__ = [
     "FolderError",
     "add_folder",
     "clear_folders",
+    "folder_admissible",
     "folder_covers",
     "folder_holds_home",
     "folders_path",
@@ -138,6 +139,25 @@ def _holds_home_by_identity(folder: str) -> bool:
             return True
         current = posixpath.dirname(current)
     return False
+
+
+def folder_admissible(folder: str) -> bool:
+    """Whether the owner may admit ``folder`` for a server: the input-root shape in normal form,
+    neither the home directory nor a folder that holds it (by spelling or by identity), and not
+    in the home directory's private trees.
+
+    ``add_folder`` applies this rule under the registry lock; ``server folders add`` asks it
+    first too, so the owner is never asked to consent to a folder that would then be refused.
+    """
+
+    from finishup.adapters.home_project_reads import home_private_location
+
+    return (
+        _well_formed(folder)
+        and not folder_holds_home(folder)
+        and not _holds_home_by_identity(folder)
+        and not home_private_location(folder)
+    )
 
 
 def _decode(encoded: bytes, target_id: str) -> tuple[str, ...]:
@@ -270,14 +290,7 @@ def add_folder(root: Path, target_id: str, folder: str) -> bool:
     Callers hold ``targets.registry_lock()``.
     """
 
-    from finishup.adapters.home_project_reads import home_private_location
-
-    if (
-        not _well_formed(folder)
-        or folder_holds_home(folder)
-        or _holds_home_by_identity(folder)
-        or home_private_location(folder)
-    ):
+    if not folder_admissible(folder):
         raise FolderError("folder_invalid")
     current = read_folders(root, target_id)
     if folder in current:
