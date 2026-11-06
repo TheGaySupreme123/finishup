@@ -73,9 +73,12 @@ __all__ = [
 
 type TransportKind = Literal["unix", "ssh", "https"]
 
-# The OpenSSH master's control socket beneath a remote target root. OpenSSH binds it under a
-# 17-byte temporary suffix first, which stays inside the root's socket-path bound (the longest
-# endpoint ``run/secret-ingress.sock`` is longer than ``run/m`` plus that suffix).
+# The OpenSSH master's control socket beneath a remote target root, the only socket a client
+# binds there in this topology. OpenSSH binds it at ``run/m.<16 random characters>`` first and
+# renames it into place. A remote root is checked against the client sockets it binds, not the
+# service's endpoints: ``finishup server add`` refuses a root where that 17-byte-longer path would
+# not fit the platform's ``sun_path`` bound (``target_root_too_long``, through
+# ``finishup.config.installation.socket_path_fits``), so a root it accepted always fits here.
 SSH_CONTROL_PATH: Final = Path("run") / "m"
 SSH_CONTROL_PERSIST: Final = "15m"
 # BatchMode never prompts (no password, no passphrase, no host-key question); a host key that is
