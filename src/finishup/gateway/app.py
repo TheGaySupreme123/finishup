@@ -17,7 +17,11 @@ unchanged and an SSH client and an HTTPS client of the same owner reach the same
 per-principal claim namespaces wait for multi-key hosting (ADR-051 decision 9).
 
 Audit lines carry closed tokens only — key id, route, control method, HTTP status, closed
-reason, correlation id — never a body, a header value, a label or an address.
+reason, correlation id — never a body, a header value, a label or an address. The audit is
+bounded: the file rotates once at ``AUDIT_ROTATE_BYTES``, and a refusal of an unauthenticated
+request is written at most once per reason per ``UNAUTHENTICATED_AUDIT_SECONDS``, the ones not
+written being counted in the next window's ``gateway_refusals_suppressed`` line, so a client
+without a key cannot grow the server's disk.
 """
 
 from __future__ import annotations
@@ -66,8 +70,19 @@ from finishup.service.control_protocol import (
     encode_control_frame,
 )
 
-__all__ = ["AuditSink", "FileAuditSink", "GatewayApp", "build_gateway_app"]
+__all__ = [
+    "AUDIT_ROTATE_BYTES",
+    "UNAUTHENTICATED_AUDIT_SECONDS",
+    "AuditSink",
+    "FileAuditSink",
+    "GatewayApp",
+    "build_gateway_app",
+]
 
+# The audit file is renamed to ``<name>.1`` (replacing the previous one) once it reaches this.
+AUDIT_ROTATE_BYTES: Final = 8 * 1_048_576
+# At most one audit line per refusal reason per this window for requests no key authenticated.
+UNAUTHENTICATED_AUDIT_SECONDS: Final = 60.0
 _JSON: Final = "application/json"
 _SWEEP_SECONDS: Final = 5.0
 _USE_RECORD_SECONDS: Final = 60.0
@@ -79,10 +94,15 @@ class AuditSink(Protocol):
 
 
 class FileAuditSink:
-    """Append canonical audit lines to an owner-only file (``<log dir>/gateway-audit.jsonl``)."""
+    """Append canonical audit lines to an owner-only file (``<log dir>/gateway-audit.jsonl``).
 
-    def __init__(self, path: Path) -> None:
+    Once the file reaches ``rotate_bytes`` it is renamed to ``<name>.1``, replacing the previous
+    one, so the audit holds at most about twice that on disk.
+    """
+
+    def __init__(self, path: Path, *, rotate_bytes: int = AUDIT_ROTATE_BYTES) -> None:
         self._path = path
+        self._rotate_bytes = rotate_bytes
 
     def write(self, record: dict[str, JsonValue]) -> None:
         import os
@@ -92,9 +112,15 @@ class FileAuditSink:
             flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW
             descriptor = os.open(self._path, flags, 0o600)
             try:
+                if os.fstat(descriptor).st_size >= self._rotate_bytes:
+                    os.close(descriptor)
+                    descriptor = -1
+                    os.replace(self._path, self._path.with_name(f"{self._path.name}.1"))
+                    descriptor = os.open(self._path, flags, 0o600)
                 os.write(descriptor, canonical_encode(record) + b"\n")
             finally:
-                os.close(descriptor)
+                if descriptor >= 0:
+                    os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +129,8 @@ class _Answer:
     body: bytes = b""
     method: str | None = None
     location: str | None = None
+    # A closed token for the audit line when a 200 answer is itself a refusal (a scope gap).
+    reason: str | None = None
 
 
 class _Refused(Exception):
@@ -172,6 +200,8 @@ class GatewayApp:
         self._digest = manifest_digest
         self._on_stale = on_stale
         self._last_use: dict[str, float] = {}
+        # Per refusal reason of unauthenticated requests: (window start, lines not written).
+        self._unauthenticated: dict[str, tuple[float, int]] = {}
         self._sweeper: asyncio.Task[None] | None = None
 
     # -- lifecycle ----------------------------------------------------------------------------
@@ -223,6 +253,28 @@ class GatewayApp:
                     "reason": reason,
                 }
             )
+
+    def _audits_unauthenticated(self, reason: str) -> bool:
+        """Whether this unauthenticated refusal gets its own audit line (once per window)."""
+
+        import time
+
+        now = time.monotonic()
+        window = self._unauthenticated.get(reason)
+        if window is not None and now - window[0] < UNAUTHENTICATED_AUDIT_SECONDS:
+            self._unauthenticated[reason] = (window[0], window[1] + 1)
+            return False
+        self._unauthenticated[reason] = (now, 0)
+        if window is not None and window[1]:
+            with contextlib.suppress(Exception):
+                self._audit.write(
+                    {
+                        "event": "gateway_refusals_suppressed",
+                        "reason": reason,
+                        "count": window[1],
+                    }
+                )
+        return True
 
     def _note_use(self, key: GatewayKey) -> None:
         import time
@@ -285,14 +337,15 @@ class GatewayApp:
             except Exception:
                 reason = "service_unavailable"
                 answer = _Answer(503, _error_body(reason))
-            self._record(
-                correlation_id=correlation_id,
-                route=name,
-                status=answer.status,
-                key=key,
-                method=answer.method,
-                reason=reason,
-            )
+            if key is not None or reason is None or self._audits_unauthenticated(reason):
+                self._record(
+                    correlation_id=correlation_id,
+                    route=name,
+                    status=answer.status,
+                    key=key,
+                    method=answer.method,
+                    reason=reason if reason is not None else answer.reason,
+                )
             headers = {CORRELATION_HEADER: correlation_id, "Cache-Control": "no-store"}
             if answer.location is not None:
                 headers["Location"] = answer.location
@@ -367,7 +420,9 @@ class GatewayApp:
         method_name = cast(str, frame["method"])
         method = ControlMethod(method_name)
         if not method_allowed(key.scope, method, claim_bound=session.claim_bound):
-            return _Answer(200, _forbidden_result(session, frame), method_name)
+            return _Answer(
+                200, _forbidden_result(session, frame), method_name, reason="method_forbidden"
+            )
         if session.delivered(rpc_id):
             raise _Refused("frame_invalid")
         if session.slot(rpc_id) is None:
@@ -400,13 +455,9 @@ class GatewayApp:
         frame = _frame(payload := await self._body(request))
         if frame.get("kind") != "cancel":
             raise _Refused("frame_invalid")
-        target = frame.get("target_rpc_id")
-        slot = session.slot(target) if type(target) is str else None
-        if slot is None or slot.done():
-            # The daemon already answered that call (or never had it), and it refuses a cancel
-            # naming no active call by closing the whole connection: there is nothing to cancel.
-            return _Answer(202)
-        await session.forward(payload)
+        # Never a cancel the daemon would end the connection for (a finished call, one this
+        # gateway answered itself); one that overtook its call follows it (``sessions``).
+        await session.forward_cancel(cast(str, frame["target_rpc_id"]), payload)
         return _Answer(202)
 
     async def post_frame(self, request: Request, key: GatewayKey) -> _Answer:

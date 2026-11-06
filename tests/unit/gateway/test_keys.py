@@ -35,7 +35,8 @@ def test_a_key_is_shown_once_and_stored_only_as_a_salted_hash(directory: Path) -
     record, key = create_key(directory, label="laptop", scope="agent", now=_NOW)
     assert API_KEY_PATTERN.match(key)
     assert key.startswith(f"fuk_{record.key_id}_")
-    secret = key.rsplit("_", 1)[1]
+    # The whole secret: base64url may itself contain "_", so never split on the last one.
+    secret = key.removeprefix(f"fuk_{record.key_id}_")
     stored = (directory / "keys.json").read_bytes()
     assert secret.encode() not in stored and key.encode() not in stored
     document = json.loads(stored)

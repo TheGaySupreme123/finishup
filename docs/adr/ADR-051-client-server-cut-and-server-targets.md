@@ -589,16 +589,18 @@ HTTPS and LOCALHOST PORT
   on-demand budget. `server connect` starts the master (`ssh -fN`); `server disconnect` exits it
   by its control path (`ssh -O exit`).
 - **HTTPS and localhost ports.** `finishup.client.https_binding` speaks HTTPS binding v1 to the
-  real gateway, `finishup service gateway`, which this pull request carries unchanged from approach
-  A (its commits are cherry-picked: the gateway, its key store and `key create|list|revoke`, the
-  `rest-error` and `server-info` 1.0.0 contracts), and re-frames it as the length-prefixed byte
+  real gateway, `finishup service gateway`, which this pull request carries from approach A with
+  the same code on both branches (the gateway, its key store and `key create|list|revoke`, the
+  `rest-error` and `server-info` 1.0.0 contracts, and every fix either branch made to it), and
+  re-frames it as the length-prefixed byte
   stream: the hello becomes `POST /v1/sessions` (the gateway's 43-character session id comes back
   in `Location`); a call `POST …/calls` that waits up to 2 s for its result, after which a `202`
   continues with the 25 s results long-poll (a call is never posted twice, and after a lost
   response only its result is asked for); a cancel `POST …/cancel`, sent once the gateway has
   answered the call it names, so it never overtakes that call and waits at most those 2 s, and
   dropped when that answer was the call's result (the daemon closes a connection whose cancel
-  names a call it already finished; the gateway likewise forwards no such cancel); a
+  names a call it is not running; the gateway likewise forwards a cancel only while its call
+  runs there, and holds one that overtook its call until that call is sent); a
   `workspace_reply` `POST …/frames`; `workspace_call`s arrive through the `GET …/frames`
   long-poll, run only for a session whose hello declared the agent, which also keeps that session
   out of the gateway's 120 s idle expiry; the gateway closes an agent session in which no such
@@ -606,7 +608,12 @@ HTTPS and LOCALHOST PORT
   agent the daemon routes workspace calls to, and a closing agent connection sends its `DELETE`
   before it stops polling and waits up to 1.5 s for it. A session idle past 90 s is checked
   before a call, so an expired session fails the write and the caller's reconnect-once replays
-  the same `request_id`.
+  the same `request_id`. On the server the gateway counts sessions still being opened against a
+  key's 64-session bound, names a scope refusal in its audit line, bounds its audit (one rotation
+  at 8 MiB; refusals of requests no key authenticated written once per reason per minute, with a
+  count of the rest), shows an expired key as expired in `key list`, and when stopped ends every
+  session first (answering each open long-poll) and drops idle TLS connections instead of waiting
+  out its graceful bound.
   TLS trusts the recorded CA file or the `sha256:` pin of the leaf certificate, checked inside the
   handshake before any request (and so the key) is sent; environment proxies and `.netrc` are
   ignored. `server login` checks the key against `GET /v1/server`, which must list binding `1.0`

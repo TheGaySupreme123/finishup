@@ -243,8 +243,14 @@ def key_list(
         return
     if not keys:
         typer.echo("No gateway keys.")
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
     for key in keys:
-        state = "revoked" if key.revoked_at is not None else "active"
+        # The state the gateway itself decides on its next request (revoked first, then expiry).
+        state = {"api_key_revoked": "revoked", "api_key_expired": "expired", None: "active"}[
+            key.failure(now)
+        ]
         typer.echo(
             f"{key.key_id}  {key.scope:<8}  {state:<7}  created {key.created_at}  "
             f"last used {key.last_used_at or 'never'}  {key.label}"

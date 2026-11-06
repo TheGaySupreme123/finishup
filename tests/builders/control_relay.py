@@ -13,7 +13,8 @@
   the payload bytes the client received, so every transport can be compared byte for byte.
 * ``write_fake_ssh`` — an ``ssh`` stand-in on ``PATH``: ``-M … -L LOCAL:REMOTE`` binds the local
   socket (mode 0600) and pumps each connection to the remote socket; ``-O exit|check`` talks to
-  its control socket; any other invocation runs the remote command locally.
+  its control socket, and an exiting master leaves its forwarded socket behind as OpenSSH does;
+  any other invocation runs the remote command locally.
 """
 
 from __future__ import annotations
@@ -235,17 +236,22 @@ class ScriptedDaemon:
                     continue
                 request = parse_control_request(frame)
                 if not isinstance(request, ControlCallRequest):
-                    # A cancel may overtake its call on a transport with concurrent requests.
-                    slow.setdefault(request.target_rpc_id, asyncio.Event()).set()
+                    # As the service admits a cancel (``ControlSession.admit``): one that names
+                    # no running call ends the connection, and every call on it with it.
+                    running = slow.get(request.target_rpc_id)
+                    if running is None:
+                        return
+                    running.set()
                     continue
                 if request.method is SLOW_METHOD and request.rpc_id.endswith("51f0"):
-                    event = slow.setdefault(request.rpc_id, asyncio.Event())
+                    event = slow[request.rpc_id] = asyncio.Event()
 
                     async def answer_after_cancel(
                         call: ControlCallRequest = request, done: asyncio.Event = event
                     ) -> None:
                         await done.wait()
                         async with write_lock:
+                            slow.pop(call.rpc_id, None)
                             await self._send(
                                 stream, _result(call, ControlError("request_cancelled"))
                             )
@@ -547,11 +553,11 @@ if "-M" in args:
         while True:
             conn, _ = master.accept()
             if conn.recv(16) == b"exit":
-                for path in (local, control):
-                    try:
-                        os.unlink(path)
-                    except FileNotFoundError:
-                        pass
+                # Like OpenSSH: the control socket is removed, the -L forward is left behind.
+                try:
+                    os.unlink(control)
+                except FileNotFoundError:
+                    pass
                 os._exit(0)
             conn.close()
 

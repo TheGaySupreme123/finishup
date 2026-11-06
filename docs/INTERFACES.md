@@ -5041,9 +5041,10 @@ an HTTP body to its frame bytes; where this table and those artifacts differ, th
 request on it, a pending long-poll included, answers `404` `session_unknown`. A client posts a
 `cancel` only after the call it names was posted, and only while that call's result has not
 arrived, and never posts a call twice: after a lost response it asks `GET …/results/{rpc_id}`
-instead. The daemon closes a connection whose `cancel` names no active call, so the gateway
-answers `202` to a `cancel` naming a call whose result it already holds, or a call it never had,
-and does not forward it.
+instead. The daemon closes a connection whose `cancel` names no active call, so a cancel reaches
+the daemon only while its call runs there, after that call: one for a call that already finished,
+or that the gateway answered itself, is answered `202` and dropped (the result is final), and one
+that arrived before its call is held (at most 32 per session, 60 seconds) and sent right after it.
 
 A session id is 32 random bytes bound to its key and holds one upstream control connection; it
 expires after 120 seconds idle, and one key holds at most 64 sessions. A session whose hello
@@ -5051,7 +5052,12 @@ declared `workspace_agent` also ends once no `GET …/frames` long-poll has begu
 (`AGENT_POLL_GRACE_SECONDS`, the 25-second wait plus a margin), so a client that died without
 `DELETE` stops being the agent the daemon routes workspace calls to. The gateway starts an
 idle-stopped service while it holds `POST /v1/sessions`; when the client left before that answer,
-the session is closed at once instead of being kept. Workflow outcomes —
+the session is closed at once instead of being kept, and sessions still being opened count
+against the key's bound. Delivery is at most once: a call is forwarded once per `(sid, rpc_id)`; a
+repeated post of a pending `rpc_id` waits on the same result, and a post of an `rpc_id` already
+delivered is `frame_invalid`. A result stays readable by `GET …/results/{rpc_id}` until it is
+fetched and for 60 seconds after (at most 8 MiB per session), so a client whose answer was lost in
+transit polls instead of posting again. Workflow outcomes —
 `vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
 a `200` control-result, byte-identical to the socket. Transport and authentication failures use
 `rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:
@@ -5072,6 +5078,32 @@ claim-bound `observation_ingest`; `operator` adds `project`, `review`, `import_c
 `backup_*`, `restore_*`, `migrate_*`, `integration_*`, `observation_pause|resume|revoke` and the
 human-control and secret channels are never reachable over HTTPS; an out-of-scope call returns the
 existing `method_forbidden`.
+
+`finishup.protocol.rest_binding` (SHARED) holds the binding's constants, `KEY_SCOPES` and
+`method_allowed(scope, method, *, claim_bound)`, `parse_api_key`, and the `RestErrorContract`
+(`service/rest-error-1.0.0`) and `ServerInfoContract` (`service/server-info-1.0.0`) models.
+`fixtures/service/rest-error.case.json`, `rest-server-info.case.json` and
+`rest-method-forbidden.case.json` lock a transport error body, a `server-info` document and the
+exact bytes of the gateway's synthesized `method_forbidden` control-result (built from the
+session's `service_instance_id` and `service_generation`, never forwarded).
+
+The gateway (`finishup.gateway`; the same code as in the edge-relay pull request):
+`finishup service gateway run --listen HOST:PORT (--tls-cert F --tls-key F | --behind-proxy)` and
+`finishup service gateway key create --label L --scope agent|operator [--expires-in-days N]
+[--rotate KEY_ID] [--output-file F] | list [--json] | revoke KEY_ID` (`server_host`). `run` exits
+21 (`gateway_stale`) when the daemon answers with another manifest; stopping it (Ctrl-C or
+`SIGTERM`) first stops accepting and ends every session, which answers each open long-poll, lets
+those answers finish for at most 1 second, drops the connections left idle, and then waits at
+most 5 seconds for a request still running. `key list` shows each key as `active`, `expired` or
+`revoked`. `<state>/gateway/keys.json` (`yoetz.gateway-keys/1`) holds `key_id`, `label`, `scope`,
+`principal` (`owner`), `created_at`, `expires_at`, `revoked_at`, `last_used_at`, `salt` and
+`digest` (`sha256(salt ‖ secret)`); `gateway/keys.lock` serializes writers. Audit lines go to
+`<log dir>/gateway-audit.jsonl` with `event` (`gateway_request`), `correlation_id`, `route`,
+`key_id`, `method`, `status` and `reason` only (an out-of-scope call's `200` carries reason
+`method_forbidden`); every response carries `FinishUP-Correlation-Id`. The file is renamed to
+`gateway-audit.jsonl.1` (replacing the previous one) once it reaches 8 MiB. A refusal of a request
+no key authenticated is written at most once per reason per minute; the next window first writes
+`event` `gateway_refusals_suppressed` with that `reason` and the `count` not written.
 
 ### Several-agent setup batches (issue #1119)
 

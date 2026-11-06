@@ -258,6 +258,14 @@ async def test_an_out_of_scope_call_is_a_synthesized_refusal_never_forwarded(
         "service_instance_id": SERVICE_ID,
     }
     assert len(gateway.daemon.received()) == 1  # the hello only
+    # The operator sees the scope refusal in the audit line, by its closed token.
+    refused = gateway.audit.records[-1]
+    assert (refused["route"], refused["method"], refused["status"], refused["reason"]) == (
+        "calls",
+        "service_lock",
+        200,
+        "method_forbidden",
+    )
     operator_sid = await _open(gateway, key=gateway.operator_key)
     allowed = await gateway.client.post(
         f"/v1/sessions/{operator_sid}/calls?wait_ms=5000",
@@ -286,46 +294,6 @@ async def test_never_over_https_methods_are_refused_for_every_scope(gateway: _Ga
             assert not method_allowed(scope, method, claim_bound=True)
     assert method_allowed("agent", ControlMethod.OBSERVATION_INGEST, claim_bound=True)
     assert not method_allowed("operator", ControlMethod.OBSERVATION_INGEST, claim_bound=False)
-
-
-def _cancel(sequence: int, target: int) -> bytes:
-    return encode_control_frame(
-        {
-            "kind": "cancel",
-            "protocol_version": "1.0",
-            "rpc_id": rpc_id(sequence),
-            "service_instance_id": SERVICE_ID,
-            "service_generation": "1",
-            "target_rpc_id": rpc_id(target),
-        }
-    )[4:]
-
-
-@pytest.mark.anyio
-async def test_a_cancel_naming_no_active_call_is_acknowledged_and_never_forwarded(
-    gateway: _Gateway,
-) -> None:
-    # The daemon closes the whole connection on a cancel naming no active call, so a cancel for a
-    # call it already answered, or for one it never had, never reaches it.
-    sid = await _open(gateway)
-    answered = await gateway.client.post(
-        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
-    )
-    assert answered.status_code == 200
-    for target in (7, 0x7777):
-        response = await gateway.client.post(
-            f"/v1/sessions/{sid}/cancel",
-            content=_cancel(0x7000 + target, target),
-            headers=gateway.headers(),
-        )
-        assert response.status_code == 202
-    # The session still serves calls; the daemon reads in order, so by this call's answer it has
-    # read anything forwarded before it.
-    later = await gateway.client.post(
-        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(8), headers=gateway.headers()
-    )
-    assert later.status_code == 200
-    assert not [frame for frame in gateway.daemon.received() if b'"kind":"cancel"' in frame]
 
 
 @pytest.mark.anyio
@@ -381,6 +349,95 @@ async def test_a_pending_call_long_polls_and_is_delivered_at_most_once(gateway: 
         f"/v1/sessions/{sid}/results/{rpc_id(0x51F1)}?wait_ms=0", headers=gateway.headers()
     )
     assert unknown.status_code == 400 and _reason(unknown) == "frame_invalid"
+
+
+def _cancel(target: int, sequence: int = 0x5200) -> bytes:
+    return encode_control_frame(
+        {
+            "kind": "cancel",
+            "protocol_version": "1.0",
+            "rpc_id": rpc_id(sequence),
+            "service_instance_id": SERVICE_ID,
+            "service_generation": "1",
+            "target_rpc_id": rpc_id(target),
+        }
+    )[4:]
+
+
+@pytest.mark.anyio
+async def test_a_cancel_the_daemon_would_refuse_is_never_forwarded(gateway: _Gateway) -> None:
+    """The service ends a connection whose cancel names a call it is not running, and every call
+    on it with it; over HTTPS a cancel easily arrives after its call finished."""
+
+    sid = await _open(gateway)
+    finished = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
+    )
+    assert finished.status_code == 200
+    refused = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000",
+        content=_call(8, ControlMethod.SERVICE_LOCK),
+        headers=gateway.headers(),
+    )
+    assert json.loads(refused.content)["body"]["code"] == "method_forbidden"
+    for late in (_cancel(7, 0x5201), _cancel(8, 0x5202)):
+        cancelled = await gateway.client.post(
+            f"/v1/sessions/{sid}/cancel", content=late, headers=gateway.headers()
+        )
+        assert cancelled.status_code == 202
+    assert not any(b'"kind":"cancel"' in frame for frame in gateway.daemon.received())
+    # The session and its daemon connection are still alive.
+    after = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(9), headers=gateway.headers()
+    )
+    assert after.status_code == 200
+    assert gateway.daemon.connections == 1
+
+
+@pytest.mark.anyio
+async def test_a_cancel_that_overtook_its_call_follows_it_to_the_daemon(gateway: _Gateway) -> None:
+    """A call and its cancel are separate HTTP requests: the daemon still sees call, then cancel."""
+
+    sid = await _open(gateway)
+    early = await gateway.client.post(
+        f"/v1/sessions/{sid}/cancel", content=_cancel(0x51F0), headers=gateway.headers()
+    )
+    assert early.status_code == 202
+    assert len(gateway.daemon.received()) == 1  # held: the daemon has only the hello
+    slow = encode_control_frame(call_request(0x51F0, ControlMethod.STATUS))[4:]
+    answered = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=slow, headers=gateway.headers()
+    )
+    assert answered.status_code == 200
+    assert json.loads(answered.content)["body"]["code"] == "request_cancelled"
+    assert gateway.daemon.received()[1:] == [slow, _cancel(0x51F0)]
+
+
+@pytest.mark.anyio
+async def test_a_cancel_naming_no_active_call_is_acknowledged_and_never_forwarded(
+    gateway: _Gateway,
+) -> None:
+    # The daemon closes the whole connection on a cancel naming no active call, so a cancel for a
+    # call it already answered, or for one it never had, never reaches it.
+    sid = await _open(gateway)
+    answered = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
+    )
+    assert answered.status_code == 200
+    for target in (7, 0x7777):
+        response = await gateway.client.post(
+            f"/v1/sessions/{sid}/cancel",
+            content=_cancel(target, 0x7000 + target),
+            headers=gateway.headers(),
+        )
+        assert response.status_code == 202
+    # The session still serves calls; the daemon reads in order, so by this call's answer it has
+    # read anything forwarded before it.
+    later = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(8), headers=gateway.headers()
+    )
+    assert later.status_code == 200
+    assert not [frame for frame in gateway.daemon.received() if b'"kind":"cancel"' in frame]
 
 
 @pytest.mark.anyio
@@ -590,7 +647,8 @@ async def test_audit_lines_carry_closed_tokens_only(gateway: _Gateway) -> None:
     )
     await gateway.client.get("/v1/server", headers={"Origin": "https://evil.example"})
     assert gateway.audit.records
-    secret = gateway.agent_key.rsplit("_", 1)[1]
+    # The whole secret (``fuk_<key id>_<secret>``): base64url may itself contain "_".
+    secret = gateway.agent_key.split("_", 2)[2]
     for record in gateway.audit.records:
         assert set(record) == {
             "event",
@@ -604,3 +662,60 @@ async def test_audit_lines_carry_closed_tokens_only(gateway: _Gateway) -> None:
         text = json.dumps(record)
         for forbidden in (sid, secret, "evil.example", 'agent"', "gw.example"):
             assert forbidden not in text.replace('"route": "sessions"', "")
+
+
+@pytest.mark.anyio
+async def test_a_flood_without_a_key_cannot_grow_the_audit(
+    gateway: _Gateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anyone who reaches the listener can send requests; a refusal of one no key authenticated
+    is audited at most once per reason per window, and the rest are counted, not written."""
+
+    import finishup.gateway.app as gateway_app
+
+    for _attempt in range(50):
+        refused = await gateway.client.get("/v1/server", headers={"Authorization": "Bearer x"})
+        assert refused.status_code == 401
+        forbidden = await gateway.client.get("/v1/server", headers={"Origin": "https://x.example"})
+        assert forbidden.status_code == 403
+    assert [(record["event"], record["reason"]) for record in gateway.audit.records] == [
+        ("gateway_request", "api_key_invalid"),
+        ("gateway_request", "origin_forbidden"),
+    ]
+    # Authenticated requests are audited one line each, as before.
+    for _attempt in range(3):
+        await gateway.client.get("/v1/server", headers=gateway.headers())
+    assert len(gateway.audit.records) == 5
+    # The next window writes the count of what the previous one did not.
+    monkeypatch.setattr(gateway_app, "UNAUTHENTICATED_AUDIT_SECONDS", 0.0)
+    await gateway.client.get("/v1/server", headers={"Authorization": "Bearer x"})
+    assert gateway.audit.records[-2:] == [
+        {"event": "gateway_refusals_suppressed", "reason": "api_key_invalid", "count": 49},
+        {
+            "event": "gateway_request",
+            "correlation_id": gateway.audit.records[-1]["correlation_id"],
+            "route": "server",
+            "key_id": None,
+            "method": None,
+            "status": 401,
+            "reason": "api_key_invalid",
+        },
+    ]
+
+
+def test_the_audit_file_rotates_once_it_reaches_its_bound(tmp_path: Path) -> None:
+    from finishup.gateway.app import FileAuditSink
+
+    path = tmp_path / "log" / "gateway-audit.jsonl"
+    sink = FileAuditSink(path, rotate_bytes=200)
+    record: dict[str, JsonValue] = {"event": "gateway_request", "reason": None, "status": 200}
+    line = len(json.dumps(record, separators=(",", ":"))) + 1
+    for _line in range(100):
+        sink.write(record)
+    rotated = path.with_name("gateway-audit.jsonl.1")
+    assert path.stat().st_size < 200 + line
+    assert rotated.stat().st_size < 200 + line
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert {json.loads(text)["event"] for text in path.read_text().splitlines()} == {
+        "gateway_request"
+    }
