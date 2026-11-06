@@ -139,7 +139,8 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # ADR-051 decision 12: +1 canonical vector (CTL-2106, a claim-bound observation ingest carrying
 # the client's attestation). +2 schemas for the HTTPS binding v1 (rest-error 1.0.0, server-info
 # 1.0.0).
-REVIEWED_RESOURCE_COUNT: Final = 357
+# +1 schema: version manifest 2.4.0 reports this inventory; v0.3.0's 2.3.0 stays frozen.
+REVIEWED_RESOURCE_COUNT: Final = 358
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -839,7 +840,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
     if not platform_cell().certified:
         limitations = tuple(sorted({*limitations, PLATFORM_CELL_UNTESTED}, key=str.encode))
     return VersionManifest(
-        schema_version="2.3.0",
+        schema_version="2.4.0",
         package_name="finishup",
         package_version=_distribution_version("finishup") or "0.1.0",
         protocol_version=PROTOCOL_VERSION,

@@ -1989,6 +1989,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/version/version-manifest-2.4.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/version/version-manifest-2.2.0.schema.json",
         "json_schema",
         "application/schema+json",

@@ -26,7 +26,9 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 252  # #1239 +1 contact-expectation-declared 1.0.0;
+_EXPECTED_MEMBER_COUNT = (
+    253  # ADR-051 +1 version-manifest 2.4.0; #1239 +1 contact-expectation-declared 1.0.0;
+)
 # #1170 +1 result-recorded 1.1.0;
 # #1139 +4 lossless result-delivery schemas;
 # #1118 +1 reviewer-reply 1.0.0, +2 check-result/-recorded 1.6.0,
@@ -536,12 +538,23 @@ def test_released_version_manifest_2_2_1_retains_the_0_2_3_inventory() -> None:
     )
 
 
-def test_live_version_manifest_2_3_tracks_the_current_inventory() -> None:
-    from finishup.version import REVIEWED_RESOURCE_COUNT
+def test_released_version_manifest_2_3_retains_the_0_3_0_inventory() -> None:
+    """v0.3.0 shipped 2.3.0; the ADR-051 inventory is reported by 2.4.0 instead."""
 
     document = _version_manifest_document("2.3.0")
-
     assert document["properties"]["schema_version"]["const"] == "2.3.0"
+    assert int(_version_manifest_consts(document, "resource_counts")["total"]) == 342
+    requests = _version_manifest_consts(document, "request_result_schema_versions")
+    assert requests["control-hello"] == "2.9.0"
+    assert "server-target-status" not in requests
+
+
+def test_live_version_manifest_2_4_tracks_the_current_inventory() -> None:
+    from finishup.version import REVIEWED_RESOURCE_COUNT
+
+    document = _version_manifest_document("2.4.0")
+
+    assert document["properties"]["schema_version"]["const"] == "2.4.0"
     counts = _version_manifest_consts(document, "resource_counts")
     assert int(counts["total"]) == REVIEWED_RESOURCE_COUNT
     assert sum(int(count) for name, count in counts.items() if name != "total") == int(
