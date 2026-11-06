@@ -4113,10 +4113,20 @@ async def _run_setup_wizard(
         _append_next_step(next_steps, registration_next)
     if not interactive:
         _append_next_step(next_steps, _NEXT_AGENT_GUIDE)
+    from finishup.cli.remote_remedy import remote_locked_directive, remote_unreachable_directive
+
+    # A server on another machine is started and unlocked there (ADR-051): its own directives.
+    remote_unreachable = remote_unreachable_directive()
+    remote_locked = remote_locked_directive()
     if not service.get("reachable"):
-        _append_next_step(next_steps, _NEXT_SERVICE)
+        _append_next_step(
+            next_steps,
+            _NEXT_SERVICE if remote_unreachable is None else remote_unreachable.directive,
+        )
     if service.get("state") != "ready":
-        _append_next_step(next_steps, _NEXT_UNLOCK)
+        _append_next_step(
+            next_steps, _NEXT_UNLOCK if remote_locked is None else remote_locked.directive
+        )
     if review_mode == "semantic":
         status_steps = (
             _semantic_status_next_steps(cast(Mapping[str, object], semantic_status))

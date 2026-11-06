@@ -2880,6 +2880,14 @@ class FinishUpRuntime:
             "credential_stored": "run /provider to store an API key",
             "privacy_permission": "run /privacy if you want external review",
         }
+        from finishup.cli.remote_remedy import remote_locked_directive, remote_unreachable_directive
+
+        remote_unreachable = remote_unreachable_directive()
+        remote_locked = remote_locked_directive()
+        if remote_unreachable is not None and remote_locked is not None:
+            # A server on another machine is reached and unlocked there (ADR-051).
+            remediation["service_reachable"] = remote_unreachable.directive
+            remediation["vault_ready"] = remote_locked.directive
         for layer in snapshot.layers:
             entries.append(
                 DoctorEntry(
@@ -2904,6 +2912,7 @@ def _connect_failure(error: BaseException) -> RuntimeError_:
     """
 
     from finishup.cli.exits import remediation_message
+    from finishup.cli.remote_remedy import remote_failure
     from finishup.service.client import path_refusal_reason
 
     path_reason = path_refusal_reason(error)
@@ -2913,6 +2922,15 @@ def _connect_failure(error: BaseException) -> RuntimeError_:
             path_reason,
             "FinishUP's local folders cannot be used safely",
             details=() if remedy is None else (remedy,),
+        )
+    remote = remote_failure(error)
+    if remote is not None:
+        # The selected server is on another machine (ADR-051): its phase and directive only.
+        reason, directive = remote
+        return RuntimeError_(
+            reason,
+            "the selected FinishUP server could not serve this connection",
+            details=(directive.directive,),
         )
     return RuntimeError_(
         str(getattr(error, "reason", "service_unavailable")),

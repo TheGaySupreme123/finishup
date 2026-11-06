@@ -46,6 +46,12 @@ def menu_available() -> bool:
 
 
 def _control_guidance(error: ControlError) -> str:
+    from finishup.cli.remote_remedy import remote_remedy_line
+
+    remote = remote_remedy_line(error)
+    if remote is not None:
+        # The selected server is on another machine (ADR-051): its own repair, never a local one.
+        return remote
     code = public_error_code_for_control_reason(error.reason)
     return {
         PublicErrorCode.VAULT_LOCKED: (
@@ -197,7 +203,12 @@ async def _service_summary() -> str:
             status = await client.service_status()
         finally:
             await client.close()
-    except ControlError:
+    except ControlError as error:
+        from finishup.cli.remote_remedy import remote_remedy_line
+
+        remote = remote_remedy_line(error)
+        if remote is not None:
+            return f"not reachable — {remote}"
         return "not reachable — start it with 'finishup service run'"
     return f"reachable ({status.state.value}, vault: {status.vault_mode})"
 

@@ -602,6 +602,16 @@ def _attachment_recovery_context(reason: str) -> str:
     # the agent never sees, so no timeout replay token applies: the agent's own start is the
     # recovery (issue #739).
     if reason in {"service_unavailable", "timeout"}:
+        from finishup.client.targets import active_target_is_remote
+
+        if active_target_is_remote():
+            # ADR-051: the selected server is on another machine; nothing starts a local service.
+            return (
+                "FinishUP attachment pending: service_unavailable. The selected FinishUP server "
+                "could not be reached within the hook budget. Call start before material work; "
+                "its result names the remote phase and its repair, and later turn hooks also "
+                "retry within their budget. "
+            )
         return (
             "FinishUP attachment pending: service_unavailable. The bounded service connection "
             "did not complete. Call start before material work to finish service startup and "
@@ -4894,13 +4904,11 @@ def _session_start_attach(
     # SessionStart-only status/attach helpers: they drag protocol.models
     # and service.client, which no other event needs (#242).
     from finishup.cli.hooks import (
-        _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-        _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         SessionWorkspace,
@@ -4909,7 +4917,9 @@ def _session_start_attach(
         _read_status,  # pyright: ignore[reportPrivateUsage]
         _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
         bound_connector,
+        locked_context,
         resolve_session_workspace,
+        unavailable_context,
     )
 
     additional = ""
@@ -5049,7 +5059,7 @@ def _session_start_attach(
                         record_hook_diagnostic(f"status_{kind}", event, _state=_state)
                         record_hook_diagnostic(selection.diagnostic_reason, event, _state=_state)
                 elif kind == "locked":
-                    additional = _LOCKED_CONTEXT
+                    additional = locked_context()
                 elif kind == "retry":
                     additional = _RETRY_CONTEXT
                 elif kind == "privacy":
@@ -5066,7 +5076,7 @@ def _session_start_attach(
                     with contextlib.suppress(Exception):
                         record_hook_diagnostic(kind, event, _state=_state)
                 else:
-                    additional = _UNAVAILABLE_CONTEXT
+                    additional = unavailable_context(outcome.phase)
     return _SessionStartAttach(
         mapping=mapping,
         pending_mapping_deferred=pending_mapping_deferred,

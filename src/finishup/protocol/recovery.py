@@ -829,6 +829,16 @@ _DIRECTIVES: Final = (
         nudge="Never match a FinishUP process by name or path to stop or start it.",
     ),
     RecoveryDirective(
+        token="remote_vault_unlock_required",
+        directive=(
+            "The selected FinishUP server's vault is locked or not set up, so nothing was "
+            "recorded. Ask the owner to unlock or set it up on the server host, then repeat this "
+            "request under its original identity rules."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge="Never send a passphrase or recovery material through this client or the agent.",
+    ),
+    RecoveryDirective(
         token="remote_release_mismatch",
         directive=(
             "This client and the selected FinishUP server run different releases, so they cannot "
@@ -920,6 +930,8 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "state_forbidden": "vault_unlock_required",
         "trusted_console_required": "consent_ceremony_required",
         "vault_locked": "vault_unlock_required",
+        # ADR-051: the selected server on another machine is locked; it is unlocked there.
+        "remote_vault_locked": "remote_vault_unlock_required",
         # Provider credentials (issue #520).
         "provider_binding_required": "provider_setup_required",
         "provider_credential_invalid": "provider_setup_required",

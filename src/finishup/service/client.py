@@ -2481,6 +2481,7 @@ async def _connect_remote_attempts(
     projection_render_mode: ProjectionRenderMode,
     output_is_controlling_tty: bool,
 ) -> ServiceClient:
+    """The attempts behind ``_connect_remote_on_demand``, before the remote phase is named."""
 
     from finishup.client.connector_status import (
         connector_holder,

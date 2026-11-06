@@ -640,6 +640,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "remote_server_test",
         "remote_service_start_required",
         "remote_target_no_local_service",
+        "remote_vault_unlock_required",
         "server_host_command_required",
         "server_selection_overridden",
         "workspace_agent_reconnect",

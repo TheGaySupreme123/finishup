@@ -171,6 +171,7 @@ from finishup.protocol.recovery import (
     REASON_REMEDIES,
     RECOVERY_DIRECTIVES,
     WRITE_OPERATIONS,
+    continuation_for_local_reason,
     continuation_for_reason,
     timeout_operation_kind,
 )
@@ -1887,6 +1888,16 @@ def _vault_initialization_required_message(include_authorize: bool) -> str:
     )
 
 
+def _remote_locked_continuation() -> str | None:
+    """The continuation for a locked vault on a selected remote server; None for a local root."""
+
+    from finishup.client.targets import active_target_is_remote
+
+    if not active_target_is_remote():
+        return None
+    return continuation_for_local_reason("remote_vault_locked")
+
+
 def _control_error_result(
     error: ControlError,
     request_id: str | None,
@@ -1902,6 +1913,22 @@ def _control_error_result(
     # Prefer the service-minted diagnostic id when present so the agent-facing public error
     # resolves the same durable sink record the daemon already wrote. Never mint a second id for
     # a failure the service already correlated.
+    if error.reason == "vault_locked":
+        remote_locked = _remote_locked_continuation()
+        if remote_locked is not None:
+            # The selected server is on another machine (ADR-051): its vault is unlocked or set
+            # up there, never by a command on this machine; no host or name is in the text.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.VAULT_LOCKED,
+                message=RECOVERY_DIRECTIVES[remote_locked].directive,
+                retryable=error.retryable,
+                host_profile=host_profile,
+                safe_details={"continuation": remote_locked},
+                diagnostic_reason="vault_locked",
+            )
     if error.reason == "vault_locked":
         # The daemon's retryable flag distinguishes a soft lock or transient re-unlock
         # failure (heals on a later attempt) from a hard lock or missing setup (needs a

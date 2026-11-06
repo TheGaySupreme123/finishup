@@ -70,6 +70,7 @@ __all__ = [
     "ServerTarget",
     "TargetError",
     "TargetKind",
+    "active_target_is_remote",
     "active_target_record",
     "clear_selection",
     "find_target",
@@ -835,6 +836,21 @@ def selection_source() -> SelectionSource:
     """Which source decided this process's root: the variable, the pin, the selection, ambient."""
 
     return isolation_binding()
+
+
+def active_target_is_remote() -> bool:
+    """Whether the root this process uses is a remote target, for choosing a remedy's words.
+
+    Never raises: a root or record that cannot be read answers False, so a renderer keeps the
+    remedy it gives every local root. Connection paths decide for themselves and fail closed
+    (``finishup.client.remote_binding.is_remote_active_root``).
+    """
+
+    try:
+        record = active_target_record()
+    except TargetError:
+        return False
+    return record is not None and record.is_remote
 
 
 def active_target_record() -> ServerTarget | None:

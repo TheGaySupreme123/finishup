@@ -547,6 +547,33 @@ def control_failure(
                 payload["recovery"] = recovery_directive_json(remote_directive)
             stdout_writer(payload)
         return exit_code_for(code)
+    if code is PublicErrorCode.VAULT_LOCKED:
+        from finishup.cli.remote_remedy import remote_locked_directive
+
+        locked = remote_locked_directive()
+        if locked is not None:
+            # The selected server's own vault (ADR-051): it is unlocked on the server host,
+            # never by a command on this machine.
+            from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
+
+            lines = [
+                "vault_locked: the selected FinishUP server's vault is locked, and nothing was "
+                "recorded",
+                *render_recovery_directive_lines(locked),
+            ]
+            stderr_writer(_with_correlation("\n".join(lines), error))
+            if json_output:
+                payload = {
+                    "ok": False,
+                    "public_code": code.value,
+                    "reason": "vault_locked",
+                    "retryable": error.retryable,
+                    "recovery": recovery_directive_json(locked),
+                }
+                if error.correlation_id is not None:
+                    payload["correlation_id"] = error.correlation_id
+                stdout_writer(payload)
+            return exit_code_for(code)
     from finishup.service.client import accepted_but_unresponsive, handshake_failure
 
     startup = _spawned_startup_failure(error)
