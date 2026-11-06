@@ -93,7 +93,9 @@ def test_every_slash_command_has_a_scope_and_no_other_is_listed() -> None:
         ("recommend list", "server_host"),
         ("privacy setup", "server_host"),
         ("privacy show", "any"),
-        ("observe status", "server_host"),
+        ("observe status", "any"),
+        ("observe grant", "any"),
+        ("observe checks trust", "any"),
         ("backup preview", "server_host"),
         ("consent authorize", "server_host"),
         ("integrate skill install", "server_host"),
@@ -163,6 +165,26 @@ def test_require_server_host_refuses_a_remote_target(monkeypatch: pytest.MonkeyP
     require_server_host("status")
     require_server_host("server use")
     require_server_host("/server")
+
+
+def test_observe_commands_run_on_the_client_of_a_remote_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client's observation store is the remote target's authority (ADR-051 decision 12)."""
+
+    record = _remote_record()
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    observe = [path for path in _paths() if path.split()[0] == "observe"]
+    assert observe
+    for path in observe:
+        require_server_host(path)
+    require_server_host("/observe")
+    assert TUI_COMMAND_SCOPES["observe"] == "any"
+    assert not any(
+        entry.disposition == "server_host_only"
+        and any(command.split()[0] in {"observe", "/observe"} for command in entry.commands)
+        for entry in LEDGER
+    )
 
 
 def test_a_guarded_command_refuses_before_running_with_no_owner_text(
