@@ -3421,6 +3421,7 @@ async def _try_auto_start(
     from pydantic import ValidationError
 
     from finishup import __version__
+    from finishup.client.workspace_ref import WorkspaceRefNotPortable, start_request_for_connection
     from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
     from finishup.protocol.ids import IdKind, new_id
     from finishup.protocol.models import OperationFailureModel, StartRequest
@@ -3480,7 +3481,10 @@ async def _try_auto_start(
             )
         else:
             client = await connect(ControlClientKind.CLI)
-        result = await client.start(request, deadline_ms=_remaining_deadline_ms())
+        # ADR-051: a server on another machine is sent the connection's handle, never the locator.
+        result = await client.start(
+            start_request_for_connection(request, client), deadline_ms=_remaining_deadline_ms()
+        )
         # A validated local predecessor selects recovery before admission. An
         # ordinary create attempt would now succeed and strand predecessor work.
     except ControlError as error:
@@ -3495,6 +3499,9 @@ async def _try_auto_start(
         )
     except TimeoutError:
         return AutoAttachOutcome(None, "timeout")
+    except WorkspaceRefNotPortable as refusal:
+        # Nothing was sent: the connection had no workspace handle to name instead of a path.
+        return AutoAttachOutcome(None, _AUTO_ATTACH_ERROR_REASONS[refusal.code])
     except Exception:
         return AutoAttachOutcome(None, "service_unavailable")
     finally:

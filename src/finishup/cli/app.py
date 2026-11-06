@@ -57,6 +57,7 @@ from finishup.cli.render import (
     render_local_recovery_lines,
 )
 from finishup.cli.server import server_app
+from finishup.client.workspace_ref import WorkspaceRefNotPortable, start_request_for_connection
 from finishup.domain.values import JsonObject
 from finishup.legacy_names import RENAME_NOTE
 from finishup.ports.control import (
@@ -904,6 +905,10 @@ async def _call_workflow(
                 )
                 if refused is not None:
                     return refused
+            if type(request) is StartRequest:
+                # ADR-051: a server on another machine is sent the connection's handle, never a
+                # path; with none to send, nothing is sent (``WorkspaceRefNotPortable``).
+                request = start_request_for_connection(request, client)
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
         finally:
@@ -952,6 +957,13 @@ async def _call_workflow(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
+    except WorkspaceRefNotPortable as refusal:
+        # Refused before anything was sent; the fixed message and directive name no path.
+        _stderr(refusal.message)
+        recovery = render_error_recovery_lines(refusal.safe_details)
+        if recovery:
+            _stderr("\n".join(recovery))
+        return exit_code_for(refusal.code)
 
 
 def _finish(code: int) -> None:
