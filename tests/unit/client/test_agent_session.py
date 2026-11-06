@@ -117,6 +117,56 @@ def test_the_foreground_agent_binds_the_named_target_and_reconnects_after_a_clos
     assert active_root() is None  # the selection is the everyday install again
 
 
+def test_the_foreground_agent_backs_off_while_connections_close_at_once(remote: Path) -> None:
+    """A server that accepts and closes at once (draining, an idle stop) is not redialled in a
+    tight loop: each brief connection waits the next back-off; a lasting one resets it."""
+
+    clock = _Clock()
+    waits: list[float] = []
+    dialled: list[_Connection] = []
+    lifetimes = iter((0.0, 0.0, 0.0, 60.0, 0.0))
+
+    async def bind(_workspace: WorkspaceLocator) -> ClientWorkspaceBinding:
+        return _BINDING
+
+    class _Lived(_Connection):
+        def __init__(self, lifetime: float) -> None:
+            super().__init__()
+            self.lifetime = lifetime
+
+        async def wait_closed(self) -> None:
+            clock.now += self.lifetime  # the server closes it after ``lifetime`` seconds
+            self.drop()
+
+    async def dial(_binding: ClientWorkspaceBinding) -> _Connection:
+        lifetime = next(lifetimes, None)
+        if lifetime is None:
+            raise asyncio.CancelledError
+        connection = _Lived(lifetime)
+        dialled.append(connection)
+        return connection
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    async def exercise() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            await run_foreground_agent(
+                remote,
+                WorkspaceLocator("/w/repo"),
+                connect=dial,
+                binding_for=bind,
+                clock=clock,
+                sleep=sleep,
+            )
+
+    asyncio.run(exercise())
+    # Three brief connections back off 1, 2, 5 s; the lasting one resets; the next brief one
+    # starts again at 1 s.
+    assert waits == [1.0, 2.0, 5.0, 1.0]
+    assert len(dialled) == 5
+
+
 @pytest.mark.parametrize(
     ("binding", "handle", "error", "expected"),
     [

@@ -65,6 +65,9 @@ AGENT_LEASE_SECONDS: Final = 900.0
 DRAIN_INTERVAL_SECONDS: Final = 30.0
 # Waits between reconnect attempts of a background or foreground agent connection.
 _RECONNECT_BACKOFF_SECONDS: Final = (1.0, 2.0, 5.0, 15.0, 30.0)
+# A connection that closes sooner than this (a draining server, an idle stop, a refusal after the
+# hello) counts like a failed dial: the next dial waits its back-off instead of looping at once.
+_STABLE_CONNECTION_SECONDS: Final = 10.0
 _COMPONENT: Final = "client.agent_session"
 
 
@@ -132,6 +135,8 @@ async def run_foreground_agent(
     *,
     connect: AgentConnector | None = None,
     binding_for: BindingFactory | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Serve this workspace's calls on one connection to the target at ``root`` until cancelled.
 
@@ -167,7 +172,7 @@ async def run_foreground_agent(
                 if not served or not error.retryable:
                     raise AgentSessionError(error.reason, phase=error.phase) from None
                 _record("foreground_agent", error.phase or error.reason)
-                await asyncio.sleep(_backoff(attempt))
+                await sleep(_backoff(attempt))
                 attempt += 1
                 continue
             try:
@@ -175,11 +180,16 @@ async def run_foreground_agent(
                     # The server derived no handle (its vault is locked, say): no call names us.
                     raise AgentSessionError("workspace_agent_unavailable")
                 served = True
-                attempt = 0
+                opened = clock()
                 await connection.wait_closed()
             finally:
                 await connection.close()
             _record("foreground_agent", "reconnecting")
+            if clock() - opened < _STABLE_CONNECTION_SECONDS:
+                await sleep(_backoff(attempt))
+                attempt += 1
+            else:
+                attempt = 0
 
 
 # -- the bridge's background agent and drain ------------------------------------------------------
