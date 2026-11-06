@@ -617,3 +617,44 @@ def test_a_target_confirmed_under_an_older_disclosure_is_never_dialled(
     asyncio.run(exercise())
     assert spawned == []
     assert not (remote / "state" / "claimed-workspaces").exists()
+
+
+def test_every_folder_of_one_worktree_claims_the_same_worktree(
+    remote: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_local_service: None,
+) -> None:
+    """A bridge started in a subfolder claims its worktree's top level, as hooks and the CLI do."""
+
+    import subprocess
+
+    from finishup.client.claimed_workspaces import claimed_workspace
+    from finishup.ports.control import WorkspaceClaim, WorkspaceIdentityKind
+
+    repository = home / "work" / "repo"
+    (repository / "src" / "deep").mkdir(parents=True, mode=0o700)
+    subprocess.run(("git", "init", "-q", "-b", "main", str(repository)), check=True)
+    daemon = ScriptedDaemon()
+    spawned: list[Path] = []
+
+    async def exercise() -> None:
+        tasks = _fake_connector(monkeypatch, daemon.serve, spawned)
+        try:
+            for folder in (repository / "src" / "deep", repository):
+                client = await service_client.connect_service(
+                    ControlClientKind.CLI, workspace_locator=WorkspaceLocator(path=str(folder))
+                )
+                await client.close()
+        finally:
+            _stop(tasks)
+
+    asyncio.run(exercise())
+    claims = [
+        cast(dict[str, str], json.loads(daemon.received(index)[0])["workspace_claim"])
+        for index in (0, 1)
+    ]
+    assert claims[0] == claims[1]
+    kind = cast(WorkspaceIdentityKind, claims[0]["identity_kind"])
+    claim = WorkspaceClaim(kind, claims[0]["digest"], claims[0]["worktree"])
+    assert claimed_workspace(remote, claim) == WorkspaceLocator(path=str(repository))

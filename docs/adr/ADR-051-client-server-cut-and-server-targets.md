@@ -636,7 +636,10 @@ through the same relay; human-control and secret channels never leave the server
   pass `serve_workspace=True` and answer the server's workspace calls on their own connection:
   the CLI (`build_service_client`, which the menu and the terminal interface also use) and the
   MCP bridge. Hooks stay claim-only, so their observation ingest is attested and their `start`
-  sends the handle. A workspace the shared root rule cannot resolve is not claimed, and a remote
+  sends the handle. The claimed locator is first normalized to its worktree's top level by the
+  hooks' own rule (`canonical_workspace_locator`), so a bridge started in a subfolder and a hook
+  in the same worktree claim it alike and reach one handle. A workspace the shared root rule
+  cannot resolve is not claimed, and a remote
   connection with no claim refuses an absolute `workspace_ref` instead of sending it. A target the
   owner confirmed under an older disclosure is refused before any dial, with or without a
   workspace to claim, as the retryable `service_unavailable` with phase

@@ -5035,7 +5035,8 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   `ssh`, `https` and `local_port`.
 - `service.client`: for a remote root `connect_service(..., serve_workspace: bool = False)` and
   `connect_service_on_demand(..., serve_workspace: bool = False)` turn the locator into the
-  target's claim (`binding_for_active_root`), record it in the claimed-workspace index, send no
+  target's claim (`binding_for_active_root`, over the locator normalized to its worktree's top
+  level by `canonical_workspace_locator`), record it in the claimed-workspace index, send no
   `workspace_locator`, set the connection's `transport` to `connector`, and start the connector
   (never `service run` or a supersede) when none answers; with `serve_workspace` the connection
   also offers the workspace agent (the CLI's `build_service_client` and the MCP bridge pass it,

@@ -2087,23 +2087,31 @@ async def _remote_binding(
 ) -> ClientWorkspaceBinding | None:
     """The binding a remote root's connection sends in place of ``workspace_locator``.
 
-    ADR-051 approach A: every connection through the connector claims its workspace and never
-    sends its path. The claim is the target's own (``binding_for_active_root``); with
-    ``serve_workspace`` the connection also offers the workspace agent. Each claim is recorded in
-    the root's owner-only index, so the connector can keep a background agent for that
-    workspace. A workspace the shared root rule cannot resolve is not claimed; the connection
-    then names no workspace, as a refused locator leaves a local one unbound. A target record
-    that refuses (an older disclosure, a record that can no longer be read) refuses the
-    connection with its phase; it never connects unbound instead.
+    ADR-051 approach A: every connection through the connector claims its workspace and never sends
+    its path. The claim is the target's own (``binding_for_active_root``); with ``serve_workspace``
+    the connection also offers the workspace agent. Each claim is recorded in the root's owner-only
+    index, so the connector can keep a background agent for that workspace. The locator is first
+    normalized to its worktree's top level (the hooks' own rule), so every surface of one worktree
+    claims it alike. A workspace the shared root rule cannot resolve is not claimed; the connection
+    then names no workspace, as a refused locator leaves a local one unbound. A target record that
+    refuses (an older disclosure, a record that can no longer be read) refuses the connection with
+    its phase; it never connects unbound instead.
     """
 
     if workspace_binding is not None or workspace_locator is None:
         return workspace_binding
+    from finishup.adapters.workspace_binding import canonical_workspace_locator
     from finishup.adapters.workspace_root import RepositoryIdentityError
     from finishup.client.claimed_workspaces import record_claimed_workspace
     from finishup.client.remote_binding import binding_for_active_root
     from finishup.client.targets import TargetError
 
+    # One worktree, one claim: the worktree digest is over the path claimed, so a connection made
+    # from a subfolder (the MCP bridge in the folder its host started in) claims its worktree's
+    # top level, as the hooks and the CLI already do, and every surface reaches the same handle.
+    canonical = canonical_workspace_locator(workspace_locator.path)
+    if canonical is not None and canonical != workspace_locator.path:
+        workspace_locator = WorkspaceLocator(canonical)
     try:
         binding = await binding_for_active_root(workspace_locator, serve_workspace=serve_workspace)
     except RepositoryIdentityError:
