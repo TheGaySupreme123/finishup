@@ -1932,8 +1932,13 @@ record changes as follows.
   target and offers switching to this computer's everyday FinishUP or keeping the target (the
   default; FinishUP never switches on its own); without that console the facts and `finishup
   server use local` are printed; and setup readiness, `server status` and the terminal interface
-  show the item while it lasts. **Honest limit:** while the owner keeps the target, and after
-  switching until open agent sessions restart, traffic to it continues. Apart from such a target,
+  show the item while this computer's service is running and unlocked, the only source of its
+  policy. While a remote target is selected a fresh command does not set this computer's policy
+  (server-host privacy commands are refused; `privacy tighten|propose` reach the target), so the
+  choice arises from a process that resolved this computer's server before the selection changed.
+  **Honest limits:** while the owner keeps the target, and after switching until open agent
+  sessions restart, traffic to it continues; once this computer's idle service stops or locks,
+  the displays can no longer tell the state and say nothing. Apart from such a target,
   the FinishUP-owned process set in the zero-network state still permits only the exact endpoints
   decision 10 lists.
 - **Policy authority sits on the server.** The server's own effective policy, repository grants

@@ -62,9 +62,18 @@ governs your work.
 ### When you turn on zero-network with a server already chosen
 
 Turning the zero-network setting on does not by itself stop a server you already chose: your work
-keeps going to it. So whenever you change your privacy policy to that setting while a server on
-another machine, a port or the web is chosen, FinishUP tells you which server it is and lets you
-decide. It never switches for you.
+keeps going to it.
+
+While a server on another machine, a port or the web is chosen, a new FinishUP command does not
+change this computer's privacy policy. `finishup privacy setup`, the other privacy settings,
+`finishup ai` and the terminal interface's `/privacy` refuse to run (`requires_server_host`), and
+`finishup privacy tighten` and `finishup privacy propose` change the chosen server's policy, not
+this computer's. To change this computer's policy, run `finishup server use local` first.
+
+FinishUP that was already working with this computer's own FinishUP when you chose the server can
+still change this computer's policy: a terminal interface or menu that was open then, or a privacy
+step or setup that was under way. Whenever such a change turns the zero-network setting on, FinishUP
+tells you which server is chosen and lets you decide. It never switches for you.
 
 In your own terminal it asks:
 
@@ -74,16 +83,20 @@ In your own terminal it asks:
 Choose 1 or 2 (Enter keeps the server):
 ```
 
-Pressing Enter, or any answer but 1, keeps the server. Choosing 1 is `finishup server use local`.
-Without a terminal to ask in (a script, or a command asked for JSON), FinishUP switches nothing
-and prints the same facts with that command. Either way, restart open agent sessions after
-switching: they keep the server they started with until then. Choosing the server again needs the
-setting turned off first.
+Pressing Enter or Ctrl-C, or any answer but 1, keeps the server. Choosing 1 is `finishup server
+use local`. Without a terminal to ask in (a script, or a command asked for JSON), FinishUP
+switches nothing and prints the same facts with that command. Either way, restart open agent
+sessions after switching: they keep the server they started with until then. Choosing the server
+again needs the setting turned off first.
 
 Until you switch, `finishup setup status --next`, `finishup server status` and `finishup server
-list`, the setup summary and the terminal interface's header and `/server` keep saying so. If the
-saved server choice cannot be read, FinishUP says that instead of guessing, and `finishup server
-use local` clears it.
+list`, the setup summary and the terminal interface's header and `/server` keep saying so, as
+long as this computer's FinishUP service is running and unlocked: only that service can tell them
+this computer's policy. Usually nothing on this computer uses it while another server is chosen,
+so it stops or locks itself after a while; from then on these views cannot tell whether the
+setting is on and say nothing about it, even though your work still goes to the chosen server.
+`finishup server status` always shows which server is chosen. If the saved server choice cannot be
+read, FinishUP says that instead of guessing, and `finishup server use local` clears it.
 
 ## Sign in to a web server
 

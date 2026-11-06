@@ -557,23 +557,40 @@ answers bounded `workspace_call`s on a connection that declared it.
     not stop traffic to it, and offers `1` switch to this computer's everyday FinishUP now
     (`finishup server use local`) or `2` keep using the target. Enter, end of input, an interrupt
     or any other answer keeps it: switching is never chosen for the owner, and under zero-network
-    it cannot be undone without relaxing the policy;
-  - without that console, for a machine-readable answer, or for a grant relayed from an agent
-    chat, nothing switches: the facts, the command and the reminder to restart open agent sessions
-    go to stderr as `zero_network_remote_selected: …`.
+    it cannot be undone without relaxing the policy. The choice is read on the calling event
+    loop's thread, never in a worker, with Python's default SIGINT handler in place of the loop
+    runner's for the read, so Ctrl-C answers it at once;
+  - without that console, for a machine-readable answer (`--json`, including the setting
+    commands, which set `machine_readable_answer()` around the change), or for a grant relayed
+    from an agent chat, nothing switches: the facts, the command and the reminder to restart open
+    agent sessions go to stderr as `zero_network_remote_selected: …`.
 
-  The item stays visible while the state lasts: `server status` (stderr beside `--json`, whose
-  1.0.0 contract is unchanged) and `server list`, `setup status` (stderr), `setup status --next`
-  (a `server_selection` fact with its pinned continuation), the setup wizard's next steps, the
-  menu home, and the terminal interface's header and `/server` (read at start, after a privacy
-  ceremony, and on `/server`; the header drops it once the selection file changes). A selection
-  that cannot be read is reported as `zero_network_selection_unreadable` with its closed reason
-  (`selection_invalid`, `target_root_unsafe`, `target_record_invalid`) and `finishup server use
-  local` as the way back, never as "no server". While this computer's policy cannot be read,
-  nothing claims the zero-network state either way. **Honest limit:** while the owner keeps the
-  target, and after switching until open agent sessions restart (a running MCP bridge keeps the
-  target it started with), traffic to it continues. Agents cannot change the policy or the
-  selection, so no MCP tool surfaces or answers the choice.
+  **Where it can arise.** While a remote target is selected, a fresh process does not set this
+  computer's policy: every `server_host` privacy command (the privacy ceremonies, `decide-policy`,
+  the credential-heuristic, conversation and input-root commands, `ai`, `elevated-bootstrap`, the
+  terminal interface's `/privacy`) is refused with `requires_server_host`, and the `any`-scoped
+  `privacy tighten|propose` and `setup run` act on the selected target. The paths above
+  therefore surface the choice when the process committing the change resolved this computer's
+  server before the selection changed (the selection memo is per process): an open terminal
+  interface or menu, or a privacy step or setup run already under way when `server use` ran
+  elsewhere. Adding or selecting the target after the policy is zero-network is refused, as above.
+
+  The item stays visible while the state lasts and can be read (below): `server status` (stderr
+  beside `--json`, whose 1.0.0 contract is unchanged) and `server list`, `setup status` (stderr),
+  `setup status --next` (a `server_selection` fact with its pinned continuation), the setup wizard's
+  next steps, the menu home, and the terminal interface's header and `/server` (read at start, after
+  a privacy ceremony, and on `/server`; the header drops it once the selection file changes). A
+  selection that cannot be read is reported as `zero_network_selection_unreadable` with its closed
+  reason (`selection_invalid`, `target_root_unsafe`, `target_record_invalid`) and `finishup server
+  use local` as the way back, never as "no server". While this computer's policy cannot be read,
+  nothing claims the zero-network state either way, so the displays show the item only while this
+  computer's service is running and unlocked, the one source of that policy. **Honest limits:**
+  while the owner keeps the target, and after switching until open agent sessions restart (a running
+  MCP bridge keeps the target it started with), traffic to it continues; and usually nothing on this
+  computer uses its own service while a remote target is selected, so once that service relocks or
+  stops when idle the displays can no longer tell the state and say nothing, although work still
+  goes to the target. Agents cannot change the policy or the selection, so no MCP tool surfaces or
+  answers the choice.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -931,8 +948,11 @@ installation is never touched by a target operation.
   a remote target is selected, FinishUP surfaces it and the owner decides, on the trusted console
   or from the printed command, whether to switch to the everyday FinishUP; it never switches on
   its own (maintainer decision, 2026-11-06, replacing the earlier choice to only disclose the
-  limit). While the owner keeps the target, and after switching until open agent sessions
-  restart, traffic to it continues.
+  limit). That change can only come from a process that resolved this computer's server before
+  the selection changed, because fresh server-host commands are refused while a remote target is
+  selected. While the owner keeps the target, and after switching until open agent sessions
+  restart, traffic to it continues, and the displays show the state only while this computer's
+  service is running and unlocked.
 - A Linux server whose runtime directory belongs to the login session loses its sockets at the
   last logout; `service endpoint --json` reports this, and the server needs linger or its own
   isolated root.
