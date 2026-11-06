@@ -95,6 +95,9 @@ _CONNECT_SECONDS: Final = 10.0
 _REQUEST_SECONDS: Final = 30.0
 _POLL_MARGIN_SECONDS: Final = 15.0
 _DELETE_SECONDS: Final = 1.0
+# A keyring that waits on an unlock or permission prompt must not hold a connect past its budget;
+# below the 5 s handshake attempt, so this bound, not the caller's, names the outcome.
+_CREDENTIAL_READ_SECONDS: Final = 3.0
 _MAX_RECEIVE_BYTES: Final = 65_536
 _MAX_SERVER_INFO_BYTES: Final = 65_536
 # A session id is 32 random bytes, base64url without padding (the gateway's ``sid``).
@@ -645,11 +648,18 @@ class BindingControlStream:
 async def open_binding_stream(
     target: ServerTarget, credential: CredentialSource, *, http_transport: object | None = None
 ) -> BindingControlStream:
-    """A fresh binding stream for ``target``; the key is read here, in this process."""
+    """A fresh binding stream for ``target``; the key is read here, in this process.
+
+    The read runs in a worker thread, bounded: a keyring that blocks on an unlock or permission
+    prompt (a locked Secret Service collection, a Keychain asking again) never blocks the event
+    loop, and a key that cannot be read in time is ``remote_auth_failed`` like one that is absent.
+    The worker finishes on its own; its key, if any, is dropped.
+    """
 
     try:
-        secret = credential.read()
-    except CredentialError:
+        async with asyncio.timeout(_CREDENTIAL_READ_SECONDS):
+            secret = await asyncio.to_thread(credential.read)
+    except (CredentialError, TimeoutError):
         raise TransportError("remote_auth_failed") from None
     if http_transport is not None and not isinstance(http_transport, httpx.AsyncBaseTransport):
         raise TypeError("http_transport_invalid")

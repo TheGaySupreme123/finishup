@@ -16,6 +16,7 @@ import ipaddress
 import json
 import ssl
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import replace
@@ -186,6 +187,56 @@ def test_a_missing_key_never_dials() -> None:
         return raised.value
 
     assert asyncio.run(exercise()).phase == "remote_auth_failed"
+    assert gateway.requests == []
+
+
+class _PromptingCredential(StaticCredential):
+    """A keyring waiting on an unlock prompt: ``read`` blocks until ``answered`` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reading = threading.Event()
+        self.answered = threading.Event()
+        self.blocked_the_loop = False
+
+    def read(self) -> str:
+        self.reading.set()
+        if not self.answered.wait(timeout=5.0):
+            self.blocked_the_loop = True
+        return super().read()
+
+
+def test_a_keyring_waiting_on_a_prompt_never_blocks_the_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.client import https_binding
+
+    monkeypatch.setattr(https_binding, "_CREDENTIAL_READ_SECONDS", 0.2)
+    gateway = _gateway()
+    credential = _PromptingCredential()
+
+    async def exercise() -> ControlError:
+        connecting = asyncio.create_task(
+            _connect(_transport(httpx.ASGITransport(app=gateway), credential=credential))
+        )
+        try:
+            # The event loop keeps running while the key is read: this coroutine sees the read
+            # begin, and the connect ends at the read's own bound.
+            while not credential.reading.is_set():
+                await asyncio.sleep(0.001)
+            with pytest.raises(ControlError) as raised:
+                await connecting
+            return raised.value
+        finally:
+            credential.answered.set()
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == (
+        "service_unavailable",
+        True,
+        "remote_auth_failed",
+    )
+    assert not credential.blocked_the_loop
     assert gateway.requests == []
 
 
