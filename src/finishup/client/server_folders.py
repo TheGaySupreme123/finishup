@@ -463,8 +463,11 @@ def set_mode(root: Path, target_id: str, mode: OutsideReadMode) -> bool:
     was. The listed folders are kept.
 
     A mode is recorded even where it equals the kind's default, so a later change of default
-    never changes a mode its owner chose. A damaged record is refused, never replaced:
-    ``clear_folders`` is its way out. Callers hold ``targets.registry_lock()``.
+    never changes a mode its owner chose. A recorded ``local`` therefore widens what such a
+    change would narrow: callers record it only after the owner typed the target's name on the
+    trusted console, even where it is the default now (``finishup server folders mode``). A
+    damaged record is refused, never replaced: ``clear_folders`` is its way out. Callers hold
+    ``targets.registry_lock()``.
     """
 
     if mode not in OUTSIDE_READ_MODES:

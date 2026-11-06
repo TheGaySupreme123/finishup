@@ -15,7 +15,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Self, cast
 
 import pytest
@@ -28,6 +28,7 @@ from finishup.cli import trusted_console
 from finishup.client import targets
 from finishup.client.server_folders import (
     FolderRecord,
+    OutsideReads,
     add_folder,
     folders_path,
     read_folders,
@@ -398,19 +399,96 @@ def test_declining_mode_local_on_the_console_changes_nothing(
     assert "Undo it with 'finishup server folders mode lab listed'" in notice
 
 
-def test_a_kind_whose_default_is_local_needs_no_console_to_record_it(home: Path) -> None:
+def test_a_default_local_is_recorded_only_with_the_typed_name(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded 'local' outlives any later change of default, so an agent's shell, which has
+    no trusted console, never records it: the target keeps following its kind's default."""
+
+    from finishup.client import server_folders
+
     record, root = _ssh(home)
     listed = _invoke("list", "devbox")
     assert "(mode local, the default for an SSH server)" in listed.stdout
     assert "'finishup server folders mode devbox listed'" in listed.stdout
-    # Recording the mode it is already in widens nothing: no console is asked for.
+    # No trusted console (stdin is not a terminal here): nothing is recorded, and it says so.
     result = _invoke("mode", "devbox", "local")
     assert result.exit_code == 0, result.output
+    assert "already in mode local, the default for an SSH server" in result.stdout
+    assert "nothing was recorded" in result.stdout
+    assert read_record(root, record.target_id) == FolderRecord()
+    assert not folders_path(root).exists()
+    # So a later change of the kind's default still applies to it.
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            server_folders, "DEFAULT_OUTSIDE_READ_MODE", MappingProxyType({"ssh": "listed"})
+        )
+        assert server_folders.outside_reads_of(root, record) == OutsideReads(
+            "listed", (), "kind_default"
+        )
+    # On the trusted console, the owner's typed name records it, and it outlives that change.
+    seen: list[str] = []
+
+    def confirm(target: targets.ServerTarget) -> None:
+        seen.append(target.target_id)
+
+    monkeypatch.setattr(server_cli, "_confirm_local_mode_on_trusted_console", confirm)
+    recorded = _invoke("mode", "devbox", "local")
+    assert recorded.exit_code == 0, recorded.output
+    assert seen == [record.target_id]
+    assert "stays in mode local, now set by you" in recorded.stdout
+    assert "'finishup server folders mode devbox listed'" in recorded.stdout
     assert read_record(root, record.target_id) == FolderRecord((), "local")
-    # Narrowing, then widening again, asks.
-    assert _invoke("mode", "devbox", "listed").exit_code == 0
-    again = _invoke("mode", "devbox", "local")
-    assert again.exit_code == 2 and again.stderr.startswith("trusted_console_required:")
+    monkeypatch.setattr(
+        server_folders, "DEFAULT_OUTSIDE_READ_MODE", MappingProxyType({"ssh": "listed"})
+    )
+    assert server_folders.outside_reads_of(root, record) == OutsideReads("local", (), "owner")
+
+
+def test_declining_a_default_local_on_the_console_records_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, root = _ssh(home)
+
+    class _Console:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(
+            self,
+            _kind: type[BaseException] | None,
+            _value: BaseException | None,
+            _traceback: TracebackType | None,
+        ) -> None:
+            return None
+
+        def write(self, _text: str) -> None:
+            return None
+
+        def read_choice(self, _prompt: str, allowed: tuple[bytes, ...]) -> bytes:
+            assert allowed == (b"devbox",)
+            raise trusted_console.TrustedConsoleError("input_invalid")
+
+    monkeypatch.setattr(trusted_console, "TrustedForegroundConsole", _Console)
+    result = _invoke("mode", "devbox", "local")
+    assert result.exit_code == 2
+    assert result.stderr.startswith("authorization_declined:")
+    assert read_record(root, record.target_id) == FolderRecord()
+
+
+def test_a_default_listed_is_recorded_without_a_console(
+    remote: tuple[targets.ServerTarget, Path],
+) -> None:
+    """Recording 'listed' narrows, so it needs no console, and it outlives a change of default."""
+
+    record, root = remote
+    result = _invoke("mode", "lab", "listed")
+    assert result.exit_code == 0, result.output
+    assert "stays in mode listed, now set by you" in result.stdout
+    assert "'finishup server folders mode lab local'" in result.stdout
+    assert read_record(root, record.target_id) == FolderRecord((), "listed")
+    again = _invoke("mode", "lab", "listed")
+    assert again.exit_code == 0 and "already in mode listed, set by you" in again.stdout
 
 
 @pytest.mark.parametrize("value", ["open", "LOCAL", "", "unrestricted"])

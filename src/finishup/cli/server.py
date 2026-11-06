@@ -1517,13 +1517,34 @@ def server_folders_mode(
     if current.mode == mode:
         typer.echo(f"{who} is already in mode {mode}, set by you.")
         return
-    if mode == "local" and _mode_and_origin(record, current)[0] != "local":
-        _confirm_local_mode_on_trusted_console(record)
+    in_force, origin = _mode_and_origin(record, current)
+    if mode == "local":
+        # A recorded 'local' is the owner's choice, kept through any later change of default, so
+        # recording it always takes the typed name, even where 'local' is only the default now.
+        # Where no trusted console can ask, nothing is recorded and the default keeps applying.
+        try:
+            _confirm_local_mode_on_trusted_console(record)
+        except ServerCommandRefused as refusal:
+            if refusal.reason != "trusted_console_required" or in_force != "local":
+                raise
+            typer.echo(
+                f"{who} is already in mode local, {origin}; nothing was recorded, so it keeps "
+                "following that default. To keep mode local even if the default changes, run "
+                "this command in your own terminal and type the server's name."
+            )
+            return
     try:
         with registry_lock():
             set_mode(target_root(record.target_id), record.target_id, mode)
     except FolderError as error:
         raise ServerCommandRefused(error.reason) from None
+    other = "listed" if mode == "local" else "local"
+    if in_force == mode:
+        typer.echo(
+            f"{who} stays in mode {mode}, now set by you: a later change of its default no "
+            f"longer changes it. 'finishup server folders mode {record.name} {other}' changes it."
+        )
+        return
     if mode == "local":
         typer.echo(
             f"{who} now reads outside your projects as FinishUP on this computer would (mode "

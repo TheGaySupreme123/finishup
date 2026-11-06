@@ -213,11 +213,13 @@ finishup server folders list devbox
 Choosing local shows you what that lets the server read, including what a server that does not
 follow FinishUP's rules could read and list, and asks you to type the server's name, in a terminal
 you are typing in; an agent cannot do this. Choose it only for a server you trust as you trust
-FinishUP on this computer. For a server already in local mode by default, choosing local only
-records your choice. Choosing listed needs no confirmation and is always the way back. Either
-choice applies from the server's next read. `list`, `server status` and `/server` show the mode and
-why the server has it: set by you, the default for its kind, or the default for an official
-FinishUP service. FinishUP keeps your choice when a later release changes a default.
+FinishUP on this computer. Choosing local asks this even for a server already in local mode by
+default, because FinishUP keeps your choice when a later release changes a default. Where nothing
+can ask you, as in an agent's shell, FinishUP records nothing, says so, and the server keeps its
+default. Choosing listed needs no confirmation and is always the way back. Either choice applies
+from the server's next read. `list`, `server status` and `/server` show the mode and why the
+server has it: set by you, the default for its kind, or the default for an official FinishUP
+service.
 
 ### List the folders a server may read
 

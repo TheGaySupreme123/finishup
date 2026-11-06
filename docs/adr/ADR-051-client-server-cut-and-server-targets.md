@@ -317,7 +317,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   server reads, so it needs the trusted foreground console and the owner typing the target name
   after a notice of what that mode lets the server read, a rule-breaking server included;
   `listed` narrows it and is the way back, needing neither. A mode the owner sets is recorded even
-  where it equals the default, so a later change of default never changes it. A target with no
+  where it equals the default, so a later change of default never changes it. A recorded `local`
+  therefore outlives a default that later narrows, so recording it always takes the console and
+  the typed name, even where `local` is the target's default already; where no trusted console
+  can ask (an agent's shell), `mode NAME local` on such a target records nothing, says that it
+  stays in its default, and leaves it following that default. A target with no
   mode recorded has its kind's default, kept in one table in code
   (`client.server_folders.DEFAULT_OUTSIDE_READ_MODE`), so the maintainer changes a default in one
   line: `ssh` defaults to `local`, because the SSH login is the owner's own account on another
@@ -1021,7 +1025,7 @@ stack the service cannot drive fails the start with `network_listener_unavailabl
 | `server add NAME …` | `server remove NAME [--select-local]` (disconnects, deletes the credential, disposes of the root; refuses the selected target unless `--select-local`) | `server list` |
 | `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
-| `server folders mode NAME local` (trusted console, unless `local` is already the target's mode) | `server folders mode NAME listed` (takes effect at the next workspace call) | `server folders list NAME`, `server status [--json]`, `/server` status |
+| `server folders mode NAME local` (trusted console and typed name whenever it records `local`, the target's default included; without the console a default `local` is left unrecorded) | `server folders mode NAME listed` (takes effect at the next workspace call) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; takes effect at the next workspace call) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |
