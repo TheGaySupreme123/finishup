@@ -54,8 +54,14 @@ _MESSAGES: Final[dict[str, tuple[str, int]]] = {
         _UNSAFE,
     ),
     "output_file_unavailable": (
-        "the output file could not be created; give a new path in an existing folder",
+        "the output file could not be created, so no key was created; give a new path in an "
+        "existing folder",
         _USAGE,
+    ),
+    "output_file_write_failed": (
+        "the key could not be written to the output file, so it was revoked and the file was "
+        "removed; give a new path and run this again",
+        _UNSAFE,
     ),
 }
 
@@ -66,8 +72,8 @@ def _fail(reason: str) -> NoReturn:
     raise typer.Exit(code)
 
 
-def _write_key_file(path: Path, text: str) -> None:
-    """Write the key to a new owner-only file; an existing path is never replaced."""
+def _open_key_file(path: Path) -> tuple[Path, int]:
+    """Create the new owner-only output file before any key exists; never replace a path."""
 
     target = path.expanduser()
     target = target if target.is_absolute() else Path.cwd() / target
@@ -77,11 +83,18 @@ def _write_key_file(path: Path, text: str) -> None:
         )
     except OSError:
         _fail("output_file_unavailable")
-    try:
-        os.write(descriptor, (text + "\n").encode("ascii"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    return target, descriptor
+
+
+def _write_key_file(descriptor: int, text: str) -> None:
+    data = (text + "\n").encode("ascii")
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short_write")
+        view = view[written:]
+    os.fsync(descriptor)
 
 
 @api_key_app.command("create")
@@ -106,19 +119,52 @@ def api_key_create(
 
     if scope not in {"agent", "operator"}:
         _fail("api_key_scope_invalid")
+    # The output file comes first: a key is created only when there is somewhere to put it, so a
+    # failed attempt never leaves an active key nobody holds.
+    output = None if output_file is None else _open_key_file(output_file)
+    store = default_api_key_store()
     try:
-        record, text = default_api_key_store().create(
-            label,
-            cast(ApiScope, scope),
-            expires_in_days=expires_in_days,
-            rotate=rotate,
-        )
-    except ApiKeyError as error:
-        _fail(error.reason)
-    if output_file is not None:
-        _write_key_file(output_file, text)
-        typer.echo(f"Created key {record.key_id} ({record.scope}); written to the output file.")
-        return
+        try:
+            record, text = store.create(
+                label,
+                cast(ApiScope, scope),
+                expires_in_days=expires_in_days,
+                rotate=rotate,
+            )
+        except ApiKeyError as error:
+            if output is not None:
+                os.close(output[1])
+                output[0].unlink(missing_ok=True)
+                output = None
+            _fail(error.reason)
+        if output is not None:
+            target, descriptor = output
+            try:
+                _write_key_file(descriptor, text)
+            except OSError:
+                os.close(descriptor)
+                output = None
+                target.unlink(missing_ok=True)
+                try:
+                    store.revoke(record.key_id)
+                except ApiKeyError:
+                    # Say so: a key nobody holds must not stay active unnoticed.
+                    typer.echo(
+                        f"output_file_write_failed: key {record.key_id} could not be revoked; "
+                        f"run 'finishup service api-key revoke {record.key_id}'",
+                        err=True,
+                    )
+                    raise typer.Exit(_UNSAFE) from None
+                _fail("output_file_write_failed")
+            os.close(descriptor)
+            output = None
+            typer.echo(f"Created key {record.key_id} ({record.scope}); written to the output file.")
+            return
+    finally:
+        if output is not None:
+            # Interrupted before the key was written: leave no empty file behind.
+            os.close(output[1])
+            output[0].unlink(missing_ok=True)
     typer.echo(f"Created key {record.key_id} ({record.scope}). It is shown once:")
     typer.echo(text)
     typer.echo("On the client: finishup server login NAME (paste it at the hidden prompt).")

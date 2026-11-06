@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from builders.server_targets import ambient_home
 from finishup.cli import app as cli
@@ -100,6 +100,56 @@ def test_a_key_can_be_written_once_to_a_new_owner_only_file(home: Path) -> None:
     )
     assert refused.exit_code == 2
     assert refused.stderr.startswith("output_file_unavailable:")
+    # A refused output file never leaves an active key nobody holds.
+    assert [record.label for record in default_api_key_store().records()] == ["ops"]
+
+
+def _create_into(target: Path, label: str = "ops") -> Result:
+    return _RUNNER.invoke(
+        cli.app,
+        [
+            "service",
+            "api-key",
+            "create",
+            "--label",
+            label,
+            "--scope",
+            "operator",
+            "--output-file",
+            str(target),
+        ],
+    )
+
+
+def test_an_output_file_that_cannot_be_made_creates_no_key(home: Path) -> None:
+    missing = _create_into(home / "no-such-folder" / "laptop.key")
+    assert missing.exit_code == 2
+    assert missing.stderr.startswith("output_file_unavailable:")
+    assert "no key was created" in missing.stderr
+    assert default_api_key_store().records() == ()
+    # Nor does a refused key leave an empty output file behind.
+    target = home / "refused.key"
+    refused = _create_into(target, label="bad\tlabel")
+    assert refused.stderr.startswith("api_key_label_invalid:")
+    assert not target.exists()
+
+
+def test_a_key_that_could_not_be_written_is_revoked(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.cli import network_api
+
+    def full_disk(_descriptor: int, _text: str) -> None:
+        raise OSError("no space left")
+
+    monkeypatch.setattr(network_api, "_write_key_file", full_disk)
+    target = home / "laptop.key"
+    result = _create_into(target)
+    assert result.exit_code == 20
+    assert result.stderr.startswith("output_file_write_failed:")
+    assert not target.exists()
+    (record,) = default_api_key_store().records()
+    assert record.revoked_at is not None
 
 
 @pytest.mark.parametrize(
