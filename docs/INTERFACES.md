@@ -4563,7 +4563,10 @@ dials its own stream.
   kind `local`) gets `UnixTransport(unix_dial)`, the unchanged owner-only endpoint; a remote root
   gets `SshTransport` or `HttpsTransport` (`transport_for_target(target, root)`); an unreadable
   record raises its `TargetError`, which the client reports as `endpoint_unsafe` with path reason
-  `isolation_root_invalid` before any dial. `ControlTransport`: `kind` (`unix|ssh|https`),
+  `isolation_root_invalid` before any dial. A remote record the owner confirmed under an older
+  disclosure (`targets.require_current_authorization`) is refused there too, before any claim or
+  dial, as a retryable `service_unavailable` with phase `target_reauthorization_required`.
+  `ControlTransport`: `kind` (`unix|ssh|https`),
   `target` (`None` for local), `async connect() -> ControlStream`. Remote streams also answer
   `async failure_phase() -> str | None`.
 - `TransportError(phase)`: `phase` is one of `REMOTE_CONNECTION_PHASES`. Every remote connection
@@ -4616,7 +4619,9 @@ dials its own stream.
   (`reason`, `summary`, `directive`; `line()`), `remote_root_selected()`,
   `remote_connection_phase(error)`, and the fixed `REMOTE_UNAVAILABLE_SUMMARY`,
   `REMOTE_LOCKED_SUMMARY`, `REMOTE_UNCLAIMABLE_SUMMARY`, `REMOTE_DRAINING_SUMMARY` (the server
-  answered `service_draining`): the remedy every surface names on a remote
+  answered `service_draining`), and `REMOTE_NOT_SENT_SUMMARIES` (the phases raised before any
+  dial, `target_reauthorization_required` and `target_root_is_remote`, say that nothing was sent
+  rather than that the server could not be reached): the remedy every surface names on a remote
   root (CLI `control_failure`, menu, setup next steps, the MCP bridge's
   `_remote_control_error_result`, the hooks' `unavailable_context`/`locked_context` and
   `StatusOutcome.remote_reason`, the terminal interface's `_connect_failure` and doctor remedies).
@@ -4999,7 +5004,7 @@ wait `unavailable`.
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
 | `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
-| `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root` and `server connect`) | the owner runs `finishup server use NAME` on the trusted console |
+| `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root`, `server connect` and direct dial's active-root transport choice) | the owner runs `finishup server use NAME` on the trusted console |
 
 The remote connection phases ride as `phase` on a retryable `service_unavailable`
 (`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,

@@ -107,9 +107,10 @@ async def _key_claim(claim: WorkspaceClaim) -> RepositoryPrivacyContext:
 
     from finishup.ports.workspace_agent import workspace_handle_for_claim
 
-    commitment = "hmac-sha256:" + hmac.new(
-        b"installation", claim.digest.encode("ascii"), "sha256"
-    ).hexdigest()
+    commitment = (
+        "hmac-sha256:"
+        + hmac.new(b"installation", claim.digest.encode("ascii"), "sha256").hexdigest()
+    )
     return RepositoryPrivacyContext(
         commitment=commitment,
         identity_kind="client_claim",
@@ -488,6 +489,46 @@ def test_a_damaged_selected_target_refuses_before_any_dial(
     error = asyncio.run(exercise())
     assert error.reason == "endpoint_unsafe"
     assert client_module.path_refusal_reason(error) == "isolation_root_invalid"
+
+
+@pytest.mark.parametrize("on_demand", [False, True], ids=["connect", "on_demand"])
+def test_a_target_confirmed_under_an_older_disclosure_is_never_dialled(
+    remote: ServerTarget, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, on_demand: bool
+) -> None:
+    """ADR-051 section 8: nothing is claimed or sent until the owner confirms the current text."""
+
+    async def dial() -> ControlStream:
+        raise AssertionError("a stale target is never dialled")
+
+    transport = _FakeTransport(remote, dial)
+    _use(monkeypatch, transport)
+    monkeypatch.setattr(targets, "DISCLOSURE_VERSION", targets.DISCLOSURE_VERSION + 1)
+    locator = WorkspaceLocator(str(tmp_path))
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            if on_demand:
+                await client_module.connect_service_on_demand(
+                    ControlClientKind.MCP_BRIDGE, workspace_locator=locator, timeout_seconds=1.0
+                )
+            else:
+                # A hook's connection: claim-bound without an agent.
+                await client_module.connect_service(
+                    ControlClientKind.CLI, workspace_locator=locator
+                )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.retryable, error.phase) == (
+        "service_unavailable",
+        True,
+        "target_reauthorization_required",
+    )
+    assert transport.dials == 0
+    # The serving binding (CLI, terminal, bridge) refuses alike before claiming anything.
+    with pytest.raises(ControlError) as serving:
+        asyncio.run(client_module.serving_workspace_binding(locator))
+    assert serving.value.phase == "target_reauthorization_required"
 
 
 def test_a_local_root_still_dials_this_modules_unix_endpoint(

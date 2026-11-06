@@ -20,6 +20,7 @@ from finishup.client import targets
 from finishup.client.remote_remedy import (
     REMOTE_DRAINING_SUMMARY,
     REMOTE_LOCKED_SUMMARY,
+    REMOTE_NOT_SENT_SUMMARIES,
     REMOTE_UNAVAILABLE_SUMMARY,
     REMOTE_UNCLAIMABLE_SUMMARY,
     remote_remedy,
@@ -188,6 +189,41 @@ def test_a_lost_connection_never_claims_that_nothing_was_recorded(remote: None, 
     structured = json.dumps(result.structuredContent)
     assert "nothing was recorded" not in structured
     assert "same request_id" in structured
+
+
+@pytest.mark.parametrize(
+    ("phase", "continuation"),
+    [
+        ("target_reauthorization_required", "server_reauthorization_required"),
+        ("target_root_is_remote", "remote_target_no_local_service"),
+    ],
+)
+def test_a_connection_never_opened_says_nothing_was_sent(
+    remote: None, phase: str, continuation: str
+) -> None:
+    # Raised before any dial: the server was never reached, so no surface may call it
+    # unreachable or speak of a request it may have recorded.
+    del remote
+    refused = ControlError("service_unavailable", retryable=True, phase=phase)
+    remedy = remote_remedy(refused)
+    assert remedy is not None
+    assert (remedy.reason, remedy.summary) == (phase, REMOTE_NOT_SENT_SUMMARIES[phase])
+    assert remedy.directive == directive_for(continuation)
+    lines: list[str] = []
+    bootstrap.control_failure(refused, stderr_writer=lines.append)
+    result = bridge._control_error_result(refused, None, "start")  # pyright: ignore[reportPrivateUsage]
+    text = "".join(getattr(item, "text", "") for item in result.content)
+    structured = json.dumps(result.structuredContent)
+    for rendered in ("\n".join(lines), text, structured):
+        # (The foundation's directive says "no local service runs for it": a fact, not a command.)
+        for command in ("finishup service run", "finishup service unlock", "service restart"):
+            assert command not in rendered, rendered
+        for leak in _HOST_AND_NAME:
+            assert leak not in rendered, rendered
+        assert "could not be reached" not in rendered, rendered
+        assert "may be recorded" not in rendered, rendered
+    assert lines[0].startswith(f"service_unavailable: {phase}: ")
+    assert "nothing was" in text and phase in structured and continuation in structured
 
 
 def test_a_draining_server_is_waited_for_never_restarted_or_called_unreachable(

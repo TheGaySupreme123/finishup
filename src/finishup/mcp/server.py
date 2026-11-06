@@ -1914,6 +1914,23 @@ _REMOTE_UNAVAILABLE_MESSAGE: Final = (
     "Never fall back to another server or a local service, and never run local service "
     "lifecycle commands for this."
 )
+# The remote phases raised before any dial: nothing reached the server.
+_REMOTE_NOT_SENT_MESSAGES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "target_reauthorization_required": (
+            "The selected FinishUP server on another machine was confirmed under an older "
+            "disclosure of what leaves this computer, so nothing was sent to it. Follow the "
+            "continuation for this phase, then retry this operation with the same request_id. "
+            "Never fall back to another server or a local service."
+        ),
+        "target_root_is_remote": (
+            "The selected FinishUP target is a server on another machine, so this computer has no "
+            "FinishUP service of its own for it, and nothing was started or sent. Follow the "
+            "continuation for this phase. Never fall back to another server or a local service, "
+            "and never run local service lifecycle commands for this."
+        ),
+    }
+)
 _REMOTE_DRAINING_MESSAGE: Final = (
     "The selected FinishUP server on another machine answered that it is shutting down or "
     "restarting, so it did not serve this request. Wait a few seconds, then retry this operation "
@@ -1988,7 +2005,7 @@ def _remote_control_error_result(
         request_id,
         operation,
         code=PublicErrorCode.SERVICE_UNAVAILABLE,
-        message=_REMOTE_UNAVAILABLE_MESSAGE,
+        message=_REMOTE_NOT_SENT_MESSAGES.get(remedy.reason, _REMOTE_UNAVAILABLE_MESSAGE),
         retryable=error.retryable,
         host_profile=host_profile,
         safe_details={"reason_code": remedy.reason},

@@ -2041,16 +2041,23 @@ def _control_transport() -> ControlTransport:
     Every local root (the everyday server, an explicit isolation root, a named local server)
     dials its owner-only endpoint through this module's ``connect_control``, exactly as before. A
     target record that cannot be read refuses before any dial, so a damaged remote root never
-    starts a local service in itself.
+    starts a local service in itself. Nothing is dialled for a remote target the owner confirmed
+    under an older disclosure: that is a retryable ``service_unavailable`` in the closed phase
+    ``target_reauthorization_required``, which ``finishup server use NAME`` clears.
     """
 
-    from finishup.client.targets import TargetError
+    from finishup.client.targets import TargetError, require_current_authorization
     from finishup.client.transports import transport_for_active_root
 
     try:
-        return transport_for_active_root(connect_control)
+        transport = transport_for_active_root(connect_control)
     except TargetError as exc:
         raise _EndpointRootRefused("isolation_root_invalid") from exc
+    try:
+        require_current_authorization(transport.target)
+    except TargetError as exc:
+        raise ControlError("service_unavailable", retryable=True, phase=exc.reason) from None
+    return transport
 
 
 async def _remote_end_phase(stream: ControlStream | None) -> str | None:

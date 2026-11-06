@@ -191,7 +191,7 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
         _USAGE,
     ),
-    # The five remote connection phases (ADR-051): fixed text, never a host, user, or path.
+    # The remote connection phases (ADR-051): fixed text, never a host, user, or path.
     "remote_unreachable": (
         "the server could not be reached; check its address and this computer's network, then "
         "run 'finishup server test'",
@@ -216,6 +216,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     "remote_incompatible": (
         "that server is not running this FinishUP release (or is not a FinishUP server); install "
         "the same release on both",
+        _UNAVAILABLE,
+    ),
+    # The other two remote connection phases; target_reauthorization_required is above.
+    "target_root_is_remote": (
+        "that server runs on another machine, so no FinishUP service starts for it on this "
+        "computer; run 'finishup server test', or 'finishup server use local'",
         _UNAVAILABLE,
     ),
     "agent_not_applicable": (

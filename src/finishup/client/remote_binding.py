@@ -118,7 +118,9 @@ async def binding_for_target(
     active root, say), so the claim's salt and the dial always belong to the same target. A
     record whose ``claim_salt`` is missing or malformed raises ``TargetError``
     (``target_record_invalid``); a locator the shared root rule cannot resolve raises
-    ``RepositoryIdentityError``.
+    ``RepositoryIdentityError``. The disclosure check is the dialler's: the active root's
+    transport (``service.client._control_transport``) refuses a target confirmed under an older
+    disclosure before anything is claimed or sent.
     """
 
     if not target.is_remote:
