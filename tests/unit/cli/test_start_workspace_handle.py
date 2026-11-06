@@ -12,8 +12,7 @@ import pytest
 
 from finishup.cli import app as app_module
 from finishup.cli import observe_hooks as observe_hooks_module
-from finishup.cli.render import render_error_recovery_lines
-from finishup.ports.control import ControlError, ServiceState, ServiceStatus
+from finishup.ports.control import ControlError
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest
 
@@ -80,18 +79,19 @@ def test_the_cli_sends_a_local_start_as_written(monkeypatch: pytest.MonkeyPatch)
 def test_the_cli_sends_nothing_without_a_handle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A claim the server could not key at hello (its vault was locked) names the locked vault.
+
+    Nothing is sent, and the agent is never told to set a handle it cannot see (ADR-051).
+    """
+
     client = _Client("client_claim", None)
     code = _run_cli_start(monkeypatch, client)
     captured = capsys.readouterr()
     assert client.sent == [] and client.closed
-    assert code == app_module.exit_code_for(PublicErrorCode.INVALID_REQUEST)
-    assert captured.out == ""
-    lines = captured.err.splitlines()
-    assert lines[0].startswith("The selected FinishUP server is on another machine")
-    assert lines[1:] == render_error_recovery_lines(
-        {"reason_code": "workspace_ref_not_portable", "continuation": "workspace_handle_required"}
-    )
-    assert "private-project" not in captured.err
+    assert code == app_module.exit_code_for(PublicErrorCode.VAULT_LOCKED)
+    assert captured.err.startswith("vault_locked")
+    assert "workspace_handle_required" not in captured.err
+    assert "private-project" not in captured.out + captured.err
 
 
 def _auto_start(tmp_path: Path, client: _Client) -> observe_hooks_module.AutoAttachOutcome:
@@ -128,26 +128,7 @@ def test_auto_attach_sends_nothing_without_a_handle(tmp_path: Path) -> None:
     client = _Client("client_claim", None)
     outcome = _auto_start(tmp_path, client)
     assert client.sent == [] and client.closed
-    assert outcome == observe_hooks_module.AutoAttachOutcome(None, "auto_attach_refused")
-
-
-def test_auto_attach_names_a_locked_remote_vault(tmp_path: Path) -> None:
-    """A locked server binds no handle: the hook's diagnostic is vault_locked, nothing sent."""
-
-    client = _Client("client_claim", None)
-    client.hello_service_status = ServiceStatus(  # pyright: ignore[reportAttributeAccessIssue]
-        protocol_version="1.0",
-        service_version="0.3.0",
-        service_instance_id="svc_00000000-0000-4000-8000-000000000061",
-        service_generation="2",
-        state=ServiceState.LOCKED,
-        state_reason="passphrase_required",
-        vault_mode="passphrase",
-        capabilities=("confidential_ingress",),
-        session_monitor="unavailable",
-    )
-    outcome = _auto_start(tmp_path, client)
-    assert client.sent == [] and client.closed
+    # The server's vault was locked when it could not key the claim: named, never retried here.
     assert outcome == observe_hooks_module.AutoAttachOutcome(None, "vault_locked")
 
 

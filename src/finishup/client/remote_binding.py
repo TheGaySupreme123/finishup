@@ -13,13 +13,22 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 from collections.abc import Sequence
-from typing import cast
+from typing import Final, cast
 
-from finishup.client.targets import TargetError, active_target_record
+from finishup.client.targets import (
+    TargetError,
+    active_target_record,
+    require_current_authorization,
+)
 from finishup.client.workspace_claim import workspace_claim
 from finishup.ports.control import WorkspaceLocator
 from finishup.service.client import ClientWorkspaceBinding
+
+# Derives the agents' opened-workspace handle key from the target's claim salt (a client secret).
+_OPENED_HANDLE_KEY_DOMAIN: Final = b"yoetz/opened-workspace-key/v1"
 
 __all__ = ["binding_for_active_root", "is_remote_active_root", "remote_workspace_binding"]
 
@@ -44,7 +53,13 @@ async def remote_workspace_binding(
         return ClientWorkspaceBinding(claim)
     from finishup.client.workspace_agent import WorkspaceAgentHandler
 
-    return ClientWorkspaceBinding(claim, WorkspaceAgentHandler(workspace, protected=protected))
+    # Every agent of this client for this target keys its opened-workspace handles alike, so a
+    # handle one connection opened is answered by another (each process serves its own calls).
+    opened_key = hmac.new(claim_salt, _OPENED_HANDLE_KEY_DOMAIN, hashlib.sha256).digest()
+    return ClientWorkspaceBinding(
+        claim,
+        WorkspaceAgentHandler(workspace, protected=protected, opened_handle_key=opened_key),
+    )
 
 
 def is_remote_active_root() -> bool:
@@ -53,10 +68,13 @@ def is_remote_active_root() -> bool:
     True when the selected (or explicitly isolated) root's ``target.json`` names a remote kind:
     ``local_port``, ``ssh`` or ``https``. False for the everyday installation, an isolated root
     that is not a target, and a named local server. A root or record that cannot be read fails
-    closed with its closed ``TargetError``; it never reads as local.
+    closed with its closed ``TargetError``; it never reads as local. A remote target the owner
+    authorized under an older disclosure raises ``target_reauthorization_required``: nothing may be
+    sent to it until the owner confirms the current disclosure (``finishup server use NAME``).
     """
 
     record = active_target_record()
+    require_current_authorization(record)
     return record is not None and record.is_remote
 
 
@@ -72,12 +90,14 @@ async def binding_for_active_root(
     (``locator`` None) has nothing to claim and also returns None, so the connection sends
     neither. A path is never sent to a remote root either way.
 
-    Fails closed: a root or record that cannot be read raises its ``TargetError``, and a locator
-    the shared root rule cannot resolve raises ``RepositoryIdentityError``; the caller must not
-    fall back to sending the locator.
+    Fails closed: a root or record that cannot be read raises its ``TargetError``, a remote
+    target authorized under an older disclosure raises ``target_reauthorization_required`` (with
+    or without a workspace), and a locator the shared root rule cannot resolve raises
+    ``RepositoryIdentityError``; the caller must not fall back to sending the locator.
     """
 
     record = active_target_record()
+    require_current_authorization(record)
     if record is None or not record.is_remote or locator is None:
         return None
     try:

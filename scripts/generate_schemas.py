@@ -9989,8 +9989,9 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     ``control-hello`` gains two optional members: ``workspace_claim``, a client's keyed claim on
     its workspace sent in place of ``workspace_locator`` (the service refuses a hello carrying
     both with ``workspace_binding_conflict``; the schema leaves that check to the handshake so the
-    refusal keeps its own reason), and ``workspace_agent``, the catalog operations the connection
-    answers. ``control-hello-result`` gains ``workspace_binding`` and ``workspace_handle``; the
+    refusal keeps its own reason), with the keyed ``worktree`` digest that gives each linked
+    worktree of one repository its own workspace handle, and ``workspace_agent``, the catalog
+    operations the connection answers. ``control-hello-result`` gains ``workspace_binding`` and ``workspace_handle``; the
     binding is on every admitted session's answer and absent only from the manifest-mismatch
     answer, which keeps the frozen pre-2.10 shape so an older peer still reads it and names
     ``manifest_mismatch`` (#436). ``control-result`` gains the server-to-client
@@ -10039,8 +10040,14 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 },
                 "identity_kind": {"enum": ["directory", "git_common_root"], "type": "string"},
                 "schema_version": {"const": "1.0.0"},
+                "worktree": {
+                    "maxLength": 71,
+                    "minLength": 71,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string",
+                },
             },
-            "required": ["schema_version", "identity_kind", "digest"],
+            "required": ["schema_version", "identity_kind", "digest", "worktree"],
             "type": "object",
         }
         properties["workspace_agent"] = {

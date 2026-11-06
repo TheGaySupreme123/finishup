@@ -437,7 +437,7 @@ def test_a_remote_connection_claims_its_workspace_and_records_it_for_the_connect
     assert ("workspace_agent" in hello) is serve_workspace
     claim = cast(dict[str, str], hello["workspace_claim"])
     kind = cast(WorkspaceIdentityKind, claim["identity_kind"])
-    recorded = claimed_workspace(remote, WorkspaceClaim(kind, claim["digest"]))
+    recorded = claimed_workspace(remote, WorkspaceClaim(kind, claim["digest"], claim["worktree"]))
     assert recorded == workspace
 
 

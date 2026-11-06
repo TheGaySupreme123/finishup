@@ -167,6 +167,7 @@ def _claim_from(frame: ControlFrame) -> WorkspaceClaim | None:
     return WorkspaceClaim(
         identity_kind=cast(WorkspaceIdentityKind, source["identity_kind"]),
         digest=source["digest"],
+        worktree=source["worktree"],
     )
 
 

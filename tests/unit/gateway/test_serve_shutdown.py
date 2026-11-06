@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from builders.control_relay import CLAIM_DIGEST, ScriptedDaemon, memory_pair
+from builders.control_relay import CLAIM_DIGEST, WORKTREE_DIGEST, ScriptedDaemon, memory_pair
 from builders.server_targets import ambient_home
 from finishup.gateway.app import build_gateway_app
 from finishup.gateway.keys import create_key
@@ -95,6 +95,7 @@ def _agent_hello() -> bytes:
             "schema_version": "1.0.0",
             "identity_kind": "directory",
             "digest": CLAIM_DIGEST,
+            "worktree": WORKTREE_DIGEST,
         },
         "workspace_agent": {
             "schema_version": "1.0.0",

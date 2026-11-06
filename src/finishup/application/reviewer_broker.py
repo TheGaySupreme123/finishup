@@ -201,7 +201,10 @@ class ReadRoot:
 
     ``path`` is the directory read beneath; ``input_root`` the owner-admitted outside root it
     binds (E2E-2), with ``declared`` the task-declared paths beneath it. A ``snapshot`` serves the
-    files FinishUP kept instead of current ones. ``refuse`` is the service's ignored-path rule.
+    files FinishUP kept instead of current ones. ``refuse`` is the service's ignored-path rule;
+    ``refuse_many``, when set, is the same rule asked once for every entry of a listing (the
+    paths it refuses), so a listing answered by a workspace agent costs one round trip per batch
+    rather than one per entry.
     """
 
     alias: str
@@ -212,6 +215,7 @@ class ReadRoot:
     subject_refs: tuple[str, ...] = ()
     snapshot: TaskInputSnapshotSet | None = None
     refuse: Callable[[str], bool] | None = None
+    refuse_many: Callable[[tuple[str, ...]], frozenset[str]] | None = None
     # #1220: ``(ref, absolute path, pinned digest, criterion ref)`` of each declared test this
     # root serves; a read is citable for its criterion ref when the case lets it be cited.
     pinned: tuple[tuple[str, str, str, str], ...] = ()
@@ -719,11 +723,30 @@ class ReviewerBroker:
         return ("records", records, (selector, version, start), left)
 
     @staticmethod
-    def _refused(root: ReadRoot, path: str) -> str | None:
-        if root.refuse is not None and root.refuse(path):
+    def _refused(root: ReadRoot, path: str, *, ignored: bool | None = None) -> str | None:
+        """Why ``path`` may not be read here, if it may not; ``ignored`` is a batch's answer."""
+
+        if ignored if ignored is not None else (root.refuse is not None and root.refuse(path)):
             return "forbidden_path"
         inside = any(d == "" or path == d or path.startswith(f"{d}/") for d in root.declared)
         return "outside_scope" if root.declared and not inside else None
+
+    @classmethod
+    def _listed(
+        cls, root: ReadRoot, below: str, listed: Sequence[tuple[str, bool]]
+    ) -> list[tuple[str, bool]]:
+        """The listed entries this root may show; one batched refusal probe when it has one."""
+
+        if root.refuse_many is None:
+            return [(n, d) for n, d in listed if not cls._refused(root, below + n)]
+        refused: frozenset[str] = (
+            root.refuse_many(tuple(below + n for n, _ in listed)) if listed else frozenset()
+        )
+        return [
+            (n, d)
+            for n, d in listed
+            if not cls._refused(root, below + n, ignored=below + n in refused)
+        ]
 
     def _file(
         self,
@@ -763,7 +786,10 @@ class ReviewerBroker:
                 names = {m[len(below) :].split("/")[0] for m in kept if m.startswith(below)}
                 listed = tuple(sorted((n, f"{below}{n}" not in kept) for n in names))
                 truncated = False
-            children = [(n, d) for n, d in listed or () if not self._refused(root, below + n)]
+            if expired():
+                # Past the read's stop: no refusal probe is spent on a listing nobody receives.
+                raise ReadDeadline("reviewer_read_deadline")
+            children = self._listed(root, below, tuple(listed or ()))
             selector = f"{root.alias}\x00{path}"
             version = canonical_digest([[[n, d] for n, d in children], truncated])
             start = self._page(selector, version, args.cursor)

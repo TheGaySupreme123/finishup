@@ -13,7 +13,7 @@ from finishup.client.workspace_ref import (
     portable_workspace_ref,
     start_request_for_connection,
 )
-from finishup.ports.control import ControlError, ServiceState, ServiceStatus, WorkspaceBinding
+from finishup.ports.control import ControlError, WorkspaceBinding
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest, public_model_to_wire
 
@@ -97,17 +97,35 @@ def test_the_rewritten_request_differs_only_in_its_workspace_ref() -> None:
 
 
 @pytest.mark.parametrize("handle", [None, "client:XYZ", "/home/dev/private-project"])
-def test_no_handle_means_nothing_is_sent(handle: str | None) -> None:
-    with pytest.raises(WorkspaceRefNotPortable) as raised:
-        portable_workspace_ref(_PATH, workspace_binding="client_claim", workspace_handle=handle)
-    refusal = raised.value
+@pytest.mark.parametrize("workspace_ref", [_PATH, None, "label"])
+def test_no_handle_means_nothing_is_sent_and_the_locked_vault_is_named(
+    handle: str | None, workspace_ref: str | None
+) -> None:
+    """ADR-051: the server keys a claim only while its vault is ready; with no handle no start
+    is sent, whether it names a path or no workspace at all (which the server would open on the
+    handle it could not give), and the refusal is the server's own retryable ``vault_locked``."""
+
+    with pytest.raises(ControlError) as raised:
+        portable_workspace_ref(
+            workspace_ref, workspace_binding="client_claim", workspace_handle=handle
+        )
+    assert (raised.value.reason, raised.value.retryable) == ("vault_locked", True)
+    assert "private-project" not in repr(raised.value)
+    with pytest.raises(ControlError) as raised:
+        portable_start_request(
+            _start(workspace_ref), workspace_binding="client_claim", workspace_handle=handle
+        )
+    assert raised.value.reason == "vault_locked"
+
+
+def test_the_not_portable_refusal_keeps_its_fixed_shape() -> None:
+    refusal = WorkspaceRefNotPortable()
     assert refusal.code is PublicErrorCode.INVALID_REQUEST
     assert refusal.retryable is False
     assert dict(refusal.safe_details) == {
         "continuation": "workspace_handle_required",
         "reason_code": "workspace_ref_not_portable",
     }
-    assert "private-project" not in refusal.message
 
 
 def test_an_unknown_binding_is_a_caller_defect() -> None:
@@ -132,10 +150,11 @@ def test_the_connection_supplies_its_binding_and_handle() -> None:
         SimpleNamespace(workspace_binding=object(), workspace_handle=_HANDLE),
     ):
         assert start_request_for_connection(request, connection) is request
-    with pytest.raises(WorkspaceRefNotPortable):
+    with pytest.raises(ControlError) as raised:
         start_request_for_connection(
             request, SimpleNamespace(workspace_binding="client_claim", workspace_handle=None)
         )
+    assert raised.value.reason == "vault_locked"
 
 
 def test_a_connection_to_another_machine_never_sends_a_path_even_unbound() -> None:
@@ -157,44 +176,3 @@ def test_a_connection_to_another_machine_never_sends_a_path_even_unbound() -> No
     # The local endpoint keeps today's behavior byte for byte.
     local = SimpleNamespace(workspace_binding="none", workspace_handle=None, transport="unix")
     assert start_request_for_connection(request, local) is request
-
-
-def _status(state: ServiceState) -> ServiceStatus:
-    return ServiceStatus(
-        protocol_version="1.0",
-        service_version="0.3.0",
-        service_instance_id="svc_00000000-0000-4000-8000-000000000051",
-        service_generation="2",
-        state=state,
-        state_reason="passphrase_required" if state is ServiceState.LOCKED else "none",
-        vault_mode="passphrase",
-        capabilities=("confidential_ingress",),
-        session_monitor="unavailable",
-    )
-
-
-def test_a_locked_server_is_named_by_its_lock_not_by_the_missing_handle() -> None:
-    """A locked remote vault binds no handle; the start is refused as vault_locked, unsent."""
-
-    request = _start()
-    locked = SimpleNamespace(
-        workspace_binding="client_claim",
-        workspace_handle=None,
-        transport="connector",
-        hello_service_status=_status(ServiceState.LOCKED),
-    )
-    with pytest.raises(ControlError) as raised:
-        start_request_for_connection(request, locked)
-    assert raised.value.reason == "vault_locked" and raised.value.retryable is False
-    # A ready server that bound no handle is still the missing handle.
-    ready = SimpleNamespace(
-        workspace_binding="client_claim",
-        workspace_handle=None,
-        transport="connector",
-        hello_service_status=_status(ServiceState.READY),
-    )
-    with pytest.raises(WorkspaceRefNotPortable):
-        start_request_for_connection(request, ready)
-    # A request that needs no handle is sent as written even while the server is locked.
-    bare = _start(None)
-    assert start_request_for_connection(bare, locked) is bare

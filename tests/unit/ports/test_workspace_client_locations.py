@@ -19,7 +19,7 @@ from finishup.ports.workspace_agent import (
     client_location_valid,
     operation_spec,
     resolve_client_location,
-    workspace_handle_for_commitment,
+    workspace_handle_for_claim,
 )
 
 _HANDLE = "client:0123456789abcdef"
@@ -127,15 +127,26 @@ class _Key:
 
 def test_a_claim_is_keyed_under_its_own_domain_into_a_pathless_identity() -> None:
     key = _Key()
-    claim = WorkspaceClaim("git_common_root", "sha256:" + "a" * 64)
+    claim = WorkspaceClaim("git_common_root", "sha256:" + "a" * 64, "sha256:" + "b" * 64)
     context = claim_repository_privacy_context(claim, key)
     assert key.domains == [REPOSITORY_CLAIM_MAC_DOMAIN]
     assert REPOSITORY_CLAIM_MAC_DOMAIN != REPOSITORY_PRIVACY_MAC_DOMAIN
+    # The repository commitment is over the claim only; the worktree digest never enters it.
     assert key.messages == [b"git_common_root\x00sha256:" + b"a" * 64]
     assert context.identity_kind == "client_claim"
     assert context.workspace_locator is None
-    assert workspace_handle_for_commitment(context.commitment).startswith("client:")
-    other = claim_repository_privacy_context(WorkspaceClaim("directory", claim.digest), key)
+    assert context.workspace_handle == workspace_handle_for_claim(
+        context.commitment, claim.worktree
+    )
+    other = claim_repository_privacy_context(
+        WorkspaceClaim("directory", claim.digest, claim.worktree), key
+    )
     assert other.commitment != context.commitment
+    # Another worktree of the same repository: the same commitment, its own handle.
+    sibling = claim_repository_privacy_context(
+        WorkspaceClaim("git_common_root", claim.digest, "sha256:" + "c" * 64), key
+    )
+    assert sibling.commitment == context.commitment
+    assert sibling.workspace_handle != context.workspace_handle
     with pytest.raises(TypeError):
         claim_repository_privacy_context(object(), key)  # pyright: ignore[reportArgumentType]

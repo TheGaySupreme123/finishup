@@ -29,6 +29,7 @@ from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
 from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
 from finishup.config.models import FinishUpConfig
+from finishup.domain.events import SessionOpenedPayload
 from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE
 from finishup.ports.change_capture import decode_task_change_base
 from finishup.ports.control import (
@@ -43,6 +44,11 @@ from finishup.ports.control import (
 )
 from finishup.ports.runtime import RouteAccess, RouteCommand, RuntimeCapability
 from finishup.ports.secret_memory import SecretPurpose
+from finishup.ports.workspace_agent import (
+    WorkspaceAgentUnavailable,
+    WorkspaceOnlyArguments,
+    WorkspaceOperation,
+)
 from finishup.protocol.ids import IdKind, new_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -224,12 +230,20 @@ def _repository(path: Path, name: str, text: str) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def _claim_for(path: Path) -> WorkspaceClaim:
-    """The client's keyed claim on ``path``, as its own machine would compute it."""
+def _claim_for(path: Path, *, repository: Path | None = None) -> WorkspaceClaim:
+    """The client's keyed claim on ``path``, as its own machine would compute it.
 
-    preimage = b"yoetz/workspace-claim/v1\x00" + b"git_common_root\x00" + bytes(path)
+    ``repository`` stands for the Git common directory a linked worktree shares with its main
+    checkout: the claim is over it, the worktree digest over ``path`` itself.
+    """
+
+    common = path if repository is None else repository
+    preimage = b"yoetz/workspace-claim/v1\x00" + b"git_common_root\x00" + bytes(common)
     digest = hmac.new(b"s" * 32, preimage, hashlib.sha256).hexdigest()
-    return WorkspaceClaim("git_common_root", "sha256:" + digest)
+    worktree = hmac.new(
+        b"s" * 32, b"yoetz/workspace-worktree/v1\x00" + bytes(path), hashlib.sha256
+    ).hexdigest()
+    return WorkspaceClaim("git_common_root", "sha256:" + digest, "sha256:" + worktree)
 
 
 @dataclass
@@ -446,6 +460,106 @@ async def _start(client: _ClaimClient, workspace_ref: str | None) -> Any:  # noq
     return await client.call(ControlMethod.START, StartRequest.model_validate(body))
 
 
+async def test_linked_worktrees_of_one_repository_are_answered_by_their_own_agents(
+    tmp_path: Path, spy: _Spy, service: _Service
+) -> None:
+    """ADR-051: worktrees share the repository's claim, never a handle or an agent."""
+
+    repository = tmp_path / "client" / "repo" / ".git"
+    main = tmp_path / "client" / "repo"
+    linked = tmp_path / "client" / "linked"
+    _repository(main, "app.py", "print('main')\n")
+    _repository(linked, "app.py", "print('linked')\n")
+    main_agent, linked_agent = FakeWorkspaceAgent(main), FakeWorkspaceAgent(linked)
+    main_client = await service.connect(
+        claim=_claim_for(main, repository=repository), agent=main_agent
+    )
+    # The linked worktree's agent connects after the main one: newest, but not the main's.
+    linked_client = await service.connect(
+        claim=_claim_for(linked, repository=repository), agent=linked_agent
+    )
+    try:
+        main_handle = main_client.session.workspace_handle
+        linked_handle = linked_client.session.workspace_handle
+        assert main_handle is not None and linked_handle is not None
+        assert main_handle != linked_handle
+
+        started = (await _start(main_client, main_handle)).root
+        assert started.ok is True, started
+        # The main worktree's task base came from its own agent alone.
+        assert "read_task_base" in main_agent.operations
+        assert linked_agent.operations == []
+        # The other worktree's handle is not this connection's workspace.
+        refused = (await _start(main_client, linked_handle)).root
+        assert refused.ok is False
+        sibling = (await _start(linked_client, linked_handle)).root
+        assert sibling.ok is True, sibling
+        assert main_agent.operations.count("read_task_base") == 1
+        assert linked_agent.operations.count("read_task_base") == 1
+        # Both tasks share the repository's commitment (privacy authority and consent scope).
+        application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+        routes = [
+            await application.start_catalog.task_route(started.task_id),
+            await application.start_catalog.task_route(sibling.task_id),
+        ]
+        commitments = {route.repository_privacy_commitment for route in routes}
+        assert len(commitments) == 1 and None not in commitments
+
+        # With the main worktree's agent gone, its handle has no agent: the linked worktree's
+        # live agent never answers for it.
+        await main_client.close()
+        with pytest.raises(WorkspaceAgentUnavailable) as caught:
+            await service.hub.call(
+                main_handle,
+                WorkspaceOperation.READ_TASK_BASE,
+                WorkspaceOnlyArguments(main_handle),
+                timeout_seconds=1.0,
+            )
+        assert caught.value.reason == "no_agent"
+        assert linked_agent.operations.count("read_task_base") == 1
+    finally:
+        await main_client.close()
+        await linked_client.close()
+    assert spy.workspaces == []
+
+
+async def test_an_agent_for_another_worktree_is_never_admitted_under_a_live_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: _Service
+) -> None:
+    """Defense in depth: were two worktrees ever to meet under one handle, the second is shut."""
+
+    import finishup.adapters.repository_identity as identity_module
+
+    def one_handle(commitment: str, worktree: str) -> str:
+        del commitment, worktree
+        return "client:00000000000000aa"
+
+    monkeypatch.setattr(identity_module, "workspace_handle_for_claim", one_handle)
+    first, second = tmp_path / "client" / "first", tmp_path / "client" / "second"
+    _repository(first, "app.py", "print('first')\n")
+    _repository(second, "app.py", "print('second')\n")
+    first_agent, second_agent = FakeWorkspaceAgent(first), FakeWorkspaceAgent(second)
+    first_client = await service.connect(claim=_claim_for(first), agent=first_agent)
+    second_client = await service.connect(claim=_claim_for(second), agent=second_agent)
+    try:
+        assert first_client.session.workspace_handle == second_client.session.workspace_handle
+        assert second_client.reader is not None
+        # The service closed the second connection instead of admitting its agent.
+        await asyncio.wait_for(second_client.reader, 5.0)
+        handle = "client:00000000000000aa"
+        await service.hub.call(
+            handle,
+            WorkspaceOperation.READ_TASK_BASE,
+            WorkspaceOnlyArguments(handle),
+            timeout_seconds=5.0,
+        )
+        assert first_agent.operations == ["read_task_base"]
+        assert second_agent.operations == []
+    finally:
+        await first_client.close()
+        await second_client.close()
+
+
 async def test_a_claim_bound_task_runs_its_whole_workflow_on_its_agent_alone(
     tmp_path: Path, spy: _Spy, service: _Service
 ) -> None:
@@ -580,21 +694,64 @@ async def test_a_claim_bound_task_runs_its_whole_workflow_on_its_agent_alone(
         await client.close()
 
 
-async def test_a_minimal_start_on_a_claim_connection_takes_its_base_from_the_agent(
-    tmp_path: Path, spy: _Spy, service: _Service
-) -> None:
-    """A start naming no workspace works as on a local connection, and reads only the client."""
+async def _start_naming_no_workspace(client: _ClaimClient, kind: str) -> Any:  # noqa: ANN401
+    """Open a task by a start that names no workspace, as a host may on one computer."""
 
-    claimed = tmp_path / "work" / "repo"
-    _repository(claimed, "decoy.py", "print('decoy')\n")
+    def body(**fields: Any) -> StartRequest:  # noqa: ANN401
+        return StartRequest.model_validate(
+            {
+                **_COMMON,
+                "request_id": new_id(IdKind.REQUEST),
+                "task_title": "Change the client's app module",
+                "requested_view": "compact",
+                **fields,
+            }
+        )
+
+    if kind == "create":
+        return (await client.call(ControlMethod.START, body(mode="create"))).root
+    parent = (await client.call(ControlMethod.START, body(mode="create"))).root
+    assert parent.ok is True, parent
+    if kind == "parent_registered":
+        return (
+            await client.call(
+                ControlMethod.START, body(mode="create", parent_session_id=parent.session_id)
+            )
+        ).root
+    assert kind == "delegate_then_attach"
+    delegated = (
+        await client.call(ControlMethod.START, body(mode="delegate", session_id=parent.session_id))
+    ).root
+    assert delegated.ok is True, delegated
+    assert delegated.attach_handle is not None
+    return (
+        await client.call(
+            ControlMethod.START,
+            body(mode="attach", attach_handle=delegated.attach_handle.model_dump(mode="json")),
+        )
+    ).root
+
+
+@pytest.mark.parametrize("kind", ["create", "parent_registered", "delegate_then_attach"])
+async def test_a_start_naming_no_workspace_opens_on_the_claims_handle_and_attests(
+    tmp_path: Path, spy: _Spy, service: _Service, kind: str
+) -> None:
+    """ADR-051: a start may name no workspace on a claim-bound connection, as on one computer.
+
+    The pair is both or neither, so a host that sends neither cannot add the handle alone. The
+    session it opens records the connection's handle, its change base comes from the agent and
+    its receipt carries the fixed workspace-evidence block; the server reads no path.
+    """
+
     client_repo = tmp_path / "client" / "repo"
     client_head = _repository(client_repo, "app.py", "print('client')\n")
     agent = FakeWorkspaceAgent(client_repo)
-    client = await service.connect(claim=_claim_for(claimed), agent=agent)
+    client = await service.connect(claim=_claim_for(client_repo), agent=agent)
     try:
-        started = (await _start(client, None)).root
+        handle = client.session.workspace_handle
+        assert handle is not None
+        started = await _start_naming_no_workspace(client, kind)
         assert started.ok is True, started
-        assert "read_task_base" in agent.operations
         application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
         runtime = await application.runtime.route(
             RouteCommand(
@@ -605,13 +762,47 @@ async def test_a_minimal_start_on_a_claim_connection_takes_its_base_from_the_age
             )
         )
         try:
+            opened = [
+                record.payload
+                async for record in runtime.ledger.load_events(runtime.session_id)
+                if isinstance(record.payload, SessionOpenedPayload)
+            ]
+            assert [payload.workspace_ref for payload in opened] == [handle]
+            # Only a start that creates a task records its base (ADR-031), as on one computer;
+            # the parent's create in the other cases read it from the agent too.
             ref = await runtime.ledger.load_task_change_base()
-            assert ref is not None
-            chunks: list[bytes] = [chunk async for chunk in runtime.objects.open_verified(ref)]
-            assert decode_task_change_base(b"".join(chunks)).commit == client_head
+            if kind == "create":
+                assert ref is not None
+                chunks = [chunk async for chunk in runtime.objects.open_verified(ref)]
+                assert decode_task_change_base(b"".join(chunks)).commit == client_head
         finally:
             await application.runtime.release(runtime)
-        assert all(str(claimed) not in entry for entry in spy.workspaces), spy.workspaces
+        assert "read_task_base" in agent.operations
+        receipt = (
+            await client.call(
+                ControlMethod.RECEIPT,
+                ReceiptRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "task_id": started.task_id,
+                        "expected_frontier": _frontier(started.frontier),
+                        "format": "text",
+                        "include": "summary",
+                        "redaction_profile": "full_local",
+                    }
+                ),
+            )
+        ).root
+        assert receipt.ok is True, receipt
+        assert receipt.human_text is not None
+        assert CLIENT_ATTESTED_WORKSPACE_LINE in receipt.human_text
+        assert str(client_repo) not in receipt.human_text
+        assert all(
+            handle not in entry and str(client_repo) not in entry for entry in spy.workspaces
+        ), spy.workspaces
     finally:
         await client.close()
 
@@ -937,7 +1128,6 @@ async def test_a_pending_workspace_call_keeps_an_idle_agent_connection_open(
     import time
 
     import finishup.service.daemon as daemon_module
-    from finishup.ports.workspace_agent import WorkspaceOnlyArguments, WorkspaceOperation
 
     class SlowAgent(FakeWorkspaceAgent):
         def answer(self, call: Any) -> Any:  # noqa: ANN401
@@ -998,3 +1188,87 @@ async def test_a_claim_on_a_locked_service_binds_no_handle_and_registers_no_agen
         served.cancel()
         await asyncio.gather(served, return_exceptions=True)
         await daemon.close()
+
+
+async def test_a_child_attached_by_its_handle_keeps_the_client_attested_receipt(
+    tmp_path: Path, service: _Service
+) -> None:
+    """ADR-051: a delegated child attached by handle, with no workspace_ref, is still claim-bound.
+
+    The child's only opening event comes from the attach. Its evidence is read by the client's
+    agent, so its receipt keeps the fixed workspace-evidence block naming the serving service.
+    """
+
+    client_repo = tmp_path / "client" / "repo"
+    _repository(client_repo, "app.py", "print('client')\n")
+    agent = FakeWorkspaceAgent(client_repo)
+    client = await service.connect(claim=_claim_for(client_repo), agent=agent)
+    try:
+        handle = client.session.workspace_handle
+        assert handle is not None
+        parent = (await _start(client, handle)).root
+        assert parent.ok is True, parent
+        delegated = (
+            await client.call(
+                ControlMethod.START,
+                StartRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "mode": "delegate",
+                        "session_id": parent.session_id,
+                        "task_title": "The client's child task",
+                        "requested_view": "compact",
+                        "workspace_ref": handle,
+                        "external_ref": "claim-bound-child",
+                    }
+                ),
+            )
+        ).root
+        assert delegated.ok is True, delegated
+        capability = delegated.attach_handle
+        assert capability is not None
+        attached = (
+            await client.call(
+                ControlMethod.START,
+                StartRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "mode": "attach",
+                        "task_title": "The client's child task",
+                        "requested_view": "compact",
+                        "attach_handle": capability.model_dump(mode="json"),
+                    }
+                ),
+            )
+        ).root
+        assert attached.ok is True, attached
+        assert attached.task_id == delegated.task_id
+        receipt = (
+            await client.call(
+                ControlMethod.RECEIPT,
+                ReceiptRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "session_id": attached.session_id,
+                        "writer_id": attached.writer_id,
+                        "task_id": attached.task_id,
+                        "expected_frontier": _frontier(attached.frontier),
+                        "format": "text",
+                        "include": "standard",
+                        "redaction_profile": "full_local",
+                    }
+                ),
+            )
+        ).root
+        assert receipt.ok is True, receipt
+        assert receipt.human_text is not None
+        assert CLIENT_ATTESTED_WORKSPACE_LINE in receipt.human_text
+        assert f"Served by FinishUP service {client.session.service_instance_id}" in (
+            receipt.human_text
+        )
+        assert str(client_repo) not in receipt.human_text
+    finally:
+        await client.close()

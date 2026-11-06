@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gc
+import hmac
 import json
 from collections.abc import Buffer, Mapping
 from dataclasses import dataclass, replace
@@ -55,6 +56,8 @@ from finishup.ports.control import (
     McpRouteProfile,
     RepositoryPrivacyContext,
     ServiceState,
+    WorkspaceClaim,
+    WorkspaceLocator,
 )
 from finishup.ports.ledger import CheckAdmissionStage, check_admission_refused
 from finishup.protocol.canonical import canonical_digest
@@ -2373,6 +2376,108 @@ async def test_soft_lock_auto_ready_reopens_on_next_ordinary_dispatch(
     assert daemon.status().state is ServiceState.READY
     assert daemon.status().state_reason == "none"
     assert application.start_calls == 1
+    await daemon.close()
+
+
+class _InstallationMac:
+    def mac(self, domain: bytes, message: bytes) -> str:
+        return "hmac-sha256:" + hmac.new(b"installation", domain + message, "sha256").hexdigest()
+
+
+class _KeyedPassphraseVault(_PassphraseVault):
+    """A passphrase vault that also hands out the installation MAC once it is ready."""
+
+    def installation_mac_handle(self, purpose: object) -> _InstallationMac:
+        del purpose
+        assert self.ready, "the installation key is read only from a ready vault"
+        return _InstallationMac()
+
+
+_CLAIM = WorkspaceClaim("git_common_root", "sha256:" + "c" * 64, "sha256:" + "d" * 64)
+
+
+@pytest.mark.anyio
+async def test_a_claim_hello_reopens_a_soft_lock_and_keys_the_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-051: a claim-bound connection's handle is fixed by its hello, so the hello re-opens a
+    # soft lock exactly as the connection's first request would; otherwise the connection could
+    # never name its workspace, register its agent or route a hook row.
+    application = _Application()
+    vault = _KeyedPassphraseVault()
+    secret = b"correct horse battery staple!!"
+    vault.expect_secret(secret)
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return application
+
+    _patch_auto_unlock_store(monkeypatch, secret)
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+
+    context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+
+    assert context is not None
+    assert context.identity_kind == "client_claim"
+    assert context.workspace_locator is None
+    assert context.workspace_handle is not None
+    assert context.workspace_handle.startswith("client:")
+    assert vault.unlock_count == 1
+    assert daemon.status().state is ServiceState.READY
+    await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_claim_hello_leaves_a_hard_lock_locked_and_keys_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _Application()
+    vault = _KeyedPassphraseVault()
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return application
+
+    _patch_auto_unlock_store(monkeypatch, b"correct horse battery staple!!")
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "explicit_lock"  # pyright: ignore[reportPrivateUsage]
+
+    context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+
+    assert context is None
+    assert vault.unlock_count == 0
+    assert daemon.status().state is ServiceState.LOCKED
+    assert daemon.status().state_reason == "explicit_lock"
+    await daemon.close()
+
+
+@pytest.mark.anyio
+async def test_a_locator_hello_still_resolves_nothing_under_a_soft_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local connections keep their exact behavior: a locator hello never unlocks the vault.
+    application = _Application()
+    vault = _KeyedPassphraseVault()
+    _patch_auto_unlock_store(monkeypatch, b"correct horse battery staple!!")
+
+    async def factory(service_generation: int, vault_generation: int) -> _Application:
+        del service_generation, vault_generation
+        return application
+
+    daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+    await daemon.start()
+    daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+
+    context = await daemon._resolve_repository_context(  # pyright: ignore[reportPrivateUsage]
+        WorkspaceLocator(str(tmp_path))
+    )
+
+    assert context is None
+    assert vault.unlock_count == 0
+    assert daemon.status().state is ServiceState.LOCKED
     await daemon.close()
 
 

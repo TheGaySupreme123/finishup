@@ -13,6 +13,7 @@ import pytest
 
 from builders.control_relay import (
     CLAIM_DIGEST,
+    WORKTREE_DIGEST,
     ScriptedDaemon,
     run_scripted_session,
 )
@@ -303,7 +304,9 @@ def test_each_claimed_workspace_gets_one_background_agent_lease(home: Path) -> N
 
     async def exercise() -> None:
         connector = Connector(root, record, agent_opener=opener)
-        claim = WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST)
+        claim = WorkspaceClaim(
+            identity_kind="directory", digest=CLAIM_DIGEST, worktree=WORKTREE_DIGEST
+        )
         await connector._observe_claim(claim)  # pyright: ignore[reportPrivateUsage]
         await connector._observe_claim(claim)  # pyright: ignore[reportPrivateUsage]
         assert [item.digest for item in opened] == [CLAIM_DIGEST]
@@ -329,7 +332,7 @@ def test_an_idle_connector_stops_and_removes_its_endpoint(home: Path) -> None:
             root, record, idle_seconds=0.3, agent_opener=opener, drain_interval=0.05
         )
         await connector._observe_claim(  # pyright: ignore[reportPrivateUsage]
-            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST)
+            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST, worktree=WORKTREE_DIGEST)
         )
         master = _StubMaster(root, restarts=[])
         master.failure = "remote_unreachable"
@@ -373,7 +376,7 @@ def test_a_stop_is_not_held_up_by_a_slow_last_delivery(home: Path) -> None:
         listener = await bind_control_listener()
         connector = Connector(root, record, agent_opener=opener, drain_interval=3_600)
         await connector._observe_claim(  # pyright: ignore[reportPrivateUsage]
-            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST)
+            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST, worktree=WORKTREE_DIGEST)
         )
         master = _StubMaster(root, restarts=[])
         connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]

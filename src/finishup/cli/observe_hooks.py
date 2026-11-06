@@ -502,36 +502,37 @@ class _HookDrainClient(Protocol):
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
 
 
-def _drain_connector(
-    connect: ServiceConnector | None, workspace_locator: str | None
-) -> HookDrainConnector | None:
-    """The connector this hook's own outbox drain uses (ADR-051).
+def _drain_connector(connect: object, workspace_locator: str | None) -> HookDrainConnector:
+    """The connector a hook pass's own outbox drains use (ADR-051).
 
-    An injected ``connect`` is used as given, and a local root keeps today's unbound drain
-    connection (``None``: the default connector). A server on another machine keeps no
-    observation consent of its own for a client's workspace and accepts a client's attested rows
-    only on a claim-bound connection; an unbound drain there was refused (``method_forbidden``
-    from an HTTPS gateway) or had its rows quarantined as ``consent_missing`` (SSH). So on a remote
-    root the drain claims the hook's canonical workspace: the hello carries the claim, never the
-    path. A pass that knows no workspace keeps the unbound connection, and the connector's own
-    drain delivers its rows.
+    An injected ``connect`` is used as given. Otherwise the root decides when the drain connects:
+    a local root (the everyday server, an isolated root, a named local server) connects exactly
+    as before, naming no workspace. A server on another machine accepts a row only when it is
+    attested over a connection that claims the row's workspace (decision 12); an unbound drain
+    there is refused, or its rows are quarantined. So on a remote root the drain names the hook's
+    canonical workspace and the connect seam claims it: the hello carries the claim, never the
+    path. A pass that knows no workspace sends nothing there: its connect fails, the rows stay
+    pending, and the background drain delivers them claim-bound.
     """
 
-    if connect is not None or workspace_locator is None:
-        return cast(HookDrainConnector | None, connect)
-    from finishup.client.targets import active_target_is_remote
+    if connect is not None:
+        return cast(HookDrainConnector, connect)
 
-    if not active_target_is_remote():
-        return None
-    from finishup.ports.control import WorkspaceLocator
+    async def drain_connect(kind: ControlClientKind) -> _HookDrainClient:
+        from finishup.client.targets import active_root_may_be_remote
 
-    locator = WorkspaceLocator(workspace_locator)
+        real = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
+        if not active_root_may_be_remote():
+            return await real(kind)
+        if workspace_locator is None:
+            from finishup.ports.control import ControlError
 
-    async def connect_claimed(kind: ControlClientKind) -> _HookDrainClient:
-        connector = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
-        return await connector(kind, workspace_locator=locator)
+            raise ControlError("service_unavailable", retryable=True)
+        from finishup.ports.control import WorkspaceLocator
 
-    return connect_claimed
+        return await real(kind, workspace_locator=WorkspaceLocator(workspace_locator))
+
+    return drain_connect
 
 
 class _StartClient(Protocol):
@@ -2772,10 +2773,12 @@ async def _try_service_ingest(
             capture_only=capture_only,
         )
         if (
-            getattr(client, "workspace_handle", None) is not None
-            and store is not None
-            and workspace_commitment is not None
+            getattr(client, "workspace_binding", None) == "client_claim"
+            or getattr(client, "workspace_handle", None) is not None
         ):
+            # A remote server target: the row goes out attested, without the path, or not at all.
+            if store is None or workspace_commitment is None:
+                raise ValueError("observation_attestation_unavailable")
             from finishup.client.observation_attestation import attest_for_connection
 
             request = attest_for_connection(

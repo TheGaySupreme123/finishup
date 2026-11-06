@@ -9,6 +9,7 @@ prints a host or a target name. With a local root every one of them keeps its ex
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
@@ -47,7 +48,8 @@ def remote(home: Path) -> Path:
 
 def _clean(text: str) -> None:
     for command in _LOCAL_COMMANDS:
-        assert command not in text, text
+        # A command, not prose that happens to contain it ("no local service runs for it").
+        assert re.search(rf"\b{re.escape(command)}\b", text) is None, text
     for name in _NAMES:
         assert f" {name} " not in f" {text} ", text
 

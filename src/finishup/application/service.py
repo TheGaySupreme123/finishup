@@ -153,7 +153,6 @@ from finishup.ports.publish_response_catalog import (
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
 from finishup.ports.start_catalog import SessionState, StartCatalogPort, TaskRoute, TaskRouteState
 from finishup.ports.workspace_agent import (
-    workspace_handle_for_commitment,
     workspace_handle_valid,
 )
 from finishup.protocol.canonical import (
@@ -249,33 +248,38 @@ def context_workspace(context: RepositoryPrivacyContext | None) -> str | None:
     if context is None:
         return None
     if context.identity_kind == "client_claim":
-        return workspace_handle_for_commitment(context.commitment)
+        return context.workspace_handle
     return None if context.workspace_locator is None else context.workspace_locator.path
 
 
 def _require_portable_workspace_ref(
     request: StartRequest, context: RepositoryPrivacyContext | None
-) -> None:
+) -> str | None:
     """Refuse a start whose ``workspace_ref`` does not fit its connection's binding (ADR-051).
 
     On a claim-bound connection the service cannot read the client's paths, so the only
-    ``workspace_ref`` it records is the connection's own handle: the handle in the session's
+    ``workspace_ref`` it records is the connection's own handle: the handle in a session's
     opening event is the durable fact that every workspace read of the task goes to the
-    client's agent and that its receipts say so. A start may still omit ``workspace_ref``, as
-    on a local connection: the task then records no workspace root, so nothing names a
-    directory the service could read, and its task base and check-time change come only
-    through this connection's claim. A ``client:`` handle names a claim, so a connection that
-    carries no claim cannot record one. Every refusal comes before any write and names no
-    value.
+    client's agent and that its receipts say so. A start that names a workspace must name that
+    handle. A start may also name none, in every mode where it may on one computer (where it
+    then reads the connection's own locator path); here the connection's claim names that same
+    workspace, so the handle is returned and any session the start opens (a create, a
+    parent-registered child, a child attached by its attach handle) records it in its opening
+    event alone. The request's identity is unchanged, and a start that opens no session (an
+    attach to an existing one, a delegation) records nothing. A start that names the handle
+    returns None, as does every start on a connection without a claim. A ``client:`` handle
+    names a claim, so a connection that carries no claim cannot record one. Every refusal
+    comes before any write and names no value.
     """
 
     reference = request.workspace_ref
     claimed = context is not None and context.identity_kind == "client_claim"
     if claimed:
         assert context is not None
-        if reference is None:
-            return
-        if reference != workspace_handle_for_commitment(context.commitment):
+        handle = context.workspace_handle
+        if handle is not None and reference is None:
+            return handle
+        if handle is None or reference != handle:
             raise PublicOperationError(
                 PublicErrorCode.INVALID_REQUEST,
                 (
@@ -285,7 +289,7 @@ def _require_portable_workspace_ref(
                 False,
                 safe_details={"reason_code": "workspace_ref_not_portable"},
             )
-        return
+        return None
     if reference is not None and workspace_handle_valid(reference):
         raise PublicOperationError(
             PublicErrorCode.INVALID_REQUEST,
@@ -293,6 +297,7 @@ def _require_portable_workspace_ref(
             False,
             safe_details={"reason_code": "workspace_binding_conflict"},
         )
+    return None
 
 
 def _declared_input_paths(request: PublishWorkRequest) -> tuple[str, ...]:
@@ -1234,7 +1239,7 @@ class Application:
         *,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> StartInternalResult:
-        _require_portable_workspace_ref(request, repository_privacy_context)
+        session_workspace_ref = _require_portable_workspace_ref(request, repository_privacy_context)
         # Delegate/self-register requests use a parent session as their authority but do not pass
         # through the start-catalog route transition that rotates or renews an existing session.
         # Touch that lease before executing the lineage operation so an active parent cannot be
@@ -1271,6 +1276,7 @@ class Application:
                             else repository_privacy_context.commitment
                         ),
                         input_capture=capture,
+                        session_workspace_ref=session_workspace_ref,
                     )
             else:
                 result = await execute_start(
@@ -1282,6 +1288,7 @@ class Application:
                         else repository_privacy_context.commitment
                     ),
                     input_capture=capture,
+                    session_workspace_ref=session_workspace_ref,
                 )
             await self._maybe_birth_implicit_repository_project(repository_privacy_context)
             await self._record_task_change_base(result, repository_privacy_context)

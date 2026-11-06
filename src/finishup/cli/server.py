@@ -23,7 +23,7 @@ from __future__ import annotations
 import functools
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +51,7 @@ from finishup.client.targets import (
     read_selected_target_id,
     reauthorized,
     registry_lock,
+    require_current_authorization,
     selection_source,
     target_root,
     validate_name,
@@ -142,7 +143,8 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         _UNSAFE,
     ),
     "selection_invalid": (
-        "the server selection file is damaged; 'finishup server use local' replaces it",
+        "the server selection is damaged or names a server folder that is missing or unsafe; "
+        "'finishup server use local' clears it",
         _UNSAFE,
     ),
     "trusted_console_required": (
@@ -154,6 +156,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "this computer's FinishUP is set to make no network connections, so it cannot use a "
         "server on another machine; change the privacy policy on this computer first",
         _USAGE,
+    ),
+    "network_policy_unreadable": (
+        "this computer's FinishUP has its own privacy policy, which could not be read (its "
+        "service is stopped, locked, or did not answer), so a server on another machine is "
+        "refused; start it with 'finishup service start', unlock it if it is locked, and retry",
+        _UNAVAILABLE,
     ),
     "credential_not_applicable": (
         "only HTTPS targets take an API key; SSH targets use your OpenSSH keys and agent",
@@ -173,9 +181,10 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "this FinishUP build has no client runtime for that kind of server target",
         _UNAVAILABLE,
     ),
-    "selection_active": (
-        "another server is selected, so this computer's everyday server cannot be started from "
-        "here; run 'finishup server use local' first",
+    "target_reauthorization_required": (
+        "this server target was authorized under an older disclosure of what leaves this "
+        "computer; run 'finishup server use NAME' in your own terminal to read the current one "
+        "and confirm it",
         _USAGE,
     ),
     "usage": (
@@ -247,6 +256,8 @@ class ServerCommandRefused(Exception):
 
 
 _DEFAULT_REMEDY: Final = "the server target did not respond as needed"
+# Written once, when the everyday installation's vault is initialized.
+_INSTALLATION_MARKER: Final = "installation-state.json"
 ROOT_UNUSABLE_MESSAGE: Final = (
     "this process's FinishUP root cannot be used; 'finishup service isolation' explains which "
     "source decided it"
@@ -297,10 +308,30 @@ def _runtime_failure(error: TargetRuntimeError) -> NoReturn:
     )
 
 
+def _explicit_source_present() -> bool:
+    """Whether the isolation variable or a runtime pin decides this process's root.
+
+    Read without resolving the selection, so the ways back from a damaged or dangling selection
+    (``use local``, ``remove --select-local``) still work. A variable or pin that cannot be used is
+    still an explicit source: it fails closed with its own path-safety reason.
+    """
+
+    from finishup.config.paths import isolated_root_variable, read_runtime_pin
+
+    try:
+        return isolated_root_variable() is not None or read_runtime_pin() is not None
+    except PathSafetyError as error:
+        raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
+
+
 def _source() -> str:
     try:
         return selection_source()
     except PathSafetyError as error:
+        if not _explicit_source_present():
+            # Neither the variable nor a pin is set, so the selection is what cannot be used: a
+            # damaged file, or a missing or unsafe target folder. Its remedy works from here.
+            raise ServerCommandRefused("selection_invalid") from None
         raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
 
 
@@ -308,6 +339,13 @@ def _require_selection_in_force() -> None:
     """Refuse while the isolation variable or a runtime pin outranks the selection."""
 
     if _source() in _EXPLICIT_SOURCES:
+        raise ServerCommandRefused("selection_overridden")
+
+
+def _require_no_explicit_source() -> None:
+    """``_require_selection_in_force`` without resolving the selection (the ways back)."""
+
+    if _explicit_source_present():
         raise ServerCommandRefused("selection_overridden")
 
 
@@ -338,20 +376,46 @@ def _kind_label(kind: str) -> str:
     }[kind]
 
 
-def _zero_network_in_force() -> bool:
-    """Whether this computer is in the zero-network state that refuses a remote hop.
+def _everyday_installation_exists() -> bool:
+    """Whether this computer's everyday FinishUP was set up (its vault initialized).
 
-    The everyday local server's effective policy decides when it answers; a policy that does not
-    permit network egress is the zero-network configuration. When it does not answer, an explicit
-    ``[privacy]`` declaration in the everyday configuration file decides (it can only declare
-    egress off). A configuration that cannot be read fails closed.
+    Read under ``selection_override(None)``. The installation marker is written once, when the
+    vault is initialized, so its presence means this computer has a privacy policy of its own.
+    Anything that keeps the answer from being known (a configuration or folder that cannot be
+    read) fails closed: it counts as set up.
     """
 
-    import tomllib
+    import os
+
+    from finishup.config.load import load_config
+    from finishup.config.models import ConfigError
+    from finishup.config.paths import bundle_root
+
+    try:
+        config = load_config({}, os.environ, None)
+        (bundle_root(_data_dir=config.storage.data_dir) / _INSTALLATION_MARKER).lstat()
+    except FileNotFoundError:
+        return False
+    except (ConfigError, OSError, PathSafetyError):
+        return True
+    return True
+
+
+def _zero_network_in_force() -> bool:
+    """Whether this computer is in the zero-network state that refuses a remote hop (ADR-051).
+
+    Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
+    This computer's own FinishUP decides. When its everyday installation was set up, its running
+    service's effective policy decides, and a policy that does not permit network egress is the
+    zero-network state; when that policy cannot be read (the service is stopped, locked, or does
+    not answer) the hop is refused with ``network_policy_unreadable``, never allowed. A computer
+    whose everyday FinishUP was never set up has no policy of its own, so nothing here refuses
+    it: it is a client of the server it names, and that server's own policy governs its data.
+    """
 
     import anyio
 
-    from finishup.config.paths import ambient_registry_dirs, selection_override
+    from finishup.config.paths import selection_override
     from finishup.domain.values import JsonObject
     from finishup.ports.control import ControlClientKind, ControlError
     from finishup.service.client import connect_service
@@ -368,24 +432,19 @@ def _zero_network_in_force() -> bool:
             return None
         finally:
             await client.close()
+        # The reply is a frozen ``JsonObject`` (a ``Mapping``, not a ``dict``) on the wire.
         policy = response.get("composed_policy")
-        if not isinstance(policy, dict):
+        if not isinstance(policy, Mapping):
             return None
-        return cast(dict[str, object], policy).get("network_egress_permitted") is not True
+        return cast(Mapping[str, object], policy).get("network_egress_permitted") is not True
 
     with selection_override(None):
-        answer = anyio.run(effective)
-    if answer is not None:
-        return answer
-    config_dir, _state = ambient_registry_dirs()
-    path = config_dir / "config.toml"
-    try:
-        if not path.exists():
+        if not _everyday_installation_exists():
             return False
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    return "privacy" in data
+        answer = anyio.run(effective)
+    if answer is None:
+        raise ServerCommandRefused("network_policy_unreadable")
+    return answer
 
 
 def _confirm_on_trusted_console(name: str, kind: str) -> None:
@@ -409,7 +468,8 @@ def _confirm_on_trusted_console(name: str, kind: str) -> None:
 
 
 def _authorize_remote(name: str, kind: str) -> None:
-    if kind != "local_port" and _zero_network_in_force():
+    # Every remote kind is a network hop, ``local_port`` included (ADR-051 section 3).
+    if _zero_network_in_force():
         raise ServerCommandRefused("zero_network_in_force")
     _confirm_on_trusted_console(name, kind)
 
@@ -548,7 +608,10 @@ def server_add(
     name: Annotated[str, typer.Argument(help="Target name: 1-16 lowercase letters, digits, -.")],
     address: Annotated[
         str | None,
-        typer.Argument(help="ssh://[user@]host[:port] or https://host[:port][/base]."),
+        # No square brackets: help renders as Rich markup, where "[/base]" is a closing tag.
+        typer.Argument(
+            help="ssh://user@host:port or https://host:port/base (user, port and base optional)."
+        ),
     ] = None,
     local: Annotated[
         bool, typer.Option("--local", help="A named local server on this computer.")
@@ -597,8 +660,10 @@ def server_add(
             kind = "ssh"
             user, host, ssh_port = parse_ssh_url(cast(str, address))
         else:
-            kind = "https"
             base_url = normalize_https_url(cast(str, address))
+            # ``https://127.0.0.1:PORT`` and ``https://[::1]:PORT`` are this computer's loopback
+            # ports (ADR-051 section 3), exactly as ``--port PORT`` records 127.0.0.1.
+            kind = "local_port" if _loopback_origin(base_url) else "https"
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     if (remote_root is not None or remote_launcher is not None) and kind != "ssh":
@@ -665,6 +730,15 @@ def server_add(
         _emit((f"Store its API key with 'finishup server login {record.name}'.",))
     else:
         _emit((f"Check it with 'finishup server test {record.name}'.",))
+
+
+def _loopback_origin(base_url: str) -> bool:
+    """Whether a normalized HTTPS address is a loopback origin with an explicit port."""
+
+    try:
+        return normalize_https_url(base_url, loopback_only=True) == base_url
+    except TargetError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,14 +816,17 @@ def use_target(
     (``authorize`` defaults to it), which also refreshes its recorded authorization.
     """
 
-    _require_selection_in_force()
     if name == "local":
+        # The way back never resolves the selection it removes: a damaged selection, or one that
+        # names a missing or unsafe target folder, is exactly what it must clear.
+        _require_no_explicit_source()
         try:
             with registry_lock():
                 clear_selection()
         except TargetError as error:
             raise ServerCommandRefused(error.reason) from None
         return None
+    _require_selection_in_force()
     record = _target_or_fail(name)
     if record.is_remote:
         (authorize or _authorize_remote)(record.name, record.kind)
@@ -970,12 +1047,18 @@ def server_remove(
 ) -> None:
     """Remove a target: stop what this client runs for it, delete its key and its folder."""
 
-    _require_selection_in_force()
+    _require_no_explicit_source()
     record = _target_or_fail(name)
+    unreadable_selection = False
     try:
         selected = read_selected_target_id()
     except TargetError as error:
-        raise ServerCommandRefused(error.reason)
+        if not select_local:
+            raise ServerCommandRefused(
+                "selection_invalid" if error.reason == "target_root_unsafe" else error.reason
+            ) from None
+        # A selection that cannot be read may name this target; --select-local clears it first.
+        selected, unreadable_selection = None, True
     if selected == record.target_id and not select_local:
         raise ServerCommandRefused("target_selected")
     root = target_root(record.target_id)
@@ -995,7 +1078,7 @@ def server_remove(
             raise ServerCommandRefused(error.reason)
     try:
         with registry_lock():
-            if selected == record.target_id:
+            if selected == record.target_id or unreadable_selection:
                 clear_selection()
             if record.kind == "local":
                 from finishup.cli.instance import dispose_instance
@@ -1019,7 +1102,7 @@ def server_remove(
         typer.echo(f"{error.reason_code}: the target folder is unsafe to remove", err=True)
         raise typer.Exit(_UNSAFE) from None
     typer.echo(f"Removed server target {record.name} ({record.target_id}).")
-    if selected == record.target_id:
+    if selected == record.target_id or unreadable_selection:
         typer.echo("Using this computer's everyday FinishUP server.")
         _warn_open_sessions()
 
@@ -1114,12 +1197,11 @@ def server_logout(name: Annotated[str, typer.Argument(help="An HTTPS server targ
 def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> str:
     record, root, everyday = _resolve(name)
     kind: TargetKind = "local" if record is None else record.kind
-    if action == "ensure_ready" and everyday:
-        try:
-            if read_selected_target_id() is not None and _source() not in _EXPLICIT_SOURCES:
-                raise ServerCommandRefused("selection_active")
-        except TargetError as error:
-            raise ServerCommandRefused(error.reason)
+    if action == "ensure_ready":
+        # Nothing is sent to a target confirmed under an older disclosure; 'stop' stays usable.
+        require_current_authorization(record)
+    # The everyday server starts here even while another is selected: a spawned service is told
+    # its spawner's root (``service run --ambient-root``) and never reads the selection itself.
     try:
         runtime = runtime_for(kind)
         if action == "ensure_ready":

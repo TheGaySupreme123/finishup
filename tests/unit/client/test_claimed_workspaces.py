@@ -14,7 +14,7 @@ from finishup.client.claimed_workspaces import (
 )
 from finishup.ports.control import WorkspaceClaim, WorkspaceLocator
 
-_CLAIM = WorkspaceClaim("git_common_root", "sha256:" + "ab" * 32)
+_CLAIM = WorkspaceClaim("git_common_root", "sha256:" + "ab" * 32, "sha256:" + "cd" * 32)
 
 
 @pytest.fixture
@@ -38,7 +38,9 @@ def test_a_recorded_claim_reads_back_as_its_workspace(root: Path, tmp_path: Path
     assert record_claimed_workspace(root, _CLAIM, workspace) is True
     assert record.stat().st_ino == before
     # Another kind under the same digest is not this claim.
-    assert claimed_workspace(root, WorkspaceClaim("directory", _CLAIM.digest)) is None
+    assert (
+        claimed_workspace(root, WorkspaceClaim("directory", _CLAIM.digest, _CLAIM.worktree)) is None
+    )
 
 
 def test_a_tampered_or_unsafe_record_is_never_read(root: Path, tmp_path: Path) -> None:

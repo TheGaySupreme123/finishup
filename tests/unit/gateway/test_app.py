@@ -21,6 +21,7 @@ import pytest
 from builders.control_relay import (
     CLAIM_DIGEST,
     SERVICE_ID,
+    WORKTREE_DIGEST,
     ScriptedDaemon,
     call_request,
     memory_pair,
@@ -129,6 +130,7 @@ def _hello(*, agent: bool = False, locator: bool = False, digest: str | None = N
             "schema_version": "1.0.0",
             "identity_kind": "directory",
             "digest": CLAIM_DIGEST,
+            "worktree": WORKTREE_DIGEST,
         }
         hello["workspace_agent"] = {
             "schema_version": "1.0.0",

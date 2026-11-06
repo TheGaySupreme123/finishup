@@ -221,11 +221,18 @@ async def _connect(
 
 
 def _agent(client: _Client) -> _RecordingAgent:
+    from finishup.client.observation_outbox import check_policy_trusted
+
     return _RecordingAgent(
         WorkspaceAgentHandler(
             WorkspaceLocator(client.path),
             protected=(str(client.state),),
             check_sandbox=_ReadySandbox(),
+            # The client's own store decides approved-check trust (ADR-051 decision 12); here it
+            # lives under the client's separate state root, as on another machine.
+            check_policy_trust=lambda digest: check_policy_trusted(
+                client.path, digest, state=client.state
+            ),
         )
     )
 

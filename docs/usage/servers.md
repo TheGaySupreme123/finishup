@@ -17,7 +17,7 @@ as it always has.
 | Kind | Add it with | What it is |
 |---|---|---|
 | Local | `finishup server add NAME --local` | A second FinishUP on this computer, with its own tasks, vault and settings. It starts when something first needs it, like the default one. |
-| Local port | `finishup server add NAME https://127.0.0.1:PORT` | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
+| Local port | `finishup server add NAME https://127.0.0.1:PORT` (or `https://[::1]:PORT`, or `--port PORT`) | A FinishUP served over HTTPS on a port of this computer. It is treated like a web server, because a port can forward anywhere. |
 | SSH | `finishup server add NAME ssh://[user@]host[:port]` | A FinishUP on another machine that you log in to over SSH, as yourself. |
 | Web (HTTPS) | `finishup server add NAME https://host[:port][/path]` | A FinishUP hosted on the web. You sign in to it with an API key. |
 
@@ -54,7 +54,11 @@ a server: there is no agent tool for it, and the command refuses to run without 
 disclosure changes in a later release, FinishUP asks you to confirm again before using the server.
 
 If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
-or use a server on another machine, a port or the web.
+or use a server on another machine, a port or the web. It also refuses while the FinishUP set up
+on this computer cannot tell it its policy, because its service is stopped or locked: start it
+with `finishup service start`, unlock it if needed, and try again. A computer whose own FinishUP
+was never set up has no privacy policy of its own and can use a server; the server's policy then
+governs your work.
 
 ## Sign in to a web server
 
@@ -104,8 +108,9 @@ finishup server test devbox
 ```
 
 `list` shows every server and which one is in use. `status` shows which setting chose the server
-in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready, the
-key's scope and whether a key is stored (never the key). `test` connects, measures the round trip
+in use, its kind, whether it is reachable, both FinishUP releases, whether its vault is ready, and
+whether a key is stored and where (never the key itself). The key's scope is set by the server's
+operator and is not shown here. `test` connects, measures the round trip
 and warns when it is slow enough that a startup check required by your agent setup would likely
 time out.
 
@@ -256,7 +261,8 @@ give, the content you allow, the checks you approve and the observations waiting
 all live here, and `finishup observe …` changes them here whichever server you use. Each
 observation this computer delivers carries those settings with it; the server accepts them as
 your computer's own statement and does not check them itself. Receipts of such a task say so in
-one more line.
+one more line. With a server elsewhere, `finishup observe drain` delivers one project's waiting
+observations at a time: the one you name with `--workspace`, or the folder you run it in.
 
 For an SSH server you can run the service commands through SSH, from a terminal:
 
@@ -280,16 +286,18 @@ repeated safely.
 | `remote_identity_changed` | The server's host key or certificate is not the one you confirmed. | Confirm the server's identity another way, then remove and add the server again. |
 | `remote_service_not_running` | The server machine answered, but its FinishUP service is not running. | SSH: `ssh -t <server> finishup service start`. Web: ask the server's operator. |
 | `remote_incompatible` | The two machines run different FinishUP releases. | Install the same release on both. |
+| `target_reauthorization_required` | This release shows a newer disclosure of what leaves your computer than the one you confirmed for that server, so nothing is sent to it. | Run `finishup server use NAME` in your own terminal and confirm again. |
 | `vault_locked` | The server's vault is locked. | SSH: `ssh -t <server> finishup service unlock`. Web: the operator unlocks it on the server. |
 | `requires_server_host` | That command belongs to the server. | Run it on the server, as shown above. |
 | `method_forbidden` | The API key's scope does not allow that call. | Use an `operator` key for management commands. |
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
-| `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. | Start it on the server instead. |
-| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
-| `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on your approved list. | Nothing to repair unless you meant to admit that folder or check. |
-| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it. |
-| `workspace_binding_conflict` | A client sent two different ways of naming the project. | Report it as a bug. |
+| `selection_invalid` | The saved server choice is damaged, or names a server whose folder on this computer is missing or unsafe. `finishup server` commands say this instead of `isolation_root_invalid`. | Run `finishup server use local`; it clears the choice even when it cannot be read. |
+| `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |
+| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
+| `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on the check list you approved and trusted on this computer. A receipt says so where the refusal kept the server from seeing your change. | Nothing to repair unless you meant to admit that folder or trust that check list. |
+| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
+| `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
 
 In the terminal interface, the header shows which server is in use, and `/server` lists your
 servers and can switch between them with the same confirmation.

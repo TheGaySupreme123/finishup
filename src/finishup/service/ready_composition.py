@@ -421,7 +421,6 @@ from finishup.ports.start_catalog import (
 )
 from finishup.ports.workspace_agent import (
     WorkspaceAgentUnavailable,
-    workspace_handle_for_commitment,
 )
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
@@ -5190,16 +5189,32 @@ async def _reviewer_read_roots(
         )
     )
     statement = tuple(i.source_ref for i in case.items if i.section == "task_statement")
-    roots = [
-        ReadRoot(
-            "w1",
-            workspace_root,
-            excluded=protected,
-            subject_refs=evidence,
-            refuse=ignored if callable(probe) else (lambda _path: True),
-            reads=reads,
-        )
-    ]
+    if reads is not None:
+        # The agent answers the ignored-path rule in batches within the reviewer's read budget:
+        # a listing costs one round trip per batch, never one per entry (ADR-051).
+        batched = reads.refused_paths
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=lambda path: path in batched((path,)),
+                refuse_many=batched,
+                reads=reads,
+            )
+        ]
+    else:
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=ignored if callable(probe) else (lambda _path: True),
+                reads=reads,
+            )
+        ]
     # Issue #1220: the declared tests the packet lists, by ref, wherever they were declared;
     # each read is pinned to the digest the packet lists. Never FinishUP's own directories.
     pinned = tuple(
@@ -8616,11 +8631,7 @@ async def provide_service_ready_context(
         locator = context.workspace_locator
         # A claim-bound task's inputs are read by its client's agent beneath the same roots,
         # excluding the claimed workspace by its handle (ADR-051).
-        handle = (
-            workspace_handle_for_commitment(context.commitment)
-            if context.identity_kind == "client_claim"
-            else None
-        )
+        handle = context.workspace_handle if context.identity_kind == "client_claim" else None
         if privacy_application is None or (locator is None and handle is None):
             return None
         scope = AuthorizationScope(
