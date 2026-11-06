@@ -682,8 +682,10 @@ HTTPS and LOCALHOST PORT
   workflow with client-attested evidence and the client's attribution, a decoy at the claimed
   path never read, the reviewer's `read_file` answered by the agent, the agent lost mid-review
   (`workspace_agent_unavailable`, never a pass), a hook's row delivered by the bridge's background
-  drain and verified through its agent, a hook's claim-only connection, and remote loss as a typed
-  remote phase with no local fallback. `tests/unit/client/test_direct_transport_parity.py` and
+  drain and verified through its agent, a hook's claim-only connection, two real linked worktrees
+  of one repository on one target (one commitment, two handles, and every workspace call of each
+  task answered by its own worktree's agent), and remote loss as a typed remote phase with no
+  local fallback. `tests/unit/client/test_direct_transport_parity.py` and
   `tests/capability/test_openssh_direct_dial.py` show the frames byte-identical over every
   transport, against the real gateway and a real `sshd`.
 - **Compared with A.** No relay process to supervise and no per-target status file; the costs are

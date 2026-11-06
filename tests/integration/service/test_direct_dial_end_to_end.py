@@ -83,6 +83,7 @@ from finishup.service.client import ClientWorkspaceBinding, ServiceClient
 from integration.service.test_claim_bound_sessions import (  # noqa: F401 - fixtures
     _COMMON,  # pyright: ignore[reportPrivateUsage]
     _frontier,  # pyright: ignore[reportPrivateUsage]
+    _git,  # pyright: ignore[reportPrivateUsage]
     _pair,  # pyright: ignore[reportPrivateUsage]
     _publish_batches,  # pyright: ignore[reportPrivateUsage]
     _repository,  # pyright: ignore[reportPrivateUsage]
@@ -144,18 +145,26 @@ class _Recorded(WorkspaceAgentHandler):
     """
 
     operations: ClassVar[list[str]] = []
+    # (the root this agent serves, the operation it answered), in order.
+    answered: ClassVar[list[tuple[str, str]]] = []
+    # (served root, operation, the reply's outcome and reason), in order.
+    replies: ClassVar[list[tuple[str, str, str, str | None]]] = []
     drops: ClassVar[dict[str, Callable[[], None]]] = {}
 
     def __init__(self, workspace: WorkspaceLocator, **kwargs: Any) -> None:  # noqa: ANN401
         kwargs.setdefault("check_sandbox", _ReadySandbox())
         super().__init__(workspace, **kwargs)
+        self.served_root = workspace.path
 
     def answer(self, call: WorkspaceCall, *, workspace_handle: str | None) -> WorkspaceReply:
         type(self).operations.append(call.operation)
+        type(self).answered.append((self.served_root, call.operation))
         drop = type(self).drops.get(call.operation)
         if drop is not None:
             drop()
-        return super().answer(call, workspace_handle=workspace_handle)
+        reply = super().answer(call, workspace_handle=workspace_handle)
+        type(self).replies.append((self.served_root, call.operation, reply.outcome, reply.reason))
+        return reply
 
 
 @pytest.fixture
@@ -164,6 +173,8 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> Iterator[type[_Recorded]]:
 
     class _Agent(_Recorded):
         operations: ClassVar[list[str]] = []
+        answered: ClassVar[list[tuple[str, str]]] = []
+        replies: ClassVar[list[tuple[str, str, str, str | None]]] = []
         drops: ClassVar[dict[str, Callable[[], None]]] = {}
 
     monkeypatch.setattr(workspace_agent_module, "WorkspaceAgentHandler", _Agent)
@@ -359,7 +370,9 @@ async def _receipt(connection: ServiceClient, started: Any, frontier: Any) -> An
     return receipt
 
 
-async def _task_base_commit(service: _Service, started: Any) -> str:  # noqa: F811, ANN401
+async def _task_base_commit(service: _Service, started: Any) -> str | None:  # noqa: F811, ANN401
+    """The commit of the task's recorded change base, or None when none could be read."""
+
     application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
     runtime = await application.runtime.route(
         RouteCommand(
@@ -371,7 +384,8 @@ async def _task_base_commit(service: _Service, started: Any) -> str:  # noqa: F8
     )
     try:
         ref = await runtime.ledger.load_task_change_base()
-        assert ref is not None
+        if ref is None:
+            return None
         chunks: list[bytes] = [chunk async for chunk in runtime.objects.open_verified(ref)]
         return decode_task_change_base(b"".join(chunks)).commit
     finally:
@@ -490,6 +504,93 @@ async def test_a_remote_task_runs_end_to_end_through_the_direct_dial_transport(
         f"This client reached FinishUP service {connection.service_instance_id} "
         f"(transport: {kind})."
     )
+
+
+@pytest.mark.parametrize("kind", ["https", "ssh"])
+async def test_linked_worktrees_on_one_remote_target_each_serve_their_own_task(
+    kind: str,
+    tmp_path: Path,
+    spy: _Spy,  # noqa: F811
+    service: _Service,  # noqa: F811
+    agent: type[_Recorded],
+    forbid_local: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two real linked worktrees of one repository on one remote target (ADR-051).
+
+    Each worktree's connection claims the same repository under the target's salt and names its
+    own worktree by digest, through the foundation's binding (``serving_workspace_binding``): the
+    server keys one repository commitment, and so one privacy authority and consent scope, but
+    gives each worktree its own handle, task workspace and agent route. Every workspace call for
+    each task then reaches that task's own worktree, through the direct-dial transport.
+
+    The main checkout's task base is its HEAD. The linked worktree's base is that worktree's own
+    answer: the Git change capture refuses a checkout whose ``.git`` is a file (``unsafe_root``)
+    on one computer exactly as here, so that task records the gap, never the main checkout's HEAD.
+    """
+
+    from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+    from finishup.ports.change_capture import ChangeCaptureUnavailable
+
+    del forbid_local
+    main = tmp_path / "client" / "repo"
+    main_head = _repository(main, "app.py", "print('client')\n")
+    linked = tmp_path / "client" / "linked"
+    _git(main, "worktree", "add", "-q", "-b", "side", os.fspath(linked))
+    (linked / "app.py").write_text("print('client, side branch')\n")
+    _git(linked, "commit", "-q", "-am", "side branch")
+    assert _git(linked, "rev-parse", "HEAD") != main_head
+    for worktree in (main, linked):
+        (worktree / "app.py").write_text("print('client, edited')\n")
+    directory = _short_directory()
+    try:
+        async with _remote(kind, service, monkeypatch, directory):
+            main_connection = await _serving_connection(main)
+            linked_connection = await _serving_connection(linked)
+            try:
+                handles = (main_connection.workspace_handle, linked_connection.workspace_handle)
+                assert None not in handles and handles[0] != handles[1]
+                main_started, main_receipt = await _workflow(main_connection, main)
+                during_main = len(agent.replies)
+                linked_started, linked_receipt = await _workflow(linked_connection, linked)
+            finally:
+                await main_connection.close()
+                await linked_connection.close()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+    # Every workspace call of each task was answered by its own worktree's agent alone.
+    assert {reply[0] for reply in agent.replies[:during_main]} == {os.fspath(main)}
+    assert {reply[0] for reply in agent.replies[during_main:]} == {os.fspath(linked)}
+    for root in (main, linked):
+        operations = [reply[1] for reply in agent.replies if reply[0] == os.fspath(root)]
+        assert {"read_task_base", "capture_metadata"} <= set(operations), operations
+    # The main checkout's base is its own HEAD, read by its agent.
+    assert await _task_base_commit(service, main_started) == main_head
+    assert ("read_task_base", "ok", None) in [reply[1:] for reply in agent.replies[:during_main]]
+    # The linked worktree's agent answered for it exactly as this computer's own capture would.
+    with pytest.raises(ChangeCaptureUnavailable) as local:
+        GitChangeCaptureAdapter().read_task_base(os.fspath(linked))
+    assert local.value.reason == "unsafe_root"
+    assert {reply[2:] for reply in agent.replies[during_main:] if reply[1] == "read_task_base"} == {
+        ("unavailable", "unsafe_root")
+    }
+    assert await _task_base_commit(service, linked_started) is None  # never the main's HEAD
+    # Both tasks share the repository's commitment: one privacy authority and consent scope.
+    application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+    routes = [
+        await application.start_catalog.task_route(started.task_id)
+        for started in (main_started, linked_started)
+    ]
+    commitments = {route.repository_privacy_commitment for route in routes}
+    assert len(commitments) == 1 and None not in commitments
+    assert main_started.task_id != linked_started.task_id
+    # The server's own adapters never saw either worktree, and both receipts are client-attested.
+    assert spy.workspaces == [], spy.workspaces
+    for receipt in (main_receipt, linked_receipt):
+        text = receipt.human_text
+        assert type(text) is str and CLIENT_ATTESTED_WORKSPACE_LINE in text
+        assert os.fspath(main) not in text and os.fspath(linked) not in text
 
 
 async def test_a_decoy_at_the_claimed_path_is_never_read(
