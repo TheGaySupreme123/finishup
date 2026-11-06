@@ -311,7 +311,8 @@ class WorkspaceAgentHandler:
         made for (``client.server_folders.outside_reads_reader`` given that target's root or its
         claim salt). Without one the handler is in ``listed`` mode with no folder: it never
         guesses the target from this process's selection, which may name another server, nor
-        takes any kind's default. An answer that fails is ``listed`` with no folder too.
+        takes the mode of the target in use. An answer that fails is ``listed`` with no folder
+        too.
         """
 
         if type(workspace) is not WorkspaceLocator:

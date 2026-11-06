@@ -473,15 +473,19 @@ def _confirm_on_trusted_console(
     kind: str,
     *,
     ask_mode: bool = False,
-    mode_line: str | None = None,
+    decided: OutsideReadMode | None = None,
+    official: bool = False,
 ) -> OutsideReadMode | None:
     """Show the versioned disclosure and require the owner to type the target name.
 
     At ``server add`` the owner also answers what the server may read outside their projects
     here (ADR-051 decision 5), before typing the name, which then authorizes both: with
-    ``ask_mode`` the question is asked and the answer returned; otherwise ``mode_line``, the
-    mode already decided (``--outside-reads``, or an official endpoint), is shown. ``server use``
-    asks neither. Returns the mode answered, or None when none was asked.
+    ``ask_mode`` the question is asked and the answer returned; otherwise the mode already
+    decided, by ``--outside-reads`` (``decided``) or as an ``official`` endpoint, is shown. When
+    the owner chooses ``local``, answered or by the flag, the notice of what that mode lets the
+    server read, a rule-breaking server included, comes before the typed name, as with ``server
+    folders mode NAME local``. ``server use`` asks neither. Returns the mode answered, or None
+    when none was asked.
     """
 
     from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
@@ -494,8 +498,15 @@ def _confirm_on_trusted_console(
             console.write(f"Target: {name}, {_kind_label(kind)}.\n")
             if ask_mode:
                 answered = _ask_outside_reads(console, name)
-            elif mode_line is not None:
-                console.write(mode_line + "\n")
+            else:
+                mode_line = _decided_mode_line(decided, official=official)
+                if mode_line is not None:
+                    console.write(mode_line + "\n")
+            if (answered or decided) == "local":
+                console.write("\n")
+                for line in _LOCAL_MODE_BODY:
+                    console.write(line.format(name=name) + "\n")
+                console.write("\n")
             console.read_choice(
                 "Type the target name to authorize it (anything else cancels): ",
                 (name.encode("ascii"),),
@@ -521,7 +532,10 @@ def _ask_outside_reads(console: TrustedForegroundConsole, name: str) -> OutsideR
     console.write("\n" + OUTSIDE_READ_QUESTION + "\n")
     for mode in ("local", "listed"):
         console.write(f"  {mode.ljust(6)}  {OUTSIDE_READ_MODE_LINES[mode]}\n")
-    console.write(f"You can change it later with 'finishup server folders mode {name}'.\n")
+    console.write(
+        f"You can change it later with 'finishup server folders mode {name} local' or "
+        f"'finishup server folders mode {name} listed'.\n"
+    )
     for attempt in range(_MODE_ATTEMPTS):
         if attempt:
             console.write("Please type local or listed.\n")
@@ -538,12 +552,19 @@ def _ask_outside_reads(console: TrustedForegroundConsole, name: str) -> OutsideR
 
 
 def _authorize_remote(
-    name: str, kind: str, *, ask_mode: bool = False, mode_line: str | None = None
+    name: str,
+    kind: str,
+    *,
+    ask_mode: bool = False,
+    decided: OutsideReadMode | None = None,
+    official: bool = False,
 ) -> OutsideReadMode | None:
     # Every remote kind is a network hop, ``local_port`` included (ADR-051 section 3).
     if _zero_network_in_force():
         raise ServerCommandRefused("zero_network_in_force")
-    return _confirm_on_trusted_console(name, kind, ask_mode=ask_mode, mode_line=mode_line)
+    return _confirm_on_trusted_console(
+        name, kind, ask_mode=ask_mode, decided=decided, official=official
+    )
 
 
 def _absolute_option(value: str | None) -> str | None:
@@ -735,7 +756,8 @@ def server_add(
             name,
             kind,
             ask_mode=mode is None and not official,
-            mode_line=_decided_mode_line(mode, official=official),
+            decided=mode,
+            official=official,
         )
         mode = mode or answered
     remote_endpoint: str | None = None
@@ -1551,20 +1573,27 @@ _FOLDER_NOTICE: Final = (
     "",
 )
 
+# What mode ``local`` lets a server read, a rule-breaking server included (ADR-051 decision 5):
+# shown before the typed name whenever the owner chooses ``local``, at ``server add`` (the answer
+# or ``--outside-reads local``) and with ``server folders mode NAME local``.
+_LOCAL_MODE_BODY: Final = (
+    "When that server checks or reviews your work, the FinishUP workspace agent here answers its",
+    "reads outside your project folder as a FinishUP service on this computer answers them: the",
+    "server's own privacy policy chooses the folders it reads task inputs from, and the agent does",
+    "not limit it to folders you list for it. FinishUP's usual safety checks still hold: hidden,",
+    "credential-named and system files, your home folder's private folders and FinishUP's own",
+    "folders are never read, and links are never followed. But that policy does not bind a server",
+    "that breaks FinishUP's rules: such a server could read any other such file on this computer",
+    "and list the names in its folders. Choose this only for a server you trust as you trust",
+    "FinishUP on this computer.",
+    "Undo it with 'finishup server folders mode {name} listed'.",
+)
+
 _LOCAL_MODE_NOTICE: Final = (
     "Let server target {name} ({target_id}) read outside your projects on this computer as",
     "FinishUP on this computer would (mode local):",
     "",
-    "When that server checks or reviews your work, the FinishUP workspace agent here answers its",
-    "reads outside your project folder as a FinishUP service on this computer answers them: the",
-    "server's own privacy policy chooses the folders it reads task inputs from, and the agent no",
-    "longer limits it to the folders you listed for it. FinishUP's usual safety checks still hold:",
-    "hidden, credential-named and system files, your home folder's private folders and FinishUP's",
-    "own folders are never read, and links are never followed. But that policy does not bind a",
-    "server that breaks FinishUP's rules: such a server could read any other such file on this",
-    "computer and list the names in its folders. Choose this only for a server you trust as you",
-    "trust FinishUP on this computer.",
-    "Undo it with 'finishup server folders mode {name} listed'.",
+    *_LOCAL_MODE_BODY,
     "",
 )
 
