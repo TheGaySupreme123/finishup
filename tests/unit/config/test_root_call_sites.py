@@ -30,6 +30,8 @@ _FOLLOWS_SELECTION: Final = {
     ("cli/runtime_facts.py", "_owned_roots", "active_root"): 1,
     # Which folders this installation uses (``isolated`` for any non-ambient root).
     ("cli/service_installation.py", "installation_folders", "active_root"): 1,
+    # Direct dial (approach B): the selected root's ``target.json`` picks the transport.
+    ("client/transports.py", "transport_for_active_root", "active_root"): 1,
 }
 _STAYS_EXPLICIT: Final = {
     # Registrations and launch lines stamp only an explicit isolation root.
@@ -127,9 +129,10 @@ def test_the_audit_covers_the_design_table() -> None:
     """Design section 5 lists 20 lines: 5 switch to ``active_root()`` and 15 stay explicit. One
     of the 15 (``codex_mcp.py:578``) is the definition of the Codex adapter's
     ``_expected_isolated_root`` helper, which resolves through ``isolated_root_environment``, so
-    the explicit side has 14 calls here."""
+    the explicit side has 14 calls here. The direct-dial transport seam (approach B) adds a sixth
+    call that follows the selection."""
 
-    assert len(_FOLLOWS_SELECTION) == 5
+    assert len(_FOLLOWS_SELECTION) == 6
     assert len(_STAYS_EXPLICIT) == 14
 
 
