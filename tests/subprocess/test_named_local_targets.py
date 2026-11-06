@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import pwd
 import shutil
 import subprocess
 import sys
@@ -26,6 +25,8 @@ from typing import cast
 
 import pytest
 
+from builders.server_targets import short_home_base
+
 _TIMEOUT = 90
 
 
@@ -33,20 +34,21 @@ _TIMEOUT = 90
 def _private_everyday_folders(prefix: str) -> Generator[dict[str, str]]:
     """The environment with every everyday folder (data, state, config, cache, runtime) moved.
 
-    One short owner-only tree beneath the account's real home (outside shared temp): target
-    roots live beneath the ambient state directory and must keep their socket paths under
-    ``sun_path``, and no folder may resolve to this account's real installation, whose
-    everyday service a probe of the ``local`` server would otherwise find.
+    One short owner-only tree beneath a home short enough for the socket bound (outside shared
+    temp): target roots live beneath the ambient state directory and must keep their socket
+    paths under ``sun_path``. No folder may resolve to this account's real installation, whose
+    everyday service a probe of the ``local`` server would otherwise find, so ``HOME`` moves
+    into the tree too.
     """
 
-    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    base = Path(tempfile.mkdtemp(prefix=prefix, dir=real_home))
+    base = Path(tempfile.mkdtemp(prefix=prefix, dir=short_home_base()))
     base.chmod(0o700)
     environment = {
         name: value
         for name, value in os.environ.items()
         if not name.startswith(("FINISHUP_", "YOETZ_"))
     }
+    environment["HOME"] = str(base)
     for variable, leaf in (
         ("XDG_STATE_HOME", "s"),
         ("XDG_CONFIG_HOME", "c"),
