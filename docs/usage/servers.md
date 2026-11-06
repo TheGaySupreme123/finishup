@@ -260,9 +260,11 @@ read was missing.
   locking, takes priority over a re-open under way. A re-open that cannot finish within 30
   seconds stops and leaves the server locked, and a later request tries again. If the reason is
   that the server's credential store does not answer, FinishUP waits for that answer rather than
-  asking again, and until it comes, requests are refused as locked straight away. A re-open
-  part-way through preparing FinishUP's storage finishes that step before it stops, so a lock can
-  take a moment longer then.
+  asking again, and until it comes, requests are refused as locked straight away. After a
+  re-open, FinishUP also tidies the stored unlock secret in that credential store. The tidy-up
+  never holds the re-open up or locks the server again; if the store stops answering it, the next
+  re-open waits for that answer in the same way. A re-open part-way through preparing FinishUP's
+  storage finishes that step before it stops, so a lock can take a moment longer then.
 - Those limits hold for a vault that FinishUP opens with a stored unlock secret for its passphrase
   (`finishup service status --json` shows `"vault_mode": "passphrase"`). If the vault key itself
   is kept in the server's credential store (`"vault_mode": "os_keyring"`) and that store stops

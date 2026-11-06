@@ -2870,7 +2870,7 @@ def test_a_keyring_read_that_never_answers_pins_one_worker_thread_however_often_
         assert (
             logged
             == [("failed", "reready_deadline_exceeded")]
-            + [("failed", "auto_unlock_read_outstanding")] * 3
+            + [("failed", "auto_unlock_store_call_outstanding")] * 3
         )
         async with asyncio.timeout(_WAIT_SECONDS):
             assert await loop.run_in_executor(None, str, "other work") == "other work"
@@ -2879,7 +2879,7 @@ def test_a_keyring_read_that_never_answers_pins_one_worker_thread_however_often_
         # request reads afresh and re-opens the service.
         store.release.set()
         async with asyncio.timeout(_WAIT_SECONDS):
-            while daemon._outstanding_auto_unlock_read is not None:  # pyright: ignore[reportPrivateUsage]
+            while daemon._outstanding_auto_unlock_store_call is not None:  # pyright: ignore[reportPrivateUsage]
                 await asyncio.sleep(0)
         assert len(store.returned) == 1
         assert not any(store.returned[0])
@@ -2888,6 +2888,146 @@ def test_a_keyring_read_that_never_answers_pins_one_worker_thread_however_often_
         assert context is not None
         assert store.reads == 2
         assert vault.unlock_count == 1
+        assert daemon.status().state is ServiceState.READY
+        await daemon.close()
+
+    with asyncio.Runner() as runner:
+        runner.get_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        try:
+            runner.run(scenario())
+        finally:
+            store.release.set()
+
+
+class _StagedCleanupNeverAnsweringStore:
+    """A scoped entry read at once, beside a staged rotation whose discard waits until released."""
+
+    def __init__(self, secret: bytes) -> None:
+        self.secret = secret
+        self.reads = 0
+        self.discarding = threading.Event()
+        self.release = threading.Event()
+        self._guard = threading.Lock()
+
+    def load_candidates_with_reason(self) -> tuple[tuple[tuple[bytearray, str], ...], str]:
+        with self._guard:
+            self.reads += 1
+        return ((bytearray(self.secret), "active"),), "none"
+
+    def slot_report(self) -> dict[str, str]:
+        return {
+            "active": "present",
+            "staged_initialization": "absent",
+            "staged_rotation": "present",
+        }
+
+    def discard_staged_rotation(self) -> None:
+        self.discarding.set()
+        self.release.wait(_WAIT_SECONDS * 3)
+
+
+def test_a_staged_reconcile_that_never_answers_holds_no_attempt_and_pins_one_worker_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scoped read was tracked, the staged-slot reconcile after it was not: an attempt whose
+    # deadline or lock cancel ended its wait for the reconcile left that worker thread blocked,
+    # and the next request began a new attempt with a new read and a new reconcile, until the
+    # shared pool was full. A stalled reconcile also unwound and relocked a vault it had found
+    # open. The reconcile now runs beside activation; the next attempt waits for it rather than
+    # reading beside it, and once an attempt gave up on it, none starts another store call.
+    secret = b"correct horse battery staple!!"
+    store = _StagedCleanupNeverAnsweringStore(secret)
+
+    def store_factory(bundle: Path) -> _StagedCleanupNeverAnsweringStore:
+        del bundle
+        return store
+
+    monkeypatch.setattr(daemon_module, "AutoUnlockPassphraseStore", store_factory)
+    deadlines: list[asyncio.Timeout] = []
+    expire_at_once = False
+
+    def deadline() -> asyncio.Timeout:
+        # An attempt given an expired deadline ends at its first wait.
+        timeout = asyncio.timeout(0 if expire_at_once else None)
+        deadlines.append(timeout)
+        return timeout
+
+    monkeypatch.setattr(daemon_module, "_soft_reready_deadline", deadline)
+    logged: list[tuple[object, object]] = []
+
+    class _RecordingLogger(StructuredLogger):
+        def warning(self, operation: str, **fields: object) -> None:
+            if operation == "auto_unlock":
+                logged.append((fields.get("outcome"), fields.get("reason")))
+            super().warning(operation, **fields)
+
+    monkeypatch.setattr(daemon_module, "get_logger", _RecordingLogger)
+
+    async def scenario() -> None:
+        nonlocal expire_at_once
+        loop = asyncio.get_running_loop()
+        vault = _KeyedPassphraseVault()
+        vault.expect_secret(secret)
+
+        async def factory(service_generation: int, vault_generation: int) -> _Application:
+            del service_generation, vault_generation
+            return _Application()
+
+        daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
+        await daemon.start()
+        daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
+
+        # The vault opens and the service is ready while the reconcile still waits on the store.
+        async with asyncio.timeout(_WAIT_SECONDS):
+            context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        assert context is not None
+        assert daemon.status().state is ServiceState.READY
+        assert vault.lock_count == 0
+        assert await asyncio.to_thread(store.discarding.wait, _WAIT_SECONDS)
+
+        # Locked again, the next attempt waits for that reconcile instead of reading beside it,
+        # and its deadline ends the wait, not the worker thread.
+        await daemon.lock("user_session_locked")
+        expire_at_once = True
+        async with asyncio.timeout(_WAIT_SECONDS):
+            assert (
+                await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+                is None
+            )
+        assert store.reads == 1
+        assert daemon.status().state is ServiceState.LOCKED
+        assert daemon.status().state_reason == "user_session_locked"
+
+        # Later requests start no store call while that reconcile still waits: they are answered
+        # at once, keeping the soft-lock reason.
+        for _ in range(3):
+            async with asyncio.timeout(_WAIT_SECONDS):
+                assert (
+                    await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+                    is None
+                )
+            assert daemon.status().state is ServiceState.LOCKED
+            assert daemon.status().state_reason == "user_session_locked"
+        assert store.reads == 1
+        assert len(deadlines) == 2
+        assert (
+            logged
+            == [("failed", "reready_deadline_exceeded")]
+            + [("failed", "auto_unlock_store_call_outstanding")] * 3
+        )
+        async with asyncio.timeout(_WAIT_SECONDS):
+            assert await loop.run_in_executor(None, str, "other work") == "other work"
+
+        # Once the store answers, the next request reads afresh and re-opens the service.
+        store.release.set()
+        async with asyncio.timeout(_WAIT_SECONDS):
+            while daemon._outstanding_auto_unlock_store_call is not None:  # pyright: ignore[reportPrivateUsage]
+                await asyncio.sleep(0)
+        expire_at_once = False
+        async with asyncio.timeout(_WAIT_SECONDS):
+            context = await daemon._resolve_claim_context(_CLAIM)  # pyright: ignore[reportPrivateUsage]
+        assert context is not None
+        assert store.reads == 2
         assert daemon.status().state is ServiceState.READY
         await daemon.close()
 
@@ -3227,6 +3367,18 @@ async def test_staged_promote_failure_after_unlock_keeps_vault_ready(
         staged=True,
         promote_error=OSError("keyring write failed"),
     )
+    reconcile_failed = asyncio.Event()
+
+    class _RecordingLogger(StructuredLogger):
+        def warning(self, operation: str, **fields: object) -> None:
+            if (fields.get("outcome"), fields.get("reason")) == (
+                "degraded",
+                "staged_reconcile_failed",
+            ):
+                reconcile_failed.set()
+            super().warning(operation, **fields)
+
+    monkeypatch.setattr(daemon_module, "get_logger", _RecordingLogger)
     daemon = _soft_lock_daemon(tmp_path, factory=factory, vault=vault)
     await daemon.start()
     daemon._state_reason = "idle_relock"  # pyright: ignore[reportPrivateUsage]
@@ -3237,6 +3389,9 @@ async def test_staged_promote_failure_after_unlock_keeps_vault_ready(
     )
 
     assert result.outcome == "ok"
+    # The reconcile runs on its own beside activation; its failure is still logged.
+    async with asyncio.timeout(_WAIT_SECONDS):
+        await reconcile_failed.wait()
     assert vault.unlock_count == 1
     assert vault.ready is True
     assert vault.lock_count == 0, "a promote failure must not relock the ready vault"

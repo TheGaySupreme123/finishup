@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import functools
 import hashlib
 import hmac
 import os
@@ -18,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, Literal, Never, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Never, Protocol, cast
 
 import anyio
 from pydantic import BaseModel
@@ -932,10 +933,14 @@ class ServiceDaemon:
         self._soft_reready_task: asyncio.Task[bool] | None = None
         # Locks in progress: a lock outranks an automatic re-ready, so none starts until it applied.
         self._locks_pending = 0
-        # A scoped auto-unlock read that a cancelled or expired re-ready left in its worker
-        # thread, until it returns: no attempt starts another meanwhile, so a credential store
-        # that never answers pins one worker thread, not one more per retry.
-        self._outstanding_auto_unlock_read: asyncio.Future[_AutoUnlockCandidates] | None = None
+        # A credential-store call of the re-ready (the scoped auto-unlock read, or the staged-slot
+        # reconcile) that a cancelled or expired attempt stopped waiting for, until it returns:
+        # no attempt starts another store call meanwhile, so a credential store that never
+        # answers pins one worker thread, not one more per retry.
+        self._outstanding_auto_unlock_store_call: asyncio.Future[Any] | None = None
+        # The staged-slot reconcile a re-ready started once the vault opened, while it still
+        # runs. That attempt never waits for it; the next attempt does, before it reads.
+        self._staged_reconcile: asyncio.Future[None] | None = None
         self._stop_event = asyncio.Event()
         # ``serve`` owns the accept loops; a daemon driven by ``start`` alone never serves and
         # must never wait on an event nothing will set.
@@ -3051,16 +3056,17 @@ class ServiceDaemon:
                 or lifecycle.state is not ServiceState.LOCKED
             ):
                 return False
-            outstanding = self._outstanding_auto_unlock_read
+            outstanding = self._outstanding_auto_unlock_store_call
             if outstanding is not None and not outstanding.done():
-                # An earlier attempt's scoped auto-unlock read still waits on the credential
-                # store. Another read would pin one more worker thread of the shared pool that
-                # activation and the unlock ceremony need; stay LOCKED, keep the soft reason,
-                # and let the first request after that read returns try again.
+                # A credential-store call an earlier attempt stopped waiting for (its scoped
+                # read, or a staged-slot reconcile) still waits on the store. Another call would
+                # pin one more worker thread of the shared pool that activation and the unlock
+                # ceremony need; stay LOCKED, keep the soft reason, and let the first request
+                # after that call returns try again.
                 get_logger("service.daemon").warning(
                     "auto_unlock",
                     outcome="failed",
-                    reason="auto_unlock_read_outstanding",
+                    reason="auto_unlock_store_call_outstanding",
                 )
                 return False
             deadline = _soft_reready_deadline()
@@ -3167,27 +3173,80 @@ class ServiceDaemon:
         """Read the scoped auto-unlock entries in a worker thread, never leaving them unzeroed.
 
         Cancelling the wait cannot stop the worker thread, and ``asyncio.to_thread`` would drop
-        the passphrase bytes it returns afterwards without overwriting them. The read's own
-        future is shielded instead. On a cancel it stays the outstanding read until it returns,
-        and whatever it returns then is overwritten.
+        the passphrase bytes it returns afterwards without overwriting them. On a cancel the
+        read stays the outstanding store call until it returns, and whatever it returns then is
+        overwritten.
         """
 
         read = asyncio.get_running_loop().run_in_executor(
             None, contextvars.copy_context().run, store.load_candidates_with_reason
         )
         try:
-            return await asyncio.shield(read)
+            return await self._await_auto_unlock_store_call(read)
         except asyncio.CancelledError:
-            self._outstanding_auto_unlock_read = read
-            read.add_done_callback(self._settle_outstanding_auto_unlock_read)
+            read.add_done_callback(_overwrite_unclaimed_candidates)
             raise
 
-    def _settle_outstanding_auto_unlock_read(
-        self, read: asyncio.Future[_AutoUnlockCandidates]
-    ) -> None:
-        if self._outstanding_auto_unlock_read is read:
-            self._outstanding_auto_unlock_read = None
-        _overwrite_unclaimed_candidates(read)
+    async def _await_auto_unlock_store_call[T](self, call: asyncio.Future[T]) -> T:
+        """Wait for one credential-store call running in a worker thread.
+
+        A lock, shutdown or the attempt's deadline ends the wait, never the thread. The call's
+        own future is shielded, and a call this attempt stopped waiting for becomes the
+        outstanding store call until it returns, so no attempt starts another beside it.
+        """
+
+        try:
+            return await asyncio.shield(call)
+        except asyncio.CancelledError:
+            self._outstanding_auto_unlock_store_call = call
+            call.add_done_callback(self._settle_outstanding_auto_unlock_store_call)
+            raise
+
+    def _settle_outstanding_auto_unlock_store_call(self, call: asyncio.Future[Any]) -> None:
+        if self._outstanding_auto_unlock_store_call is call:
+            self._outstanding_auto_unlock_store_call = None
+
+    def _start_staged_reconcile(self, store: AutoUnlockPassphraseStore, accepted_slot: str) -> None:
+        """Reconcile the staged keyring entries in a worker thread the attempt never waits for.
+
+        The vault is already open, and the reconcile is credential-store hygiene only: neither
+        its failure nor a store that never answers it may hold the attempt under its deadline or
+        a lock's cancel, or relock the ready vault (#492 review). It stays the re-ready's store
+        call until it returns: the next attempt waits for it before reading, so a read never
+        overlaps it and no second store call starts beside it.
+        """
+
+        reconcile = asyncio.get_running_loop().run_in_executor(
+            None,
+            contextvars.copy_context().run,
+            functools.partial(_reconcile_staged_slots, store, accepted_slot),
+        )
+        self._staged_reconcile = reconcile
+        reconcile.add_done_callback(self._settle_staged_reconcile)
+
+    def _settle_staged_reconcile(self, reconcile: asyncio.Future[None]) -> None:
+        if self._staged_reconcile is reconcile:
+            self._staged_reconcile = None
+        if not reconcile.cancelled() and reconcile.exception() is not None:
+            get_logger("service.daemon").warning(
+                "auto_unlock",
+                outcome="degraded",
+                reason="staged_reconcile_failed",
+            )
+
+    async def _await_staged_reconcile(self) -> None:
+        """Let a staged-slot reconcile an earlier attempt started finish before this one reads.
+
+        Its failure was logged where it ended and does not concern this attempt. A lock, shutdown
+        or this attempt's deadline ends the wait, and the reconcile then becomes the outstanding
+        store call.
+        """
+
+        reconcile = self._staged_reconcile
+        if reconcile is None or reconcile.done():
+            return
+        with contextlib.suppress(Exception):
+            await self._await_auto_unlock_store_call(reconcile)
 
     async def _soft_unlock_passphrase_locked(self) -> bool:
         """Unlock passphrase vault from the bundle-scoped platform entry under activation lock."""
@@ -3200,6 +3259,7 @@ class ServiceDaemon:
             self._auto_unlock_reason = "auto_unlock_backend_unavailable"
             return False
 
+        await self._await_staged_reconcile()
         store = AutoUnlockPassphraseStore(bundle)
         candidates, load_reason = await self._read_auto_unlock_candidates(store)
         if not candidates:
@@ -3251,16 +3311,10 @@ class ServiceDaemon:
         finally:
             _overwrite_candidates(candidates)
         # The vault is ready from here on. Reconciling the staged keyring entries is
-        # credential-store hygiene only: a promote/discard failure must never relock a ready
-        # vault, so log it and continue activation (#492 review).
-        try:
-            await asyncio.to_thread(_reconcile_staged_slots, store, accepted_slot)
-        except Exception:
-            get_logger("service.daemon").warning(
-                "auto_unlock",
-                outcome="degraded",
-                reason="staged_reconcile_failed",
-            )
+        # credential-store hygiene only: a promote/discard failure, or a store that never
+        # answers it, must never relock a ready vault, so it runs on its own while activation
+        # continues, and its failure is logged (#492 review).
+        self._start_staged_reconcile(store, accepted_slot)
         if not vault.ready:
             self._state_reason = "unlock_failed"
             return False
