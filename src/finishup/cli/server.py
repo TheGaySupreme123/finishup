@@ -500,7 +500,10 @@ def server_add(
     name: Annotated[str, typer.Argument(help="Target name: 1-16 lowercase letters, digits, -.")],
     address: Annotated[
         str | None,
-        typer.Argument(help="ssh://[user@]host[:port] or https://host[:port][/base]."),
+        # No square brackets: the help renderer reads "[/base]" as a markup closing tag.
+        typer.Argument(
+            help="ssh://user@host:port or https://host:port/base (user, port, base optional)."
+        ),
     ] = None,
     local: Annotated[
         bool, typer.Option("--local", help="A named local server on this computer.")

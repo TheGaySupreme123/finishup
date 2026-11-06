@@ -336,6 +336,30 @@ def test_refusals_are_closed_tokens_without_owner_text(
         assert owner_text not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        (),
+        ("add",),
+        ("list",),
+        ("use",),
+        ("status",),
+        ("test",),
+        ("remove",),
+        ("login",),
+        ("logout",),
+        ("connect",),
+        ("disconnect",),
+    ],
+)
+def test_every_server_command_renders_its_help(home: Path, arguments: tuple[str, ...]) -> None:
+    result = _invoke(*arguments, "--help")
+    assert result.exit_code == 0, result.output
+    if arguments == ("add",):
+        assert "ssh://user@host:port" in result.stdout
+        assert "https://host:port/base" in result.stdout
+
+
 def test_a_name_already_taken_is_refused_before_any_confirmation(
     home: Path, authorized: list[tuple[str, str]]
 ) -> None:
