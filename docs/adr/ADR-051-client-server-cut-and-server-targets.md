@@ -547,11 +547,19 @@ SSH (owner-equivalent, no key)
   it.
 - `client/rest_runtime.py`: the `https`/`local_port` runtime needs no process; the `ssh` runtime runs
   one master per target with the fixed argv `ssh -f -N -M -S <troot>/run/m -o ControlPersist=900 -o
-  BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177
-  -o StreamLocalBindUnlink=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -p <port> -L
-  <troot>/run/api.sock:<server api.sock> -- <dest>`, stops it with `ssh -O exit`, and starts an
-  idle-stopped remote service once with the recorded absolute launcher. `server add` for SSH runs
-  `<launcher> service endpoint --json` once (batch mode) to record the server's API socket and the
+  BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=<1..10> -o ExitOnForwardFailure=yes
+  -o StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes -o ServerAliveInterval=15 -o
+  ServerAliveCountMax=3 -p <port> -L <troot>/run/api.sock:<server api.sock> -- <dest>`, stops it
+  with `ssh -O exit`, and starts an idle-stopped remote service once with the recorded absolute
+  launcher. Starting the master is serialized per target (`<troot>/run/m.lock`) and re-checked
+  under the lock with `-O check`: a live master that lost its forward gets it back with `-O
+  forward`, a control socket is removed only after its master stopped answering, and so a second
+  `-M` (which would run on as a plain session no `-O exit` reaches) is never started. Every SSH
+  step runs within the caller's own time budget (`ConnectTimeout` included), and a master start
+  that could not reach the server is remembered for 10 seconds (`<troot>/run/m.failed`, closed
+  tokens only), so the hooks right after it fail at once with the same phase; `server connect`
+  and `server test` always try again. `server add` for SSH runs `<launcher> service endpoint
+  --json` once (batch mode, `ConnectTimeout=10`) to record the server's API socket and the
   launcher that answered; a server without `api_socket = true` is refused with
   `remote_incompatible` (phase `api_socket_unconfigured`).
 - `client/agent.py` (`finishup agent run --root <troot>`, `client_only`): the pull-based workspace
@@ -559,7 +567,10 @@ SSH (owner-equivalent, no key)
   `yoetz.agent-workspace/1` record beneath the target root; the path never leaves the machine) and
   start the agent when none runs. It holds `<troot>/state/agent.lock` stamped with its pid,
   registers each claimed workspace, long-polls its calls, answers them in worker threads, and
-  exits 15 minutes after its last workspace; `server disconnect` signals the stamped pid.
+  exits 15 minutes after its last workspace; `server disconnect` signals the stamped pid. For an
+  SSH target, a request the agent or its background delivery loses on the transport brings the
+  master back (`rest_runtime.restore_ssh_transport`, never the remote service), so a master that
+  died while the user was idle does not wait for a foreground client.
 
 **SSH forwards a socket to a socket.** The approach brief proposed forwarding to a loopback TCP
 port of the API. This pull request forwards to the owner-only `api.sock` instead: a request there

@@ -266,6 +266,54 @@ async def test_a_fresh_note_ends_a_registration_retry_wait_at_once(
 
 
 @pytest.mark.anyio
+async def test_a_request_lost_on_the_transport_brings_the_transport_back(
+    remote: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An SSH target's master that died while the user was idle is restored by the agent itself,
+    # not only when a foreground client happens to connect; a refusal the server answered is not
+    # a transport failure and restores nothing.
+    record, root = remote
+    monkeypatch.setattr(agent_module, "_RETRY_SECONDS", (0.01,))
+    restored: list[tuple[ServerTarget, Path]] = []
+    refusals: list[str] = []
+    both = asyncio.Event()
+
+    async def restorer(at_record: ServerTarget, at_root: Path) -> None:
+        restored.append((at_record, at_root))
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            refusals.append("connect" if len(refusals) % 2 == 0 else "refused")
+            if len(refusals) >= 4:
+                both.set()
+            if refusals[-1] == "connect":
+                raise httpx.ConnectError("forward gone", request=request)
+            return httpx.Response(401, content=b'{"reason":"api_key_invalid"}')
+        raise httpx.ConnectError("unused", request=request)
+
+    note_workspace(root, _WORKSPACE)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(answer), base_url="https://lab.example")
+    loop = _loop(
+        root,
+        record,
+        http,
+        "unused",
+        workspace=claim("repo"),
+        handler=_Handler(),
+        transport_restorer=restorer,
+    )
+    running = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(both.wait(), 10)
+    finally:
+        loop.stop()
+        assert await asyncio.wait_for(running, 10) == 0
+    connects = refusals.count("connect")
+    assert restored and all(item == (record, root) for item in restored)
+    assert 2 <= len(restored) <= connects
+
+
+@pytest.mark.anyio
 async def test_without_a_claim_or_handler_nothing_registers(
     remote: tuple[ServerTarget, Path],
 ) -> None:

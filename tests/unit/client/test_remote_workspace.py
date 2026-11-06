@@ -257,10 +257,10 @@ class _SshSteps:
                 )
             return connected
 
-        def master(_self: object, _record: object, _root: object) -> None:
+        def master(_self: object, _record: object, _root: object, **_options: object) -> None:
             self.steps.append("master")
 
-        def start(_self: object, _record: object, _root: object) -> None:
+        def start(_self: object, _record: object, _root: object, **_options: object) -> None:
             self.steps.append("start")
 
         monkeypatch.setattr(rest_client, "connect_rest_service", connect)
@@ -311,3 +311,25 @@ async def test_an_ssh_connection_brings_its_master_up_and_only_on_demand_starts_
     with pytest.raises(ControlError) as raised:
         await _ssh_connect(on_demand=True)
     assert raised.value.phase == "remote_auth_failed" and steps.steps == ["connect"]
+
+
+@pytest.mark.anyio
+async def test_a_delivery_pass_brings_an_ssh_targets_master_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The agent's background delivery restores a lost master itself (no foreground client may
+    # come for a long time); a refusal the server answered restores nothing.
+    from finishup.client import remote_workspace
+
+    steps = _SshSteps(monkeypatch, "remote_unreachable")
+    client = await remote_workspace._rest_delivery_client(  # pyright: ignore[reportPrivateUsage]
+        _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64)
+    )
+    assert client is steps.connected
+    assert steps.steps == ["connect", "master", "connect"]
+    steps = _SshSteps(monkeypatch, "remote_auth_failed")
+    with pytest.raises(ControlError):
+        await remote_workspace._rest_delivery_client(  # pyright: ignore[reportPrivateUsage]
+            _SSH_RECORD, Path("/x/t"), WorkspaceClaim("directory", "sha256:" + "a" * 64)
+        )
+    assert steps.steps == ["connect"]

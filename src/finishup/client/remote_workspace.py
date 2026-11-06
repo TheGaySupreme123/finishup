@@ -139,8 +139,29 @@ def handler_for_workspace(locator: WorkspaceLocator, root: Path) -> WorkspaceCal
 async def _rest_delivery_client(
     record: ServerTarget, root: Path, claim: WorkspaceClaim
 ) -> DeliveryClient:
+    """A claim-bound client for one delivery pass; an SSH target's lost master is brought back."""
+
     from finishup.client.rest_client import connect_rest_service
 
+    try:
+        return await connect_rest_service(
+            ControlClientKind.CLI, record=record, root=root, claim=claim
+        )
+    except ControlError as error:
+        if record.kind != "ssh" or error.phase != "remote_unreachable":
+            raise
+    from finishup.client.rest_runtime import restore_ssh_transport
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    try:
+        await restore_ssh_transport(record, root)
+    except TargetRuntimeError as failure:
+        from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+        phase = failure.reason if failure.reason in REMOTE_CONNECTION_PHASES else None
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=phase or "remote_unreachable"
+        ) from None
     return await connect_rest_service(ControlClientKind.CLI, record=record, root=root, claim=claim)
 
 

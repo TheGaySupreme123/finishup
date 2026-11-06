@@ -810,7 +810,7 @@ def ssh_remote(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Remote]:
         def no_spawn() -> object:
             raise AssertionError("a remote target never spawns a local service")
 
-        def master(_self: object, _record: object, _root: object) -> None:
+        def master(_self: object, _record: object, _root: object, **_options: object) -> None:
             return None
 
         monkeypatch.setattr(agent_module, "ensure_agent", ensure)

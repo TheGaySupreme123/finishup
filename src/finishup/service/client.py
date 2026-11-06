@@ -2103,10 +2103,19 @@ async def _connect_remote(
     from finishup.client.target_runtime import TargetRuntimeError
 
     runtime = SshTargetRuntime()
+
+    def budget() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+        return remaining
+
     try:
         # The master is this client's own transport, like a TCP connection: any connection may
-        # bring it up. Only an on-demand caller may start the remote service.
-        await asyncio.to_thread(runtime.ensure_master, record, root)
+        # bring it up, within this call's own budget (an unreachable host never holds a hook for
+        # ssh's own timeouts, and one that just failed fails at once). Only an on-demand caller
+        # may start the remote service.
+        await asyncio.to_thread(runtime.ensure_master, record, root, timeout=budget())
     except TargetRuntimeError as error:
         raise ControlError(
             "service_unavailable", retryable=True, phase=_remote_phase(error.reason)
@@ -2120,7 +2129,7 @@ async def _connect_remote(
             raise
     # The master is up but nothing answered: the remote service may have stopped while idle.
     try:
-        await asyncio.to_thread(runtime.start_remote_service, record, root)
+        await asyncio.to_thread(runtime.start_remote_service, record, root, timeout=budget())
     except TargetRuntimeError as error:
         raise ControlError(
             "service_unavailable", retryable=True, phase=_remote_phase(error.reason)

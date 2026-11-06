@@ -12,6 +12,12 @@
   ``known_hosts``), binds the local socket owner-only, and stops after 15 idle minutes or on
   ``ssh -O exit``. A remote service that stopped while idle is started again with the recorded
   absolute launcher (``service start``), never a bare ``finishup`` from the remote ``PATH``.
+  Starting the master is serialized per target (``<target root>/run/m.lock``) and re-checked
+  under that lock, so two clients never start two masters (a second ``-M`` that finds the control
+  socket in place would run on as an ordinary session no ``-O exit`` reaches); a master that lost
+  its forward gets it back through ``-O forward``; and every step runs within the caller's time
+  budget. A master that could not reach the server is remembered briefly (``m.failed``), so the
+  connections right after it fail at once instead of each waiting on ssh again.
 
 Nothing here runs a shell on this machine or kills a process by name: the master is stopped
 through its own control socket and the agent through its stamped pid. ssh's own output is read
@@ -20,12 +26,16 @@ only to choose a closed reason and is never shown or logged.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import fcntl
 import os
 import re
 import shlex
 import stat
 import subprocess
 import time
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
@@ -41,16 +51,25 @@ from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.service.network_protocol import API_SOCKET_NAME
 
 __all__ = [
+    "MASTER_FAILURE_HOLD_SECONDS",
     "MASTER_SOCKET_NAME",
     "RestTargetRuntime",
     "SshEndpoint",
     "SshTargetRuntime",
     "discover_ssh_endpoint",
+    "restore_ssh_transport",
     "ssh_command_prefix",
     "ssh_master_argv",
 ]
 
 MASTER_SOCKET_NAME: Final = "m"
+_MASTER_LOCK_NAME: Final = "m.lock"
+_MASTER_FAILURE_NAME: Final = "m.failed"
+# After a master that could not reach the server, connections fail at once for this long.
+MASTER_FAILURE_HOLD_SECONDS: Final = 10.0
+# The longest a TCP connection to the SSH server may take (``ConnectTimeout``).
+_SSH_CONNECT_SECONDS: Final = 10
+_LOCK_POLL_SECONDS: Final = 0.05
 _SSH: Final = "ssh"
 _MASTER_IDLE_SECONDS: Final = 900
 _SSH_START_SECONDS: Final = 30.0
@@ -132,9 +151,17 @@ def ssh_command_prefix(record: ServerTarget, root: Path) -> list[str]:
     ]
 
 
-def ssh_master_argv(record: ServerTarget, root: Path) -> list[str]:
-    """The fixed, secret-free argv of one target's OpenSSH master and its socket forward."""
+def ssh_master_argv(
+    record: ServerTarget, root: Path, *, connect_timeout: int = _SSH_CONNECT_SECONDS
+) -> list[str]:
+    """The fixed, secret-free argv of one target's OpenSSH master and its socket forward.
 
+    ``connect_timeout`` (whole seconds, 1 to 10) bounds the TCP connection, so an unreachable
+    host fails within the caller's budget instead of the system's.
+    """
+
+    if not 1 <= connect_timeout <= _SSH_CONNECT_SECONDS:
+        raise ValueError("ssh_connect_timeout_invalid")
     if record.kind != "ssh":
         raise TargetRuntimeError("remote_unreachable", phase="target_incomplete")
     remote = _socket_path_text(record.remote_endpoint)
@@ -154,6 +181,8 @@ def ssh_master_argv(record: ServerTarget, root: Path) -> list[str]:
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=yes",
+        "-o",
+        f"ConnectTimeout={connect_timeout}",
         "-o",
         "ExitOnForwardFailure=yes",
         "-o",
@@ -274,6 +303,8 @@ def discover_ssh_endpoint(
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=yes",
+        "-o",
+        f"ConnectTimeout={_SSH_CONNECT_SECONDS}",
         "-p",
         str(port),
         "--",
@@ -442,28 +473,208 @@ class RestTargetRuntime:
         return anyio.run(probe)
 
 
+def _remaining(deadline: float, *, cap: float | None = None) -> float:
+    """What is left of a budget, at most ``cap``; a spent budget is ssh's own timeout."""
+
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TargetRuntimeError("remote_unreachable", phase="ssh_timeout")
+    return left if cap is None else min(left, cap)
+
+
+def _run_directory(root: Path) -> Path:
+    from finishup.config.paths import PathSafetyError, ensure_owner_only_dir
+
+    directory = root / "run"
+    try:
+        ensure_owner_only_dir(directory)
+    except (OSError, PathSafetyError):
+        raise TargetRuntimeError("remote_unreachable", phase="target_root_unsafe") from None
+    return directory
+
+
+@contextlib.contextmanager
+def _master_lock(directory: Path, deadline: float) -> Generator[None]:
+    """Hold ``run/m.lock``: one process at a time checks and starts this target's master."""
+
+    try:
+        descriptor = os.open(
+            directory / _MASTER_LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+    except OSError:
+        raise TargetRuntimeError("remote_unreachable", phase="target_root_unsafe") from None
+    try:
+        facts = os.fstat(descriptor)
+        if not stat.S_ISREG(facts.st_mode) or facts.st_uid != os.geteuid():
+            raise TargetRuntimeError("remote_unreachable", phase="target_root_unsafe")
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(min(_LOCK_POLL_SECONDS, _remaining(deadline)))
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _recent_failure(directory: Path) -> TargetRuntimeError | None:
+    """The closed failure of a master start that could not reach the server moments ago."""
+
+    path = directory / _MASTER_FAILURE_NAME
+    try:
+        facts = path.lstat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(facts.st_mode)
+        or facts.st_uid != os.geteuid()
+        or facts.st_size > 128
+        or not 0 <= time.time() - facts.st_mtime < MASTER_FAILURE_HOLD_SECONDS
+    ):
+        return None
+    try:
+        reason, _colon, phase = path.read_text(encoding="ascii").strip().partition(":")
+        return TargetRuntimeError(reason, phase=phase or None)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _note_failure(directory: Path, error: TargetRuntimeError) -> None:
+    """Remember an unreachable server for ``MASTER_FAILURE_HOLD_SECONDS`` (closed tokens only)."""
+
+    if error.reason != "remote_unreachable":
+        return
+    path = directory / _MASTER_FAILURE_NAME
+    temporary = directory / f".{_MASTER_FAILURE_NAME}.{os.getpid()}.tmp"
+    text = error.reason if error.phase is None else f"{error.reason}:{error.phase}"
+    with contextlib.suppress(OSError):
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+        try:
+            os.write(descriptor, text.encode("ascii") + b"\n")
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, path)
+
+
+def _clear_failure(directory: Path) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        (directory / _MASTER_FAILURE_NAME).unlink()
+
+
+def _remove_stale_control_socket(directory: Path) -> None:
+    """Remove a control socket whose master no longer answers; refuse anything else there."""
+
+    path = directory / MASTER_SOCKET_NAME
+    try:
+        facts = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise TargetRuntimeError("remote_unreachable", phase="target_root_unsafe") from None
+    if not stat.S_ISSOCK(facts.st_mode) or facts.st_uid != os.geteuid():
+        raise TargetRuntimeError("remote_unreachable", phase="target_root_unsafe")
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
+
+
 class SshTargetRuntime(RestTargetRuntime):
     """``ssh`` targets: one OpenSSH master per target, forwarding the API socket."""
 
-    def master_running(self, record: ServerTarget, root: Path) -> bool:
+    def master_running(
+        self, record: ServerTarget, root: Path, *, timeout: float = _SSH_CONTROL_SECONDS
+    ) -> bool:
         argv = [*ssh_command_prefix(record, root), "-O", "check", "--", _destination(record)]
         if not (root / "run" / MASTER_SOCKET_NAME).exists():
             return False
-        return _run(argv, timeout=_SSH_CONTROL_SECONDS).returncode == 0
+        return _run(argv, timeout=timeout).returncode == 0
 
     def _prepare(self, record: ServerTarget, root: Path) -> None:
-        self.ensure_master(record, root)
+        # ``server connect`` and ``server test`` are the owner asking now: no remembered failure.
+        self.ensure_master(record, root, honor_recent_failure=False)
 
-    def ensure_master(self, record: ServerTarget, root: Path) -> None:
-        """Start this target's master unless it is running with its forward in place."""
+    def ensure_master(
+        self,
+        record: ServerTarget,
+        root: Path,
+        *,
+        timeout: float = _SSH_START_SECONDS,
+        honor_recent_failure: bool = True,
+    ) -> None:
+        """Make this target's master and its forward usable within ``timeout`` seconds.
 
-        if self.master_running(record, root) and (root / "run" / API_SOCKET_NAME).exists():
-            return
-        completed = _run(ssh_master_argv(record, root), timeout=_SSH_START_SECONDS, detaches=True)
+        Under the target's master lock: a master that answers ``-O check`` with its forward in
+        place is left alone, one that lost its forward gets it back with ``-O forward``, and only
+        when none answers is a stale control socket removed and a master started. A start that
+        could not reach the server is remembered for ``MASTER_FAILURE_HOLD_SECONDS``, and while
+        ``honor_recent_failure`` the calls in that window fail at once with the same reason.
+        """
+
+        deadline = time.monotonic() + timeout
+        directory = _run_directory(root)
+        if honor_recent_failure:
+            remembered = _recent_failure(directory)
+            if remembered is not None:
+                raise remembered
+        with _master_lock(directory, deadline):
+            if honor_recent_failure:
+                # Another process may have just failed (or succeeded) while this one waited.
+                remembered = _recent_failure(directory)
+                if remembered is not None:
+                    raise remembered
+            running = self.master_running(
+                record, root, timeout=_remaining(deadline, cap=_SSH_CONTROL_SECONDS)
+            )
+            if running and (directory / API_SOCKET_NAME).exists():
+                return
+            try:
+                if running:
+                    self._forward_again(record, root, deadline)
+                else:
+                    _remove_stale_control_socket(directory)
+                    self._start_master(record, root, deadline)
+            except TargetRuntimeError as error:
+                _note_failure(directory, error)
+                raise
+            _clear_failure(directory)
+
+    def _start_master(self, record: ServerTarget, root: Path, deadline: float) -> None:
+        left = _remaining(deadline)
+        argv = ssh_master_argv(
+            record, root, connect_timeout=max(1, min(_SSH_CONNECT_SECONDS, int(left)))
+        )
+        completed = _run(argv, timeout=left, detaches=True)
         if completed.returncode != 0:
             raise _ssh_failure(completed.stderr)
 
-    def start_remote_service(self, record: ServerTarget, root: Path) -> None:
+    def _forward_again(self, record: ServerTarget, root: Path, deadline: float) -> None:
+        """Add the API socket's forward back to a live master (never a second master)."""
+
+        forward = ssh_master_argv(record, root)
+        local_to_remote = forward[forward.index("-L") + 1]
+        argv = [
+            *ssh_command_prefix(record, root),
+            "-O",
+            "forward",
+            "-L",
+            local_to_remote,
+            "--",
+            _destination(record),
+        ]
+        completed = _run(argv, timeout=_remaining(deadline, cap=_SSH_CONTROL_SECONDS))
+        if completed.returncode != 0:
+            raise TargetRuntimeError("remote_unreachable", phase="ssh_forward")
+
+    def start_remote_service(
+        self, record: ServerTarget, root: Path, *, timeout: float = _SSH_START_SECONDS
+    ) -> None:
         """Start an idle-stopped remote service once, through the master and its launcher."""
 
         if record.remote_launcher is None:
@@ -474,7 +685,7 @@ class SshTargetRuntime(RestTargetRuntime):
             _destination(record),
             _remote_command(record.remote_root, record.remote_launcher, "service", "start"),
         ]
-        completed = _run(argv, timeout=_SSH_START_SECONDS)
+        completed = _run(argv, timeout=_remaining(time.monotonic() + timeout))
         if completed.returncode == 255:
             raise _ssh_failure(completed.stderr)
         if completed.returncode != 0:
@@ -484,6 +695,7 @@ class SshTargetRuntime(RestTargetRuntime):
         if (root / "run" / MASTER_SOCKET_NAME).exists():
             argv = [*ssh_command_prefix(record, root), "-O", "exit", "--", _destination(record)]
             _run(argv, timeout=_SSH_CONTROL_SECONDS)
+        _clear_failure(root / "run")
         forwarded = root / "run" / API_SOCKET_NAME
         try:
             facts = forwarded.lstat()
@@ -491,3 +703,18 @@ class SshTargetRuntime(RestTargetRuntime):
             return
         if stat.S_ISSOCK(facts.st_mode) and facts.st_uid == os.geteuid():
             forwarded.unlink()
+
+
+async def restore_ssh_transport(
+    record: ServerTarget, root: Path, *, timeout: float = _SSH_START_SECONDS
+) -> None:
+    """Bring an SSH target's master and forward back for a background client (the agent).
+
+    Nothing for any other kind. It never starts the remote service (only a caller the owner is
+    waiting on does). A failure raises its closed ``TargetRuntimeError``; a recent one is
+    remembered, so a background retry loop does not run ssh on every attempt.
+    """
+
+    if record.kind != "ssh":
+        return
+    await asyncio.to_thread(SshTargetRuntime().ensure_master, record, root, timeout=timeout)

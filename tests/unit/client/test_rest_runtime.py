@@ -58,12 +58,13 @@ def _ssh_record(**overrides: object) -> ServerTarget:
 class _Recorder:
     def __init__(self, *results: tuple[int, bytes, bytes]) -> None:
         self.calls: list[tuple[list[str], bool]] = []
+        self.timeouts: list[float] = []
         self._results = list(results)
 
     def __call__(
         self, argv: list[str], *, timeout: float, detaches: bool = False
     ) -> subprocess.CompletedProcess[bytes]:
-        del timeout
+        self.timeouts.append(timeout)
         self.calls.append((argv, detaches))
         code, stdout, stderr = self._results.pop(0) if self._results else (0, b"", b"")
         return subprocess.CompletedProcess(argv, code, stdout, stderr)
@@ -84,6 +85,8 @@ def test_the_master_argv_is_fixed_and_forwards_the_api_socket() -> None:
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
         "-o",
         "ExitOnForwardFailure=yes",
         "-o",
@@ -127,18 +130,20 @@ def test_discovery_reads_the_api_socket_and_the_launcher_that_answered(
     )
     ((argv, detaches),) = recorder.calls
     assert not detaches
-    assert argv[:9] == [
+    assert argv[:11] == [
         "ssh",
         "-o",
         "BatchMode=yes",
         "-o",
         "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=10",
         "-p",
         "22",
         "--",
         "lab.example",
     ]
-    command = argv[9]
+    command = argv[11]
     # Never a bare ``finishup`` from the remote PATH; the isolated root is pinned and quoted.
     assert "exec env FINISHUP_ISOLATED_ROOT='/srv/x y' \"$p\" service endpoint --json" in command
     assert command.endswith("exit 127")
@@ -331,3 +336,209 @@ def test_the_probe_samples_round_trips_after_the_first_call(
     assert result.outcome == "ready"
     assert len(calls) == PROBE_SAMPLES + 1
     assert (result.samples, result.round_trip_p95_ms) == (PROBE_SAMPLES, 20)
+
+
+def _bind(path: Path) -> None:
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(path))
+    listener.close()
+
+
+def _check(argv: list[str]) -> bool:
+    return argv[-4:-2] == ["-O", "check"]
+
+
+def test_concurrent_clients_start_one_master_and_never_a_second_one(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A second ``ssh -M`` that finds the control socket would run on as a plain session that no
+    # ``-O exit`` reaches. Under the target's lock the second client finds the first's master.
+    import threading
+
+    record, root = ssh_root
+    calls: list[list[str]] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def fake_run(
+        argv: list[str], *, timeout: float, detaches: bool = False
+    ) -> subprocess.CompletedProcess[bytes]:
+        del timeout
+        calls.append(argv)
+        if detaches:
+            entered.set()
+            assert release.wait(10)
+            _bind(root / "run" / "m")
+            _bind(root / "run" / "api.sock")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(rest_runtime, "_run", fake_run)
+    first = threading.Thread(target=SshTargetRuntime().ensure_master, args=(record, root))
+    first.start()
+    assert entered.wait(10)
+    second = threading.Thread(target=SshTargetRuntime().ensure_master, args=(record, root))
+    second.start()
+    release.set()
+    first.join(10)
+    second.join(10)
+    masters = [argv for argv in calls if "-M" in argv]
+    assert len(masters) == 1
+    assert _check(calls[-1])
+
+
+def test_a_live_master_that_lost_its_forward_gets_it_back_without_a_second_master(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, root = ssh_root
+    _bind(root / "run" / "m")
+    recorder = _Recorder((0, b"", b""), (0, b"", b""))
+    monkeypatch.setattr(rest_runtime, "_run", recorder)
+    SshTargetRuntime().ensure_master(record, root)
+    (check, _), (forward, detaches) = recorder.calls
+    assert _check(check)
+    assert not detaches and "-M" not in forward
+    assert forward[forward.index("-O") : forward.index("-O") + 4] == [
+        "-O",
+        "forward",
+        "-L",
+        f"{root / 'run' / 'api.sock'}:/srv/finishup/run/api.sock",
+    ]
+
+
+def test_a_stale_control_socket_is_removed_only_after_its_master_stopped_answering(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, root = ssh_root
+    _bind(root / "run" / "m")
+    recorder = _Recorder((255, b"", b"Control socket connect: Connection refused"), (0, b"", b""))
+    removed_before_start: list[bool] = []
+
+    def run(
+        argv: list[str], *, timeout: float, detaches: bool = False
+    ) -> subprocess.CompletedProcess[bytes]:
+        if detaches:
+            removed_before_start.append(not (root / "run" / "m").exists())
+        return recorder(argv, timeout=timeout, detaches=detaches)
+
+    monkeypatch.setattr(rest_runtime, "_run", run)
+    SshTargetRuntime().ensure_master(record, root)
+    assert [_check(argv) for argv, _ in recorder.calls] == [True, False]
+    assert removed_before_start == [True]
+    # Something that is not this user's socket is never removed, and no master is started.
+    (root / "run" / "m").write_bytes(b"")
+    monkeypatch.setattr(rest_runtime, "_run", _Recorder((255, b"", b"")))
+    with pytest.raises(TargetRuntimeError) as raised:
+        SshTargetRuntime().ensure_master(record, root)
+    assert (raised.value.reason, raised.value.phase) == ("remote_unreachable", "target_root_unsafe")
+    assert (root / "run" / "m").exists()
+
+
+def test_the_master_runs_within_the_callers_budget(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, root = ssh_root
+    recorder = _Recorder((0, b"", b""))
+    monkeypatch.setattr(rest_runtime, "_run", recorder)
+    SshTargetRuntime().ensure_master(record, root, timeout=3.5)
+    ((argv, _),) = recorder.calls
+    assert "ConnectTimeout=3" in argv
+    assert recorder.timeouts[0] <= 3.5
+    with pytest.raises(TargetRuntimeError) as raised:
+        SshTargetRuntime().start_remote_service(record, root, timeout=0.0)
+    assert (raised.value.reason, raised.value.phase) == ("remote_unreachable", "ssh_timeout")
+
+
+def test_an_unreachable_server_fails_the_next_connections_at_once(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, root = ssh_root
+    monkeypatch.setattr(
+        rest_runtime, "_run", _Recorder((255, b"", b"connect to host: Connection timed out"))
+    )
+    with pytest.raises(TargetRuntimeError) as first:
+        SshTargetRuntime().ensure_master(record, root)
+    assert (first.value.reason, first.value.phase) == ("remote_unreachable", "ssh_connect")
+    remembered = (root / "run" / "m.failed").read_text(encoding="ascii")
+    assert remembered == "remote_unreachable:ssh_connect\n"
+    quiet = _Recorder()
+    monkeypatch.setattr(rest_runtime, "_run", quiet)
+    with pytest.raises(TargetRuntimeError) as again:
+        SshTargetRuntime().ensure_master(record, root)
+    assert (again.value.reason, again.value.phase) == ("remote_unreachable", "ssh_connect")
+    assert quiet.calls == []
+    # The owner asking now (``server connect``/``test``) is never answered from memory, and a
+    # master that starts clears it.
+    SshTargetRuntime().ensure_master(record, root, honor_recent_failure=False)
+    assert len(quiet.calls) == 1
+    assert not (root / "run" / "m.failed").exists()
+    # An authentication refusal is not remembered: the owner may load a key and retry at once.
+    monkeypatch.setattr(rest_runtime, "_run", _Recorder((255, b"", b"Permission denied")))
+    with pytest.raises(TargetRuntimeError):
+        SshTargetRuntime().ensure_master(record, root)
+    assert not (root / "run" / "m.failed").exists()
+
+
+def test_restoring_the_transport_is_for_ssh_targets_only(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    record, root = ssh_root
+    recorder = _Recorder((0, b"", b""))
+    monkeypatch.setattr(rest_runtime, "_run", recorder)
+    https = ServerTarget(
+        record.target_id,
+        "lab",
+        "https",
+        record.created_at,
+        base_url="https://lab.example",
+        claim_salt=_SALT,
+        authorized_at=record.created_at,
+        disclosure_version=1,
+    )
+    asyncio.run(rest_runtime.restore_ssh_transport(https, root))
+    assert recorder.calls == []
+    asyncio.run(rest_runtime.restore_ssh_transport(record, root))
+    assert recorder.calls[0][0] == ssh_master_argv(record, root)
+
+
+def test_a_connection_gives_the_ssh_steps_only_what_is_left_of_its_budget(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from finishup.config.paths import reset_selection_memo
+    from finishup.ports.control import ControlClientKind
+    from finishup.service import client as client_module
+
+    record, _root = ssh_root
+    with targets.registry_lock():
+        targets.write_selection(record)
+    reset_selection_memo()
+    budgets: list[tuple[str, float]] = []
+
+    async def unreachable(*_args: object, **_options: object) -> object:
+        raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+
+    def master(_self: object, _record: object, _root: object, *, timeout: float) -> None:
+        budgets.append(("master", timeout))
+
+    def start(_self: object, _record: object, _root: object, *, timeout: float) -> None:
+        budgets.append(("start", timeout))
+
+    def no_spawn() -> object:
+        raise AssertionError("a remote target never spawns a local service")
+
+    monkeypatch.setattr("finishup.client.rest_client.connect_rest_service", unreachable)
+    monkeypatch.setattr(SshTargetRuntime, "ensure_master", master)
+    monkeypatch.setattr(SshTargetRuntime, "start_remote_service", start)
+    monkeypatch.setattr(client_module, "_spawn_service_process", no_spawn)
+    with pytest.raises(ControlError) as raised:
+        asyncio.run(
+            client_module.connect_service_on_demand(
+                ControlClientKind.CLI, workspace_locator=None, timeout_seconds=2.0
+            )
+        )
+    assert raised.value.phase == "remote_unreachable"
+    assert [step for step, _ in budgets] == ["master", "start"]
+    assert all(0 < budget <= 2.0 for _, budget in budgets)

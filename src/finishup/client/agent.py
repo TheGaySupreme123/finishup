@@ -15,6 +15,10 @@ long-lived, pull-based client of the server's network API, one per target root:
 * For each noted workspace it also delivers what the hooks captured and could not deliver
   themselves (``CapturedObservationDelivery``: the shared ``ClientObservationDrain`` over a
   claim-bound connection, every row attested from this client's own store).
+* For an SSH target it also brings the target's master back when a request fails on the
+  transport (``rest_runtime.restore_ssh_transport``), so a master that died while the user was
+  idle (a sleep, a network blip) is restored before the server's next background call, not only
+  when a foreground client happens to connect.
 * It holds ``<target root>/state/agent.lock`` (an exclusive lock stamped with its pid), ends a
   workspace 15 minutes after its last note, and exits after 15 minutes without workspaces or on
   ``SIGTERM`` (``stop_agent`` signals the stamped pid; nothing is killed by name).
@@ -366,8 +370,15 @@ class _Delivery(Protocol):
 
 
 type _ClaimFactory = Callable[[ServerTarget, WorkspaceLocator], Awaitable[WorkspaceClaim | None]]
+type _TransportRestorer = Callable[[ServerTarget, Path], Awaitable[None]]
 type _HandlerFactory = Callable[[WorkspaceLocator, Path], WorkspaceCallHandler | None]
 type _DeliveryFactory = Callable[[ServerTarget, Path, WorkspaceLocator, WorkspaceClaim], _Delivery]
+
+
+async def _restore_transport(record: ServerTarget, root: Path) -> None:
+    from finishup.client.rest_runtime import restore_ssh_transport
+
+    await restore_ssh_transport(record, root)
 
 
 def _captured_observation_delivery(
@@ -415,6 +426,7 @@ class WorkspaceAgentLoop:
         claim_factory: _ClaimFactory = claim_for_workspace,
         handler_factory: _HandlerFactory = handler_for_workspace,
         delivery_factory: _DeliveryFactory = _captured_observation_delivery,
+        transport_restorer: _TransportRestorer = _restore_transport,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         scan_seconds: float = _SCAN_SECONDS,
@@ -427,6 +439,7 @@ class WorkspaceAgentLoop:
         self._claim_factory = claim_factory
         self._handler_factory = handler_factory
         self._delivery_factory = delivery_factory
+        self._transport_restorer = transport_restorer
         self._clock = clock
         self._wall_clock = wall_clock
         self._scan_seconds = scan_seconds
@@ -558,6 +571,9 @@ class WorkspaceAgentLoop:
             except Exception as error:
                 reason = error.reason if isinstance(error, _AgentRetry) else "remote_unreachable"
                 _record("workspace_agent_poll", reason)
+                if not isinstance(error, _AgentRetry):
+                    # The request never reached the server: an SSH target's master may be gone.
+                    await self._restore_transport()
                 delay = _RETRY_SECONDS[min(attempt, len(_RETRY_SECONDS) - 1)]
                 attempt += 1
                 # A client process that reached the server notes the workspace again: retry at
@@ -569,6 +585,20 @@ class WorkspaceAgentLoop:
                 if nudge.is_set():
                     nudge.clear()
                     attempt = 0
+
+    async def _restore_transport(self) -> None:
+        """Bring the target's transport back (an SSH master); a failure waits for the retry."""
+
+        from finishup.client.target_runtime import TargetRuntimeError
+
+        try:
+            await self._transport_restorer(self._record, self._root)
+        except asyncio.CancelledError:
+            raise
+        except TargetRuntimeError as error:
+            _record("workspace_agent_transport", error.reason)
+        except Exception:
+            _record("workspace_agent_transport", "restore_failed")
 
     async def _poll(
         self, api: _AgentApi, agent_id: str, handle: str, handler: WorkspaceCallHandler
