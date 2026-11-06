@@ -167,9 +167,10 @@ policy names lets it read that folder alone.
 `remove` stops it at once; `remove NAME --all` removes every folder for that server, and also
 clears a list FinishUP can no longer read (FinishUP then lets the server read no folder at all).
 `list` and `server status` show the folders. The list stays on this computer and is never sent to
-the server. Removing the server removes its list too. A server on this computer does not use this
-list: there, the privacy settings decide which folders a review may read (`finishup privacy
-input-roots`).
+the server, and it belongs to that server alone: switching to another server does not change what
+a connection already open to this one may read. Removing the server removes its list too. A server
+on this computer does not use this list: there, the privacy settings decide which folders a review
+may read (`finishup privacy input-roots`).
 
 When a task names a file in a folder that the server's privacy policy covers but you have not
 added for that server here, the workspace agent refuses to read it, and the check reports

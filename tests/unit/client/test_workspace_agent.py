@@ -798,25 +798,34 @@ def test_the_admitted_folders_are_read_on_every_call_and_fail_closed(
     ) == ("refused", "root_not_admitted")
 
 
-def test_by_default_the_active_targets_own_record_admits(
+def test_by_default_the_record_of_the_target_in_use_when_built_admits(
     repository: Path, protected: Path, shared: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    asked: list[bool] = []
+    """Bound when the handler is built, read on every call (ADR-051 decision 5)."""
 
-    def active() -> tuple[str, ...]:
-        asked.append(True)
+    bound: list[bool] = []
+    read: list[bool] = []
+
+    def reader() -> tuple[str, ...]:
+        read.append(True)
         return (os.fspath(shared),)
 
-    monkeypatch.setattr(agent_module, "active_target_folders", active)
+    def folders_reader() -> object:
+        bound.append(True)
+        return reader
+
+    monkeypatch.setattr(agent_module, "folders_reader", folders_reader)
     handler = WorkspaceAgentHandler(
         WorkspaceLocator(os.fspath(repository)), protected=(os.fspath(protected),)
     )
-    assert _ok(
-        handler,
-        WorkspaceOperation.READ_TEXT_BENEATH,
-        ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
-    ) == (b"SPEC_MARKER\n", 12)
-    assert asked == [True]
+    assert bound == [True] and read == []
+    for _ in range(2):
+        assert _ok(
+            handler,
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(os.fspath(shared), "spec.md"),
+        ) == (b"SPEC_MARKER\n", 12)
+    assert bound == [True] and read == [True, True]
 
 
 def test_a_declared_test_beneath_an_admitted_folder_is_read_as_locally(

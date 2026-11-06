@@ -49,22 +49,31 @@ async def remote_workspace_binding(
     """The claim on ``workspace`` under ``claim_salt``, with its agent when ``serve_workspace``.
 
     ``protected`` is passed to the agent (``WorkspaceAgentHandler``); by default it protects
-    this client's own FinishUP directories and the everyday installation's. A locator the shared
-    root rule cannot resolve raises its closed ``RepositoryIdentityError``; the caller must then
-    not connect with a path instead.
+    this client's own FinishUP directories and the everyday installation's. The agent admits
+    outside reads beneath the folders the owner admitted for the target this process uses now,
+    and only when that target's claim salt is ``claim_salt``. A locator the shared root rule
+    cannot resolve raises its closed ``RepositoryIdentityError``; the caller must then not connect
+    with a path instead.
     """
 
     claim = await workspace_claim(workspace, claim_salt)
     if not serve_workspace:
         return ClientWorkspaceBinding(claim)
+    from finishup.client.server_folders import folders_reader
     from finishup.client.workspace_agent import WorkspaceAgentHandler
 
     # Every agent of this client for this target keys its opened-workspace handles alike, so a
     # handle one connection opened is answered by another (each process serves its own calls).
     opened_key = hmac.new(claim_salt, _OPENED_HANDLE_KEY_DOMAIN, hashlib.sha256).digest()
+    # The folders the owner admitted for this connection's own target (ADR-051 decision 5): bound
+    # now to the target whose salt the claim was made under, never to whichever target this
+    # process selects later; another target, or none, admits nothing.
+    outside = folders_reader(claim_salt=claim_salt)
     return ClientWorkspaceBinding(
         claim,
-        WorkspaceAgentHandler(workspace, protected=protected, opened_handle_key=opened_key),
+        WorkspaceAgentHandler(
+            workspace, protected=protected, opened_handle_key=opened_key, outside_folders=outside
+        ),
     )
 
 

@@ -158,6 +158,45 @@ async def test_every_agent_of_a_target_keys_its_opened_workspaces_alike(
 
 
 @pytest.mark.anyio
+async def test_an_agent_reads_the_folders_of_its_own_target_whatever_is_selected_later(
+    home: Path, workspace: WorkspaceLocator, tmp_path: Path
+) -> None:
+    """ADR-051 decision 5: the record is bound to the target the connection's claim was made for,
+    never to the process-wide selection, which ``server use`` or another target's probe
+    (``selection_override``) may change while the agent runs."""
+
+    from finishup.client.remote_binding import remote_workspace_binding
+    from finishup.client.server_folders import add_folder
+
+    del home
+    first, second = _remote("ssh"), _remote("https")
+    mine, theirs = (tmp_path / "mine").resolve(), (tmp_path / "theirs").resolve()
+    for record, folder in ((first, mine), (second, theirs)):
+        folder.mkdir()
+        add_folder(targets.target_root(record.target_id), record.target_id, os.fspath(folder))
+    _select(first)
+    binding = await binding_for_active_root(workspace, serve_workspace=True)
+    assert binding is not None and type(binding.agent) is WorkspaceAgentHandler
+    agent = binding.agent
+
+    def admitted() -> tuple[str, ...]:
+        return agent._folders()  # pyright: ignore[reportPrivateUsage]
+
+    assert admitted() == (os.fspath(mine),)
+    _select(second)
+    assert admitted() == (os.fspath(mine),)
+    with paths.selection_override(targets.target_root(second.target_id)):
+        assert admitted() == (os.fspath(mine),)
+    _select(first)
+    # A claim made under another target's salt than the target in use admits nothing.
+    other = await remote_workspace_binding(
+        workspace, base64.b64decode(second.claim_salt or "", validate=True)
+    )
+    assert type(other.agent) is WorkspaceAgentHandler
+    assert other.agent._folders() == ()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.anyio
 async def test_a_claim_only_binding_loads_no_agent(home: Path, workspace: WorkspaceLocator) -> None:
     _select(_remote("ssh"))
     binding = await binding_for_active_root(workspace, serve_workspace=False)
