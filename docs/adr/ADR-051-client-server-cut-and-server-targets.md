@@ -336,7 +336,127 @@ an HTTPS target).
 
 ## Topology (approach-specific)
 
-<!-- APPROACH-TOPOLOGY -->
+### Approach C — the server-native network API
+
+The service itself is the network edge. There is no connector on the client and no gateway on the
+server: when the server's `config.toml` has a `[network]` table, the daemon serves a
+resource-shaped HTTP API from its own event loop, and every remote client speaks that one API.
+
+```
+HTTPS and LOCAL PORT (key + scope)
+  client host                                         server host
+  hook / MCP / CLI / TUI (RestServiceClient) ══ HTTPS ══► service :8443 (vault, ledger)
+  finishup agent run (pull) ══ GET /v1/agents/{id}/work ══► workspace hub
+                            ◄═ workspace_call ═══ │ ═══ POST …/replies ═► workspace_reply
+
+SSH (owner-equivalent, no key)
+  hook / MCP / CLI / TUI ─HTTP over AF_UNIX─► <troot>/run/api.sock
+     ssh -M -S <troot>/run/m -L <troot>/run/api.sock:<server runtime>/api.sock (one per target)
+     ═══════════════ one warm SSH connection, one channel per HTTP connection ═══════════════►
+                                         sshd child (as owner) ─AF_UNIX─► api.sock ─► service
+  control.sock, human-control and secret sockets: never forwarded
+```
+
+**Server side.**
+
+- `service/http_api.py` (Starlette under uvicorn, driven on the daemon's loop without uvicorn's
+  own signal handling) is bound during composition, under the singleton lock and before any
+  endpoint is published, so a listener that cannot be bound fails the start with a closed
+  configuration reason (`network_listener_unavailable`, `network_tls_unusable`). Without
+  `[network]` nothing is imported or bound and the service is byte-identical to today.
+- `[network]`: `listen` (IP-literal `host:port` addresses), `tls_cert` and `tls_key` (paths; the key
+  file must be the owner's and owner-only; TLS 1.2 or later), `allow_plain_loopback` (plain HTTP on
+  a loopback address only, for a same-host TLS-terminating proxy), and `api_socket` (the owner-only
+  `<runtime>/api.sock`). Every non-loopback listener needs TLS.
+- Keys: `fuk_<12 hex id>_<43 base64url>` (256 bits), stored as `sha256(salt ‖ secret)` in
+  `<state>/network/api-keys.json` (`yoetz.api-keys/1`, owner-only, canonical), compared in
+  constant time, re-read when the file changes. `finishup service api-key create|list|revoke` runs
+  on the server host (`server_host` scope) and edits the file under its lock; no key is ever
+  managed over the network. A key carries a scope (decision 9) and a principal; `--rotate KEY_ID`
+  keeps the predecessor's principal.
+- Requests are stateless. Each carries `Authorization: Bearer` (except on `api.sock`) and may carry
+  `X-FinishUP-Workspace-Claim: <identity_kind>:sha256:<64 hex>`. The service keys the claim by the
+  key's principal before resolving it (`sha256("yoetz/claim-principal/v1\0" ‖ principal ‖ 0x00 ‖
+  digest)`), so two principals never reach each other's repositories, and never resolves a path.
+- `POST /v1/{method}`: the body is the method's existing request body and the answer is the
+  existing control-result body, byte-identical to the socket frame's `body`, with
+  `FinishUP-Outcome: ok|error` and the service instance and generation as headers. A call addressed
+  to an earlier generation answers `service_generation_changed`, as on the socket. A call still
+  running after `wait_ms` (≤ 25 000) answers `202` and `/v1/operations/{id}` long-polls (`GET`) or
+  cancels (`DELETE`) it; a client-chosen `FinishUP-Operation-Id` is dispatched at most once and a
+  finished answer stays retrievable for 120 seconds. Each request, and each registered agent, holds
+  the daemon's idle shutdown like one open control connection.
+- Workspace agents: `POST /v1/agents` (claim header required; body = the agent declaration) answers
+  the agent id and the `client:` handle; `GET /v1/agents/{id}/work` long-polls queued
+  `workspace_call` frames; `POST /v1/agents/{id}/replies` delivers one `workspace_reply`;
+  `DELETE /v1/agents/{id}` ends it. Each registration is one in-process channel of the workspace hub
+  whose writer queues calls for the next poll. A lease of 60 seconds without a poll, or a revoked or
+  expired key, ends the agent and fails its pending calls typed.
+- Refusals: `rest-error` reasons (`api_key_invalid|revoked|expired`, `origin_forbidden`,
+  `header_invalid`, `frame_invalid`, `frame_too_large`, `route_unknown`, `operation_unknown`,
+  `agent_unknown`, `method_not_allowed`, `operation_limit`, `agent_limit`,
+  `workspace_claim_required`, `workspace_agent_unavailable`, `service_unavailable`). Any `Origin`
+  header is refused before authentication, and nothing answers before authentication. Audit
+  records carry closed tokens only; uvicorn's own logs are discarded because they would carry
+  addresses and request lines.
+
+**Client side.**
+
+- `client/rest_client.py`: `RestServiceClient` subclasses `ServiceClient` (every typed method is
+  shared; only the transport methods are overridden) and is what `connect_service` and
+  `connect_service_on_demand` return for a root whose `target.json` names a remote kind. A remote
+  root never spawns or supersedes a local service. HTTPS trusts the target's `--ca-file`, its
+  `--tls-pin` (checked inside the TLS handshake, so a key is never sent to a mismatching server), or
+  the public store; proxy variables are ignored. Failures carry the remote phases on
+  `service_unavailable`.
+- **Who reads the target credential:** each client process that dials an HTTPS or `local_port`
+  target reads it from `CredentialSource` (as in approach B). Same-user software can read it as
+  well, as it can read today's auto-unlock custody; no surface an agent reaches reveals or switches
+  it.
+- `client/rest_runtime.py`: the `https`/`local_port` runtime needs no process; the `ssh` runtime runs
+  one master per target with the fixed argv `ssh -f -N -M -S <troot>/run/m -o ControlPersist=900 -o
+  BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o StreamLocalBindMask=0177
+  -o StreamLocalBindUnlink=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -p <port> -L
+  <troot>/run/api.sock:<server api.sock> -- <dest>`, stops it with `ssh -O exit`, and starts an
+  idle-stopped remote service once with the recorded absolute launcher. `server add` for SSH runs
+  `<launcher> service endpoint --json` once (batch mode) to record the server's API socket and the
+  launcher that answered; a server without `api_socket = true` is refused with
+  `remote_incompatible` (phase `api_socket_unconfigured`).
+- `client/agent.py` (`finishup agent run --root <troot>`, `client_only`): the pull-based workspace
+  agent. Client processes note each workspace they work in (an owner-only
+  `yoetz.agent-workspace/1` record beneath the target root; the path never leaves the machine) and
+  start the agent when none runs. It holds `<troot>/state/agent.lock` stamped with its pid,
+  registers each claimed workspace, long-polls its calls, answers them in worker threads, and
+  exits 15 minutes after its last workspace; `server disconnect` signals the stamped pid.
+
+**SSH forwards a socket to a socket.** The approach brief proposed forwarding to a loopback TCP
+port of the API. This pull request forwards to the owner-only `api.sock` instead: a request there
+is the owner's (peer-UID checked), so SSH stays owner-equivalent with no API key, as decision 9
+and the shared target record (no credential for SSH) require, and an SSH-only server opens no TCP
+port at all. The server records nothing new: `remote_endpoint` holds the API socket's path.
+
+**ADR-008 invariant 6, lifted at its root.** With `[network]` configured the service process
+itself is network-reachable: TLS and HTTP parsing run in the process that holds the vault. The
+mitigations: the listener exists only when the owner configures it; TLS is required everywhere
+except an explicit loopback opt-in; keys are hashed, scoped and revocable; any `Origin` header is
+refused; nothing answers before authentication; service stop, backup, restore, migrate,
+integration and observation administration never cross the network, and neither do unlock,
+consent, the owner receipt view, the human-control or secret endpoints, or `control.sock`;
+requests are bounded (frame sizes, 32 running operations and 16 agents per key, 256 concurrent
+connections, 25-second long-polls).
+
+**Integration points** (wired after the workspace-remoting tracks merge):
+`ServiceDaemon._network_api_bindings()` (claim resolver, workspace hub, live-call scope) on the
+server, and `finishup.client.remote_workspace.claim_for_workspace` /
+`handler_for_workspace` on the client. Until then a claim header binds no repository and agent
+registration answers `workspace_agent_unavailable`.
+
+| Way in | Way out | Way to see it |
+|---|---|---|
+| `[network]` in the server's `config.toml` | remove the table and restart the service | `finishup service endpoint --json` |
+| `finishup service api-key create` | `finishup service api-key revoke KEY_ID` | `finishup service api-key list` |
+| `finishup server connect NAME` (SSH master, on demand too) | `finishup server disconnect NAME` | `finishup server status NAME` |
+| workspace agent (started on demand) | idle exit, or `server disconnect` | the target's `state/agent.lock` stamp |
 
 ## Reverse states
 

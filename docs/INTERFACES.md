@@ -4650,49 +4650,83 @@ unavailable reason `workspace_agent_unavailable`, so
 `check_time_change_unavailable_workspace_agent_unavailable` joins
 `CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS`.
 
-<!-- APPROACH-HTTPS-BINDING: approaches A and B keep this subsection; approach C replaces it with
-its resource-shaped API. -->
-**HTTPS binding v1** (`https` and `local_port` targets). Each body is the exact canonical JSON a
-socket frame carries after its length prefix. Every request carries `Authorization: Bearer
-fuk_<12 hex key id>_<43 base64url secret>` and `FinishUP-Binding: 1.0`; a request with an `Origin`
-header is refused, and no route answers without authentication. A hello carrying
-`workspace_locator` is refused. The `server-info-1.0.0` and `rest-error-1.0.0` schemas are
-hand-authored with their `schemas/manifest.json` digests, and the `rest-binding-1.0` fixture binds
-an HTTP body to its frame bytes; where this table and those artifacts differ, they win.
+**Server-native network API v1** (`https`, `local_port` and `ssh` targets; this tree's approach).
+The service serves it itself, only when its `config.toml` has a `[network]` table
+(`finishup.config.models.NetworkConfig`): `listen` (IP-literal `host:port` addresses, TLS unless a
+loopback address with `allow_plain_loopback = true`), `tls_cert` and `tls_key` (paths; the key file
+owner-only), and `api_socket` (the owner-only, peer-UID-checked `<runtime>/api.sock`). Modules:
+`service.http_api` (server), `service.network_protocol` and `service.api_keys` (shared contract and
+key file), `client.rest_client`, `client.rest_runtime`, `client.agent` and
+`client.remote_workspace` (client). Requests are stateless; every TCP request carries
+`Authorization: Bearer fuk_<12 hex key id>_<43 base64url secret>` (one spelling per key); a request
+on `api.sock` carries none and acts as the owner with the `operator` scope. Any `Origin` header is
+refused before authentication, and no route answers without it.
 
 | Method and path | Body in | Response |
 |---|---|---|
-| `GET /v1/server` | none | `200` `server-info-1.0.0`: release, manifest digest, key id, scope, accepted bindings |
-| `POST /v1/sessions` | control-hello 2.10.0 | `201` control-hello-result and `Location: /v1/sessions/{sid}`; `409` with the daemon's hello-result on a manifest mismatch |
-| `POST /v1/sessions/{sid}/calls?wait_ms=` (≤ 25000) | control-request (`kind: call`) | `200` control-result, or `202` while pending |
-| `GET /v1/sessions/{sid}/results/{rpc_id}?wait_ms=` (≤ 25000) | none | long-poll for that call's control-result |
-| `GET /v1/sessions/{sid}/frames?wait_ms=` (≤ 25000) | none | long-poll for pending server frames, including `workspace_call` frames for a session whose hello declared `workspace_agent` |
-| `POST /v1/sessions/{sid}/frames` | control-request (`kind: workspace_reply`) | `202` |
-| `POST /v1/sessions/{sid}/cancel` | control-request (`kind: cancel`) | `202` |
-| `DELETE /v1/sessions/{sid}` | none | `204`; closes the session's one upstream control connection |
+| `GET /v1/server` | none | `200` `{schema_version, release, schema_manifest_digest, status, key_id, scope, transport, workspace_binding, workspace_handle}` |
+| `POST /v1/{method}?wait_ms=` (≤ 25000) | the method's existing request body | `200` the existing control-result body, byte-identical to the socket frame's `body`, with `FinishUP-Outcome: ok\|error`, `FinishUP-Operation-Id`, `FinishUP-Service-Instance`, `FinishUP-Service-Generation` (and `FinishUP-Workspace-Handle` when claim-bound); or `202` `{operation_id, schema_version, state: "pending"}` with `Location: /v1/operations/{id}` |
+| `GET /v1/operations/{id}?wait_ms=` | none | long-poll: `200` as above, or `202` |
+| `DELETE /v1/operations/{id}` | none | `204`; a running call ends `request_cancelled` |
+| `POST /v1/agents` | `{schema_version, operations, max_reply_bytes}` (the hello's `workspace_agent` shape); claim header required | `201` `{schema_version, agent_id: "agt_<32 hex>", workspace_handle, lease_ms}` and `Location` |
+| `GET /v1/agents/{id}/work?wait_ms=` | none | `200` `{schema_version, calls: [<workspace_call frame>...]}` (oldest first) |
+| `POST /v1/agents/{id}/replies` | one `workspace_reply` frame | `202` |
+| `DELETE /v1/agents/{id}` | none | `204` |
 
-A session id is 32 random bytes bound to its key and holds one upstream control connection; it
-expires after 120 seconds idle, and one key holds at most 64 sessions. Workflow outcomes —
-`vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
-a `200` control-result, byte-identical to the socket. Transport and authentication failures use
-`rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:
+Optional request headers, each validated against closed values: `FinishUP-Client-Kind`
+(`cli|mcp_bridge|ui`, default `cli`), `FinishUP-Service-Instance` with
+`FinishUP-Service-Generation` (both or neither; an earlier generation answers
+`service_generation_changed`), `FinishUP-Operation-Id` (a control rpc id; dispatched at most once,
+answers kept 120 seconds), `FinishUP-Deadline-Ms`, `FinishUP-Route-Profile` (`policy|strict`),
+`FinishUP-Host-Profile` (`generic|codex|claude|cursor`) and `X-FinishUP-Workspace-Claim:
+<git_common_root|directory>:sha256:<64 hex>`. The service keys a claim by the key's principal
+(`sha256("yoetz/claim-principal/v1\0" ‖ principal ‖ 0x00 ‖ digest)`) before resolving it, and never
+resolves a path. Presentation facts never come from the network: every call gets the fail-safe
+machine-readable projection.
+
+A key's scope bounds its methods: `agent` allows the six workflow methods, `service_status` and
+`observation_ingest` on a claim-bound request; `operator` adds `project`, `review`,
+`import_codex_jsonl`, `observation_status`, `privacy_get_setup`, `privacy_get_effective`,
+`privacy_pending_list`, `privacy_receipts_list`, `privacy_receipts_get`, `privacy_propose_policy`,
+`privacy_tighten_policy` and `service_lock`. `service_stop`, `backup_*`, `restore_*`, `migrate_*`,
+`integration_*` and `observation_pause|resume|revoke` are never reachable. An out-of-scope call
+answers the existing `method_forbidden` control error, before its body is read. Transport and
+authentication refusals are `{reason, schema_version: "1.0.0"}` with closed reasons:
 
 | Status | Reasons |
 |---|---|
-| 400 | `frame_invalid` |
+| 400 | `frame_invalid`, `header_invalid` |
 | 401 | `api_key_invalid`, `api_key_revoked`, `api_key_expired` |
-| 403 | `origin_forbidden`, `workspace_locator_forbidden` |
-| 404 | `session_unknown` |
+| 403 | `origin_forbidden`, `workspace_claim_required` |
+| 404 | `route_unknown`, `operation_unknown`, `agent_unknown` |
+| 405 | `method_not_allowed` |
 | 413 | `frame_too_large` |
-| 429 | `session_limit` |
-| 503 | `service_unavailable` |
+| 429 | `operation_limit` (32 running per key), `agent_limit` (16 per key) |
+| 503 | `service_unavailable`, `workspace_agent_unavailable` |
 
-A key's scope bounds its methods: `agent` allows the six workflow methods, `service_status` and
-claim-bound `observation_ingest`; `operator` adds `project`, `review`, `import_codex_jsonl`,
-`observation_status`, the read and tighten privacy methods and `service_lock`. `service_stop`,
-`backup_*`, `restore_*`, `migrate_*`, `integration_*`, `observation_pause|resume|revoke` and the
-human-control and secret channels are never reachable over HTTPS; an out-of-scope call returns the
-existing `method_forbidden`.
+**API keys** (`service.api_keys.ApiKeyStore`): `<state>/network/api-keys.json`
+(`yoetz.api-keys/1`, owner-only canonical JSON) holds per key `key_id`, `label`, `scope`,
+`principal` (`p_<16 hex>`), `created_at`, `expires_at`, `revoked_at`, a 16-byte `salt` and
+`hash = sha256(salt ‖ secret)`; at most 256 keys. `finishup service api-key create --label L --scope
+agent|operator [--expires-in-days N] [--rotate KEY_ID] [--output-file F]` shows the key once (or
+writes a new 0600 file), `list [--json]` (`yoetz.api-key-list/1`) never shows one, `revoke KEY_ID`
+is the reverse; all three are `server_host`. Failures are `ApiKeyError` reasons
+(`api_key_label_invalid`, `api_key_scope_invalid`, `api_key_expiry_invalid`, `api_key_unknown`,
+`api_key_limit`, `api_keys_unsafe`, `api_keys_damaged`). `finishup service endpoint --json` adds
+`network: {api_socket, listen, tls}` only when `[network]` is configured.
+
+**Client.** `connect_service` and `connect_service_on_demand` return
+`client.rest_client.RestServiceClient` (a `ServiceClient` subclass with the same methods and
+`ControlError`s, plus `transport_kind`, `workspace_binding` and `workspace_handle`) for a root
+whose `target.json` names a remote kind; a remote root never spawns or supersedes a service.
+Remote failures are `service_unavailable` with phase `remote_unreachable`, `remote_auth_failed`,
+`remote_identity_changed`, `remote_service_not_running` or `remote_incompatible`. SSH targets
+(`client.rest_runtime.SshTargetRuntime`) keep one master at `<troot>/run/m` forwarding
+`<troot>/run/api.sock` to the server's `api.sock` (`remote_endpoint` in `target.json`), learned by
+`server add` from `service endpoint --json`. The workspace agent, `finishup agent run --root
+<troot>` (`client_only`), keeps `<troot>/state/agent.lock` (stamped pid) and the noted workspaces
+`<troot>/state/agent-workspaces/w_<32 hex>.json` (`yoetz.agent-workspace/1`, path only, never
+sent).
 
 ### Several-agent setup batches (issue #1119)
 

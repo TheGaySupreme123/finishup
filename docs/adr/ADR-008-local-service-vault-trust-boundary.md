@@ -559,19 +559,32 @@ ceremonies are unchanged on whichever host runs the service.
   holds: owner-written target configuration alone selects the endpoint, and nothing an agent,
   request body, repository or environment variable supplies can switch it.
 
-<!-- APPROACH-TOPOLOGY: each approach's pull request replaces or adjusts the items below. -->
-The items below carry the edge-relay wording of the design (approach A). Approach B keeps the
-gateway row and moves the credential into client processes; approach C replaces invariant 6 at
-its root, because its service is itself network-reachable.
+This pull request takes approach C, the server-native network API (ADR-051, topology section):
+the service itself serves a network API when its `[network]` table asks for one, so invariant 6
+changes at its root.
 
-- **Invariant 6 becomes:** "The *service's* control transport is never TCP or network-reachable.
-  Another machine reaches it only through sshd stream-local forwarding into the owner-only
-  endpoint, or through a same-user gateway that authenticates a key, applies a scope and re-enters
-  through that endpoint. Human-control and secret endpoints are never forwarded."
-- **Trust table rows added.** *Target connector* (client host, per target, no vault): narrowly
-  trusted to relay control frames for one owner-selected target and to hold its target
-  credential; no storage, vault, policy or provider authority. *Service gateway* (server host,
-  same UID as the service): narrowly trusted to authenticate API keys, apply their scope, refuse
-  locators and `Origin` headers, and re-enter through the owner-only control endpoint as an
-  ordinary client; no vault, storage or policy authority.
-- **Who reads the target credential:** only the connector, started with a scrubbed environment.
+- **Invariant 6 becomes:** "The service's *Unix* control, human-control and secret endpoints are
+  never TCP, never network-reachable and never forwarded. When the owner configures `[network]`,
+  the service additionally serves its network API itself: on TCP listeners that speak TLS (plain
+  HTTP only on a loopback address the owner opted into, behind a same-host TLS proxy), and on an
+  owner-only, peer-UID-checked Unix socket that an SSH client forwards to. Every TCP request
+  authenticates a hashed, scoped, revocable API key; any `Origin` header is refused; nothing
+  answers before authentication; and service stop, backup, restore, migrate, integration,
+  observation administration, unlock, consent and the owner receipt view are never reachable
+  through it." Without `[network]` the original invariant holds unchanged: the service opens no
+  network listener at all.
+- **The cost, stated plainly.** TLS and HTTP parsing run in the process that holds the vault. The
+  attack surface is the TLS stack, the HTTP parser (h11), the router and the key check, all before
+  any vault-backed code runs; requests are bounded in size, concurrency and wait. Independent
+  security review of this listener is required before the amendment is accepted.
+- **Trust table rows added.** *Network API listener* (inside the service): narrowly trusted to
+  authenticate keys, apply their scope, key a client's workspace claim by the key's principal and
+  never resolve a path, and dispatch exactly the allowed control methods; it adds no vault,
+  storage or policy authority beyond the methods it dispatches. *Workspace agent process*
+  (`finishup agent run`, client host, no vault): answers bounded workspace calls for the
+  workspaces its own client processes noted.
+- **Who reads the target credential:** every client process that dials an HTTPS or local-port
+  target (hooks, the MCP bridge, the CLI, the terminal interface, the workspace agent) reads it
+  from the target's credential store. This is weaker than a single holder; it matches today's
+  same-user access to auto-unlock custody, and no surface an agent reaches reveals or switches it.
+  SSH targets use no FinishUP credential.

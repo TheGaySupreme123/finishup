@@ -182,7 +182,65 @@ never passes because a read was missing.
   unless lingering is on for your account (`loginctl enable-linger`), or FinishUP runs in its own
   folder on the server. `finishup service endpoint --json`, run on the server, reports both.
 
-<!-- APPROACH-TOPOLOGY -->
+## Turn on the server's network API
+
+Your computer reaches a FinishUP server through the server's own network API. The server's owner
+turns it on, on the server, by adding a `[network]` section to its FinishUP settings file
+(`config.toml`) and restarting its FinishUP service. Without that section the server opens no
+network connection at all.
+
+For an **SSH** server, one line is enough: it serves the API on a socket only you can open, which
+your SSH connection reaches. No API key is involved; SSH already proves it is you.
+
+```toml
+[network]
+api_socket = true
+```
+
+For a **web** or **port** server, list the addresses to listen on and the server's certificate and
+private key. FinishUP refuses to listen without TLS, except on this machine's loopback address
+when you put a TLS proxy in front of it and say so with `allow_plain_loopback = true`. The key file
+must be readable only by you.
+
+```toml
+[network]
+listen = ["0.0.0.0:8443"]
+tls_cert = "/etc/finishup/server.pem"
+tls_key = "/etc/finishup/server-key.pem"
+```
+
+Then, on the server, create a key for each computer or person and give it to them:
+
+```text
+finishup service api-key create --label laptop --scope agent
+finishup service api-key create --label admin --scope operator --output-file admin.key
+finishup service api-key list
+finishup service api-key revoke 3f9a1c0b2d4e
+```
+
+The key is shown once; the server keeps only a scrambled form of it. An `agent` key allows what
+agents need; an `operator` key also allows management reads and policy tightening. Nothing that
+stops the server, backs it up, restores or migrates it, or unlocks its vault can be done with any
+key. To replace a key without losing access to existing tasks, create the new one with
+`--rotate OLD_KEY_ID`, sign in with it, then revoke the old one. `finishup service endpoint --json`
+on the server shows what is turned on.
+
+## How your computer reaches the server
+
+FinishUP's tools, hooks, the `finishup` command and the terminal interface each talk to the server
+directly, over HTTPS for a web or port server and through one shared SSH connection for an SSH
+server. That SSH connection starts when first needed and closes after 15 minutes without use;
+`finishup server connect` starts it now and `disconnect` closes it.
+
+The workspace agent is a small FinishUP process on your computer, `finishup agent run`, that
+starts when your sessions first use a server on another machine and stops 15 minutes after the
+last one ends. It asks the server for work rather than waiting for the server to call in, so it
+works through firewalls and proxies that allow ordinary HTTPS. `finishup server disconnect` stops
+it too.
+
+On a web or port server, each FinishUP process on your computer reads your API key from your
+credential store when it connects. Software running as you can read that store too, as it can
+read FinishUP's own unlock secret; nothing an agent can call shows or changes the key.
 
 ## Things that run on the server
 

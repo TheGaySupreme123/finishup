@@ -150,7 +150,27 @@ REMOTE (local_port, ssh, https; the owner's own server)
   human-control and secret channels: never leave the server host
 ```
 
-<!-- APPROACH-TOPOLOGY -->
+**Server-native network API (this tree's approach).** A remote target reaches the service's own
+network API, which the service serves only when its `[network]` configuration asks for one
+(`service/http_api.py`, bound during composition and served on the daemon's event loop):
+
+```
+HTTPS / LOCAL PORT
+  hook / MCP / CLI / TUI ──RestServiceClient, HTTPS + API key──► service API (TLS listener)
+  finishup agent run ──long-poll /v1/agents/{id}/work, POST replies──► workspace hub
+
+SSH
+  hook / MCP / CLI / TUI ──HTTP over <troot>/run/api.sock──► ssh master (-L socket:socket)
+                          ═══ SSH ═══► server's owner-only api.sock ──► service API
+```
+
+`connect_service` returns a `RestServiceClient` (`client/rest_client.py`) for a remote root: the
+same typed methods, each a stateless request whose body and answer are the control protocol's
+own bodies. Keys live hashed in the service's state and are managed with
+`finishup service api-key` on the server host. The workspace agent is a dedicated, pull-based
+client process (`client/agent.py`); SSH targets keep one OpenSSH master per target
+(`client/rest_runtime.py`). The Unix control, human-control and secret endpoints are never
+forwarded. ADR-051's topology section has the routes, scopes and the ADR-008 amendment.
 
 ## The six operations
 
