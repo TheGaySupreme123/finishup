@@ -5,8 +5,10 @@ isolation variable, the runtime pin, the owner-only selection, or the everyday a
 the target it resolves to, and what one probe of that target observed. For a remote target it
 also carries what that target's server may read outside the claimed project on this computer
 (ADR-051 decision 5): the outside-read mode, where the mode came from, and the folders listed for
-it, from this client's own record. It is an owner display: the target name, its location (a host,
-a URL) and the listed folders appear here and in ``server list``, ``server status`` and
+it, from this client's own record. ``zero_network_selection`` says when this computer forbids
+all network use while a remote server is, or may be, selected (ADR-051 decision 8), by generated
+id and closed tokens; it is null otherwise. It is an owner display: the target name, its location
+(a host, a URL) and the listed folders appear here and in ``server list``, ``server status`` and
 ``server folders list`` only, never in errors, logs, hook output, or MCP text. The claim salt and
 any credential never appear.
 """
@@ -22,6 +24,7 @@ __all__ = [
     "ServerTargetOutsideReads",
     "ServerTargetProbe",
     "ServerTargetStatusContract",
+    "ServerTargetZeroNetworkSelection",
 ]
 
 SERVER_TARGET_STATUS_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
@@ -51,15 +54,16 @@ class ServerTargetOutsideReads(BaseModel):
     """What a remote target's server may read outside the claimed project on this computer.
 
     ``mode`` ``local``: as a FinishUP service on this computer would read; ``listed``: only beneath
-    ``folders``. ``mode_source`` says where the mode came from: the owner (``server folders
-    mode``), the kind's default, the default of an official FinishUP endpoint, or a record that
-    cannot be read (then ``listed`` with no folder).
+    ``folders``. Every remote kind has the same two modes. ``mode_source`` says where the mode
+    came from: the owner (at ``server add`` or with ``server folders mode``); with none recorded,
+    an official FinishUP endpoint (``local``) or no choice yet (``not_chosen``, ``listed``); or a
+    record that cannot be read (then ``listed`` with no folder).
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["local", "listed"]
-    mode_source: Literal["owner", "kind_default", "official_endpoint", "unreadable"]
+    mode_source: Literal["owner", "official_endpoint", "not_chosen", "unreadable"]
     folders: list[ListedFolder] = Field(max_length=32)
 
 
@@ -100,6 +104,23 @@ class ServerTargetProbe(BaseModel):
     samples: int = Field(ge=0)
 
 
+class ServerTargetZeroNetworkSelection(BaseModel):
+    """This computer forbids all network use while the selection names, or may name, a server on
+    another machine, a port or the web (ADR-051 decision 8).
+
+    ``zero_network_remote_selected``: ``target_id`` and ``kind`` name the selected server.
+    ``zero_network_selection_unreadable``: the selection could not be read; ``detail`` is its
+    closed reason and the server is unknown. Generated ids and closed tokens only.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: Literal["zero_network_remote_selected", "zero_network_selection_unreadable"]
+    target_id: TargetId | None
+    kind: Literal["local_port", "ssh", "https"] | None
+    detail: Token | None
+
+
 class ServerTargetStatusContract(BaseModel):
     """``server-target-status`` 1.0.0."""
 
@@ -111,4 +132,7 @@ class ServerTargetStatusContract(BaseModel):
     client_version: Annotated[str, Field(min_length=1, max_length=128)]
     target: ServerTargetDescription
     probe: ServerTargetProbe
+    # Null unless this computer is in the zero-network state while a remote server is (or may
+    # be) selected: the zero-network setting does not stop traffic to it.
+    zero_network_selection: ServerTargetZeroNetworkSelection | None
     observed_at: Timestamp

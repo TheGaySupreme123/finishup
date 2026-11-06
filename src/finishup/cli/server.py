@@ -17,20 +17,24 @@ trusted console; refusals name a target by its id or not at all, with a closed r
 An isolation root or a runtime pin outranks the selection; while one is in force every command
 that would change or use the selection is refused with ``selection_overridden``.
 
-``folders mode NAME local|listed`` chooses what a remote target's server may read outside the
-claimed workspace on this computer: in ``local`` mode, as a FinishUP service on this computer
-would; in ``listed`` mode, only beneath the folders listed for it. ``local`` needs the owner to
-type the target name on the trusted console; ``listed`` is the way back. ``folders add NAME
-FOLDER`` lists one folder, with the same typed confirmation; ``folders remove`` is the reverse.
-``folders list``, ``status`` and ``add`` show the mode. The record is this client's own
-(``finishup.client.server_folders``) and never sent to the server (ADR-051 decision 5).
+Every remote kind has an outside-read mode (ADR-051 decision 5), the same two for each: what
+the target's server may read outside the claimed workspace on this computer, in ``local`` mode
+as a FinishUP service on this computer would, in ``listed`` mode only beneath the folders listed
+for it. ``add`` asks the owner which, on the trusted console as part of its typed confirmation
+(``--outside-reads local|listed`` answers it up front), except for an official FinishUP endpoint,
+which is ``local``. ``folders mode NAME local|listed`` changes it later: ``local`` needs the
+owner to type the target name on the trusted console; ``listed`` is the way back. ``folders add
+NAME FOLDER`` lists one folder, with the same typed confirmation; ``folders remove`` is the
+reverse. ``folders list``, ``status`` and ``add`` show the mode. Once chosen, nothing asks again:
+hooks, agent tools, the CLI and the terminal interface read the record. The record is this
+client's own (``finishup.client.server_folders``) and never sent to the server.
 """
 
 from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,7 +77,8 @@ from finishup.config.paths import PathSafetyError
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
 if TYPE_CHECKING:
-    from finishup.client.server_folders import FolderRecord
+    from finishup.cli.trusted_console import TrustedForegroundConsole
+    from finishup.client.server_folders import FolderRecord, OutsideReadMode
 
 __all__ = [
     "DISCLOSURE_LINES",
@@ -195,6 +200,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     "outside_read_mode_invalid": (
         "give 'local' (read outside your projects as FinishUP on this computer would) or "
         "'listed' (only the folders you list)",
+        _USAGE,
+    ),
+    "outside_reads_not_chosen": (
+        "no answer chose what that server may read outside your projects, so nothing was added; "
+        "run the command again and type local or listed when asked, or give --outside-reads "
+        "local or --outside-reads listed",
         _USAGE,
     ),
     "zero_network_in_force": (
@@ -434,16 +445,38 @@ def _zero_network_in_force() -> bool:
     return state == "zero_network"
 
 
-def _confirm_on_trusted_console(name: str, kind: str) -> None:
-    """Show the versioned disclosure and require the owner to type the target name."""
+# The add-time question may be answered wrongly a few times before nothing is added.
+_MODE_ATTEMPTS: Final = 3
+
+
+def _confirm_on_trusted_console(
+    name: str,
+    kind: str,
+    *,
+    ask_mode: bool = False,
+    mode_line: str | None = None,
+) -> OutsideReadMode | None:
+    """Show the versioned disclosure and require the owner to type the target name.
+
+    At ``server add`` the owner also answers what the server may read outside their projects
+    here (ADR-051 decision 5), before typing the name, which then authorizes both: with
+    ``ask_mode`` the question is asked and the answer returned; otherwise ``mode_line``, the
+    mode already decided (``--outside-reads``, or an official endpoint), is shown. ``server use``
+    asks neither. Returns the mode answered, or None when none was asked.
+    """
 
     from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 
+    answered: OutsideReadMode | None = None
     try:
         with TrustedForegroundConsole() as console:
             for line in DISCLOSURE_LINES:
                 console.write(line.format(version=DISCLOSURE_VERSION) + "\n")
             console.write(f"Target: {name}, {_kind_label(kind)}.\n")
+            if ask_mode:
+                answered = _ask_outside_reads(console, name)
+            elif mode_line is not None:
+                console.write(mode_line + "\n")
             console.read_choice(
                 "Type the target name to authorize it (anything else cancels): ",
                 (name.encode("ascii"),),
@@ -452,13 +485,46 @@ def _confirm_on_trusted_console(name: str, kind: str) -> None:
         if error.reason == "trusted_console_required":
             raise ServerCommandRefused("trusted_console_required")
         raise ServerCommandRefused("authorization_declined")
+    return answered
 
 
-def _authorize_remote(name: str, kind: str) -> None:
+def _ask_outside_reads(console: TrustedForegroundConsole, name: str) -> OutsideReadMode:
+    """Ask which outside-read mode the new target gets; an explicit answer is required.
+
+    One plain line per mode, the same for every remote kind. Enter alone or another word asks
+    again, a few times; then, or at end of input or an interrupt, nothing is added
+    (``outside_reads_not_chosen``), with the way to answer next time.
+    """
+
+    from finishup.cli.trusted_console import TrustedConsoleError
+    from finishup.client.server_folders import OUTSIDE_READ_MODE_LINES, OUTSIDE_READ_QUESTION
+
+    console.write("\n" + OUTSIDE_READ_QUESTION + "\n")
+    for mode in ("local", "listed"):
+        console.write(f"  {mode.ljust(6)}  {OUTSIDE_READ_MODE_LINES[mode]}\n")
+    console.write(f"You can change it later with 'finishup server folders mode {name}'.\n")
+    for attempt in range(_MODE_ATTEMPTS):
+        if attempt:
+            console.write("Please type local or listed.\n")
+        try:
+            answer = console.read_choice("Type local or listed: ", (b"local", b"listed"))
+        except TrustedConsoleError as error:
+            if error.reason in {"empty_input", "input_invalid"}:
+                continue
+            if error.reason == "trusted_console_required":
+                raise
+            raise ServerCommandRefused("outside_reads_not_chosen") from None
+        return "local" if answer == b"local" else "listed"
+    raise ServerCommandRefused("outside_reads_not_chosen")
+
+
+def _authorize_remote(
+    name: str, kind: str, *, ask_mode: bool = False, mode_line: str | None = None
+) -> OutsideReadMode | None:
     # Every remote kind is a network hop, ``local_port`` included (ADR-051 section 3).
     if _zero_network_in_force():
         raise ServerCommandRefused("zero_network_in_force")
-    _confirm_on_trusted_console(name, kind)
+    return _confirm_on_trusted_console(name, kind, ask_mode=ask_mode, mode_line=mode_line)
 
 
 def _discover_ssh_endpoint(
@@ -528,8 +594,21 @@ def server_add(
     tls_pin: Annotated[
         str | None, typer.Option("--tls-pin", help="HTTPS: sha256:<hex> certificate pin.")
     ] = None,
+    outside_reads: Annotated[
+        str | None,
+        typer.Option(
+            "--outside-reads",
+            metavar="local|listed",
+            help=(
+                "Remote: what it may read outside your projects here; local: what FinishUP on "
+                "this computer would read, listed: only folders you list. Asked when omitted."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Add a server target: a named local server, or a remote one after typed authorization."""
+
+    from finishup.client.server_folders import OUTSIDE_READ_MODES, official_address
 
     _require_selection_in_force()
     try:
@@ -539,6 +618,16 @@ def server_add(
     chosen = sum((local, port is not None, address is not None))
     if chosen != 1:
         raise ServerCommandRefused("usage")
+    if outside_reads is not None and outside_reads not in OUTSIDE_READ_MODES:
+        raise ServerCommandRefused("outside_read_mode_invalid")
+    if outside_reads is not None and local:
+        raise ServerCommandRefused(
+            "usage",
+            message=(
+                "--outside-reads is for a server on another machine, a port or the web; a server "
+                "on this computer reads under its own privacy policy"
+            ),
+        )
     kind: TargetKind
     base_url: str | None = None
     user: str | None = None
@@ -579,8 +668,19 @@ def server_add(
         raise ServerCommandRefused(error.reason)
     if taken:
         raise ServerCommandRefused("target_name_taken")
+    # What it may read outside your projects here (ADR-051 decision 5): the same question for
+    # every remote kind, asked as part of the typed confirmation unless --outside-reads answered
+    # it, and never for an official FinishUP endpoint, which is 'local' as FinishUP here is.
+    mode: OutsideReadMode | None = outside_reads
+    official = official_address(kind, base_url, ca_file=ca_text, tls_pin=tls_pin)
     if kind != "local":
-        _authorize_remote(name, kind)
+        answered = _authorize_remote(
+            name,
+            kind,
+            ask_mode=mode is None and not official,
+            mode_line=_decided_mode_line(mode, official=official),
+        )
+        mode = mode or answered
     api_socket: str | None = None
     if kind == "ssh":
         # Ask the server where its owner-only API socket is (and which launcher answered),
@@ -596,6 +696,7 @@ def server_add(
         remote_launcher = discovered.launcher
     try:
         with registry_lock():
+            recorded = True
             if kind == "local":
                 from finishup.client.targets import new_local_target
 
@@ -618,11 +719,12 @@ def server_add(
                 if api_socket is not None:
                     record = replace(record, remote_endpoint=api_socket)
                     write_target(target_root(record.target_id), record)
+                recorded = _record_added_mode(record, mode)
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     typer.echo(f"Added server target {record.name} ({record.target_id}, {record.kind}).")
     if record.is_remote:
-        _emit(_added_mode_lines(record))
+        _emit(_added_mode_lines(record, recorded=recorded))
     if kind == "local":
         _emit(
             (
@@ -636,25 +738,89 @@ def server_add(
         _emit((f"Check it with 'finishup server test {record.name}'.",))
 
 
-def _added_mode_lines(record: ServerTarget) -> tuple[str, ...]:
+def _decided_mode_line(mode: OutsideReadMode | None, *, official: bool) -> str | None:
+    """The console line for a mode decided before ``server add`` asks: by ``--outside-reads``,
+    or as an official FinishUP endpoint. None when the question is asked."""
+
+    if mode == "local":
+        return (
+            "Outside your projects it will read what FinishUP on this computer would read "
+            "(mode local, from --outside-reads)."
+        )
+    if mode == "listed":
+        return (
+            "Outside your projects it will read only folders you list for it (mode listed, from "
+            "--outside-reads)."
+        )
+    if official:
+        return (
+            "Outside your projects it will read what FinishUP on this computer would read "
+            "(mode local): it is an official FinishUP server."
+        )
+    return None
+
+
+def _record_added_mode(record: ServerTarget, mode: OutsideReadMode | None) -> bool:
+    """Record the mode the owner answered for the new target; False when it could not be.
+
+    Never refuses the add: a mode that could not be written leaves the target ``listed``, the
+    fail-closed value of a target whose owner has not chosen, and ``server add`` says so and how
+    to choose. Called under ``registry_lock``.
+    """
+
+    from finishup.client.server_folders import FolderError, set_mode
+
+    if mode is None or not record.is_remote:
+        return True
+    try:
+        set_mode(target_root(record.target_id), record.target_id, mode)
+    except FolderError:
+        return False
+    return True
+
+
+def _added_mode_lines(record: ServerTarget, *, recorded: bool = True) -> tuple[str, ...]:
     """What ``server add`` says of a new remote target's outside-read mode, and how to change it."""
 
     from finishup.client.server_folders import outside_reads_of
 
     found = outside_reads_of(target_root(record.target_id), record)
-    origin = _mode_origin(record.kind, found.source)
+    if not recorded:
+        return (
+            "Its choice of what it may read outside your projects could not be saved, so for now "
+            "it reads only folders you list there, none yet (mode listed).",
+            f"Choose again with 'finishup server folders mode {record.name} local' or "
+            f"'finishup server folders mode {record.name} listed'; trying again may help.",
+        )
+    origin = _mode_origin(found.source)
     if found.mode == "local":
         return (
-            f"Outside your projects it reads as FinishUP on this computer would (mode local, "
-            f"{origin}).",
+            f"Outside your projects it reads what FinishUP on this computer would read (mode "
+            f"local, {origin}).",
             f"To let it read only folders you list: 'finishup server folders mode {record.name} "
             "listed'.",
+        )
+    if found.source == "not_chosen":
+        return (
+            f"Outside your projects it reads only folders you list, none yet (mode listed, "
+            f"{origin}).",
+            _choose_line(record.name),
         )
     return (
         f"Outside your projects it reads only folders you list, none yet (mode listed, {origin}).",
         f"List one with 'finishup server folders add {record.name} FOLDER', or, if you trust it "
         f"as you trust FinishUP on this computer: 'finishup server folders mode {record.name} "
         "local'.",
+    )
+
+
+def _choose_line(name: str) -> str:
+    """How the owner chooses the mode of a target with none chosen yet."""
+
+    return (
+        f"Choose what it may read there: 'finishup server folders mode {name} local' (what "
+        f"FinishUP on this computer would read) or 'finishup server folders mode {name} listed' "
+        "(only folders you list)."
     )
 
 
@@ -914,12 +1080,27 @@ def build_status_document(
         "client_version": __version__,
         "target": target,
         "probe": _probe_document(result, failure),
+        "zero_network_selection": _zero_network_selection(),
         "observed_at": format_rfc3339_ms(stamp),
     }
     from finishup.protocol.server_target_status import ServerTargetStatusContract
 
     ServerTargetStatusContract.model_validate(document)
     return document
+
+
+def _zero_network_selection() -> JsonValue:
+    """The status document's ``zero_network_selection`` (ADR-051 decision 8): the item while this
+    computer forbids all network use and a remote server is, or may be, selected.
+
+    A stable seam: this build does not yet tell the owner when the zero-network state leaves a
+    remote server selected, so it reports nothing (null). The zero-network selection check fills
+    it with its item's fact: ``reason`` (``zero_network_remote_selected`` or
+    ``zero_network_selection_unreadable``), ``target_id``, ``kind`` and ``detail``, generated ids
+    and closed tokens only.
+    """
+
+    return None
 
 
 def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
@@ -959,28 +1140,22 @@ def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
     return tuple(lines)
 
 
-_KIND_NOUNS: Final = {
-    "local_port": "a server on a port of this computer",
-    "ssh": "an SSH server",
-    "https": "a web server",
-}
-
-
-def _mode_origin(kind: str, source: str) -> str:
+def _mode_origin(source: str) -> str:
     """Why a target is in its outside-read mode, in the owner's words."""
 
     if source == "owner":
         return "set by you"
     if source == "official_endpoint":
-        return "the default for an official FinishUP server"
+        return "an official FinishUP server"
     if source == "unreadable":
         return "because its record cannot be read"
-    return f"the default for {_KIND_NOUNS.get(kind, 'this kind of server')}"
+    return "not chosen yet"
 
 
 def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """Owner-display lines of a status document's remote target: its outside-read mode and the
-    folders listed for it. Empty for a target that is not remote."""
+    """Owner-display lines of a status document's remote target: its outside-read mode, the
+    folders listed for it, and how to choose a mode when none was chosen. Empty for a target that
+    is not remote."""
 
     outside = target.get("outside_reads")
     if not isinstance(outside, dict):
@@ -988,10 +1163,10 @@ def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
     mode = outside.get("mode")
     source = cast(str, outside.get("mode_source"))
     folders = [item for item in cast(list[JsonValue], outside.get("folders")) if type(item) is str]
-    origin = _mode_origin(cast(str, target.get("kind")), source)
+    origin = _mode_origin(source)
     if mode == "local":
         lines = [
-            f"Outside your projects: reads as FinishUP on this computer would (mode local, "
+            f"Outside your projects: reads what FinishUP on this computer would read (mode local, "
             f"{origin})"
         ]
         if folders:
@@ -1009,6 +1184,8 @@ def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
     else:
         lines.append("Folders it may read outside your projects:")
         lines.extend(f"  {folder}" for folder in folders)
+    if source == "not_chosen":
+        lines.append(_choose_line(str(target.get("name") or "NAME")))
     return tuple(lines)
 
 
@@ -1343,14 +1520,14 @@ def _mode_and_origin(record: ServerTarget, current: FolderRecord) -> tuple[str, 
     from finishup.client.server_folders import mode_of
 
     mode, source = mode_of(record, current)
-    return mode, _mode_origin(record.kind, source)
+    return mode, _mode_origin(source)
 
 
 def _still_local_line(record: ServerTarget) -> str:
     return (
-        f"It is in mode local, so outside your projects it still reads as FinishUP on this "
-        f"computer would; 'finishup server folders mode {record.name} listed' limits it to the "
-        "folders you list."
+        f"It is in mode local, so outside your projects it still reads what FinishUP on this "
+        f"computer would read; 'finishup server folders mode {record.name} listed' limits it to "
+        "the folders you list."
     )
 
 
@@ -1394,8 +1571,8 @@ def server_folders_add(
     typer.echo(f"{record.name} ({record.target_id}) may now read files beneath {canonical}.")
     if _mode_and_origin(record, current)[0] == "local":
         typer.echo(
-            "It is in mode local, so outside your projects it already reads as FinishUP on this "
-            "computer would; this folder is what it reads in mode listed."
+            "It is in mode local, so outside your projects it already reads what FinishUP on "
+            "this computer would read; this folder is what it reads in mode listed."
         )
 
 
@@ -1413,8 +1590,8 @@ def server_folders_list(
     who = f"{record.name} ({record.target_id})"
     if mode == "local":
         typer.echo(
-            f"{who} reads outside your projects as FinishUP on this computer would (mode local, "
-            f"{origin})."
+            f"{who} reads outside your projects what FinishUP on this computer would read (mode "
+            f"local, {origin})."
         )
         if current.folders:
             typer.echo("Folders listed for it, read only in mode listed:")
@@ -1429,9 +1606,12 @@ def server_folders_list(
             f"{who} may read no folder outside your projects on this computer (mode listed, "
             f"{origin})."
         )
-        return
-    typer.echo(f"{who} may read files beneath (mode listed, {origin}):")
-    _emit(tuple(f"  {item}" for item in current.folders))
+    else:
+        typer.echo(f"{who} may read files beneath (mode listed, {origin}):")
+        _emit(tuple(f"  {item}" for item in current.folders))
+    if current.mode is None:
+        # No choice recorded (an official endpoint's 'local' returned above): say how to choose.
+        typer.echo(_choose_line(record.name))
 
 
 @folders_app.command("remove")
@@ -1446,7 +1626,7 @@ def server_folders_remove(
         typer.Option("--all", help="Remove every folder (also clears a damaged record)."),
     ] = False,
 ) -> None:
-    """Stop listing a folder for a server (takes effect at once)."""
+    """Stop listing a folder for a server (from the server's next read)."""
 
     from finishup.client.server_folders import (
         FolderError,
@@ -1477,7 +1657,7 @@ def server_folders_remove(
         typer.echo(
             f"{who} may no longer read any folder on this computer: its record could not be "
             "read, so it now lists none, in mode listed. 'finishup server folders mode "
-            f"{record.name} local' lets it read as FinishUP on this computer would."
+            f"{record.name} local' lets it read what FinishUP on this computer would read."
         )
         return
     which = "any folder" if folder is None else "that folder"
@@ -1485,7 +1665,10 @@ def server_folders_remove(
         typer.echo(f"{who} no longer lists {which}.")
         typer.echo(_still_local_line(record))
         return
-    typer.echo(f"{who} may no longer read {which} on this computer.")
+    typer.echo(
+        f"{who} may no longer read {which} on this computer, from its next read; a read already "
+        "under way may still return files from it."
+    )
 
 
 @folders_app.command("mode")
@@ -1495,7 +1678,7 @@ def server_folders_mode(
     mode: Annotated[
         str,
         typer.Argument(
-            help="local: read as FinishUP on this computer would; listed: only folders you list."
+            help="local: what FinishUP on this computer would read; listed: only folders you list."
         ),
     ],
 ) -> None:
@@ -1519,18 +1702,19 @@ def server_folders_mode(
         return
     in_force, origin = _mode_and_origin(record, current)
     if mode == "local":
-        # A recorded 'local' is the owner's choice, kept through any later change of default, so
-        # recording it always takes the typed name, even where 'local' is only the default now.
-        # Where no trusted console can ask, nothing is recorded and the default keeps applying.
+        # A recorded 'local' is the owner's own choice, kept whatever the reviewed list of
+        # official endpoints says later, so recording it always takes the typed name, even for
+        # an official endpoint, already 'local' unrecorded. Where no trusted console can ask
+        # there, nothing is recorded and it stays 'local' as an official endpoint.
         try:
             _confirm_local_mode_on_trusted_console(record)
         except ServerCommandRefused as refusal:
             if refusal.reason != "trusted_console_required" or in_force != "local":
                 raise
             typer.echo(
-                f"{who} is already in mode local, {origin}; nothing was recorded, so it keeps "
-                "following that default. To keep mode local even if the default changes, run "
-                "this command in your own terminal and type the server's name."
+                f"{who} is already in mode local, as {origin}; nothing was recorded. To record "
+                "mode local as your own choice, run this command in your own terminal and type "
+                "the server's name."
             )
             return
     try:
@@ -1541,20 +1725,21 @@ def server_folders_mode(
     other = "listed" if mode == "local" else "local"
     if in_force == mode:
         typer.echo(
-            f"{who} stays in mode {mode}, now set by you: a later change of its default no "
-            f"longer changes it. 'finishup server folders mode {record.name} {other}' changes it."
+            f"{who} stays in mode {mode}, now set by you. 'finishup server folders mode "
+            f"{record.name} {other}' changes it."
         )
         return
     if mode == "local":
         typer.echo(
-            f"{who} now reads outside your projects as FinishUP on this computer would (mode "
-            f"local). Undo it with 'finishup server folders mode {record.name} listed'."
+            f"{who} now reads outside your projects what FinishUP on this computer would read "
+            f"(mode local), from its next read. Undo it with 'finishup server folders mode "
+            f"{record.name} listed'."
         )
         return
     count = len(current.folders)
     listed = "no folder" if count == 0 else f"{count} folder{'s' if count != 1 else ''}"
     typer.echo(
         f"{who} now reads outside your projects only beneath folders you list (mode listed), "
-        f"from its next read: {listed} so far. 'finishup server folders list {record.name}' "
-        "shows them."
+        f"from its next read (a read already under way may still finish): {listed} so far. "
+        f"'finishup server folders list {record.name}' shows them."
     )
