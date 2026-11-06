@@ -36,7 +36,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
@@ -380,6 +380,26 @@ def _captured_observation_delivery(
 class _Served:
     task: asyncio.Task[None]
     agent_id: str | None = None
+    # When a client process last noted this workspace; a later note means the server just
+    # answered it, so a registration waiting out its retry delay tries again now (``nudge``).
+    noted_at: float = 0.0
+    nudge: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _noted_at(root: Path, name: str) -> float:
+    try:
+        return (_workspaces_dir(root) / name).stat(follow_symlinks=False).st_mtime
+    except OSError:
+        return 0.0
+
+
+async def _until_either(first: asyncio.Event, second: asyncio.Event) -> None:
+    waits = [asyncio.ensure_future(first.wait()), asyncio.ensure_future(second.wait())]
+    try:
+        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for wait in waits:
+            wait.cancel()
 
 
 class WorkspaceAgentLoop:
@@ -439,10 +459,14 @@ class WorkspaceAgentLoop:
                         await self._end(api, name)
                 for name, locator in live.items():
                     served = self._served.get(name)
+                    noted_at = _noted_at(self._root, name)
                     if served is None or served.task.done():
                         self._served[name] = _Served(
-                            asyncio.create_task(self._serve(api, name, locator))
+                            asyncio.create_task(self._serve(api, name, locator)), noted_at=noted_at
                         )
+                    elif noted_at > served.noted_at:
+                        served.noted_at = noted_at
+                        served.nudge.set()
                 if self._served:
                     idle_since = self._clock()
                 elif self._clock() - idle_since >= self._idle_exit_seconds:
@@ -519,12 +543,14 @@ class WorkspaceAgentLoop:
         self, api: _AgentApi, name: str, claim: WorkspaceClaim, handler: WorkspaceCallHandler
     ) -> None:
         attempt = 0
+        nudge = self._served[name].nudge
         while not self._stopping.is_set():
             try:
                 registration = await api.register(claim, handler)
                 self._served[name].agent_id = registration.agent_id
                 _record("workspace_agent_register", "registered")
                 attempt = 0
+                nudge.clear()
                 await self._poll(api, registration.agent_id, registration.workspace_handle, handler)
                 _record("workspace_agent_register", "agent_unknown")
             except asyncio.CancelledError:
@@ -534,9 +560,15 @@ class WorkspaceAgentLoop:
                 _record("workspace_agent_poll", reason)
                 delay = _RETRY_SECONDS[min(attempt, len(_RETRY_SECONDS) - 1)]
                 attempt += 1
+                # A client process that reached the server notes the workspace again: retry at
+                # once then, so a restarted server's first calls find this agent (found in the
+                # real-environment run: an SSH restart left the next start without an agent).
                 with contextlib.suppress(TimeoutError):
                     async with asyncio.timeout(delay):
-                        await self._stopping.wait()
+                        await _until_either(self._stopping, nudge)
+                if nudge.is_set():
+                    nudge.clear()
+                    attempt = 0
 
     async def _poll(
         self, api: _AgentApi, agent_id: str, handle: str, handler: WorkspaceCallHandler

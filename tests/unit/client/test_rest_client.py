@@ -281,9 +281,10 @@ async def test_connect_service_uses_the_api_for_a_remote_root_and_never_spawns(
         await plain.close()
         await on_demand.close()
     # The locator is bound at the connect seam (a claim only: the target's agent answers) and
-    # noted for this target's agent; its path stays on this machine.
+    # noted for this target's agent, again once the server answered (so an agent waiting out a
+    # retry registers now); its path stays on this machine.
     assert bound == [("/home/me/repo", False)]
-    assert noted == [(Path("/x/t"), "/home/me/repo")]
+    assert noted == [(Path("/x/t"), "/home/me/repo")] * 2
     assert on_demand.workspace_binding == "client_claim"
     assert plain.workspace_binding == "none"
     assert service.seen[-1][0] is ControlClientKind.UI

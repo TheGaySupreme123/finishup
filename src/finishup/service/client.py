@@ -2053,10 +2053,11 @@ async def _connect_remote(
 
     record, root = target
     claim = await _remote_claim(workspace_locator, workspace_binding)
-    if workspace_locator is not None and claim is not None:
+    noted = workspace_locator if claim is not None else None
+    if noted is not None:
         from finishup.client.agent import ensure_agent, note_workspace
 
-        note_workspace(root, workspace_locator)
+        note_workspace(root, noted)
         ensure_agent(root)
     deadline = time.monotonic() + timeout_seconds
 
@@ -2066,13 +2067,20 @@ async def _connect_remote(
             raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
         try:
             async with asyncio.timeout(remaining):
-                return await connect_rest_service(
+                connected = await connect_rest_service(
                     client_kind, record=record, root=root, claim=claim
                 )
         except TimeoutError as exc:
             raise ControlError(
                 "service_unavailable", retryable=True, phase="remote_unreachable"
             ) from exc
+        if noted is not None:
+            from finishup.client.agent import note_workspace
+
+            # The server answered: noting again lets an agent that is waiting out a retry (the
+            # server was unreachable, or was just restarted) register before this call needs it.
+            note_workspace(root, noted)
+        return connected
 
     if record.kind != "ssh":
         return await attempt()

@@ -231,6 +231,41 @@ async def test_background_delivery_backs_off_while_it_makes_no_progress(
 
 
 @pytest.mark.anyio
+async def test_a_fresh_note_ends_a_registration_retry_wait_at_once(
+    remote: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Found in the real-environment run: after an SSH client restarted an idle-stopped server,
+    # the agent was still waiting out its retry delay, so the next start and check found no
+    # agent. A client process that reaches the server notes the workspace again; the agent then
+    # retries at once instead of after the delay.
+    record, root = remote
+    monkeypatch.setattr(agent_module, "_RETRY_SECONDS", (60.0,))
+    attempts: list[float] = []
+    attempted = asyncio.Event()
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            attempts.append(time.monotonic())
+            attempted.set()
+        raise httpx.ConnectError("unreachable", request=request)
+
+    note_workspace(root, _WORKSPACE)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(refuse), base_url="https://lab.example")
+    loop = _loop(root, record, http, "unused", workspace=claim("repo"), handler=_Handler())
+    running = asyncio.create_task(loop.run())
+    try:
+        await asyncio.wait_for(attempted.wait(), 10)
+        attempted.clear()
+        note_workspace(root, _WORKSPACE)
+        # Without the nudge the next attempt would come 60 s later.
+        await asyncio.wait_for(attempted.wait(), 10)
+    finally:
+        loop.stop()
+        assert await asyncio.wait_for(running, 10) == 0
+    assert len(attempts) == 2
+
+
+@pytest.mark.anyio
 async def test_without_a_claim_or_handler_nothing_registers(
     remote: tuple[ServerTarget, Path],
 ) -> None:
