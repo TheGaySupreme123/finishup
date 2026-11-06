@@ -316,6 +316,23 @@ _DIRECTIVES: Final = (
         guidance_uri=_WORKFLOW_RECOVERY,
         nudge="Do not mint a new request_id, task, or check mode to escape an admission barrier.",
     ),
+    # A check refused because the service already holds its limit of checks (issue #1309). The
+    # refusal is made before the task ledger is read, so unlike the admission refusal above it
+    # cannot say nothing is recorded: a check that finished after its client stopped waiting
+    # replays from the ledger. The 30 seconds match the service's ``retry_after_ms``.
+    RecoveryDirective(
+        token="check_service_busy_same_identity",
+        directive=(
+            "The service was at its check limit and did not look up this request_id; a result "
+            "may exist. Wait retry_after_ms (30 s) and replay the exact check body and "
+            "request_id. After three refusals, retain it and report the service busy."
+        ),
+        guidance_uri=_WORKFLOW_RECOVERY,
+        nudge=(
+            "Busy does not mean the check did not run. Do not mint a new request_id, task, or "
+            "check mode to get around the limit."
+        ),
+    ),
     # --- local installation state (issues #220, #237) ---------------------------------------
     RecoveryDirective(
         token="service_holder_busy",

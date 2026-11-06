@@ -2773,6 +2773,12 @@ them from memory or from the live store.
   `status view=operation` reads `absent` with the same `admission` stage. Replay the exact check
   body and request ID after `retry_after_ms`, at most three times, then report the check as not
   admitted. The service is host-agnostic here; this host needs no extra step (issue #838).
+- **Service at its check limit.** A check `BUNDLE_BUSY` carrying the
+  `check_service_busy_same_identity` continuation was neither looked up nor started, because the
+  service already had eight checks in progress; it does not show whether anything is recorded
+  under the request ID. Replay the exact check body and request ID after `retry_after_ms` (30
+  seconds), at most three times, then report the service as busy. The service is host-agnostic
+  here; this host needs no extra step (issue #1309).
 - **Exact-session attach.** When `SessionStart` or recovery context provides a held
   `session_id`, use that exact value as the `mode=attach` selector. Codex's canonical repository
   context supplies the workspace fence; if the request carries identity refs, include the
