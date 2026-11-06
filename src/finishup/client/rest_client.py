@@ -745,6 +745,11 @@ async def read_server_info(
     if info.schema_manifest_digest != schema_manifest_digest():
         # Lockstep releases (ADR-051 decision 10): the wire contract differs.
         raise _remote("remote_incompatible", retryable=False)
+    # This is the network API's hello-result, held to the socket's rule: the answer names the
+    # binding this request asked for, and the parsed document carries a workspace handle only
+    # beside ``client_claim``, so a handle comes only with a claim this client sent.
+    if info.workspace_binding != ("none" if claim is None else "client_claim"):
+        raise _remote("remote_incompatible", retryable=False)
     return info
 
 

@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -201,6 +202,28 @@ def test_documents_round_trip_strictly() -> None:
     for raw in ("25001", "-1", "1.5", "x"):
         with pytest.raises(ValueError):
             parse_wait_ms(raw)
+
+
+def test_server_info_carries_a_handle_only_beside_a_client_claim() -> None:
+    # The rule control-hello-result 2.10.0 states, on the network API's answer: a workspace
+    # handle names a claimed workspace, so it never rides an unbound answer, in either direction.
+    claimed = ServerInfo(
+        release="0.3.0",
+        schema_manifest_digest="sha256:" + "a" * 64,
+        status=service_status(),
+        key_id="0123456789ab",
+        scope="agent",
+        transport="https",
+        workspace_binding="client_claim",
+        workspace_handle="client:" + "0" * 16,
+    )
+    with pytest.raises(ValueError):
+        replace(claimed, workspace_binding="none")
+    with pytest.raises(ValueError):
+        parse_server_info(server_info_document(claimed).replace(b'"client_claim"', b'"none"'))
+    # A claim the service has no workspace for yet is still bound, with no handle.
+    unresolved = replace(claimed, workspace_handle=None)
+    assert parse_server_info(server_info_document(unresolved)) == unresolved
 
 
 def test_scope_gate_is_per_method_and_claim() -> None:

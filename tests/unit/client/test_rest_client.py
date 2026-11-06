@@ -17,7 +17,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from builders.network_api import INSTANCE_ID, FakeHub, FakeService, claim, key_store, make_api
+from builders.network_api import (
+    INSTANCE_ID,
+    FakeHub,
+    FakeService,
+    claim,
+    key_store,
+    make_api,
+    service_status,
+)
 from builders.server_targets import ambient_home
 from finishup.client import rest_client
 from finishup.client.rest_client import RestEndpoint, RestServiceClient, connect_rest_service
@@ -30,10 +38,12 @@ from finishup.ports.control import (
     ServiceState,
     WorkspaceLocator,
 )
+from finishup.protocol.schemas import schema_manifest_digest
 from finishup.service import client as service_client
 from finishup.service.api_keys import ApiKeyStore
 from finishup.service.client import ClientWorkspaceBinding
 from finishup.service.http_api import NetworkApi
+from finishup.service.network_protocol import ServerInfo, server_info_document
 
 _RECORD = ServerTarget(
     "t_0a1b2c3d",
@@ -234,6 +244,104 @@ async def test_a_claim_binds_the_client_and_names_its_handle(
         await client.close()
     context = service.seen[-1][2]
     assert context is not None and context.identity_kind == "client_claim"
+
+
+_HANDLE = "client:" + "0" * 16
+
+
+def _server_info_body(binding: str, *, with_handle: bool) -> bytes:
+    """A ``GET /v1/server`` answer with ``binding``, and the handle or none, conforming or not.
+
+    ``ServerInfo`` refuses a handle beside any binding but ``client_claim``, so a non-conforming
+    answer is rewritten from a conforming one.
+    """
+
+    body = server_info_document(
+        ServerInfo(
+            release="0.3.0",
+            schema_manifest_digest=schema_manifest_digest(),
+            status=service_status(),
+            key_id="0123456789ab",
+            scope="agent",
+            transport="https",
+            workspace_binding="client_claim",
+            workspace_handle=_HANDLE,
+        )
+    )
+    body = body.replace(b'"client_claim"', f'"{binding}"'.encode())
+    return body if with_handle else body.replace(f'"{_HANDLE}"'.encode(), b"null")
+
+
+def _answering(body: bytes) -> RestEndpoint:
+    def answer(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, content=body)
+
+    return RestEndpoint("https", "https://api.test", httpx.MockTransport(answer), "x" * 20)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("binding", "with_handle", "claimed"),
+    [
+        # A handle beside an unbound answer: the document itself is refused.
+        ("none", True, False),
+        ("none", True, True),
+        # A claim-bound answer to a request that carried no claim.
+        ("client_claim", True, False),
+        ("client_claim", False, False),
+        # An unbound answer to a request that carried a claim.
+        ("none", False, True),
+    ],
+)
+async def test_a_handle_binds_only_to_the_claim_this_client_sent(
+    binding: str, with_handle: bool, claimed: bool
+) -> None:
+    # The network API's hello-result (ADR-051): as on the socket, the answer names the binding
+    # the request asked for, and a workspace handle rides only beside ``client_claim``. Any other
+    # answer is a server this client cannot bind a session to, refused before any call.
+    with pytest.raises(ControlError) as raised:
+        await connect_rest_service(
+            ControlClientKind.CLI,
+            record=_RECORD,
+            root=Path("/x"),
+            claim=claim("repo") if claimed else None,
+            _endpoint=_answering(_server_info_body(binding, with_handle=with_handle)),
+        )
+    assert (raised.value.reason, raised.value.phase, raised.value.retryable) == (
+        "service_unavailable",
+        "remote_incompatible",
+        False,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("binding", "with_handle", "claimed"),
+    [
+        ("none", False, False),
+        ("client_claim", True, True),
+        # A claim the server has no workspace for yet is bound, with no handle.
+        ("client_claim", False, True),
+    ],
+)
+async def test_a_conforming_server_answer_binds_the_session(
+    binding: str, with_handle: bool, claimed: bool
+) -> None:
+    client = await connect_rest_service(
+        ControlClientKind.CLI,
+        record=_RECORD,
+        root=Path("/x"),
+        claim=claim("repo") if claimed else None,
+        _endpoint=_answering(_server_info_body(binding, with_handle=with_handle)),
+    )
+    try:
+        assert (client.workspace_binding, client.workspace_handle) == (
+            binding,
+            _HANDLE if with_handle else None,
+        )
+    finally:
+        await client.close()
 
 
 @pytest.mark.anyio

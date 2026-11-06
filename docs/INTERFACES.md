@@ -4979,6 +4979,13 @@ claim's repository digest by the key's principal (`sha256("yoetz/claim-principal
 linked worktree (`workspace_handle_for_claim`); it never resolves a path. Presentation facts never come from the network: every call gets the fail-safe
 machine-readable projection.
 
+`GET /v1/server` is this API's hello-result and keeps its rule: `workspace_binding` is
+`client_claim` on a request that carries the claim header and `none` on one that does not, and
+`workspace_handle` rides only beside `client_claim` (null while the service has no workspace for
+the claim). `RestServiceClient` refuses an answer that carries a handle beside any other binding
+(`network_protocol.ServerInfo` rejects that document) and an answer whose binding is not the one
+its request asked for, both as `remote_incompatible` before any call.
+
 A key's scope bounds its methods: `agent` allows the six workflow methods, `service_status` and
 `observation_ingest` on a claim-bound request; `operator` adds `project`, `review`,
 `import_codex_jsonl`, `observation_status`, `privacy_get_setup`, `privacy_get_effective`,
