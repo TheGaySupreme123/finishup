@@ -15,18 +15,26 @@ import pytest
 from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
 
 import finishup.mcp.server as bridge
+import finishup.mcp.summaries as summaries_module
 from builders.status_wire import compact_status
 from finishup.application.result_delivery import decode_handle, page_result
 from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
-from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_lines,
+    workspace_provenance_unknown_wire,
+)
 from finishup.mcp.summaries import summary_for_receipt
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.models import ReceiptResultModel, StatusResultModel, public_model_to_wire
@@ -82,15 +90,33 @@ def test_a_receipt_keeps_its_exact_canonical_copy_ahead_of_the_attribution() -> 
     )
 
 
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+)
+# The line only that reason's section ends with, and the line the other reason's ends with.
+_OWN_AND_OTHER: dict[str, tuple[str, str]] = {
+    SESSION_OPENING_UNREADABLE: (
+        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
+    ),
+    SESSION_OPENING_UNRECOVERABLE: (
+        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+    ),
+}
+
+
+@pytest.mark.parametrize("reason", _REASONS)
 @pytest.mark.parametrize("receipt_format", ["text", "markdown"])
 def test_a_receipt_whose_provenance_is_unknown_gets_only_the_producing_service(
-    receipt_format: str,
+    receipt_format: str, reason: WorkspaceProvenanceReason
 ) -> None:
     wire = _receipt_result_wire()
     wire["format"] = receipt_format
     wire["document"] = None
     wire["human_text"] = "Receipt\n\n" + workspace_provenance_unknown_block(
-        markdown=receipt_format == "markdown"
+        markdown=receipt_format == "markdown", reason=reason
     )
     receipt = ReceiptResultModel.model_validate(wire)
     local = _text(bridge.result_from_public_model(receipt))
@@ -100,25 +126,34 @@ def test_a_receipt_whose_provenance_is_unknown_gets_only_the_producing_service(
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in attributed
 
 
-def _unknown_json_receipt() -> ReceiptResultModel:
+def _unknown_json_receipt(
+    reason: WorkspaceProvenanceReason = SESSION_OPENING_UNREADABLE,
+) -> ReceiptResultModel:
     wire = _receipt_result_wire()
-    wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    wire["workspace_provenance"] = workspace_provenance_unknown_wire(reason)
     return ReceiptResultModel.model_validate(wire)
 
 
-def test_a_json_receipt_of_unknown_provenance_says_so_and_names_only_the_service() -> None:
-    """Decision D4: the member is in the structured result and its canonical text copy, and the
-    client adds no "read on the client" line beside it."""
+@pytest.mark.parametrize("reason", _REASONS)
+def test_a_json_receipt_of_unknown_provenance_says_so_and_names_only_the_service(
+    reason: WorkspaceProvenanceReason,
+) -> None:
+    """Decision D4: the member, reason included, is in the structured result and its canonical
+    text copy, and the client adds no "read on the client" line beside it."""
 
-    receipt = _unknown_json_receipt()
+    receipt = _unknown_json_receipt(reason)
     local = bridge.result_from_public_model(receipt)
     attributed = bridge.result_from_public_model(receipt, attribution=_ATTRIBUTION)
     structured = cast(dict[str, JsonValue], attributed.structuredContent)
-    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire()
+    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire(reason)
     assert attributed.structuredContent == local.structuredContent
     assert _text(attributed) == "\n".join((_text(local), _REACHED))
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(attributed)
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in _text(attributed)
+    assert reason in _text(attributed)
+    own, other = _OWN_AND_OTHER[reason]
+    assert own in _text(attributed)
+    assert other not in _text(attributed)
 
 
 def test_the_member_alone_keeps_the_client_line_off_any_receipt_text() -> None:
@@ -133,11 +168,30 @@ def test_the_member_alone_keeps_the_client_line_off_any_receipt_text() -> None:
     )
 
 
-def test_the_receipt_summary_says_an_unknown_provenance_in_fixed_words() -> None:
-    summary = summary_for_receipt(_unknown_json_receipt())
-    for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES:
+@pytest.mark.parametrize("reason", _REASONS)
+def test_the_receipt_summary_says_an_unknown_provenance_in_fixed_words(
+    reason: WorkspaceProvenanceReason,
+) -> None:
+    """The agent's receipt summary carries the lines of the result's own reason: a passing cause
+    says to retry, a lasting one says it will not clear and never says to retry or restart."""
+
+    summary = summary_for_receipt(_unknown_json_receipt(reason))
+    for line in workspace_provenance_unknown_lines(reason):
         assert line in summary
+    assert _OWN_AND_OTHER[reason][1] not in summary
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE not in summary_for_receipt(_receipt())
+
+
+def test_the_receipt_summary_admits_no_notice_beside_another_reasons_token() -> None:
+    """A member whose notice is not its own reason's fixed text adds no line to the summary."""
+
+    source = public_model_to_wire(_unknown_json_receipt(SESSION_OPENING_UNRECOVERABLE))
+    source["workspace_provenance"] = {
+        **workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE),
+        "notice": workspace_provenance_unknown_wire(SESSION_OPENING_UNREADABLE)["notice"],
+    }
+    summary = getattr(summaries_module, "_workspace_provenance_parts")(source)
+    assert summary == []
 
 
 # --- the bridge attributes the connection that answered -----------------------------------------
@@ -228,7 +282,9 @@ async def test_a_claim_bound_receipt_of_unknown_provenance_names_only_its_produc
     result = await bridge.dispatch_receipt(_receipt_arguments(), bridge.build_bridge_runtime())
     assert result.isError is False
     structured = cast(dict[str, JsonValue], result.structuredContent)
-    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire()
+    assert structured["workspace_provenance"] == workspace_provenance_unknown_wire(
+        SESSION_OPENING_UNREADABLE
+    )
     assert _text(result).endswith("\n" + _REACHED)
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(result)
 
@@ -253,7 +309,7 @@ async def test_a_local_answer_is_not_attributed(
 
 
 def _paged_receipt(
-    block: str, *, provenance_unknown: bool = False
+    block: str, *, provenance_unknown: WorkspaceProvenanceReason | None = None
 ) -> tuple[str, list[dict[str, JsonValue]]]:
     """A text receipt past the host budget whose text ends with ``block``, cut into the pages the
     service gives an agent: the first from ``receipt``, the rest from ``status`` continuations."""
@@ -261,8 +317,8 @@ def _paged_receipt(
     wire = _receipt_result_wire()
     wire["format"] = "text"
     wire["document"] = None
-    if provenance_unknown:
-        wire["workspace_provenance"] = workspace_provenance_unknown_wire()
+    if provenance_unknown is not None:
+        wire["workspace_provenance"] = workspace_provenance_unknown_wire(provenance_unknown)
     prose = "\n".join(f"Section line {i}: " + "plain receipt prose. " * 6 for i in range(150))
     human_text = prose + "\n\n" + block
     wire["human_text"] = human_text
@@ -307,7 +363,7 @@ class _PagingClient(_Client):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("provenance", ["unknown", "client_attested"])
+@pytest.mark.parametrize("provenance", ["unknown", "unknown_lasting", "client_attested"])
 async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provenance: str
 ) -> None:
@@ -316,12 +372,17 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
     ``status``), so no page says the evidence was read on the client machine beside a section
     that says this is unknown, and the agent reads the section whole (ADR-051)."""
 
+    reasons: dict[str, WorkspaceProvenanceReason] = {
+        "unknown": SESSION_OPENING_UNREADABLE,
+        "unknown_lasting": SESSION_OPENING_UNRECOVERABLE,
+    }
+    reason = reasons.get(provenance)
     block = (
-        workspace_provenance_unknown_block(markdown=False)
-        if provenance == "unknown"
+        workspace_provenance_unknown_block(markdown=False, reason=reason)
+        if reason is not None
         else client_attested_receipt_block(_SERVICE_ID, markdown=False)
     )
-    human_text, pages = _paged_receipt(block, provenance_unknown=provenance == "unknown")
+    human_text, pages = _paged_receipt(block, provenance_unknown=reason)
     assert len(pages) > 2
     _wire(monkeypatch, tmp_path, _PagingClient(pages))
     runtime = bridge.build_bridge_runtime()
@@ -337,8 +398,9 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
             bridge.result_from_public_model(ReceiptResultModel.model_validate(page))
         )
         assert _text(result) == "\n".join((unattributed, _REACHED))
-        if provenance == "unknown":
+        if reason is not None:
             assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(result)
+            assert _OWN_AND_OTHER[reason][1] not in _text(result)
         items = cast(list[dict[str, JsonValue]], page["items"])
         delivered += "".join(
             cast(str, item["value"]) for item in items if item["path"] == "/human_text"
@@ -356,11 +418,11 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
             for item in cast(list[dict[str, JsonValue]], page["items"])
         )
     ]
-    if provenance == "unknown":
+    if reason is not None:
         assert len(members) == 1 and members[0] == first
         assert first[1] == {
             "path": "/workspace_provenance",
-            "value": cast(JsonValue, workspace_provenance_unknown_wire()),
+            "value": cast(JsonValue, workspace_provenance_unknown_wire(reason)),
         }
     else:
         assert members == []

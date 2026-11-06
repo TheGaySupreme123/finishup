@@ -13,10 +13,12 @@ import pytest
 import finishup.application.service as service_module
 from finishup.domain.events import (
     ClientKind,
+    EventSchema,
     IntegrationKind,
     RedactionState,
     RuntimeProfile,
     SessionOpenedPayload,
+    UnknownEvent,
 )
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
@@ -24,11 +26,16 @@ from finishup.domain.receipts import (
     CLIENT_ATTESTED_OBSERVATION_LINE,
     CLIENT_ATTESTED_WORKSPACE_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
     WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
+)
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+    workspace_provenance_unknown_lines,
 )
 from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from finishup.ports.workspace_agent import workspace_handle_for_claim
@@ -374,17 +381,33 @@ def test_an_opening_event_the_ledger_could_not_read_leaves_the_binding_unknown()
 
     The record is found by its schema name, so its missing payload is never the None that would
     drop a claim-bound receipt's client-attested block. The ledger keeps that gap while it holds
-    the task, so no retry would read it: the binding is unknown and the receipt says so.
+    the task and reads the object again once the service opens the task afresh, so the cause can
+    pass: the binding is unknown, and the receipt says to run it again and then restart.
     """
 
     from builders.replay import genesis_session_opened
     from finishup.application import receipt
 
     attested_by: Any = getattr(receipt, "_attested_by")
-    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    passing = getattr(receipt, "_Provenance").UNREADABLE
     unread = replace(genesis_session_opened(), payload=None)
     assert unread.redaction is RedactionState.PRESENT
-    assert asyncio.run(attested_by(_runtime(_Ledger((unread,))))) is unknown
+    assert asyncio.run(attested_by(_runtime(_Ledger((unread,))))) is passing
+    assert passing.value == SESSION_OPENING_UNREADABLE
+
+
+def _unknown_version(payload: object) -> UnknownEvent:
+    """A ``session_opened`` of a version this service cannot decode, as a ledger returns it.
+
+    Built without the envelope's own validation: only the fields the attestation read looks at
+    matter here, and the real ``UnknownEvent`` type is what tells it apart.
+    """
+
+    record = object.__new__(UnknownEvent)
+    object.__setattr__(record, "schema", EventSchema("session_opened", "9.0.0"))
+    object.__setattr__(record, "redaction", RedactionState.PRESENT)
+    object.__setattr__(record, "payload", payload)
+    return record
 
 
 @pytest.mark.parametrize(
@@ -394,42 +417,68 @@ def test_an_opening_event_the_ledger_could_not_read_leaves_the_binding_unknown()
         _record(None, redaction="erased_claimed"),
         _record(None, redaction="key_unavailable"),
         # A session_opened version this service cannot decode keeps its raw payload, or None
-        # when recovery could not read the object either.
+        # when recovery could not read the object either; reading the object later still leaves
+        # a version this service cannot decode.
         _record({"workspace_ref": _HANDLE}),
-        _record(None),
+        _unknown_version({"workspace_ref": _HANDLE}),
+        _unknown_version(None),
     ],
     ids=[
         "logically_redacted",
         "erased_claimed",
         "key_unavailable",
-        "unknown_version",
-        "present_unread",
+        "unknown_version_payload",
+        "unknown_event",
+        "unknown_event_unread",
     ],
 )
-def test_an_opening_event_that_cannot_say_leaves_the_binding_unknown(record: object) -> None:
-    """No retry reads it, so the receipt is built and says so instead of omitting it."""
+def test_an_opening_event_no_retry_can_read_leaves_the_binding_unknown_for_good(
+    record: object,
+) -> None:
+    """A lasting cause: the receipt is built and says the record will not become readable again,
+    never that a retry or a restart would help."""
 
     from finishup.application import receipt
 
     attested_by: Any = getattr(receipt, "_attested_by")
-    unknown = getattr(receipt, "_Provenance").UNKNOWN
-    assert asyncio.run(attested_by(_runtime(_Ledger((record,))))) is unknown
+    lasting = getattr(receipt, "_Provenance").UNRECOVERABLE
+    assert asyncio.run(attested_by(_runtime(_Ledger((record,))))) is lasting
+    assert lasting.value == SESSION_OPENING_UNRECOVERABLE
 
 
-def test_the_unknown_provenance_block_is_fixed_words() -> None:
-    """Decision D4: what happened, why it matters and what to do, in fixed words only."""
+def test_an_opening_whose_payload_did_not_load_is_a_passing_cause() -> None:
+    from finishup.application import receipt
 
-    assert workspace_provenance_unknown_block(markdown=False).splitlines() == [
-        "Workspace evidence",
+    attested_by: Any = getattr(receipt, "_attested_by")
+    passing = getattr(receipt, "_Provenance").UNREADABLE
+    assert asyncio.run(attested_by(_runtime(_Ledger((_record(None),))))) is passing
+
+
+@pytest.mark.parametrize("markdown", [False, True])
+def test_the_unknown_provenance_block_is_fixed_words(markdown: bool) -> None:
+    """Decision D4: what happened, why it matters, and what to do for a passing cause or why it
+    lasts for a lasting one, in fixed words only."""
+
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    passing = workspace_provenance_unknown_block(
+        markdown=markdown, reason=SESSION_OPENING_UNREADABLE
+    )
+    lasting = workspace_provenance_unknown_block(
+        markdown=markdown, reason=SESSION_OPENING_UNRECOVERABLE
+    )
+    assert passing.splitlines() == [
+        heading,
         WORKSPACE_PROVENANCE_UNKNOWN_LINE,
         WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
         WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     ]
-    assert workspace_provenance_unknown_block(markdown=True).splitlines() == [
-        "## Workspace evidence",
-        *WORKSPACE_PROVENANCE_UNKNOWN_LINES,
+    assert lasting.splitlines() == [
+        heading,
+        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     ]
-    assert WORKSPACE_PROVENANCE_UNKNOWN_LINES == (
+    assert workspace_provenance_unknown_lines(SESSION_OPENING_UNREADABLE) == (
         "Provenance unknown: the record of how this task's session was opened could not be "
         "read from the server's ledger.",
         "Why it matters: FinishUP cannot confirm whether this task's workspace evidence was "
@@ -437,8 +486,20 @@ def test_the_unknown_provenance_block_is_fixed_words() -> None:
         "What to do: run receipt again. If this persists, restart the server's FinishUP service "
         "(`finishup service restart` on the server host), then run receipt again.",
     )
-    # Nothing in the section says the evidence was read on the client: it says that is unknown.
-    assert CLIENT_ATTESTED_WORKSPACE_LINE not in workspace_provenance_unknown_block(markdown=False)
+    # A lasting cause gives no retry or restart advice.
+    assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in lasting
+    assert "finishup service restart" not in lasting
+    # Nothing in either section says the evidence was read on the client: it says that is unknown.
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in passing
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in lasting
+
+
+@pytest.mark.parametrize("reason", ["session_opening_lost", "", None])
+def test_the_unknown_provenance_block_admits_only_a_closed_reason(reason: object) -> None:
+    from finishup.protocol.errors import ProtocolValueError
+
+    with pytest.raises(ProtocolValueError, match="invalid_receipt_document"):
+        workspace_provenance_unknown_block(markdown=False, reason=cast(Any, reason))
 
 
 class _Recorded:
@@ -470,7 +531,9 @@ def test_a_failed_attestation_read_leaves_the_binding_unknown_and_never_refuses(
     """Decision D4: the receipt is built and says the provenance is unknown; nothing refuses.
 
     The failure is recorded as one bounded diagnostic under ``receipt_attestation_read`` so an
-    operator can find it; the caller gets the unknown binding, never an error.
+    operator can find it; the caller gets the unknown binding, never an error. Nothing can tell a
+    passing read failure from a lasting one, so it is never called lasting: the receipt says to
+    run it again and then restart.
     """
 
     from finishup.application import receipt
@@ -478,7 +541,7 @@ def test_a_failed_attestation_read_leaves_the_binding_unknown_and_never_refuses(
     recorded = _Recorded()
     monkeypatch.setattr(receipt, "record_classified_exception_without_raising", recorded)
     attested_by: Any = getattr(receipt, "_attested_by")
-    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    unknown = getattr(receipt, "_Provenance").UNREADABLE
     request_id = "req_00000000-0000-4000-8000-000000051002"
     for records in ((), (_record(None, name="session_resumed"),)):
         recorded.calls.clear()
@@ -504,7 +567,7 @@ def test_a_failed_attestation_read_recovers_on_the_next_read() -> None:
     from finishup.application import receipt
 
     attested_by: Any = getattr(receipt, "_attested_by")
-    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    unknown = getattr(receipt, "_Provenance").UNREADABLE
     ledger = _Ledger((), OSError(5, "input/output error"))
     runtime = _runtime(ledger)
     assert asyncio.run(attested_by(runtime)) is unknown

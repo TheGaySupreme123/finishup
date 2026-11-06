@@ -47,8 +47,8 @@ from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
 from finishup.domain.receipt_closing import CLOSING_PROMPT_PATTERN
 from finishup.domain.review_guidance import ReviewGuidance
 from finishup.domain.workspace_provenance import (
-    WORKSPACE_PROVENANCE_UNKNOWN_NOTICE,
     WorkspaceProvenanceReason,
+    workspace_provenance_unknown_notice,
 )
 from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
@@ -7966,8 +7966,11 @@ class ReceiptWorkspaceProvenanceModel(_ClosedModel):
 
     Present on every receipt format exactly when the record that opened the task's session could
     not be read or could not say whether the task is claim-bound; the receipt is built anyway.
-    ``notice`` is the fixed what-happened, why-it-matters and what-to-do text; nothing in it is
-    user-controlled. ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``).
+    ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``) saying whether the cause can
+    pass (``session_opening_unreadable``) or lasts (``session_opening_unrecoverable``).
+    ``notice`` is exactly that reason's fixed text: what happened, why it matters, and what to do
+    for a passing cause or why it lasts for a lasting one; nothing in it is user-controlled, and a
+    notice of the other reason is refused.
     """
 
     status: Literal["unknown"]
@@ -7976,7 +7979,7 @@ class ReceiptWorkspaceProvenanceModel(_ClosedModel):
 
     @model_validator(mode="after")
     def _validate_fixed_notice(self) -> ReceiptWorkspaceProvenanceModel:
-        if self.notice != WORKSPACE_PROVENANCE_UNKNOWN_NOTICE:
+        if self.notice != workspace_provenance_unknown_notice(self.reason):
             raise ValueError("workspace_provenance_notice_invalid")
         return self
 

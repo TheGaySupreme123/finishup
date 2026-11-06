@@ -702,13 +702,18 @@ default service.
   none carries these lines.
 - **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
   still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
-  line it ends with the fixed provenance-unknown section (what happened, why it matters, run
-  `receipt` again or restart the server's service), and every receipt format, JSON included,
-  carries the same words as its `workspace_provenance` member. The retry and restart help only a
-  passing cause: an opening record that was redacted or erased never reads again, and one whose
-  key is gone or whose version the server cannot decode reads only once the key is back or the
-  server is upgraded, so that task's receipts keep the section. A long receipt has its other
-  sections shortened to fit and still ends with the whole section.
+  line it ends with the fixed provenance-unknown section (what happened, why it matters, and
+  whether a retry can help), and every receipt format, JSON included, carries the same words as
+  its `workspace_provenance` member, whose `reason` names the kind of cause (decision D4b). A
+  passing cause (`session_opening_unreadable`: a failed read, or a record the server could not
+  load) says to run `receipt` again and, if it persists, restart the server's service. A lasting
+  cause (`session_opening_unrecoverable`: the record was redacted or erased, its key is gone, or
+  the server's version cannot decode it) says the record will not become readable again and the
+  task's receipts will keep saying so, with no retry or restart advice; only an upgrade to a
+  version that knows the record's format changes the last case. The agent sees the same words
+  in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
+  first page. A long receipt has its other sections shortened to fit and still ends with the
+  whole section.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
   selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
   use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an

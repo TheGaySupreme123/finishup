@@ -22,7 +22,9 @@ from finishup.domain.events import (
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
+    RedactionState,
     SessionOpenedPayload,
+    UnknownEvent,
     encode_payload,
     media_type_for,
 )
@@ -50,7 +52,12 @@ from finishup.domain.values import (
     task_id,
     timestamp_from_datetime,
 )
-from finishup.domain.workspace_provenance import workspace_provenance_unknown_wire
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_UNREADABLE,
+    SESSION_OPENING_UNRECOVERABLE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_wire,
+)
 from finishup.kernel.deterministic_checks import build_deterministic_case
 from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_builder import (
@@ -123,9 +130,17 @@ _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
 
 
 class _Provenance(Enum):
-    """A claim binding that the session's opening event cannot establish (ADR-051)."""
+    """A claim binding that the session's opening event cannot establish (ADR-051, decision D4).
 
-    UNKNOWN = "unknown"
+    Each value is the closed ``reason`` the receipt's ``workspace_provenance`` member carries, and
+    picks the last line of its "Workspace evidence" section: ``UNREADABLE`` can pass (the read
+    failed or the record did not load), so the section says to retry; ``UNRECOVERABLE`` lasts (the
+    record is redacted or erased, its key is gone, or this version cannot decode it), so it says
+    the record will not become readable again and the receipt will keep saying so.
+    """
+
+    UNREADABLE = SESSION_OPENING_UNREADABLE
+    UNRECOVERABLE = SESSION_OPENING_UNRECOVERABLE
 
 
 class Application(Protocol):
@@ -165,9 +180,10 @@ class ReceiptInternalResult:
     # #1240 D5: the line asking the agent to tell the user this receipt's conclusion and its open
     # or declined reviewer notes. Fixed words and counts only (``domain.receipt_closing``).
     agent_closing_prompt: str | None = None
-    # ADR-051 decision D4: the receipt could not establish where its workspace evidence was read
-    # (``domain.workspace_provenance``). Every format carries it, JSON included; fixed words only.
-    workspace_provenance_unknown: bool = False
+    # ADR-051 decision D4: the receipt could not establish where its workspace evidence was read,
+    # and whether that can pass or lasts (``domain.workspace_provenance``). Every format carries
+    # it, JSON included; a closed reason and fixed words only.
+    workspace_provenance_reason: WorkspaceProvenanceReason | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -227,9 +243,14 @@ class ReceiptInternalResult:
                 else {"agent_closing_prompt": self.agent_closing_prompt}
             ),
             **(
-                {"workspace_provenance": cast(JsonValue, workspace_provenance_unknown_wire())}
-                if self.workspace_provenance_unknown
-                else {}
+                {}
+                if self.workspace_provenance_reason is None
+                else {
+                    "workspace_provenance": cast(
+                        JsonValue,
+                        workspace_provenance_unknown_wire(self.workspace_provenance_reason),
+                    )
+                }
             ),
         }
 
@@ -517,17 +538,21 @@ def _internal_result(
 ) -> ReceiptInternalResult:
     """The result of one receipt; ``attested_by`` is the serving service's instance id when the
     task is claim-bound, so its text and markdown renderings end with the fixed client-attested
-    workspace-evidence block (ADR-051), or ``_Provenance.UNKNOWN`` when the session's opening
-    event could not be read or cannot say, so they end with the fixed provenance-unknown block
-    instead: what happened, why it matters, what to do (decision D4), and the result of every
-    format, JSON included, carries the ``workspace_provenance`` member saying so. The stored
-    document never carries either."""
+    workspace-evidence block (ADR-051), or a ``_Provenance`` when the session's opening event
+    could not be read or cannot say, so they end with the fixed provenance-unknown block instead:
+    what happened, why it matters, and what to do for a passing cause or why it lasts for a
+    lasting one (decision D4), and the result of every format, JSON included, carries the
+    ``workspace_provenance`` member saying so with the same reason. The stored document never
+    carries either."""
 
     document_json = cast(JsonValue, receipt_document_to_json(document))
     markdown = request.format is ReceiptFormat.MARKDOWN
+    provenance_reason: WorkspaceProvenanceReason | None = (
+        attested_by.value if isinstance(attested_by, _Provenance) else None
+    )
     trailer: str | None = None
-    if attested_by is _Provenance.UNKNOWN:
-        trailer = workspace_provenance_unknown_block(markdown=markdown)
+    if provenance_reason is not None:
+        trailer = workspace_provenance_unknown_block(markdown=markdown, reason=provenance_reason)
     elif type(attested_by) is str:
         trailer = client_attested_receipt_block(
             attested_by,
@@ -570,7 +595,7 @@ def _internal_result(
         request.writer_id,
         document.correctness_advisory_counts,
         _agent_closing_prompt(document) or None,
-        attested_by is _Provenance.UNKNOWN,
+        provenance_reason,
     )
 
 
@@ -654,20 +679,29 @@ async def _attested_by(
     session's own opening event, found by its schema name, a durable fact, so a replay renders
     the same block. None means that event was read and names no handle, or the session has none.
 
-    ``_Provenance.UNKNOWN`` means the opening event could not say, and the receipt is built
-    anyway (owner decision D4: a receipt never refuses over this lookup). Its "Workspace
-    evidence" section then says the provenance is unknown, why that matters and what to do,
-    never nothing and never a guess. That is the answer when:
+    A ``_Provenance`` means the opening event could not say, and the receipt is built anyway
+    (owner decision D4: a receipt never refuses over this lookup). Its "Workspace evidence"
+    section then says the provenance is unknown, why that matters and whether a retry can help,
+    never nothing and never a guess. The answer says which kind of cause it is:
 
-    * the read itself fails, whatever the failure (an ``OSError`` from storage, a malformed
-      record, a ledger that refuses with its own classified error). It is recorded as one
-      bounded diagnostic under operation ``receipt_attestation_read``, so an operator can find
-      it, and never reaches the caller as a refusal;
-    * the event comes back without a decoded ``session_opened`` payload: it is redacted, its key
-      is unavailable, its version is one this service cannot decode, or its envelope says
-      ``present`` but its payload is None. The last is the payload object a SQLite ledger could
-      not read (missing, failed verification, or an environmental fault) while it recovered the
-      task; the ledger keeps that gap for as long as it holds the task open.
+    * ``_Provenance.UNREADABLE`` (passing; a retry or a restart can clear it):
+
+      - the read itself fails, whatever the failure (an ``OSError`` from storage, a malformed
+        record, a ledger that refuses with its own classified error). Nothing here can tell a
+        passing fault from a lasting one, so it is never called lasting. It is recorded as one
+        bounded diagnostic under operation ``receipt_attestation_read``, so an operator can find
+        it, and never reaches the caller as a refusal;
+      - a decodable (``AcceptedEvent``) opening whose envelope says ``present`` but whose payload
+        is None: the payload object a SQLite ledger could not read (missing, failed
+        verification, or an environmental fault) while it recovered the task. The ledger keeps
+        that gap for as long as it holds the task open, and reads the object again when the
+        service opens the task afresh (after it drops an idle task or restarts).
+
+    * ``_Provenance.UNRECOVERABLE`` (lasting; no retry or restart reads it): the opening is
+      ``logically_redacted`` or ``erased_claimed``, it is ``key_unavailable``, or it is an
+      ``UnknownEvent`` (a ``session_opened`` version this service cannot decode, whether or not
+      its payload object read), or any other record that carries a payload that is not a
+      ``SessionOpenedPayload``.
 
     Every receipt and every replay reads the event again, so once the read succeeds (a transient
     fault clears, or the service reopens the task after a restart and the object reads) the same
@@ -689,13 +723,20 @@ async def _attested_by(
             operation="receipt_attestation_read",
             request_id=request_id,
         )
-        return _Provenance.UNKNOWN
+        return _Provenance.UNREADABLE
     payload = opening.payload
     if isinstance(payload, SessionOpenedPayload):
         if workspace_handle_valid(payload.workspace_ref):
             return runtime.fence.service_instance_id
         return None
-    return _Provenance.UNKNOWN
+    if (
+        type(opening) is not UnknownEvent
+        and opening.redaction is RedactionState.PRESENT
+        and payload is None
+    ):
+        # Its payload object did not load; opening the task afresh reads it again.
+        return _Provenance.UNREADABLE
+    return _Provenance.UNRECOVERABLE
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.

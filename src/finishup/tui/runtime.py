@@ -2744,15 +2744,21 @@ class FinishUpRuntime:
         gaps = tuple(str(item) for item in getattr(coverage, "known_gaps", ()) or ())
         semantic = CheckType.SEMANTIC_MODEL_DERIVED in success.coverage.check_types
         # ADR-051 decision D4: a JSON receipt whose provenance is unknown shows the same fixed
-        # section a text receipt ends with, and no "read on the client machine" line.
-        provenance_unknown = success.workspace_provenance is not None
+        # section a text receipt ends with, for the result's own reason (a passing cause says to
+        # retry, a lasting one says it will not clear), and no "read on the client machine" line.
+        provenance = success.workspace_provenance
+        provenance_unknown = provenance is not None
         rendered = (
             "\n".join(
                 (
                     canonical_encode(success.document).decode("utf-8"),
                     *(
-                        (workspace_provenance_unknown_block(markdown=False),)
-                        if provenance_unknown
+                        (
+                            workspace_provenance_unknown_block(
+                                markdown=False, reason=provenance.reason
+                            ),
+                        )
+                        if provenance is not None
                         else ()
                     ),
                     *attribution_lines(attribution, provenance_unknown=provenance_unknown),
