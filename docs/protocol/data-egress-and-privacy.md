@@ -18,8 +18,11 @@ When the owner selects a FinishUP server on another machine
 ([ADR-051](../adr/ADR-051-client-server-cut-and-server-targets.md), Proposed), that server's
 service is this trusted service and this protocol runs there unchanged. The hop between the
 owner's FinishUP client and that server is the owner-authorized FinishUP server hop: it is not one
-of the five network channels below, enabling it enables none of them, and it is refused in the
-zero-network state (the ADR-009 amendment proposed by ADR-051).
+of the five network channels below, and enabling it enables none of them. Adding or selecting a
+remote target is refused in the zero-network state (the ADR-009 amendment proposed by ADR-051).
+That check runs when the owner adds or selects the target, not before each connection, so
+tightening the policy to zero-network later does not stop a target already selected; the way out
+is `finishup server use local`, then restarting open agent sessions.
 
 ## Content classes
 

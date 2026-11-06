@@ -51,7 +51,10 @@ a server: there is no agent tool for it, and the command refuses to run without 
 disclosure changes in a later release, FinishUP asks you to confirm again before using the server.
 
 If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
-or use a server on another machine, a port or the web. It also refuses while the FinishUP set up
+or choose a server on another machine, a port or the web. It checks when you add or choose the
+server, not on every connection: changing the policy to zero-network later does not stop a server
+you already chose. To stop using it, run `finishup server use local`, then restart open agent
+sessions. FinishUP also refuses to add or choose such a server while the FinishUP set up
 on this computer cannot tell it its policy, because its service is stopped or locked: start it
 with `finishup service start`, unlock it if needed, and try again. A computer whose own FinishUP
 was never set up has no privacy policy of its own and can use a server; the server's policy then

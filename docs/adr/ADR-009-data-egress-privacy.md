@@ -1920,10 +1920,16 @@ record changes as follows.
   new disclosure version requires a fresh confirmation. Agents cannot add or select a remote
   target. This is a trusted-console decision, not a vault-reauthenticated ceremony, because a
   client machine may have no vault; ADR-051 records that limit.
-- **Refused in the zero-network state.** Decision 10 is enforced, not reworded: a remote target
-  is refused while the effective policy is zero-network and, with no local service, while the
-  configuration bootstrap leaves `network_egress_permitted` false. In that state the FinishUP-owned
-  process set still permits only the exact endpoints decision 10 lists.
+- **Refused in the zero-network state, when a target is added or selected.** Decision 10 holds
+  at that point: adding or selecting a remote target is refused while this computer's set-up
+  installation reports an effective policy that does not permit network egress, and also while
+  that policy cannot be read (`network_policy_unreadable`); a computer whose own FinishUP was
+  never set up has no policy of its own, and the server's policy governs the work sent to it
+  (ADR-051 decision 8). **Honest limit:** clients do not consult the local policy again before
+  each connection, so tightening this computer's policy to zero-network later does not by itself
+  stop an already selected remote target. The way out is `finishup server use local`, then
+  restarting open agent sessions. Apart from such a target, the FinishUP-owned process set in the
+  zero-network state still permits only the exact endpoints decision 10 lists.
 - **Policy authority sits on the server.** The server's own effective policy, repository grants
   and never-send fence decide every AI-powered review disclosure from there, exactly as they do
   locally; the client's profile does not widen or narrow them. Workspace evidence reaches the

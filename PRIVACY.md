@@ -64,8 +64,10 @@ composite of `local_only`, the global ceiling off, and all five network channels
 turning update checks off). That mode still permits only exact release-profiled local IPC required
 for the FinishUP service, confidential helper, approved local model, OS credential/user-presence
 service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations. A
-FinishUP server on another machine, on a local port, or on the web cannot be added, selected, or
-used in that mode.
+FinishUP server on another machine, on a local port, or on the web cannot be added or selected in
+that mode. FinishUP checks the mode when you add or select such a server, not on every connection:
+turning zero-network mode on later does not stop a server you already selected. To stop using it,
+run `finishup server use local`, then restart open agent sessions.
 
 An independent review-context profile controls which potentially useful material is selected before
 those disclosure rules run: `structural`, `goal_aware`, `assisted`, `expanded`, or `custom`. The
@@ -316,8 +318,11 @@ the LLM profiles and the four non-LLM channels above, and enabling it enables no
   only you can read where none is usable; it never appears in a command line, an environment
   variable, a settings file, a log, or anything an agent can read. Software running as your own
   account can read it, as it can read other owner-only files.
-- **Zero-network mode refuses it.** While your policy forbids all network use, no such server can
-  be added, chosen, or used.
+- **Zero-network mode refuses it when you add or choose it.** While your policy forbids all
+  network use, no such server can be added or chosen. FinishUP checks when you add or choose the
+  server, not on every connection, so turning zero-network mode on later does not stop a server
+  you already chose. To stop using it, run `finishup server use local`, then restart open agent
+  sessions.
 - **Receipts say so.** A receipt from such a server states that workspace evidence was read on your
   machine by the FinishUP workspace agent and attested over the connection.
 
