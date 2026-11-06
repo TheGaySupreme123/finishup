@@ -109,6 +109,7 @@ __all__ = [
     "WORKSPACE_REPLY_OUTCOMES",
     "WORKSPACE_REPLY_REASONS",
     "WORKSPACE_UNAVAILABLE_REASONS",
+    "WORKSPACE_AGENT_UNAVAILABLE_REASONS",
     "ApprovedCheckRun",
     "CaptureArguments",
     "CaptureMetadataArguments",
@@ -128,6 +129,7 @@ __all__ = [
     "RunApprovedCheckArguments",
     "SnapshotOutsideInputsArguments",
     "SubjectStateCaptureArguments",
+    "WorkspaceAgentUnavailable",
     "WorkspaceCodecError",
     "WorkspaceOnlyArguments",
     "WorkspaceOperation",
@@ -135,10 +137,12 @@ __all__ = [
     "WorkspaceOperationSpec",
     "WorkspaceReplyOutcome",
     "change_capture_unavailable_reason",
+    "client_location_valid",
     "new_remote_workspace_handle",
     "operation_spec",
     "outcome_for_reason",
     "remote_workspace_handle_valid",
+    "resolve_client_location",
     "workspace_handle_for_commitment",
     "workspace_handle_valid",
 ]
@@ -226,6 +230,104 @@ def new_remote_workspace_handle() -> str:
     """A fresh, unguessable opened-workspace handle for an agent's own handle table."""
 
     return "rws_" + secrets.token_hex(16)
+
+
+def client_location_valid(value: object, *, relative: bool = True) -> bool:
+    """Whether ``value`` names a place on the client's machine a read may name.
+
+    A location is an absolute path (one the task's own content or the owner's policy named), or
+    the claimed workspace's handle standing for its root, optionally followed, when ``relative``,
+    by ``/`` and a root-relative path with no empty, ``.`` or ``..`` component. The server never
+    learns the root's path: the agent resolves the handle against its own claimed root
+    (``resolve_client_location``).
+    """
+
+    try:
+        _client_location(value, relative=relative)
+    except _Invalid:
+        return False
+    return True
+
+
+def resolve_client_location(value: str, handle: str, root: str) -> str | None:
+    """The agent's own path for a client location, or None when it names another workspace.
+
+    An absolute path stays as it is (the agent's own confinement then decides whether it may be
+    read); the agent's own ``handle`` is its claimed ``root``; ``handle/relative`` is joined
+    beneath that root. A handle the agent did not claim resolves to None (``workspace_not_claimed``).
+    """
+
+    if not client_location_valid(value) or not workspace_handle_valid(handle):
+        raise ValueError("client_location_invalid")
+    if type(root) is not str or not root.startswith("/"):
+        raise ValueError("client_root_invalid")
+    if value.startswith("/"):
+        return value
+    named, _separator, rest = value.partition("/")
+    if named != handle:
+        return None
+    return root if not rest else root.rstrip("/") + "/" + rest
+
+
+# --- typed unavailability -------------------------------------------------------------------
+
+# Why the server could not get a workspace answer from the client's agent. Closed tokens only:
+# none names a path, a host or anything the agent sent.
+WORKSPACE_AGENT_UNAVAILABLE_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        # No agent connection for the workspace arrived within the bounded wait.
+        "no_agent",
+        # The agent's connection closed while the call was pending.
+        "agent_disconnected",
+        # No reply within the call's deadline.
+        "deadline_exceeded",
+        # The agent's connection had no free call slot within the deadline.
+        "agent_busy",
+        # Every agent connection for the workspace declined to declare the operation.
+        "operation_not_declared",
+        # The reply did not decode as the operation's result within its bound.
+        "reply_invalid",
+        # The agent answered: unavailable, refused, or failed, with its own closed reason.
+        "agent_unavailable",
+        "agent_refused",
+        "agent_failed",
+        # The server could not encode the call within the operation's bound.
+        "arguments_invalid",
+        # No hub serves this process, or a blocking call came from the event loop's own thread.
+        "hub_unavailable",
+    }
+)
+
+
+class WorkspaceAgentUnavailable(Exception):
+    """A workspace call got no usable answer from the client's workspace agent (ADR-051).
+
+    ``reason`` is one of ``WORKSPACE_AGENT_UNAVAILABLE_REASONS``; ``agent_reason`` is the agent's
+    own closed reply reason when it answered (``agent_unavailable``, ``agent_refused`` or
+    ``agent_failed``). Neither carries a path or anything the agent sent besides that token.
+    Every caller turns it into a recorded gap, never into a pass.
+    """
+
+    __slots__ = ("agent_reason", "reason")
+
+    reason: str
+    agent_reason: str | None
+
+    def __init__(self, reason: str, agent_reason: str | None = None) -> None:
+        if reason not in WORKSPACE_AGENT_UNAVAILABLE_REASONS:
+            raise ValueError("workspace_agent_unavailable_reason_invalid")
+        answered = reason in {"agent_unavailable", "agent_refused", "agent_failed"}
+        if (agent_reason is not None) is not answered or (
+            agent_reason is not None and agent_reason not in WORKSPACE_REPLY_REASONS
+        ):
+            raise ValueError("workspace_agent_reason_invalid")
+        self.reason = reason
+        self.agent_reason = agent_reason
+        super().__init__(reason)
+
+    @property
+    def refused(self) -> bool:
+        return self.reason == "agent_refused"
 
 
 # --- operations, outcomes and reasons -------------------------------------------------------
@@ -441,6 +543,35 @@ def _remote_handle(value: object) -> str:
     return cast(str, value)
 
 
+def _client_location(value: object, *, relative: bool) -> str:
+    """An absolute path, or the claimed workspace's handle (``relative``: plus a sub-path)."""
+
+    text = _text(value)
+    if text.startswith("/"):
+        return text
+    named, separator, rest = text.partition("/")
+    if not workspace_handle_valid(named):
+        raise _fail()
+    if separator and (
+        not relative or not rest or any(part in {"", ".", ".."} for part in rest.split("/"))
+    ):
+        raise _fail()
+    return text
+
+
+def _client_locations(value: object, max_items: int) -> tuple[str, ...]:
+    if type(value) is not tuple:
+        raise _fail()
+    items = cast(tuple[object, ...], value)
+    if len(items) > max_items:
+        raise _fail()
+    return tuple(_client_location(item, relative=False) for item in items)
+
+
+def _client_location_list(value: object, max_items: int) -> tuple[str, ...]:
+    return _client_locations(tuple(_list(value, max_items)), max_items)
+
+
 def _sha256(value: object) -> str:
     if type(value) is not str or _SHA256.fullmatch(value) is None:
         raise _fail()
@@ -553,7 +684,7 @@ class ReadOutsideInputsArguments:
         _texts(self.roots, _MAX_PATH_LIST, absolute=True)
         _texts(self.values, _MAX_PATH_LIST)
         _int(self.limit, 0, MAX_TASK_INPUT_FILES)
-        _texts(self.excluded, _MAX_PATH_LIST, absolute=True)
+        _client_locations(self.excluded, _MAX_PATH_LIST)
         if type(self.space_cut) is not frozenset or len(self.space_cut) > _MAX_PATH_LIST:
             raise _fail()
         for value in self.space_cut:
@@ -577,17 +708,23 @@ class SnapshotOutsideInputsArguments:
         _int(self.limit, 0, MAX_SNAPSHOT_CANDIDATES)
         _int(self.max_bytes, 0, MAX_SNAPSHOT_FILE_BYTES)
         _int(self.budget_ms, 0, MAX_WORKSPACE_DEADLINE_MS)
-        _texts(self.excluded, _MAX_PATH_LIST, absolute=True)
+        _client_locations(self.excluded, _MAX_PATH_LIST)
 
 
 @dataclass(frozen=True, slots=True)
 class ReadDeclaredTestArguments:
+    """``read_declared_test``; ``location`` is absolute or beneath the claimed workspace's handle.
+
+    Every ``excluded`` entry of the reads family is an absolute path or the workspace handle
+    (``client_location_valid``): the agent resolves a handle against its own claimed root.
+    """
+
     location: str = field(repr=False)
     excluded: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
-        _text(self.location, absolute=True)
-        _texts(self.excluded, _MAX_PATH_LIST, absolute=True)
+        _client_location(self.location, relative=True)
+        _client_locations(self.excluded, _MAX_PATH_LIST)
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,9 +734,9 @@ class ReadTextBeneathArguments:
     excluded: tuple[str, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
-        _text(self.root, absolute=True)
+        _client_location(self.root, relative=False)
         _text(self.relative)
-        _texts(self.excluded, _MAX_PATH_LIST, absolute=True)
+        _client_locations(self.excluded, _MAX_PATH_LIST)
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,9 +747,9 @@ class ListBeneathArguments:
     inspect: int = 128
 
     def __post_init__(self) -> None:
-        _text(self.root, absolute=True)
+        _client_location(self.root, relative=False)
         _text(self.relative)
-        _texts(self.excluded, _MAX_PATH_LIST, absolute=True)
+        _client_locations(self.excluded, _MAX_PATH_LIST)
         _int(self.inspect, 1, _MAX_LIST_INSPECT)
 
 
@@ -1203,7 +1340,7 @@ def _decode_outside(source: dict[str, object]) -> ReadOutsideInputsArguments:
         _text_list(fields_["roots"], _MAX_PATH_LIST, absolute=True),
         _text_list(fields_["values"], _MAX_PATH_LIST),
         _int(fields_["limit"], 0, MAX_TASK_INPUT_FILES),
-        _text_list(fields_["excluded"], _MAX_PATH_LIST, absolute=True),
+        _client_location_list(fields_["excluded"], _MAX_PATH_LIST),
         _sorted_set(fields_["space_cut"], _MAX_PATH_LIST),
     )
 
@@ -1229,7 +1366,7 @@ def _decode_snapshot(source: dict[str, object]) -> SnapshotOutsideInputsArgument
         limit=_int(fields_["limit"], 0, MAX_SNAPSHOT_CANDIDATES),
         max_bytes=_int(fields_["max_bytes"], 0, MAX_SNAPSHOT_FILE_BYTES),
         budget_ms=_int(fields_["budget_ms"], 0, MAX_WORKSPACE_DEADLINE_MS),
-        excluded=_text_list(fields_["excluded"], _MAX_PATH_LIST, absolute=True),
+        excluded=_client_location_list(fields_["excluded"], _MAX_PATH_LIST),
     )
 
 
@@ -1240,8 +1377,8 @@ def _encode_declared(value: ReadDeclaredTestArguments) -> dict[str, JsonValue]:
 def _decode_declared(source: dict[str, object]) -> ReadDeclaredTestArguments:
     fields_ = _object(source, frozenset({"excluded", "location"}))
     return ReadDeclaredTestArguments(
-        _text(fields_["location"], absolute=True),
-        _text_list(fields_["excluded"], _MAX_PATH_LIST, absolute=True),
+        _client_location(fields_["location"], relative=True),
+        _client_location_list(fields_["excluded"], _MAX_PATH_LIST),
     )
 
 
@@ -1252,9 +1389,9 @@ def _encode_text_beneath(value: ReadTextBeneathArguments) -> dict[str, JsonValue
 def _decode_text_beneath(source: dict[str, object]) -> ReadTextBeneathArguments:
     fields_ = _object(source, frozenset({"excluded", "relative", "root"}))
     return ReadTextBeneathArguments(
-        _text(fields_["root"], absolute=True),
+        _client_location(fields_["root"], relative=False),
         _text(fields_["relative"]),
-        _text_list(fields_["excluded"], _MAX_PATH_LIST, absolute=True),
+        _client_location_list(fields_["excluded"], _MAX_PATH_LIST),
     )
 
 
@@ -1270,9 +1407,9 @@ def _encode_list_beneath(value: ListBeneathArguments) -> dict[str, JsonValue]:
 def _decode_list_beneath(source: dict[str, object]) -> ListBeneathArguments:
     fields_ = _object(source, frozenset({"excluded", "inspect", "relative", "root"}))
     return ListBeneathArguments(
-        _text(fields_["root"], absolute=True),
+        _client_location(fields_["root"], relative=False),
         _text(fields_["relative"]),
-        _text_list(fields_["excluded"], _MAX_PATH_LIST, absolute=True),
+        _client_location_list(fields_["excluded"], _MAX_PATH_LIST),
         _int(fields_["inspect"], 1, _MAX_LIST_INSPECT),
     )
 

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 import pytest
 
+from finishup.domain.observation import (
+    observation_ingest_request_from_json,
+    observation_ingest_request_to_json,
+)
+from finishup.domain.values import freeze_json
 from finishup.ports.workspace_agent import WORKSPACE_OPERATION_CATALOG, WorkspaceOperation
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.errors import ProtocolValueError
@@ -111,3 +117,31 @@ def test_each_family_exchange_decodes_through_the_catalog(
         else:
             assert reply.result is None and reply.reason is not None
     assert "ok" in outcomes and outcomes - {"ok"}
+
+
+def test_the_attested_ingest_vector_is_a_2_10_request_with_no_path(
+    fixture_loader: FixtureLoader,
+) -> None:
+    """CTL-2106: a claim-bound ingest carries the client's attestation (ADR-051 decision 12)."""
+
+    path = "canonical/control-observation-ingest-attested-2.10.case.json"
+    fixture = cast(dict[str, Any], fixture_loader.load_json(path))
+    assert fixture["fixture_id"] == "CTL-2106"
+    assert fixture["expected"]["schema_name"] == "control-request"
+    frame = cast(dict[str, JsonValue], fixture["input"]["frame"])
+    validate_schema_instance("control-request", "2.10.0", frame)
+    _assert_frame(frame, fixture["expected"])
+    # The member is new in 2.10; an unattested ingest keeps its 2.9 shape.
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.9.0", frame)
+    body = cast(dict[str, Any], frame["body"])
+    unattested = {**frame, "body": {k: v for k, v in body.items() if k != "client_attestation"}}
+    validate_schema_instance("control-request", "2.9.0", cast(dict[str, JsonValue], unattested))
+    request = observation_ingest_request_from_json(freeze_json(body))
+    attestation = request.client_attestation
+    assert attestation is not None and attestation.consent == "active"
+    assert attestation.route is not None
+    assert canonical_encode(observation_ingest_request_to_json(request)) == canonical_encode(
+        cast(JsonValue, body)
+    )
+    assert "/" not in json.dumps(body["client_attestation"])

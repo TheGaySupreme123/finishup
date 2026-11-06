@@ -2522,6 +2522,7 @@ class FinishUpRuntime:
         """
 
         from finishup.cli.render import render_human_status
+        from finishup.client.attribution import connection_attribution
         from finishup.protocol.models import StatusRequestModel
 
         session = self._sessions.get(title)
@@ -2541,10 +2542,12 @@ class FinishUpRuntime:
         )
         async with self._client() as client:
             result = await client.status(request)
+            attribution = connection_attribution(client)
         success = self._unwrap(result, "the task view could not be read")
         session.frontier = success.head_frontier
         return TaskStatusPage(
-            tuple(render_human_status(success).splitlines()), success.page.next_cursor
+            tuple(render_human_status(success, attribution=attribution).splitlines()),
+            success.page.next_cursor,
         )
 
     def _work_detail(self, title: str, session: _WorkSession, compact: object) -> WorkDetail:
@@ -2571,6 +2574,7 @@ class FinishUpRuntime:
         """Read the latest check's operation page, including structural review progress."""
 
         from finishup.cli.render import render_human_status
+        from finishup.client.attribution import connection_attribution
         from finishup.protocol.models import StatusRequestModel
 
         session = self._sessions.get(title)
@@ -2591,8 +2595,11 @@ class FinishUpRuntime:
         )
         async with self._client() as client:
             result = await client.status(request)
+            attribution = connection_attribution(client)
         success = self._unwrap(result, "the check progress could not be read")
-        return TaskStatusPage(tuple(render_human_status(success).splitlines()), None)
+        return TaskStatusPage(
+            tuple(render_human_status(success, attribution=attribution).splitlines()), None
+        )
 
     async def run_check(self, title: str, mode: CheckMode) -> tuple[str, tuple[str, ...]]:
         """Run one check in the requested mode and report it without softening."""
@@ -2640,6 +2647,7 @@ class FinishUpRuntime:
         """
 
         from finishup.cli.render import render_human_receipt
+        from finishup.client.attribution import attribution_lines, connection_attribution
         from finishup.protocol.canonical import canonical_encode
         from finishup.protocol.coverage import CheckType
         from finishup.protocol.models import ReceiptRequestModel
@@ -2663,15 +2671,21 @@ class FinishUpRuntime:
             if owner_view:
                 await self._authorize_owner_receipt_view(client, request)
             result = await client.receipt(request)
+            attribution = connection_attribution(client)
         success = self._unwrap(result, "the receipt could not be built")
         session.frontier = success.result_frontier
         coverage = getattr(success, "coverage", None)
         gaps = tuple(str(item) for item in getattr(coverage, "known_gaps", ()) or ())
         semantic = CheckType.SEMANTIC_MODEL_DERIVED in success.coverage.check_types
         rendered = (
-            canonical_encode(success.document).decode("utf-8")
+            "\n".join(
+                (
+                    canonical_encode(success.document).decode("utf-8"),
+                    *attribution_lines(attribution),
+                )
+            )
             if success.document is not None
-            else render_human_receipt(success)
+            else render_human_receipt(success, attribution=attribution)
         )
         return ReceiptSummary(
             subject_id=session.task_id,

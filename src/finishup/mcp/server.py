@@ -42,6 +42,12 @@ from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
     canonical_workspace_locator,
 )
+from finishup.client.attribution import (
+    ServiceAttribution,
+    attribution_lines,
+    connection_attribution,
+)
+from finishup.client.workspace_ref import start_request_for_connection
 from finishup.config.env import EnvNameConflictError, read_env
 from finishup.config.load import load_config
 from finishup.config.models import ConfigError, LoggingConfig
@@ -1321,18 +1327,39 @@ def _result_text(
     return "\n".join(part for part in (*parts, note, complete_check) if part)
 
 
+# ADR-051: the results whose text names a claim-bound connection's producing service.
+_ATTRIBUTED_OPERATIONS: Final = frozenset({"status", "receipt"})
+
+
+def _attributed_text(text: str, attribution: ServiceAttribution | None) -> str:
+    """``text`` followed by a claim-bound connection's provenance lines (ADR-051), unchanged for
+    any other connection. A line the text already carries is not repeated."""
+
+    lines = attribution_lines(attribution, shown=text)
+    if not lines:
+        return text
+    return "\n".join((text, *lines) if text else lines)
+
+
 def result_from_public_model(
     result: object,
     *,
     host_profile: McpHostProfile = "generic",
     request_id: str | None = None,
     operation: str | None = None,
+    attribution: ServiceAttribution | None = None,
 ) -> types.CallToolResult:
-    """Validate and project one public result to structured plus host-compatible text."""
+    """Validate and project one public result to structured plus host-compatible text.
+
+    ``attribution`` is set for a claim-bound connection's status and receipt (ADR-051): the
+    text, and its canonical fallback, then end with the fixed workspace-evidence line and the
+    producing service. The structured result never carries it.
+    """
 
     wire = public_model_to_wire(result)
-    rendered = _result_text(
-        wire, host_profile=host_profile, request_id=request_id, operation=operation
+    rendered = _attributed_text(
+        _result_text(wire, host_profile=host_profile, request_id=request_id, operation=operation),
+        attribution,
     )
     # The service budgets canonical text plus structured content. A small result's prose can
     # repeat several fields more often: fall back to that complete canonical text if needed.
@@ -1340,7 +1367,7 @@ def result_from_public_model(
     # the canonical copy can be the longer channel, and a fallback must never enlarge a result.
     rendered_bytes = mcp_delivery_bytes(wire, text=rendered)
     if rendered_bytes > HOST_RESULT_BUDGET_BYTES:
-        canonical = canonical_encode(wire).decode("utf-8")
+        canonical = _attributed_text(canonical_encode(wire).decode("utf-8"), attribution)
         if mcp_delivery_bytes(wire, text=canonical) < rendered_bytes:
             rendered = canonical
     return types.CallToolResult(
@@ -2964,13 +2991,21 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
         )
     if inherited is not None:
         return inherited
+    # ADR-051: the connection that answered, so a claim-bound status or receipt text can name
+    # its producing service.
+    served: list[ServiceClient] = []
+
+    async def invoke_served(client: ServiceClient, request: RequestT) -> ResultT:
+        served.append(client)
+        return await invoke(client, request)
+
     # Invoke first. Once this returns, a write may already be durable; response shaping must not
     # collapse that into a non-retryable INTERNAL_ERROR that steers agents away from same-id resume.
     try:
         result = await _invoke_with_reconnect(
             runtime,
             request,
-            invoke,
+            invoke_served,
             request_id,
             retain_availability_failure_for_latch=True,
         )
@@ -3043,7 +3078,7 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
                     # is idempotent and returns the stored outcome without appending again.
                     try:
                         recovered = await _invoke_with_reconnect(
-                            runtime, request, invoke, request_id
+                            runtime, request, invoke_served, request_id
                         )
                     except Exception:  # noqa: BLE001 - fall back to the typed pollable handle
                         recovered = None
@@ -3094,6 +3129,11 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
             host_profile=runtime.host_profile,
             request_id=request_id,
             operation=operation,
+            attribution=(
+                connection_attribution(served[-1])
+                if served and operation in _ATTRIBUTED_OPERATIONS
+                else None
+            ),
         )
     except Exception as exc:
         # The operation committed. Only a structural failure reaches here -- the result cannot be
@@ -3131,7 +3171,12 @@ async def dispatch_start(
         arguments,
         StartRequest,
         StartResult,
-        lambda client, request: client.start(request, deadline_ms=_stage_deadline_ms("start")),
+        # ADR-051: on a connection to a server on another machine, the workspace path becomes
+        # the connection's handle here, so every attempt (a reconnect too) sends its own.
+        lambda client, request: client.start(
+            start_request_for_connection(request, client),
+            deadline_ms=_stage_deadline_ms("start"),
+        ),
         runtime,
         "start",
     )

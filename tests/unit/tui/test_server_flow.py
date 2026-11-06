@@ -157,7 +157,7 @@ async def test_server_host_commands_refuse_a_remote_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def refuse(command: str) -> None:
-        if command in {"/observe", "/privacy", "/provider", "/service"}:
+        if command in {"/privacy", "/provider", "/service"}:
             raise ServerHostRequired("t_9f8e7d6c", "ssh")
 
     monkeypatch.setattr("finishup.cli.command_scope.require_server_host", refuse)

@@ -13,10 +13,19 @@ from finishup.adapters.workspace_root import (
     root_owned_checkout,
     workspace_identity_preimage,
 )
-from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
-from finishup.ports.keys import REPOSITORY_PRIVACY_MAC_DOMAIN, MacKeyHandle
+from finishup.ports.control import RepositoryPrivacyContext, WorkspaceClaim, WorkspaceLocator
+from finishup.ports.keys import (
+    REPOSITORY_CLAIM_MAC_DOMAIN,
+    REPOSITORY_PRIVACY_MAC_DOMAIN,
+    MacKeyHandle,
+)
 
-__all__ = ["RepositoryIdentityError", "resolve_repository_privacy_context", "root_owned_checkout"]
+__all__ = [
+    "RepositoryIdentityError",
+    "claim_repository_privacy_context",
+    "resolve_repository_privacy_context",
+    "root_owned_checkout",
+]
 
 
 async def resolve_repository_privacy_context(
@@ -31,4 +40,24 @@ async def resolve_repository_privacy_context(
         identity_kind=root.identity_kind,
         # Kept in memory beside the commitment it produced; see RepositoryPrivacyContext.
         workspace_locator=locator,
+    )
+
+
+def claim_repository_privacy_context(
+    claim: WorkspaceClaim, key: MacKeyHandle
+) -> RepositoryPrivacyContext:
+    """Key a client's workspace claim into a ``client_claim`` repository identity (ADR-051).
+
+    The installation MAC runs over ``identity_kind NUL digest`` under its own domain, so the
+    commitment names the claim and nothing else: no path is resolved, read or kept, and a claim
+    commitment can never equal one a locator produced.
+    """
+
+    if type(claim) is not WorkspaceClaim:
+        raise TypeError("workspace_claim_invalid")
+    preimage = claim.identity_kind.encode("ascii") + b"\x00" + claim.digest.encode("ascii")
+    return RepositoryPrivacyContext(
+        commitment=key.mac(REPOSITORY_CLAIM_MAC_DOMAIN, preimage),
+        identity_kind="client_claim",
+        workspace_locator=None,
     )

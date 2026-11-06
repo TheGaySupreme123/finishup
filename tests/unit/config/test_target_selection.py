@@ -225,6 +225,31 @@ def test_selection_override_resolves_one_target_and_restores(home: Path) -> None
     assert active_root() == root
 
 
+def test_the_ambient_installation_dirs_name_both_names_whatever_the_root(home: Path) -> None:
+    """The workspace agent's fence: the everyday installation's directories, as ``finishup``
+    and as the legacy ``yoetz``, are named whichever root this process uses."""
+
+    ambient = paths.ambient_installation_dirs()
+    roots = {
+        paths.bundle_root(),
+        config_file_path().parent,
+        paths.cache_dir(),
+        state_dir(),
+        paths.log_dir(),
+        runtime_dir(),
+    }
+    legacy = {
+        Path(*("yoetz" if part == "finishup" else part for part in root.parts)) for root in roots
+    }
+    assert roots | legacy <= set(ambient)
+    assert all(directory.is_absolute() for directory in ambient)
+    assert len(ambient) == len(set(ambient))
+    record, target_root = _local_target()
+    _select(record)
+    assert state_dir() == target_root / "state"
+    assert paths.ambient_installation_dirs() == ambient
+
+
 def test_clearing_the_selection_returns_to_ambient(home: Path) -> None:
     record, _root = _local_target()
     _select(record)

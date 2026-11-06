@@ -3,7 +3,9 @@
 CTL-2100 is a hello bound by a workspace locator (today's local shape), CTL-2101 a hello bound by a
 workspace claim that offers a workspace agent, CTL-2102 the claim-bound hello-result, and
 CTL-2103 to CTL-2105 one ``workspace_call``/``workspace_reply`` exchange per operation family
-(git, reads, observation), each with an answered call and a typed non-answer. Every frame is
+(git, reads, observation), each with an answered call and a typed non-answer, and CTL-2106 a
+claim-bound ``observation_ingest`` call carrying the client's attestation (ADR-051 decision 12),
+encoded by the domain codec. Every frame is
 validated against the active control envelopes, and every call's arguments and reply's result
 are encoded by the operation catalog, so a drift in either fails ``--check``. No vector holds a
 live manifest digest, path on this machine, clock reading or random value.
@@ -18,6 +20,16 @@ import sys
 from pathlib import Path
 from typing import Any, Final, cast
 
+from finishup.domain.observation import (
+    ObservationClientAttestation,
+    ObservationClientRoute,
+    ObservationCursor,
+    ObservationEnvelope,
+    ObservationIngestRequest,
+    ObservationSource,
+    observation_ingest_request_to_json,
+)
+from finishup.domain.values import JsonObject, Timestamp
 from finishup.ports.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckOutcome,
@@ -289,6 +301,47 @@ def _observation_exchanges() -> list[dict[str, Any]]:
     ]
 
 
+def _attested_ingest() -> dict[str, JsonValue]:
+    """A claim-bound hook row with the client's attestation; the commitments are the client's."""
+
+    session = "hmac-sha256:" + "5e" * 32
+    request = ObservationIngestRequest(
+        codex_session_id="claude-session-2106",
+        envelope=ObservationEnvelope(
+            session_commitment=session,
+            event_kind="PostToolUse",
+            source_identity="hook:claude-session-2106:1",
+            source=ObservationSource.CLAUDE_HOOK,
+            cursor=ObservationCursor(1, 0, 1, session, "claude-code-hooks-ordinary-v2"),
+            receipt_time=Timestamp("2026-11-05T12:00:00.000Z"),
+            structural_payload=JsonObject({}),
+            content_object_refs=(),
+            gap_codes=(),
+        ),
+        client_attestation=ObservationClientAttestation(
+            consent="active",
+            granted_at=Timestamp("2026-11-05T11:00:00.000Z"),
+            content_capture_profiles=("claude-code-ordinary-observation-v1",),
+            authority_generation="sha256:" + "a6" * 32,
+            check_policy_digest="sha256:" + "c4" * 32,
+            route=ObservationClientRoute(
+                task_id="tsk_00000000-0000-4000-8000-000000002106",
+                session_id="ses_00000000-0000-4000-8000-000000002106",
+                writer_id="wri_00000000-0000-4000-8000-000000002106",
+            ),
+        ),
+    )
+    return {
+        "body": cast(JsonValue, observation_ingest_request_to_json(request)),
+        "kind": "call",
+        "method": "observation_ingest",
+        "protocol_version": "1.0",
+        "rpc_id": _rpc(2106),
+        "service_generation": "1",
+        "service_instance_id": _SERVICE_INSTANCE_ID,
+    }
+
+
 def _single_frame_fixture(
     fixture_id: str,
     schema_name: str,
@@ -398,6 +451,20 @@ def _fixtures() -> tuple[tuple[str, str, dict[str, Any]], ...]:
             "CTL-2105",
             "canonical/control-workspace-observation-2.10.case.json",
             _exchange_fixture("CTL-2105", "observation", _observation_exchanges()),
+        ),
+        (
+            "CTL-2106",
+            "canonical/control-observation-ingest-attested-2.10.case.json",
+            _single_frame_fixture(
+                "CTL-2106",
+                "control-request",
+                _attested_ingest(),
+                "ADR-051:observation-client-attestation",
+                (
+                    "A claim-bound observation_ingest carries the client's own consent, content "
+                    "fence, trusted policy digest and mapped route, and no path."
+                ),
+            ),
         ),
     )
 

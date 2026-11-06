@@ -4,7 +4,8 @@ The client/server cut line (ADR-051) labels every CLI command path and every ter
 command with one closed scope:
 
 * ``any`` — works against whichever server target is selected (it speaks the control protocol, or
-  reads only client state).
+  acts only on the active root's own client state, such as the observation store that is the
+  client's authority on a remote target).
 * ``server_host`` — administers the server host itself (its vault, recovery set, provider runtime,
   privacy ceremonies, observation store, backups, or the service process). On a remote target it
   is refused with ``requires_server_host`` before it runs; a local target (the everyday server or a
@@ -72,6 +73,9 @@ COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "mcp": "any",
         "menu": "any",
         "instance": "any",
+        # The active root's own observation store: consent, selection, approved-check trust, the
+        # outbox. On a remote target it is the client's, and the authority (ADR-051 decision 12).
+        "observe": "any",
         "service isolation": "any",
         "setup run": "any",
         "setup status": "any",
@@ -79,14 +83,13 @@ COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "upgrade": "any",
         "version": "any",
         # The server host's own vault, recovery set, provider runtime, configuration, privacy
-        # ceremonies, observation store, backups, consent handoff, and service process.
+        # ceremonies, backups, consent handoff, and service process.
         "ai": "server_host",
         "backup": "server_host",
         "consent": "server_host",
         "elevated-bootstrap": "server_host",
         "integrate skill": "server_host",
         "migrate": "server_host",
-        "observe": "server_host",
         "privacy apply-desired": "server_host",
         "privacy conversations": "server_host",
         "privacy credential-heuristic": "server_host",
@@ -131,7 +134,7 @@ TUI_COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "project": "any",
         "findings": "any",
         "notes": "any",
-        "observe": "server_host",
+        "observe": "any",
         "check": "any",
         "progress": "any",
         "receipt": "any",

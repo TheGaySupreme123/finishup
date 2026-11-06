@@ -63,12 +63,22 @@ from finishup.adapters.task_input_read import ReadDeadline
 from finishup.application.reviewer_broker import ReadExchangeFull, ReviewerBroker
 from finishup.domain.reviewer_reads import MAX_REVIEWER_EXCHANGES
 from finishup.ports.semantic import Deadline, ReviewStepRefused, SemanticJudgment
+from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
 from finishup.protocol.canonical import JsonValue, canonical_encode
 
-__all__ = ["ReviewOutcome", "ReviewerLoop", "ReviewerModel", "ReviewerModelError", "Turn"]
+__all__ = [
+    "WORKSPACE_AGENT_UNAVAILABLE_ENDING",
+    "ReviewOutcome",
+    "ReviewerLoop",
+    "ReviewerModel",
+    "ReviewerModelError",
+    "Turn",
+]
 
 # Five read attempts, the final judgment and one format repair, on the original deadline.
 MAX_MODEL_TURNS: Final = MAX_REVIEWER_EXCHANGES
+# The ending of a review whose read a claim-bound task's workspace agent did not answer (ADR-051).
+WORKSPACE_AGENT_UNAVAILABLE_ENDING: Final = "workspace_agent_unavailable"
 LOCAL_READ_SECONDS: Final = 5.0
 FORMAT_ERROR: Final = (
     "format_error: {code}. Reply with exactly one read action or final_judgment that matches the "
@@ -269,6 +279,10 @@ class ReviewerLoop:
             return self.exit("deadline")
         except ReviewStepRefused:
             return self.exit("step_refused")
+        except WorkspaceAgentUnavailable:
+            # A claim-bound task's read got no answer from its workspace agent (ADR-051): the
+            # review ends unfinished under that closed reason, never with a judgment.
+            return self.exit(WORKSPACE_AGENT_UNAVAILABLE_ENDING)
 
     def remaining(self) -> float:
         """Seconds left; the deadline is checked after every await, never consumed late."""
