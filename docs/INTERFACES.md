@@ -4901,8 +4901,9 @@ ready application's workspace routing use. A `POST /v1/agents` registration is o
 `binding_for_active_root(locator, serve_workspace=False)` (`_remote_claim`; a caller's
 `workspace_binding` is used as given; an unresolvable locator gives no claim, never a path), noted
 for the agent (`client.agent.note_workspace`) and the agent started when none runs
-(`client.agent.ensure_agent`). An SSH target's master is ensured on every connect; only an
-on-demand connect starts an idle-stopped remote service. `RestServiceClient.call` refuses a
+(`client.agent.ensure_agent`). An SSH connection tries the forward first; only when nothing answers
+does it bring the target's master up and try again, and only an on-demand connect then starts an
+idle-stopped remote service once. `RestServiceClient.call` refuses a
 `start` whose `workspace_ref` is still an absolute path (`WorkspaceRefNotPortable`, nothing
 sent). Remote failures are `service_unavailable` with phase `remote_unreachable`,
 `remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running` or

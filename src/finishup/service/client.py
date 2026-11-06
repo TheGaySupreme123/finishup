@@ -2076,13 +2076,20 @@ async def _connect_remote(
 
     if record.kind != "ssh":
         return await attempt()
+    unanswered = {"remote_unreachable", "remote_service_not_running"}
+    try:
+        # The master's forward is usually up: a connection then costs no process at all.
+        return await attempt()
+    except ControlError as error:
+        if error.phase not in unanswered:
+            raise
     from finishup.client.rest_runtime import SshTargetRuntime
     from finishup.client.target_runtime import TargetRuntimeError
 
     runtime = SshTargetRuntime()
     try:
-        # The master is this client's own transport, like opening a TCP connection: every
-        # connection makes sure it is up. Only an on-demand caller may start the remote service.
+        # The master is this client's own transport, like a TCP connection: any connection may
+        # bring it up. Only an on-demand caller may start the remote service.
         await asyncio.to_thread(runtime.ensure_master, record, root)
     except TargetRuntimeError as error:
         raise ControlError(
@@ -2093,7 +2100,7 @@ async def _connect_remote(
     try:
         return await attempt()
     except ControlError as error:
-        if error.phase not in {"remote_unreachable", "remote_service_not_running"}:
+        if error.phase not in unanswered:
             raise
     # The master is up but nothing answered: the remote service may have stopped while idle.
     try:
