@@ -22,7 +22,6 @@ from finishup.domain.events import (
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
-    RedactionState,
     SessionOpenedPayload,
     encode_payload,
     media_type_for,
@@ -119,11 +118,6 @@ _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
         "receipt_id_mismatch",
         "receipt_redaction_profile_mismatch",
     }
-)
-# Application-derived facts a classified storage error records as its closed diagnostic reason:
-# the replay mismatches, and a session opening event the ledger holds but could not read.
-_RECEIPT_DIAGNOSTIC_REASONS: Final = _RECEIPT_REPLAY_MISMATCH_REASONS | frozenset(
-    {"session_opened_payload_unavailable"}
 )
 
 
@@ -263,11 +257,11 @@ def _classified_storage_error(
             request_id=request_id,
         )
     else:
-        if diagnostic_reason not in _RECEIPT_DIAGNOSTIC_REASONS:
+        if diagnostic_reason not in _RECEIPT_REPLAY_MISMATCH_REASONS:
             raise ValueError("receipt_diagnostic_reason_invalid") from exc
-        # Replay integrity mismatches and an unread opening event are application-derived facts,
-        # not exception classes. Keep their reason closed and structural while recording the same
-        # application-site correlation contract as object-store exceptions.
+        # Replay integrity mismatches are application-derived facts, not exception classes. Keep
+        # their reason closed and structural while recording the same application-site correlation
+        # contract as object-store exceptions.
         correlation_id = record_public_error_without_raising(
             component="application.receipt",
             operation=operation,
@@ -651,13 +645,19 @@ async def _attested_by(
 
     A read that fails is a classified storage error, never None, so a claim-bound receipt never
     loses its client-attested block: an ``OSError`` is a retryable ``STORAGE_UNSAFE`` and a
-    malformed record ``STORAGE_CORRUPT``. An opening event whose envelope says ``present`` but
-    that comes back without its payload is a failed read too (a recovering SQLite ledger keeps a
-    payload it could not read as None rather than fail), so it is a retryable ``STORAGE_UNSAFE``.
-    An opening event that is redacted, whose key is unavailable, or whose version this service
-    cannot read answers ``_Provenance.UNKNOWN``: a retry cannot change that, so the receipt is
-    still built and its human renderings say the binding is unknown. ``execute_receipt`` reads
-    this before it stages or appends anything.
+    malformed record ``STORAGE_CORRUPT``. ``execute_receipt`` reads this before it stages or
+    appends anything, so either refusal leaves no write.
+
+    An opening event that comes back without a decoded ``session_opened`` payload answers
+    ``_Provenance.UNKNOWN``: it is redacted, its key is unavailable, its version is one this
+    service cannot decode, or its envelope says ``present`` but its payload is None. The last is
+    the payload object a SQLite ledger could not read (missing, failed verification, or an
+    environmental fault) while it recovered the task; the ledger keeps that gap for as long as it
+    holds the task open, so neither this read nor a retry against the same ledger can tell a
+    transient fault from a lost object. Refusing the receipt would claim a retry helps when it
+    cannot, and would lock a task out of receipts it got before; so the receipt is built and its
+    human renderings say the binding is unknown. A replay reads the event again, so once the
+    task is reopened and the object reads, the same request renders the binding it records.
     """
 
     opening: LedgerRecord | None = None
@@ -690,17 +690,6 @@ async def _attested_by(
         if workspace_handle_valid(payload.workspace_ref):
             return runtime.fence.service_instance_id
         return None
-    if payload is None and opening.redaction is RedactionState.PRESENT:
-        unread = LookupError("session_opened_payload_unavailable")
-        raise _classified_storage_error(
-            PublicErrorCode.STORAGE_UNSAFE,
-            "The task ledger is unavailable.",
-            unread,
-            retryable=True,
-            request_id=request_id,
-            operation="receipt_attestation_read",
-            diagnostic_reason="session_opened_payload_unavailable",
-        ) from unread
     return _Provenance.UNKNOWN
 
 

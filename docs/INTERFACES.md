@@ -4957,15 +4957,21 @@ user-controlled is ever rendered beside it.
   unchanged. `application.receipt._attested_by` finds the opening record by
   `schema.name == "session_opened"`, never by payload type, and `execute_receipt` calls it before
   it stages or appends anything (a replay through `read_recorded_receipt` reads it the same way):
-  an `OSError` while reading is a retryable `STORAGE_UNSAFE`, a malformed record
-  `STORAGE_CORRUPT`, and an `AcceptedEvent` whose envelope is `present` but whose payload is None
-  (the SQLite ledger's recovery keeps a payload object it could not read that way) a retryable
-  `STORAGE_UNSAFE` with diagnostic reason `session_opened_payload_unavailable` and operation
-  `receipt_attestation_read`. An opening record that is `logically_redacted`, `erased_claimed` or
-  `key_unavailable`, or an `UnknownEvent` of a `session_opened` version this service cannot
-  decode, leaves the binding unknown: the receipt is built and its text and markdown renderings
-  end with `workspace_provenance_unknown_block(markdown=...)`, the "Workspace evidence" heading
-  and the fixed `WORKSPACE_PROVENANCE_UNKNOWN_LINE`, never with no section.
+  an `OSError` from the ledger read is a retryable `STORAGE_UNSAFE` and a malformed record
+  `STORAGE_CORRUPT`, both under operation `receipt_attestation_read`, so the refusal leaves no
+  write. An opening record that carries no decoded `SessionOpenedPayload` leaves the binding
+  unknown: one that is `logically_redacted`, `erased_claimed` or `key_unavailable`, an
+  `UnknownEvent` of a `session_opened` version this service cannot decode, and any opening record
+  (`AcceptedEvent` or `UnknownEvent`) whose envelope is `present` but whose payload is None. The
+  last is what `SqliteLedger` recovery keeps when it cannot read a payload object (`KeyError`,
+  `OSError` or `ValueError` from `open_verified`), and it keeps it for as long as that ledger
+  holds the task: the record does not say which failure it was, and no retry against the same
+  ledger reads the object again, so it is not a retryable error. The receipt is built and its text
+  and markdown renderings end with `workspace_provenance_unknown_block(markdown=...)`, the
+  "Workspace evidence" heading and the fixed `WORKSPACE_PROVENANCE_UNKNOWN_LINE`, never with no
+  section. A replay reads the opening record again, so once the task's ledger is opened afresh
+  (the runtime evicts the idle entry, or the service restarts) and the object reads, the same
+  request renders the binding the record holds.
 - Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
   ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with
