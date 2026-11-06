@@ -534,6 +534,9 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
     {
         "check_admission_same_identity",
         "check_capacity_handoff",
+        # The service already holds its limit of checks and read nothing about the identity
+        # (issue #1309). Attached by its producer, never through a reason code.
+        "check_service_busy_same_identity",
         "consent_ceremony_required",
         "field_ownership_repair",
         "frontier_held_required",

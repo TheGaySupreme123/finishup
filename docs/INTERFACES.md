@@ -9554,6 +9554,24 @@ The existing maintenance gate may delay other task reads while a check runs; thi
 pending/replay continuity, not concurrent-check scheduling. Structural progress for the running
 check is readable through `status view=operation` (next section).
 
+The service keeps at most eight such checks at once (`MAX_RETAINED_CHECKS` in
+`service/check_waits.py`), counting each one running, waiting for the dispatch gates, or detached
+from a client that stopped waiting, until its operation finishes. An exact replay of a retained
+check still reports `OPERATION_PENDING`, and a different body under its identity
+`IDEMPOTENCY_CONFLICT`. Any other check beyond the limit is refused from that in-memory state
+alone, before the task ledger is read: retryable `BUNDLE_BUSY` with `retry_after_ms: 30000`,
+`limit: 8`, no `reason_code`, and the `check_service_busy_same_identity` continuation (ADR-030),
+whose fixed message and directive say the request was not looked up or started. The refusal
+cannot say whether anything is recorded under the identity, because a check that finished after
+its client stopped waiting is no longer retained but replays from the ledger; it is therefore not
+a check admission stage (next section), adds no `admission` object to `status view=operation`,
+and that read reports whatever the ledger holds. Its correlation id resolves to a
+`service.check_waits` / `check_service_busy` diagnostic record. The refusal is a workflow error
+carried by the `check` result (`outcome=ok`, `ok: false`), never a control error, so the control
+envelope is unchanged and the connection keeps serving (issue #1309: a control-level
+`service_unavailable`, which no control-result error body admits, used to leave the call
+unanswered until the client's deadline).
+
 ### Check admission stage (#838)
 
 Every branch that refuses a new check before an operation record exists raises retryable

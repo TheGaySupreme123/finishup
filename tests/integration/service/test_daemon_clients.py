@@ -4206,6 +4206,144 @@ async def test_capture_refused_check_wakes_the_observation_sweep(
 
 
 @pytest.mark.anyio
+async def test_a_check_over_service_capacity_is_a_typed_refusal_on_a_live_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #1309 over the real client and control wire.
+
+    With the service already holding its limit of checks that may use AI-powered review, a new
+    check used to be refused with a control-level ``service_unavailable`` that no control-result
+    error body admits: the daemon could not frame its own answer and the caller got no typed
+    reply. It is now a retryable ``BUNDLE_BUSY`` workflow refusal, framed and validated like any
+    other, and the same connection keeps serving.
+
+    The refusal is made before the application (and its task ledger) is reached, so it must not
+    claim nothing is recorded: the exact replay of a check that already finished is refused the
+    same way at capacity, and once a slot frees that replay is answered from what was recorded.
+    """
+
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.ports.control import ControlResult
+    from finishup.service.check_waits import MAX_RETAINED_CHECKS
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    daemon, application, _vault, _listener = _daemon()
+    release = asyncio.Event()
+    admitted: list[str] = []
+    # A stand-in for the task ledger: what the application recorded per request_id.
+    recorded: dict[str, PublicOperationError] = {}
+    ledger_replays: list[str] = []
+    held_ids: set[str] = set()
+
+    async def ledger_check(request: object, **_kwargs: object) -> JsonObject:
+        assert isinstance(request, CheckRequest)
+        stored = recorded.get(request.request_id)
+        if stored is not None:
+            ledger_replays.append(request.request_id)
+            raise stored
+        admitted.append(request.request_id)
+        if request.request_id in held_ids:
+            await release.wait()
+        # A stand-in terminal answer; this test is about what the service refuses and replays.
+        answer = PublicOperationError(
+            PublicErrorCode.INVALID_REQUEST, "The request is invalid.", False
+        )
+        recorded[request.request_id] = answer
+        raise answer
+
+    def semantic_check() -> CheckRequest:
+        # Only a check that may use AI-powered review is retained by the service's check waits.
+        return _check_body().model_copy(
+            update={"request_id": new_id(IdKind.REQUEST), "mode": "semantic_if_configured"}
+        )
+
+    application.check = ledger_check  # type: ignore[method-assign]
+    await daemon.start()
+    waits = daemon._check_waits  # pyright: ignore[reportPrivateUsage]
+    client_stream, server_stream = _connected_control_pair()
+    server_task = asyncio.create_task(daemon._serve_control_connection(server_stream))  # pyright: ignore[reportPrivateUsage]
+    service_client = None
+    held: list[asyncio.Task[ControlResult]] = []
+    try:
+        handshake = await client_handshake(client_stream, ControlClientKind.CLI, "0.3.0")
+        service_client = _connected_client(  # pyright: ignore[reportPrivateUsage]
+            client_stream,  # pyright: ignore[reportArgumentType]
+            handshake,
+            ControlClientKind.CLI,
+        )
+        # A check that ran to completion and is recorded; the service no longer retains it.
+        finished = semantic_check()
+        first = (await service_client.check(finished, deadline_ms=3_000)).root
+        assert first.ok is False
+        assert first.error.code is PublicErrorCode.INVALID_REQUEST
+        assert (finished.writer_id, finished.request_id) not in waits._tasks  # pyright: ignore[reportPrivateUsage]
+
+        holders = [semantic_check() for _ in range(MAX_RETAINED_CHECKS)]
+        held_ids.update(body.request_id for body in holders)
+        held = [
+            asyncio.create_task(
+                daemon.dispatch(
+                    ControlClientKind.MCP_BRIDGE, _request(daemon, ControlMethod.CHECK, body)
+                )
+            )
+            for body in holders
+        ]
+        async with asyncio.timeout(5):
+            # Each held check registers with the service's waits before its first await.
+            while len(waits._tasks) < MAX_RETAINED_CHECKS or len(admitted) < 2:  # pyright: ignore[reportPrivateUsage]
+                await asyncio.sleep(0)
+
+        overflow = semantic_check()
+        for body in (overflow, finished):
+            refused = (await service_client.check(body, deadline_ms=3_000)).root
+            assert refused.ok is False
+            error = refused.error
+            assert error.code is PublicErrorCode.BUNDLE_BUSY
+            assert error.retryable is True
+            assert error.safe_details == {
+                "continuation": "check_service_busy_same_identity",
+                "limit": MAX_RETAINED_CHECKS,
+                "retry_after_ms": 30_000,
+            }
+            assert f"limit of {MAX_RETAINED_CHECKS} checks" in error.message
+            assert "did not look up" in error.message
+            assert "nothing is recorded" not in error.message.lower()
+            records = lookup_diagnostic_records(error.correlation_id, root=tmp_path)
+            assert [(record.get("operation"), record.get("request_id")) for record in records] == [
+                ("check_service_busy", body.request_id)
+            ]
+        # Neither refusal reached the application, so neither read the ledger.
+        assert overflow.request_id not in admitted
+        assert ledger_replays == []
+        # The connection that carried the refusals still answers.
+        status = await service_client.service_status()
+        assert status.state is ServiceState.READY
+
+        release.set()
+        for outcome in await asyncio.gather(*held):
+            assert isinstance(outcome.body, CheckResult)
+            assert outcome.body.root.ok is False
+        # Following the continuation: the finished check's replay is answered from its record,
+        # and the new check's exact replay is admitted and runs once.
+        replayed_finished = (await service_client.check(finished, deadline_ms=3_000)).root
+        assert replayed_finished.ok is False
+        assert replayed_finished.error.code is PublicErrorCode.INVALID_REQUEST
+        assert ledger_replays == [finished.request_id]
+        assert admitted.count(finished.request_id) == 1
+        replayed = (await service_client.check(overflow, deadline_ms=3_000)).root
+        assert replayed.ok is False
+        assert replayed.error.code is PublicErrorCode.INVALID_REQUEST
+        assert admitted.count(overflow.request_id) == 1
+    finally:
+        release.set()
+        if service_client is not None:
+            await service_client.close()
+        server_task.cancel()
+        await asyncio.gather(server_task, *held, return_exceptions=True)
+        await daemon.close()
+
+
+@pytest.mark.anyio
 async def test_observation_sweep_wake_survives_timeout_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

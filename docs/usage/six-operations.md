@@ -523,5 +523,13 @@ or an import in progress). Wait that long and replay the exact same check, at mo
 is still refused, report the check as not admitted rather than switching mode or minting a new
 request.
 
+A check refused with `BUNDLE_BUSY` and the `check_service_busy_same_identity` continuation is
+different again: the service already had its limit of eight checks in progress, so it did not look
+up or start this request, and the refusal does not say whether anything is recorded under its
+`request_id` (a check that finished after you stopped waiting still has its result). Wait the
+`retry_after_ms` it names (30 seconds) and replay the exact same check, which then returns any
+recorded result; after three refusals, report that the service was busy, not that the check ran
+or did not run, and do not switch mode or mint a new request to get around the limit.
+
 The agent-facing version of this loop, including when *not* to use FinishUP at all, is
 [`guidance/workflow.md`](../../guidance/workflow.md).

@@ -4,11 +4,57 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Final
 
+from finishup.observability.logging import record_public_error_without_raising
 from finishup.ports.control import ControlError
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 EXPLICIT_CONTROL_CANCEL = "explicit_control_cancel"
+# Checks the service keeps at once: running, waiting for the dispatch gates, or detached from a
+# client that stopped waiting. Each holds an owned task until its operation finishes.
+MAX_RETAINED_CHECKS: Final = 8
+# A slot frees only when a retained check finishes, and checks that may use AI-powered review
+# take the dispatch gates one at a time, so the replay hint is in seconds, not the 1 s of an
+# admission race. The ``check_service_busy_same_identity`` directive names the same wait.
+CAPACITY_RETRY_AFTER_MS: Final = 30_000
+# The refusal is made from in-memory state alone, before the task ledger is read, so it cannot
+# say whether anything is recorded under the request identity: a check that finished after its
+# client stopped waiting is no longer retained here, yet its result is in the ledger (#746).
+_CAPACITY_MESSAGE: Final = (
+    f"The FinishUP service already has its limit of {MAX_RETAINED_CHECKS} checks in progress, so "
+    "it did not look up or start this check. Wait, then replay the exact request; the replay is "
+    "answered from anything already recorded under this request_id."
+)
+
+
+def _capacity_refusal(request_id: str) -> PublicOperationError:
+    """Build the retryable refusal for a check over the service's capacity (issue #1309).
+
+    ``BUNDLE_BUSY`` is the public code for a resource another owner holds, here the service's
+    check slots. The refusal carries no admission ``reason_code``: those stages promise nothing
+    is recorded under the identity, which this branch cannot know. Its own diagnostic operation
+    is recorded here and bound, so the correlation id names the capacity refusal.
+    """
+
+    refusal = PublicOperationError(
+        PublicErrorCode.BUNDLE_BUSY,
+        _CAPACITY_MESSAGE,
+        True,
+        safe_details={
+            "continuation": "check_service_busy_same_identity",
+            "limit": MAX_RETAINED_CHECKS,
+            "retry_after_ms": CAPACITY_RETRY_AFTER_MS,
+        },
+    )
+    return refusal.bind_correlation_id(
+        record_public_error_without_raising(
+            component="service.check_waits",
+            operation="check_service_busy",
+            reason=PublicErrorCode.BUNDLE_BUSY.value.lower(),
+            request_id=request_id,
+        )
+    )
 
 
 class CheckWaits:
@@ -38,8 +84,12 @@ class CheckWaits:
                 "The check is still running. Retry the same request_id to recover its result.",
                 True,
             )
-        if len(self._tasks) >= 8:
-            raise ControlError("service_unavailable", retryable=True)
+        if len(self._tasks) >= MAX_RETAINED_CHECKS:
+            # Issue #1309: this was a control-level ``service_unavailable``, a client-local reason
+            # no control-result error body admits, so the daemon failed to frame its own answer
+            # and the call went unanswered until the client's deadline. A workflow error travels
+            # in the check result instead, and the connection keeps serving.
+            raise _capacity_refusal(key[1])
 
         async def execute() -> object:
             return await operation()

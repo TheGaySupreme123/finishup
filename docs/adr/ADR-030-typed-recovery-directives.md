@@ -110,6 +110,19 @@ report the check as not admitted. The operation page carries the same stage on i
 The directive bounds the replay rather than predicting admission, and an admitted pending check
 keeps its untyped `OPERATION_PENDING`.
 
+### A check refused at service capacity says only what it read (issue #1309)
+
+The service keeps at most eight checks that may use AI-powered review and refuses any other check
+from that in-memory count, before a task ledger is read. A check that finished after its client
+stopped waiting is no longer counted, yet its result is recorded, so this refusal cannot claim
+nothing is recorded and must not reuse an admission stage whose directive does. It is retryable
+`BUNDLE_BUSY` with `retry_after_ms` 30000, no `reason_code`, and its own producer-attached
+continuation, `check_service_busy_same_identity`: the request was not looked up or started; wait
+`retry_after_ms` (30 seconds, named in the directive because the text channel does not print the
+number) and replay the exact body, which answers from any recorded check; after three refusals,
+retain the request and report the service as busy, not that the check ran or did not run. The
+reason-code vocabulary is unchanged.
+
 ### Four tiers, classified at the raising site
 
 Every fact in an error belongs to exactly one tier, decided where it is known:
