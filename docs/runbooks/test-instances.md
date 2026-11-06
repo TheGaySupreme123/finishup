@@ -181,7 +181,10 @@ refuse an authority without key usage, and `server login` then fails as `remote_
 unpinned runtime so the selection applies, then add the target (`server add NAME
 ssh://user@host:port --remote-launcher <server launcher>`, or `server add NAME https://… --ca-file
 CA` / `--port PORT --ca-file CA` followed by `server login NAME --key-file F`) and select it
-(`server use NAME`); both ask for the typed name on the trusted console. `server connect`, `server
+(`server use NAME`); both ask for the typed name on the trusted console. `server add` first asks
+there what the target may read outside the owner's projects (ADR-051 decision 5); answer `local`
+or `listed`, or pass `--outside-reads local|listed` to answer it up front in a scripted run, which
+otherwise ends as `outside_reads_not_chosen` with nothing added. `server connect`, `server
 test` and `server status --json` start and show the connector. Its records are in the target root
 on the client: `state/connector-status.json`, `state/claimed-workspaces/` (one owner-only record
 per worktree a client claimed) and `log/connector.stderr`; the gateway's audit lines are in the
