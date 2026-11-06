@@ -85,6 +85,9 @@ _RETRY_SECONDS: Final = (1.0, 2.0, 5.0, 10.0, 30.0)
 # service's own idle sweep interval, so a stuck row or a revoked key is retried, not sent every
 # scan. A pass that settled a row, or found none due, keeps the scan interval.
 _DELIVERY_BACKOFF_MAX_SECONDS: Final = 60.0
+# A reply lost on the way is sent again after a growing wait, until the call's deadline.
+_REPLY_RETRY_FIRST_SECONDS: Final = 0.1
+_REPLY_RETRY_MAX_SECONDS: Final = 1.0
 _MAX_RECORD_BYTES: Final = 16_384
 _MAX_WORK_BYTES: Final = 64 * 1024 * 1024
 _COMPONENT: Final = "client.agent"
@@ -628,11 +631,28 @@ class WorkspaceAgentLoop:
     ) -> None:
         from finishup.service.control_protocol import workspace_reply_frame
 
+        # The server waits for this reply until the call's own deadline; so may delivering it.
+        deadline = self._clock() + call.deadline_ms / 1_000
         async with self._calls:
             reply = await asyncio.to_thread(handler.answer, call, workspace_handle=handle)
         body = canonical_encode(dict(workspace_reply_frame(reply)))
-        if not await api.reply(agent_id, body):
-            _record("workspace_agent_reply", "reply_refused")
+        delay = _REPLY_RETRY_FIRST_SECONDS
+        while True:
+            try:
+                delivered = await api.reply(agent_id, body)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Lost on the way (a full pool, a dropped connection): send it again in time.
+                if self._clock() + delay >= deadline:
+                    _record("workspace_agent_reply", "reply_failed")
+                    return
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _REPLY_RETRY_MAX_SECONDS)
+                continue
+            if not delivered:
+                _record("workspace_agent_reply", "reply_refused")
+            return
 
 
 def run_workspace_agent(root: Path) -> int:

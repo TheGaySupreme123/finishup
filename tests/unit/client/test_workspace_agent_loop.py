@@ -422,3 +422,71 @@ def test_the_agent_refuses_a_root_that_is_not_a_remote_target(
         with targets.registry_lock():
             _record, root = targets.new_local_target("work")
         assert run_workspace_agent(root) == 2
+
+
+def _call(deadline_ms: int = 5_000) -> WorkspaceCall:
+    from finishup.protocol.ids import IdKind, new_id
+
+    return WorkspaceCall(
+        kind="workspace_call",
+        protocol_version="1.0",
+        call_id=new_id(IdKind.CONTROL_RPC),
+        service_instance_id="svc_00000000-0000-4000-8000-000000000001",
+        service_generation="7",
+        operation="read_task_base",
+        arguments=JsonObject({}),
+        deadline_ms=deadline_ms,
+    )
+
+
+@pytest.mark.anyio
+async def test_a_reply_lost_on_the_way_is_sent_again_within_the_calls_deadline(
+    remote: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With every pooled connection taken by long-polls, a reply POST timed out waiting for one
+    # and was dropped, so the server's call ended without its answer.
+    record, root = remote
+    monkeypatch.setattr(agent_module, "_REPLY_RETRY_FIRST_SECONDS", 0.01)
+    recorded: list[tuple[str, str]] = []
+
+    def record_event(operation: str, reason: str) -> None:
+        recorded.append((operation, reason))
+
+    monkeypatch.setattr(agent_module, "_record", record_event)
+
+    class _Api:
+        def __init__(self, failures: int) -> None:
+            self.failures = failures
+            self.sent: list[bytes] = []
+
+        async def reply(self, agent_id: str, body: bytes) -> bool:
+            del agent_id
+            if self.failures:
+                self.failures -= 1
+                raise httpx.PoolTimeout("no connection free")
+            self.sent.append(body)
+            return True
+
+    loop = WorkspaceAgentLoop(root, record, http=object(), headers={})
+    flaky = _Api(failures=2)
+    await loop._answer(flaky, "agt_x", "client:0123456789abcdef", _Handler(), _call())  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+    assert len(flaky.sent) == 1 and recorded == []
+    # Past the call's deadline it gives up, records why, and never raises out of the task.
+    lost = _Api(failures=10_000)
+    await loop._answer(lost, "agt_x", "client:0123456789abcdef", _Handler(), _call(50))  # type: ignore[arg-type]  # pyright: ignore[reportPrivateUsage]
+    assert lost.sent == [] and recorded == [("workspace_agent_reply", "reply_failed")]
+
+
+def test_the_pinned_pool_has_room_for_every_agent_poll_and_its_replies() -> None:
+    from finishup.client.rest_client import (
+        _PinMismatch,  # pyright: ignore[reportPrivateUsage]
+        _PinnedTransport,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.service.http_api import MAX_AGENTS_PER_KEY
+
+    transport = _PinnedTransport("sha256:" + "0" * 64, _PinMismatch())
+    pool = transport._pool  # pyright: ignore[reportPrivateUsage]
+    # One long-poll per registered workspace, the four calls the agent answers at once, and its
+    # registrations, with room to spare: the size httpx gives every unpinned client.
+    assert pool._max_connections >= MAX_AGENTS_PER_KEY + agent_module._MAX_CONCURRENT_CALLS + 1  # pyright: ignore[reportPrivateUsage]
+    assert pool._max_connections == 100  # pyright: ignore[reportPrivateUsage]

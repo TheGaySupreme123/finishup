@@ -107,6 +107,11 @@ _CANCEL_SECONDS: Final = 2.0
 _BUSY_FIRST_SECONDS: Final = 0.25
 _BUSY_MAX_SECONDS: Final = 2.0
 _BUSY_TOTAL_SECONDS: Final = 30.0
+# httpx's own default pool, for the pinned transport too: the workspace agent shares one client
+# across every noted workspace's long-poll and its replies.
+_POOL_CONNECTIONS: Final = 100
+_POOL_KEEPALIVE: Final = 20
+_KEEPALIVE_SECONDS: Final = 5.0
 _PRIVATE: Final = object()
 _WORKFLOW: Final = frozenset(
     {
@@ -233,8 +238,9 @@ class _PinnedTransport(httpx.AsyncHTTPTransport):
             ssl_context=context,
             http1=True,
             http2=False,
-            max_connections=10,
-            keepalive_expiry=30.0,
+            max_connections=_POOL_CONNECTIONS,
+            max_keepalive_connections=_POOL_KEEPALIVE,
+            keepalive_expiry=_KEEPALIVE_SECONDS,
             network_backend=_pinned_backend(bytes.fromhex(pin.removeprefix("sha256:")), mismatch),
         )
 
