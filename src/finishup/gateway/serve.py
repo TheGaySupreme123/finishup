@@ -12,12 +12,19 @@ without a handshake of its own — each session forwards its client's hello.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
+import socket
 import ssl
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-__all__ = ["GatewayConfigError", "parse_listen", "run_gateway"]
+if TYPE_CHECKING:
+    import uvicorn
+
+    from finishup.gateway.app import GatewayApp
+
+__all__ = ["GatewayConfigError", "gateway_server", "parse_listen", "run_gateway"]
 
 _STALE_EXIT: Final = 21
 
@@ -55,6 +62,26 @@ def parse_listen(value: str) -> tuple[str, int]:
 
 def _loopback(host: str) -> bool:
     return host == "localhost" or ipaddress.ip_address(host).is_loopback
+
+
+def gateway_server(config: uvicorn.Config, state: GatewayApp) -> uvicorn.Server:
+    """A uvicorn server that ends every gateway session first when it is told to stop.
+
+    A connector keeps a frames long-poll open for up to 25 s. uvicorn closes sessions only after
+    its graceful wait, so a stop (Ctrl-C or SIGTERM) used to sit out that wait and then cancel the
+    open poll with an error traceback. Closing the sessions first answers every open poll at once,
+    each connector sees its session end, and the server exits without cancelling anything.
+    """
+
+    import uvicorn
+
+    class _GatewayServer(uvicorn.Server):
+        async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+            with contextlib.suppress(Exception):
+                await state.sessions.close_all()
+            await super().shutdown(sockets=sockets)
+
+    return _GatewayServer(config)
 
 
 def run_gateway(
@@ -96,7 +123,7 @@ def run_gateway(
         if server is not None:
             server.should_exit = True
 
-    _state, application = build_gateway_app(
+    state, application = build_gateway_app(
         keys_directory=state_dir() / GATEWAY_DIR_NAME,
         connect_upstream=ensure_service_running,
         audit=FileAuditSink(log_dir() / "gateway-audit.jsonl"),
@@ -116,9 +143,10 @@ def run_gateway(
         log_level="warning",
         lifespan="on",
         timeout_keep_alive=30,
-        # A long-poll holds a request up to 25 s; shutdown does not wait for it to finish.
+        # A long-poll holds a request up to 25 s; shutdown ends the sessions first (above), and
+        # never waits longer than this for a request still running.
         timeout_graceful_shutdown=5,
     )
-    server = uvicorn.Server(config)
+    server = gateway_server(config, state)
     server.run()
     return _STALE_EXIT if stale else 0
