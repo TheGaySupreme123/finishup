@@ -344,7 +344,7 @@ async def test_a_call_past_its_deadline_is_answered_once_and_keeps_its_slot() ->
 @pytest.mark.anyio
 async def test_a_raising_agent_is_one_closed_failure() -> None:
     def explode(_call: WorkspaceCall) -> WorkspaceReply:
-        raise RuntimeError("cannot read /home/dev/secret.txt")
+        raise RuntimeError("cannot read /srv/dev/secret.txt")
 
     stream = _FakeStream()
     client = _client(stream, _Agent(reply=explode))
@@ -433,7 +433,7 @@ def test_a_binding_holds_a_claim_and_optionally_an_agent() -> None:
 @pytest.mark.anyio
 async def test_a_hello_names_a_path_or_a_claim_never_both() -> None:
     binding = ClientWorkspaceBinding(_CLAIM)
-    locator = WorkspaceLocator("/home/dev/project")
+    locator = WorkspaceLocator("/srv/dev/project")
     for connect in (connect_service, connect_service_on_demand):
         with pytest.raises(ValueError, match="workspace_binding_conflict"):
             await connect(

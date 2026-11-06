@@ -111,7 +111,7 @@ def test_a_remote_endpoint_that_cannot_be_forwarded_is_refused(
 
 
 def test_socket_paths_include_openssh_s_temporary_suffix() -> None:
-    assert ssh_root_fits(Path("/home/owner/.local/state/finishup/servers/t_01234567"))
+    assert ssh_root_fits(Path("/srv/owner/.local/state/finishup/servers/t_01234567"))
     deep = Path("/" + "d" * 80)
     assert len(str(deep / "run" / "m")) <= 103 < len(str(deep / "run" / "m")) + 17
     assert not ssh_root_fits(deep)

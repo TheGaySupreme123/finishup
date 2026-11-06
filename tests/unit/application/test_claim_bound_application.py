@@ -62,7 +62,7 @@ def test_a_claim_bound_connection_reads_only_its_handle() -> None:
 
 def test_a_claim_bound_start_records_only_its_own_handle() -> None:
     assert _require(_start(_HANDLE), _CLAIM) is None
-    for reference in ("/home/dev/project", "client:fedcba9876543210", "project"):
+    for reference in ("/srv/dev/project", "client:fedcba9876543210", "project"):
         with pytest.raises(PublicOperationError) as caught:
             _require(_start(reference), _CLAIM)
         error = caught.value

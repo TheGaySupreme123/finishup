@@ -142,7 +142,7 @@ def test_a_hello_naming_a_local_path_never_leaves_this_machine(home: Path) -> No
         client, local = _pair()
         serving = asyncio.create_task(connector._serve_local(local))  # pyright: ignore[reportPrivateUsage]
         await client.send_all(
-            _hello(workspace_locator={"schema_version": "1.0.0", "path": "/home/owner/repo"})
+            _hello(workspace_locator={"schema_version": "1.0.0", "path": "/srv/owner/repo"})
         )
         assert await _closed_unanswered(client)
         await serving

@@ -186,23 +186,23 @@ _ARGUMENTS: dict[WorkspaceOperation, tuple[object, ...]] = {
             ("/data/inputs",),
             ("/data/inputs/spec.md", "/data/inputs/"),
             4,
-            ("/home/dev/repo",),
+            ("/srv/dev/repo",),
             frozenset({"/data/inputs/a"}),
         ),
     ),
     WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS: (
         SnapshotOutsideInputsArguments(
-            ("/data/inputs",), ("/data/inputs/spec.md",), 16, 262_144, 5_000, ("/home/dev/repo",)
+            ("/data/inputs",), ("/data/inputs/spec.md",), 16, 262_144, 5_000, ("/srv/dev/repo",)
         ),
     ),
     WorkspaceOperation.READ_DECLARED_TEST: (
-        ReadDeclaredTestArguments("/srv/tests/test_spec.py", ("/home/dev/repo",)),
+        ReadDeclaredTestArguments("/srv/tests/test_spec.py", ("/srv/dev/repo",)),
     ),
     WorkspaceOperation.READ_TEXT_BENEATH: (
-        ReadTextBeneathArguments("/home/dev/repo", "src/app.py", ()),
-        ReadTextBeneathArguments("/home/dev/repo", "", ()),
+        ReadTextBeneathArguments("/srv/dev/repo", "src/app.py", ()),
+        ReadTextBeneathArguments("/srv/dev/repo", "", ()),
     ),
-    WorkspaceOperation.LIST_BENEATH: (ListBeneathArguments("/home/dev/repo", "src", (), 128),),
+    WorkspaceOperation.LIST_BENEATH: (ListBeneathArguments("/srv/dev/repo", "src", (), 128),),
     WorkspaceOperation.LSTAT_CANDIDATES: (
         LstatCandidatesArguments(("/data/inputs", "/data/inputs/spec.md")),
     ),
@@ -653,7 +653,7 @@ def test_approved_check_runs_round_trip(output: bytes, redacted: bool) -> None:
 
 def test_the_exact_key_set_is_the_only_accepted_shape() -> None:
     spec = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.READ_TEXT_BENEATH]
-    wire = spec.encode_arguments(ReadTextBeneathArguments("/home/dev/repo", "src/app.py"))
+    wire = spec.encode_arguments(ReadTextBeneathArguments("/srv/dev/repo", "src/app.py"))
     for broken in (
         {**wire, "extra": True},
         {key: value for key, value in wire.items() if key != "excluded"},
@@ -669,7 +669,7 @@ def test_the_exact_key_set_is_the_only_accepted_shape() -> None:
 
 def test_handles_are_refused_unless_they_are_the_claimed_shape() -> None:
     spec = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.READ_TASK_BASE]
-    for handle in ("/home/dev/repo", "client:XYZ", "client:0123456789abcdef0", _REMOTE):
+    for handle in ("/srv/dev/repo", "client:XYZ", "client:0123456789abcdef0", _REMOTE):
         with pytest.raises(WorkspaceCodecError):
             spec.decode_arguments({"workspace": handle})
     observation = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.INSPECT]
@@ -828,12 +828,12 @@ def test_workspace_handles_come_from_the_commitment_and_the_worktree() -> None:
     # Linked worktrees of one repository share the commitment, never a handle.
     assert workspace_handle_for_claim(commitment, "sha256:" + "2" * 64) != handle
     assert workspace_handle_for_claim("hmac-sha256:" + "e" * 64, worktree) != handle
-    for invalid in ("client:0123456789ABCDEF", "client:", "/home/dev/repo", None):
+    for invalid in ("client:0123456789ABCDEF", "client:", "/srv/dev/repo", None):
         assert not workspace_handle_valid(invalid)
     with pytest.raises(ValueError, match="workspace_commitment_invalid"):
         workspace_handle_for_claim("sha256:" + "0" * 64, worktree)
     with pytest.raises(ValueError, match="workspace_worktree_invalid"):
-        workspace_handle_for_claim(commitment, "/home/dev/repo")
+        workspace_handle_for_claim(commitment, "/srv/dev/repo")
     first, second = new_remote_workspace_handle(), new_remote_workspace_handle()
     assert first != second
     assert remote_workspace_handle_valid(first) and remote_workspace_handle_valid(second)
@@ -858,7 +858,7 @@ def test_lstat_facts_reproduce_the_original_stat_times(tmp_path: Path) -> None:
 
 def test_codec_errors_are_closed_and_name_no_value() -> None:
     with pytest.raises(ValueError, match="workspace_codec_reason_invalid"):
-        WorkspaceCodecError("/home/dev/secret")
+        WorkspaceCodecError("/srv/dev/secret")
     spec = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.READ_DECLARED_TEST]
     with pytest.raises(WorkspaceCodecError) as refused:
         spec.decode_arguments({"excluded": [], "location": "relative/secret-name.py"})

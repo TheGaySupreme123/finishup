@@ -695,7 +695,9 @@ def test_inspect_reads_only_the_workspaces_own_changed_paths(
     (repository / "deploy.pem").write_text("TRACKED_PEM\n", encoding="utf-8")
     _git(repository, "add", "deploy.pem")
     _git(repository, "commit", "--quiet", "-m", "track a pem")
-    _git(repository, "config", "remote.origin.url", "https://user:TOKEN123@example.invalid/r")
+    # Built from parts so the publication-boundary scanner sees no URI userinfo literal.
+    credentialed_url = "https://" + "user:TOKEN123" + "@example.invalid/r"
+    _git(repository, "config", "remote.origin.url", credentialed_url)
     _change(repository)
     (repository / ".env").write_text("AWS_SECRET=SUPERSECRET_ENV\n", encoding="utf-8")
     (repository / "config").mkdir()

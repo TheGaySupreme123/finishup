@@ -18,7 +18,7 @@ from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest, public_model_to_wire
 
 _HANDLE = "client:0123456789abcdef"
-_PATH = "/home/dev/private-project"
+_PATH = "/srv/dev/private-project"
 
 
 def _start(workspace_ref: str | None = _PATH) -> StartRequest:
@@ -96,7 +96,7 @@ def test_the_rewritten_request_differs_only_in_its_workspace_ref() -> None:
     )
 
 
-@pytest.mark.parametrize("handle", [None, "client:XYZ", "/home/dev/private-project"])
+@pytest.mark.parametrize("handle", [None, "client:XYZ", "/srv/dev/private-project"])
 @pytest.mark.parametrize("workspace_ref", [_PATH, None, "label"])
 def test_no_handle_means_nothing_is_sent_and_the_locked_vault_is_named(
     handle: str | None, workspace_ref: str | None

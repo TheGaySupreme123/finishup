@@ -125,7 +125,7 @@ def _hello(*, agent: bool = False, locator: bool = False, digest: str | None = N
         "schema_manifest_digest": digest or load_schema_catalog().manifest_digest,
     }
     if locator:
-        hello["workspace_locator"] = {"schema_version": "1.0.0", "path": "/home/owner/repo"}
+        hello["workspace_locator"] = {"schema_version": "1.0.0", "path": "/srv/owner/repo"}
     if agent:
         hello["workspace_claim"] = {
             "schema_version": "1.0.0",
