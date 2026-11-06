@@ -98,6 +98,7 @@ COMMAND_SCOPES: Final[Mapping[str, CommandScope]] = MappingProxyType(
         "provider": "server_host",
         "recommend": "server_host",
         "restore": "server_host",
+        "service api-key": "server_host",
         "service auto-unlock": "server_host",
         "service diagnostics": "server_host",
         "service endpoint": "server_host",

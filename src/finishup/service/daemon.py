@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import os
@@ -11,12 +12,12 @@ import signal
 import stat
 import struct
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, Never, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Never, Protocol, cast
 
 import anyio
 from pydantic import BaseModel
@@ -87,6 +88,7 @@ from finishup.config.paths import (
     bundle_root,
     ensure_owner_only_dir,
     read_runtime_pin,
+    runtime_dir,
     service_generation_path,
     state_dir,
     unlock_throttle_path,
@@ -253,6 +255,9 @@ from finishup.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRout
 from finishup.service.startup_failure import ServiceStartupError, record_startup_failure
 from finishup.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from finishup.service.vault import VaultError, VaultMode, VaultService
+
+if TYPE_CHECKING:
+    from finishup.service.http_api import NetworkApiBindings
 
 __all__ = ["ServiceComposition", "ServiceDaemon", "main", "run_service"]
 
@@ -698,6 +703,14 @@ class _Closable(Protocol):
     async def close(self) -> None: ...
 
 
+class _NetworkApiServer(Protocol):
+    """The optional network API (``service.http_api.NetworkApiServer``, ADR-051)."""
+
+    async def start(self, bindings: NetworkApiBindings) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 class _SyncClosable(Protocol):
     def close(self) -> None: ...
 
@@ -798,6 +811,9 @@ class ServiceComposition:
     observation_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # One-use owner receipt views minted only by the human-control ceremony (ADR-009 round 3).
     owner_view_grants: OwnerViewGrants = field(default_factory=OwnerViewGrants, repr=False)
+    # The service's own network API, bound only when ``[network]`` asks for it (ADR-051). None
+    # keeps the service exactly as before: no network listener of any kind.
+    network_api: _NetworkApiServer | None = None
 
     def __repr__(self) -> str:
         return "ServiceComposition(<redacted>)"
@@ -1068,7 +1084,10 @@ class ServiceDaemon:
         heartbeat = asyncio.create_task(watchdog.run())
         stop_wait = asyncio.create_task(self._stop_event.wait())
         stop_reason = "shutdown_requested"
+        network = self._composition.network_api
         try:
+            if network is not None:
+                await network.start(self._network_api_bindings())
             done, _pending = await asyncio.wait(
                 {idle, stop_wait}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -1077,6 +1096,10 @@ class ServiceDaemon:
                 stop_reason = "idle_shutdown"
         finally:
             try:
+                if network is not None:
+                    # Stop answering the network before the drain; its calls end cancelled.
+                    with contextlib.suppress(Exception):
+                        await network.close()
                 await self.stop(stop_reason)
             finally:
                 watchdog.close()
@@ -1086,6 +1109,48 @@ class ServiceDaemon:
                 for task in (idle, control, human, stop_wait, heartbeat):
                     if task is not None:
                         await asyncio.gather(task, return_exceptions=True)
+
+    def _network_api_bindings(self) -> NetworkApiBindings:
+        """What this daemon gives its network API: status, dispatch and idle-hold (ADR-051).
+
+        INTEGRATION POINT — wired after split/client and split/server merge. Then
+        ``claim_resolver=self._resolve_claim_context`` keys a request's workspace claim (never a
+        path), ``agent_hub=self._composition.workspace_hub`` lets REST workspace agents register
+        their in-process channels, and ``dispatch`` runs inside
+        ``service.workspace_hub.live_call_scope()`` so a live call waits the shorter agent bound.
+        Until then a claim header is accepted but binds no repository, and agent registration
+        answers ``workspace_agent_unavailable``.
+        """
+
+        from finishup.service.http_api import NetworkApiBindings
+
+        async def dispatch(
+            client_kind: ControlClientKind,
+            request: ControlCallRequest,
+            context: RepositoryPrivacyContext | None,
+        ) -> ControlResult:
+            # Presentation facts never come from the network: the fail-safe machine-readable
+            # projection, exactly as a hello without a presentation context gets.
+            return await self.dispatch(
+                client_kind,
+                request,
+                repository_privacy_context=context,
+                _defer_stop=True,
+            )
+
+        @contextlib.asynccontextmanager
+        async def activity() -> AsyncGenerator[None]:
+            # One network request, or one registered agent, holds idle shutdown like one open
+            # control connection does.
+            lifecycle = self._composition.lifecycle
+            await lifecycle.client_connected()
+            try:
+                yield
+            finally:
+                with contextlib.suppress(LifecycleError):
+                    await lifecycle.client_disconnected()
+
+        return NetworkApiBindings(status=self.status, dispatch=dispatch, activity=activity)
 
     async def dispatch(
         self,
@@ -4828,6 +4893,7 @@ async def _production_composition(
     )
     secret_memory: LocalSecretMemory | None = None
     vault: VaultService | None = None
+    network_api: _NetworkApiServer | None = None
     try:
         instance = await lifecycle.acquire_singleton()
         reconciled_marker = marker_store.load()
@@ -4963,6 +5029,17 @@ async def _production_composition(
         )
         privacy_relay = _PrivacyPolicyAppRelay()
         owner_view_grants = OwnerViewGrants()
+        if config.network is not None:
+            # ADR-051: bound under the singleton, before any endpoint is published, so a listener
+            # that cannot be bound fails this start with its closed configuration reason.
+            from finishup.service.api_keys import API_KEYS_DIRECTORY, ApiKeyStore
+            from finishup.service.http_api import NetworkApiServer
+
+            network_api = NetworkApiServer.bind(
+                config.network,
+                keys=ApiKeyStore(paths.state / API_KEYS_DIRECTORY),
+                runtime=runtime_dir(),
+            )
         human = HumanControlService(
             clock=clock,
             lifecycle=lifecycle,
@@ -5010,8 +5087,11 @@ async def _production_composition(
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
             owner_view_grants=owner_view_grants,
+            network_api=network_api,
         )
     except BaseException:
+        if network_api is not None:
+            await network_api.close()
         await listeners.close()
         if vault is not None:
             await vault.close()

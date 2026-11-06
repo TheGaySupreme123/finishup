@@ -43,6 +43,10 @@ MODULE_SIDES: Final[dict[str, Side]] = {
     "finishup.service": "SERVER",
     "finishup.service.control_protocol": "SHARED",
     "finishup.service.confidential_protocol": "SHARED",
+    # The network API's wire contract and its key file (ADR-051, server-native approach): the
+    # service and the server-host ``service api-key`` commands share the file format.
+    "finishup.service.network_protocol": "SHARED",
+    "finishup.service.api_keys": "SHARED",
     "finishup.service.client": "CLIENT",
     "finishup.service.confidential_client": "CLIENT",
     # Application services are server-side except the client logic that installs, connects, and

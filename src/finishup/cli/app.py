@@ -43,6 +43,7 @@ from finishup.cli.exits import (
     lifecycle_public_code,
     remediation_message,
 )
+from finishup.cli.network_api import api_key_app
 from finishup.cli.project import project_app
 from finishup.cli.render import (
     bounded_failure_line,
@@ -246,6 +247,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(instance_app, name="instance")
 service_app.add_typer(auto_unlock_app, name="auto-unlock")
 service_app.add_typer(recovery_app, name="recovery")
+service_app.add_typer(api_key_app, name="api-key")
 app.add_typer(ai_app, name="ai")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(credential_app, name="credential")
@@ -2669,6 +2671,32 @@ def _linger_state() -> Literal["enabled", "disabled", "unknown", "not_applicable
     return "enabled" if (directory / user).exists() else "disabled"
 
 
+def _configured_network_endpoint(runtime: Path) -> JsonValue:
+    """The network API this service host's configuration asks for, or ``None`` (ADR-051).
+
+    An SSH client forwards to ``api_socket``; ``listen`` are the TCP addresses and ``tls`` says
+    whether they speak TLS. A configuration that cannot be read fails closed with its reason.
+    """
+
+    from finishup.config.load import load_config
+    from finishup.config.models import ConfigError
+    from finishup.service.network_protocol import API_SOCKET_NAME
+
+    try:
+        config = load_config({}, os.environ, None)
+    except ConfigError as error:
+        _stderr(f"config_invalid: {error.reason_code}")
+        raise typer.Exit(2) from None
+    network = config.network
+    if network is None:
+        return None
+    return {
+        "api_socket": str(runtime / API_SOCKET_NAME) if network.api_socket else None,
+        "listen": list(network.listen),
+        "tls": network.tls_cert is not None,
+    }
+
+
 @service_app.command("endpoint")
 def service_endpoint(json_output: _JSON = False) -> None:
     """Show where this server host's control endpoint is and how long it lives.
@@ -2705,6 +2733,10 @@ def service_endpoint(json_output: _JSON = False) -> None:
         "runtime_dir_session_bound": _runtime_dir_session_bound(runtime),
         "linger": _linger_state(),
     }
+    network = _configured_network_endpoint(runtime)
+    if network is not None:
+        # Present only when ``[network]`` is configured, so a plain local report keeps its bytes.
+        report["network"] = network
     if json_output:
         _stdout_json(cast(JsonValue, report))
     else:

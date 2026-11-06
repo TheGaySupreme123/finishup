@@ -87,6 +87,8 @@ __all__ = [
     "read_control_frame",
     "schema_for_method",
     "server_handshake",
+    "service_status_from_wire",
+    "service_status_wire",
     "validate_request",
     "validate_result",
     "workspace_call_frame",
@@ -1004,6 +1006,18 @@ def _status_wire(status: ServiceStatus) -> JsonObject:
     if type(status) is not ServiceStatus:
         raise TypeError("service_status_invalid")
     return _validated_wire(status, "service-status")
+
+
+def service_status_wire(status: ServiceStatus) -> JsonObject:
+    """The exact ``service-status`` wire object a hello-result carries for ``status``."""
+
+    return _status_wire(status)
+
+
+def service_status_from_wire(value: object) -> ServiceStatus:
+    """Validate one ``service-status`` wire object and return its typed model."""
+
+    return _service_status_from_wire(_validated_wire(value, "service-status"))
 
 
 def _allowed_for(kind: ControlClientKind) -> tuple[ControlMethod, ...]:
