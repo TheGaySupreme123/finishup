@@ -371,17 +371,20 @@ def folders_reader(
 
     The workspace agent of a connection is built with one; it reads the record on every outside
     read, in the agent's worker thread, so a removal takes effect at the next call. The target is
-    fixed here, when the agent is built: ``root``, or by default the root this process uses now.
+    fixed here, when the agent is built: ``root``, or the root this process uses now, which is
+    taken only with ``claim_salt`` (the salt the connection's claim was made under) and only when
+    it is the target whose salt that is, since this process's selection may name another server.
     A later change of this process's selection (``server use``, or another target probed under
-    ``selection_override``) therefore never makes the agent read another target's record. With
-    ``claim_salt`` (the salt the connection's claim was made under) the target must also be the
-    one whose salt that is. A root that is not a remote target, a target record that cannot be
-    read and a salt that does not match all bind a reader that admits nothing. Never raises.
+    ``selection_override``) therefore never makes the agent read another target's record. Neither
+    ``root`` nor ``claim_salt``, a root that is not a remote target, a target record that cannot
+    be read and a salt that does not match all bind a reader that admits nothing. Never raises.
     """
 
     from finishup.client.targets import read_target
     from finishup.config.paths import active_root
 
+    if root is None and claim_salt is None:
+        return _admit_nothing  # the selection alone never says which server the agent serves
     try:
         where = active_root() if root is None else root
         record = None if where is None else read_target(where)
