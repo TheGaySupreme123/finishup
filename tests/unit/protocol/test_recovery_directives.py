@@ -596,6 +596,17 @@ class TestWorkspaceBindingAndServerTargetReasons:
         )
         assert error.safe_details == {"reason_code": reason, "continuation": token}
 
+    def test_the_handle_directive_names_a_start_an_agent_can_send(self) -> None:
+        # An agent cannot know the connection's handle; it can send the pair, and the FinishUP
+        # MCP bridge and CLI put the handle in place of the path. A start with no pair at all is
+        # refused too, so the directive must not speak only of a path that was sent.
+        entry = directive_for("workspace_handle_required")
+        assert entry is not None
+        assert "external_ref" in entry.directive
+        assert "canonical absolute workspace_ref" in entry.directive
+        assert "naming an absolute" not in entry.directive
+        assert entry.nudge is not None and "in place of" in entry.nudge
+
     def test_remote_connection_phases_are_their_own_reason_codes(self) -> None:
         from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
 

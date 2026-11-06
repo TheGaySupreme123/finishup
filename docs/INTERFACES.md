@@ -4875,7 +4875,7 @@ wait `unavailable`.
 | Token | Raised when | Recovery |
 |---|---|---|
 | `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator` | client defect; reconnect with one binding |
-| `workspace_ref_not_portable` | a claim-bound `start` names an absolute `workspace_ref` | send the connection's `workspace_handle` |
+| `workspace_ref_not_portable` | a claim-bound `start` that opens a session names an absolute `workspace_ref`, or none | send the `workspace_ref` + `external_ref` pair; the MCP bridge and CLI send the connection's `workspace_handle` in place of the path (a hand-written client sends the handle) |
 | `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | keep the session open or run `finishup server connect`; the receipt records the gap |
 | `workspace_agent_refused` | the agent refused an operation (outside its claimed root or admitted roots, not in the owner-approved check policy, or unknown) | the refusal stands; do not resend it unchanged |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |

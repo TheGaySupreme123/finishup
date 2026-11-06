@@ -734,12 +734,12 @@ _DIRECTIVES: Final = (
     RecoveryDirective(
         token="workspace_handle_required",
         directive=(
-            "This server cannot read paths on your machine, so a start naming an absolute "
-            "workspace path was refused before any write. Set workspace_ref to the client: "
-            "handle of this connection and send the start once under a NEW request_id."
+            "This server names a new session's workspace only by this connection's client: "
+            "handle, so the start was refused before any write. Send it once under a NEW "
+            "request_id with an external_ref and the canonical absolute workspace_ref."
         ),
         guidance_uri=_WORKFLOW_ERRORS,
-        nudge="The FinishUP MCP bridge and CLI send the handle for you.",
+        nudge="The FinishUP MCP bridge and CLI send the handle in place of that path.",
     ),
     RecoveryDirective(
         token="workspace_agent_reconnect",

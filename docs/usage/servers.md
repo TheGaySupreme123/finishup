@@ -275,7 +275,7 @@ repeated safely.
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. | Start it on the server instead. |
 | `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer answered in time. | Keep the agent session open (or run `finishup server connect NAME --agent`) and check again; the receipt names what was not read. |
 | `workspace_agent_refused` | The workspace agent refused a request: outside your project, outside the folders you admitted, or a check command not on your approved list. | Nothing to repair unless you meant to admit that folder or check. |
-| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it. |
+| `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path, or without naming its project. | Start it with the project folder and a name for the work (`workspace_ref` and `external_ref`); FinishUP's own tools send the right value in place of the folder. A hand-written client must send the workspace handle the server gave it. |
 | `workspace_binding_conflict` | A client sent two different ways of naming the project. | Report it as a bug. |
 
 In the terminal interface, the header shows which server is in use, and `/server` lists your
