@@ -13,7 +13,7 @@ import pytest
 from finishup.cli import app as app_module
 from finishup.cli import observe_hooks as observe_hooks_module
 from finishup.cli.render import render_error_recovery_lines
-from finishup.ports.control import ControlError
+from finishup.ports.control import ControlError, ServiceState, ServiceStatus
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest
 
@@ -129,6 +129,26 @@ def test_auto_attach_sends_nothing_without_a_handle(tmp_path: Path) -> None:
     outcome = _auto_start(tmp_path, client)
     assert client.sent == [] and client.closed
     assert outcome == observe_hooks_module.AutoAttachOutcome(None, "auto_attach_refused")
+
+
+def test_auto_attach_names_a_locked_remote_vault(tmp_path: Path) -> None:
+    """A locked server binds no handle: the hook's diagnostic is vault_locked, nothing sent."""
+
+    client = _Client("client_claim", None)
+    client.hello_service_status = ServiceStatus(  # pyright: ignore[reportAttributeAccessIssue]
+        protocol_version="1.0",
+        service_version="0.3.0",
+        service_instance_id="svc_00000000-0000-4000-8000-000000000061",
+        service_generation="2",
+        state=ServiceState.LOCKED,
+        state_reason="passphrase_required",
+        vault_mode="passphrase",
+        capabilities=("confidential_ingress",),
+        session_monitor="unavailable",
+    )
+    outcome = _auto_start(tmp_path, client)
+    assert client.sent == [] and client.closed
+    assert outcome == observe_hooks_module.AutoAttachOutcome(None, "vault_locked")
 
 
 def test_a_stand_in_connection_without_binding_facts_is_unchanged(tmp_path: Path) -> None:

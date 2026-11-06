@@ -117,3 +117,37 @@ async def test_without_a_handle_nothing_is_sent_and_the_agent_gets_the_typed_ref
     assert details["reason_code"] == "workspace_ref_not_portable"
     assert details["continuation"] == "workspace_handle_required"
     assert "private-project" not in repr(result)
+
+
+@pytest.mark.anyio
+async def test_a_locked_remote_vault_is_named_as_such_and_nothing_is_sent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A locked server binds no handle; the agent is told to have its vault unlocked there."""
+
+    import finishup.client.targets as targets
+    from finishup.ports.control import ServiceState, ServiceStatus
+
+    client = _Client("client_claim", None)
+    client.hello_service_status = ServiceStatus(  # pyright: ignore[reportAttributeAccessIssue]
+        protocol_version="1.0",
+        service_version="0.3.0",
+        service_instance_id="svc_00000000-0000-4000-8000-000000000071",
+        service_generation="2",
+        state=ServiceState.LOCKED,
+        state_reason="passphrase_required",
+        vault_mode="passphrase",
+        capabilities=("confidential_ingress",),
+        session_monitor="unavailable",
+    )
+    _wire(monkeypatch, tmp_path, client)
+    monkeypatch.setattr(targets, "active_target_is_remote", lambda: True)
+    result = await bridge.dispatch_start(_start_body(), bridge.build_bridge_runtime())
+    assert client.sent == []
+    assert getattr(result, "isError") is True
+    structured = cast(dict[str, object], getattr(result, "structuredContent"))
+    error = cast(dict[str, object], structured["error"])
+    assert error["code"] == "VAULT_LOCKED"
+    details = cast(dict[str, object], error["safe_details"])
+    assert details["continuation"] == "remote_vault_unlock_required"
+    assert "private-project" not in repr(result)

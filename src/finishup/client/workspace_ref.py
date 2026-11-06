@@ -13,7 +13,13 @@ from __future__ import annotations
 
 from typing import Final, cast
 
-from finishup.ports.control import WORKSPACE_BINDINGS, WorkspaceBinding
+from finishup.ports.control import (
+    WORKSPACE_BINDINGS,
+    ControlError,
+    ServiceState,
+    ServiceStatus,
+    WorkspaceBinding,
+)
 from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from finishup.protocol.models import StartRequest, public_model_to_wire
@@ -103,6 +109,11 @@ def start_request_for_connection(request: StartRequest, connection: object) -> S
     the request goes out as written, exactly as before. A connection whose ``transport`` is not
     the local ``unix`` endpoint reaches a server on another machine: unbound or not, it never
     carries an absolute path.
+
+    A server whose vault is locked binds no handle, so the path could not be sent for that
+    reason alone: when the connection's hello says the service is locked, the refusal is the
+    service's own ``vault_locked`` (each surface then names the remote unlock), not a missing
+    handle. Nothing is sent either way.
     """
 
     binding = getattr(connection, "workspace_binding", "none")
@@ -110,9 +121,15 @@ def start_request_for_connection(request: StartRequest, connection: object) -> S
     transport = getattr(connection, "transport", "unix")
     if type(binding) is not str or binding not in WORKSPACE_BINDINGS:
         binding = "none"
-    return portable_start_request(
-        request,
-        workspace_binding=cast(WorkspaceBinding, binding),
-        workspace_handle=handle if type(handle) is str else None,
-        remote=type(transport) is str and transport != "unix",
-    )
+    try:
+        return portable_start_request(
+            request,
+            workspace_binding=cast(WorkspaceBinding, binding),
+            workspace_handle=handle if type(handle) is str else None,
+            remote=type(transport) is str and transport != "unix",
+        )
+    except WorkspaceRefNotPortable:
+        status = getattr(connection, "hello_service_status", None)
+        if type(status) is ServiceStatus and status.state is ServiceState.LOCKED:
+            raise ControlError("vault_locked") from None
+        raise
