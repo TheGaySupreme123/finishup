@@ -257,11 +257,22 @@ answers bounded `workspace_call`s on a connection that declared it.
 ### 6. Honest outcomes
 
 - **Provenance.** Every piece of workspace evidence obtained through the hub is labelled
-  `client_attested`. For a non-local service connection, the text, markdown, MCP and terminal
-  receipt renderings add one fixed line: "Workspace evidence was read on the client machine by the
+  `client_attested`. The fixed line is "Workspace evidence was read on the client machine by the
   FinishUP workspace agent and attested over the connection; the server did not read the
-  repository itself." Status and receipts name the producing service by `service_instance_id` and
-  a transport token.
+  repository itself." Two renderers carry it, and neither puts anything user-controlled beside it:
+  - The service ends the text and markdown receipt of a claim-bound task (its session opened with
+    a `client:` handle, a durable fact a replay reads alike) with a "Workspace evidence" section:
+    the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
+    client_claim).` The stored receipt document and JSON receipts are unchanged.
+  - The client ends every human status and receipt rendering of a claim-bound connection — CLI
+    text, the MCP status and receipt text, the terminal interface's task views and receipt — with
+    the fixed line (unless the rendered text already carries it) and `This client reached FinishUP
+    service <service_instance_id> (transport: <token>).` The id is the one the hello-result named.
+    The token is a closed set supplied by whoever builds the connection: `unix` (the default, a
+    service's local control endpoint), `connector` (a local relay that carries the connection on),
+    `ssh` (an SSH channel the client process opened) or `https` (HTTPS the client process speaks).
+    The MCP structured result, CLI JSON output and a local connection's output are unchanged
+    byte for byte.
 - **Typed gaps when no agent is reachable.** An operation that ends `workspace_agent_unavailable`
   fires the existing gap for what it would have read, and the new reason
   `workspace_agent_unavailable` joins the check-time change unavailable reasons

@@ -4623,11 +4623,33 @@ channel and reply bytes are bounded and the hub logs closed tokens only.
 `service/workspace_routing.py` wraps every workspace port and callable the composition injects: an
 absolute-path workspace goes to the unchanged local adapter, a `client:<16 hex>` handle to the hub.
 
-**Provenance.** Workspace evidence obtained through the hub is labelled `client_attested`. For a
-non-local service connection, the text, markdown, MCP and terminal receipt renderings add exactly
-one line: "Workspace evidence was read on the client machine by the FinishUP workspace agent and
-attested over the connection; the server did not read the repository itself." Status and receipts
-name the producing service by `service_instance_id` and a closed transport token.
+**Provenance.** Workspace evidence obtained through the hub is labelled `client_attested`
+(`domain.receipts.CLIENT_ATTESTED`). `domain.receipts.CLIENT_ATTESTED_WORKSPACE_LINE` is the one
+fixed line: "Workspace evidence was read on the client machine by the FinishUP workspace agent and
+attested over the connection; the server did not read the repository itself." Nothing
+user-controlled is ever rendered beside it.
+
+- Service side: the text and markdown receipt of a claim-bound task (its `SessionOpened`
+  `workspace_ref` is a `client:` handle) ends with `client_attested_receipt_block(
+  service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
+  FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
+  unchanged.
+- Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
+  ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
+  `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with
+  malformed facts raises `service_attribution_invalid` instead of dropping its provenance.
+  `ServiceAttribution(service_instance_id, transport).lines()` is the fixed line plus `This client
+  reached FinishUP service <svc_…> (transport: <token>).`; `attribution_lines(attribution, shown=)`
+  omits a line the rendered text already carries. `render_human_status` and
+  `render_human_receipt` (CLI), `result_from_public_model(..., attribution=)` for the MCP `status`
+  and `receipt` text and its canonical fallback, and the terminal interface's task views and
+  receipt (through `FinishUpRuntime`) end with these lines. Structured MCP content, CLI JSON and
+  every local connection's output are unchanged.
+- Transport tokens (`CONNECTION_TRANSPORTS`, closed): `unix` (default; a service's local control
+  endpoint), `connector` (a local relay process carries the connection on), `ssh` (an SSH channel
+  the client process opened) and `https` (HTTPS the client process speaks). Whoever builds the
+  connection supplies it: `ServiceClient(..., transport=)` through `_connected_client(...,
+  transport=)`, exposed as `ServiceClient.transport` beside `ServiceClient.service_instance_id`.
 
 **Closed tokens** (`protocol/errors.py` protocol reason codes, each with an ADR-030 directive in
 `protocol/recovery.py`):

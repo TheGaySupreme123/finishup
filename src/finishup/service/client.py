@@ -23,6 +23,7 @@ from finishup.adapters.control.unix_socket import (
     LocalControlTransportError,
     connect_control,
 )
+from finishup.client.attribution import CONNECTION_TRANSPORTS, ConnectionTransport
 from finishup.config.env import canonical_env_name
 from finishup.config.paths import (
     ISOLATED_ROOT_ENV_NAMES,
@@ -1051,6 +1052,7 @@ class ServiceClient(ControlClientPort):
         "_retired_rpc_ids",
         "_session",
         "_stream",
+        "_transport",
         "_write_lock",
     )
 
@@ -1062,11 +1064,14 @@ class ServiceClient(ControlClientPort):
         *,
         _token: object,
         workspace_agent: WorkspaceCallHandler | None = None,
+        transport: ConnectionTransport = "unix",
     ) -> None:
         if _token is not _PRIVATE_CONSTRUCTOR_TOKEN:
             raise TypeError("service_client_constructor_private")
         if type(client_kind) is not ControlClientKind:
             raise TypeError("control_client_kind_invalid")
+        if transport not in CONNECTION_TRANSPORTS:
+            raise ValueError("connection_transport_invalid")
         if workspace_agent is not None and (
             session.workspace_binding != "client_claim"
             or session.workspace_agent != workspace_agent.declaration
@@ -1079,6 +1084,7 @@ class ServiceClient(ControlClientPort):
         self._agent_executor: ThreadPoolExecutor | None = None
         self._stream = stream
         self._session = session
+        self._transport: ConnectionTransport = transport
         self._client_kind = client_kind
         self._pid = os.getpid()
         self._closed = False
@@ -1123,6 +1129,22 @@ class ServiceClient(ControlClientPort):
         """The ``client:`` handle a claim-bound connection's tasks name their workspace by."""
 
         return self._session.workspace_handle
+
+    @property
+    def service_instance_id(self) -> str:
+        """The instance id of the service that answered this connection's hello."""
+
+        return self._session.service_instance_id
+
+    @property
+    def transport(self) -> ConnectionTransport:
+        """How this connection reaches its service, a closed token (``finishup.client.attribution``).
+
+        Whoever builds the connection names it; ``unix`` for the local control endpoint. Human
+        renderings of a claim-bound connection's status and receipts show it (ADR-051).
+        """
+
+        return self._transport
 
     @property
     def last_project_request(self) -> PreparedProjectRequest | None:
@@ -1783,6 +1805,8 @@ def _connected_client(
     session: ControlSession,
     client_kind: ControlClientKind,
     workspace_agent: WorkspaceCallHandler | None = None,
+    *,
+    transport: ConnectionTransport = "unix",
 ) -> ServiceClient:
     return ServiceClient(
         stream,
@@ -1790,6 +1814,7 @@ def _connected_client(
         client_kind,
         _token=_PRIVATE_CONSTRUCTOR_TOKEN,
         workspace_agent=workspace_agent,
+        transport=transport,
     )
 
 

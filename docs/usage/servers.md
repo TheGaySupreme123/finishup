@@ -146,9 +146,12 @@ These do not leave: your project folder's full path, your API key, your vault pa
 the secure unlock and consent prompts, which only ever run on the server's own machine.
 
 Whether anything is then sent for AI-powered review is decided by the server's own privacy policy
-and repository permissions, exactly as on one computer. Receipts from a server on another machine
-carry one extra line saying that workspace evidence was read on your computer by the FinishUP
-workspace agent and attested over the connection.
+and repository permissions, exactly as on one computer. Receipts and task status from a server on
+another machine end with a line saying that workspace evidence was read on your computer by the
+FinishUP workspace agent and attested over the connection, and a line naming the FinishUP service
+that answered by its id (such as `svc_…`) and how this computer reached it (for example `ssh` or
+`https`). This holds in the `finishup` command, in what your agent reads, and in the terminal
+interface; JSON output does not carry these lines.
 
 ## The workspace agent
 
