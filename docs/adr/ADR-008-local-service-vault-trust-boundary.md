@@ -595,6 +595,7 @@ client machine.
 - **Idle lock with remote agent connections.** A remote service counts every open control
   connection as a connected client, which holds off its idle relock and idle stop. The MCP
   bridge's background workspace-agent connection is held only while its 15-minute lease runs
-  (renewed by the bridge's own calls and by rows it delivers) and never starts a stopped service;
+  (renewed by the bridge's own calls and by rows it delivers) and never asks for a stopped service
+  to be started (over HTTPS the gateway starts its service for any session, as for every client);
   `finishup server connect NAME --agent` holds one until the owner interrupts it, and says so when
   it starts. The workspace agent itself has no vault, unlock or policy authority.

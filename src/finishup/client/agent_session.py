@@ -20,9 +20,10 @@ or agent daemon on the client machine:
   target open in the foreground until interrupted (``run_foreground_agent``), for an owner who
   runs no MCP bridge.
 
-Nothing here starts a remote service in the background: the bridge's background connection
-dials only a service that is already running. Failures are closed reasons; no path, host or
-server text appears in an error or a log.
+The bridge's background connection never asks for a remote service to be started: it dials
+without the on-demand start, so over SSH a stopped service stays stopped (an HTTPS gateway starts
+its own service for any session it opens, as it does for every client). Failures are closed
+reasons; no path, host or server text appears in an error or a log.
 """
 
 from __future__ import annotations
@@ -198,7 +199,7 @@ def capture_pending(workspace: WorkspaceLocator, state: Path | None = None) -> b
 async def _connect_running(binding: ClientWorkspaceBinding) -> AgentConnection:
     from finishup.service.client import connect_service
 
-    # Only a service that is already running: background work never starts a remote service.
+    # No on-demand start: background work never asks for a remote service to be started.
     return await connect_service(ControlClientKind.CLI, workspace_binding=binding)
 
 
@@ -218,7 +219,7 @@ class BridgeBackgroundWork:
     ``drain_interval`` seconds:
 
     * while the lease runs, or while captured rows wait, one agent connection is kept (dialled
-      again if the server closed it, after a back-off; never by starting a service);
+      again if the server closed it, after a back-off; never with the on-demand start);
     * rows waiting for this workspace are delivered over that connection, and delivered rows
       renew the lease (the server verifies them through this agent);
     * once the lease has run out and nothing waits, the connection is closed.

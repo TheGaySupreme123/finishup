@@ -543,10 +543,12 @@ HTTPS and LOCALHOST PORT
     (`finishup.client.agent_session.BridgeBackgroundWork`) while the session is active: each
     service call the bridge makes, and each row it delivers, renews a 15-minute lease, and the
     connection is released when the lease has run out and nothing waits, so the server's idle
-    relock and idle stop still apply. It dials only a service that is already running, with a
-    back-off, and never starts one. Over the same connection it delivers what hooks captured and
-    could not deliver themselves (`ClientObservationDrain`), after a read-only probe of the
-    client's store, so an idle bridge opens no connection to deliver nothing.
+    relock and idle stop still apply. It dials with a back-off and without the on-demand start, so
+    over SSH it never starts a stopped service (an HTTPS gateway starts its own service for any
+    session it opens, for this connection as for every other). Over the same connection it
+    delivers what hooks captured and could not deliver themselves (`ClientObservationDrain`),
+    after a read-only probe of the client's store, so an idle bridge opens no connection to
+    deliver nothing.
   - *CLI-only use.* `finishup server connect NAME --agent` serves that target's workspace calls
     in the foreground (the target resolved as the root whatever is selected) until interrupted,
     and reconnects after the server closes the connection; while it runs the server counts it as
