@@ -212,7 +212,10 @@ resource ripple.
   on that commitment unchanged, so linked worktrees share a commitment, as they do locally. The server never resolves a filesystem path for a
   claim-bound connection. The composition flag `ServiceComposition.refuse_workspace_locators`
   (off by default) lets a network edge close any hello that names a locator. A claim on a locked
-  service binds no handle and no agent.
+  service binds no handle and no agent. Because a claim-bound connection's handle is fixed by its
+  hello, the claim hello re-opens a soft lock (idle, session lock, suspend) exactly as the
+  connection's first request would; a hard lock stays locked, and a locator hello never unlocks
+  (amended 2026-11-06 after the real-environment runs).
 - **Agent declaration.** The hello gains an optional `workspace_agent` `{schema_version: "1.0.0",
   operations: [...], max_reply_bytes: <int>}`: this connection answers workspace calls for its
   claimed workspace.

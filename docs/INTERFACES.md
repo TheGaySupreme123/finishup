@@ -4686,9 +4686,10 @@ inline_wait_seconds=5.0, background_wait_seconds=30.0)` is the service's registr
 channels. The daemon registers a channel for each agent-declaring, claim-bound connection at
 handshake (`register(*, handle, declaration, service_instance_id, service_generation, writer,
 worktree=None)`) and unregisters it on close (`unregister(channel)`), which fails its pending calls
-at once. A claim on a locked service binds no handle and no agent. Every channel under one handle
-serves one worktree: `register` refuses a channel whose `worktree` digest differs from a live
-channel's under the same handle (`ValueError("workspace_agent_worktree_conflict")`; the daemon
+at once. A claim on a locked service binds no handle and no agent; the claim hello first re-opens
+a soft lock (idle, session lock, suspend) as a first request would, while a hard lock keys
+nothing. Every channel under one handle serves one worktree: `register` refuses a channel whose
+`worktree` digest differs from a live channel's under the same handle (`ValueError("workspace_agent_worktree_conflict")`; the daemon
 records that token and closes the connection), and a call for a handle with no channel fails
 `no_agent` rather than reaching another worktree's agent. `async call(handle, operation, arguments, *,
 timeout_seconds, background=None)` sends one `workspace_call` under the session's write lock and
