@@ -153,9 +153,20 @@ class _ClaimClient:
     # The loop keeps only weak references to tasks: each answer in flight is held here until it
     # finishes, and ``close`` cancels and awaits any left.
     answering: set[asyncio.Task[None]] = field(default_factory=set["asyncio.Task[None]"])
+    # What an answer or the reader raised, other than cancellation or a closed connection. A
+    # failing fake agent must fail the test, so ``close`` raises the first one.
+    failures: list[BaseException] = field(default_factory=list[BaseException])
 
     def start(self) -> None:
         self.reader = asyncio.create_task(self._read())
+        self.reader.add_done_callback(self._keep_failure)
+
+    def _keep_failure(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and not isinstance(error, ConnectionError):
+            self.failures.append(error)
 
     async def _read(self) -> None:
         try:
@@ -166,6 +177,7 @@ class _ClaimClient:
                     task = asyncio.create_task(self._answer(parse_workspace_call(frame)))
                     self.answering.add(task)
                     task.add_done_callback(self.answering.discard)
+                    task.add_done_callback(self._keep_failure)
                     continue
                 result = parse_control_result(frame)
                 self.session.correlate(result)
@@ -205,6 +217,8 @@ class _ClaimClient:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self.failures:
+            raise self.failures[0]
 
 
 # --- repositories, spies and the service ---------------------------------------------------------
