@@ -493,6 +493,10 @@ async def build_service_client(
 
     Ordinary CLI work is repository-bound by default. Passing ``None`` explicitly remains the
     narrow escape hatch for callers whose operation genuinely has no workspace authority.
+
+    For a FinishUP server on another machine (ADR-051) the connection claims the workspace and
+    answers the server's workspace calls while the command runs (the CLI, the menu and the
+    terminal interface all connect here); the root's connector is started when none answers.
     """
 
     locator = (
@@ -505,6 +509,7 @@ async def build_service_client(
         workspace_locator=locator,
         projection_render_mode=projection_render_mode,
         output_is_controlling_tty=output_is_controlling_tty,
+        serve_workspace=True,
     )
 
 

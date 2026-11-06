@@ -1090,16 +1090,20 @@ async def _ensure_service_client(
                 continue
             connected_attempt: ServiceClient | None = None
             try:
+                # A server on another machine reads this workspace through the bridge's own
+                # connection while a call runs (ADR-051); a local root ignores the flag.
                 connected_attempt = (
                     await connect_service_on_demand(
                         ControlClientKind.MCP_BRIDGE,
                         workspace_locator=workspace_locator,
+                        serve_workspace=True,
                     )
                     if start_timeout_seconds is None
                     else await connect_service_on_demand(
                         ControlClientKind.MCP_BRIDGE,
                         workspace_locator=workspace_locator,
                         timeout_seconds=start_timeout_seconds,
+                        serve_workspace=True,
                     )
                 )
                 await connected_attempt.connect()
@@ -2521,7 +2525,7 @@ async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
         return None
     try:
         client = await connect_service(
-            ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator
+            ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator, serve_workspace=True
         )
     except Exception:
         return None

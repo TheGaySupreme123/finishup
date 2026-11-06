@@ -338,3 +338,124 @@ def test_cli_and_mcp_render_a_remote_phase_with_its_directive_only(home: Path, p
     assert details["reason_code"] == phase
     assert details["continuation"] == REASON_CODE_CONTINUATIONS[phase]
     assert "local" not in cast(str, public["message"]).lower()
+
+
+def _workspace(home: Path) -> WorkspaceLocator:
+    folder = home / "work" / "project"
+    folder.mkdir(parents=True, mode=0o700)
+    return WorkspaceLocator(path=str(folder))
+
+
+@pytest.mark.parametrize("serve_workspace", [False, True])
+def test_a_remote_connection_claims_its_workspace_and_records_it_for_the_connector(
+    remote: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_local_service: None,
+    serve_workspace: bool,
+) -> None:
+    from finishup.client.claimed_workspaces import claimed_workspace
+    from finishup.ports.control import WorkspaceClaim, WorkspaceIdentityKind
+
+    workspace = _workspace(home)
+    daemon = ScriptedDaemon()
+    spawned: list[Path] = []
+
+    async def exercise() -> None:
+        tasks = _fake_connector(monkeypatch, daemon.serve, spawned)
+        try:
+            # The plain connect starts the client-owned connector too; it is not a service.
+            client = await service_client.connect_service(
+                ControlClientKind.CLI, workspace_locator=workspace, serve_workspace=serve_workspace
+            )
+            try:
+                assert client.transport == "connector"
+                # This scripted server keys no claim (a locked vault answers the same way): the
+                # connection is claim-bound without a handle, so no workspace call can name it.
+                assert client.workspace_binding == "client_claim"
+                assert client.workspace_handle is None
+                await client.service_status()
+            finally:
+                await client.close()
+        finally:
+            _stop(tasks)
+
+    asyncio.run(exercise())
+    assert spawned == [remote]
+    raw = daemon.received(0)[0]
+    assert workspace.path.encode() not in b"".join(daemon.received(0))
+    hello = json.loads(raw)
+    assert "workspace_locator" not in hello
+    assert ("workspace_agent" in hello) is serve_workspace
+    claim = cast(dict[str, str], hello["workspace_claim"])
+    kind = cast(WorkspaceIdentityKind, claim["identity_kind"])
+    recorded = claimed_workspace(remote, WorkspaceClaim(kind, claim["digest"]))
+    assert recorded == workspace
+
+
+def test_an_outage_the_connector_never_named_is_remote_unreachable(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    started: list[Path] = []
+
+    def spawn(root: Path) -> None:
+        started.append(root)
+
+    monkeypatch.setattr("finishup.client.connector_status.spawn_connector", spawn)
+
+    async def exercise() -> ControlError:
+        with pytest.raises(ControlError) as raised:
+            await service_client.connect_service_on_demand(
+                ControlClientKind.MCP_BRIDGE, timeout_seconds=0.5
+            )
+        return raised.value
+
+    error = asyncio.run(exercise())
+    # Never the local service's remedy: the selected server could not be reached through it.
+    assert (error.reason, error.phase, error.retryable) == (
+        "service_unavailable",
+        "remote_unreachable",
+        True,
+    )
+    assert started == [remote]
+
+
+def test_a_relay_lost_mid_session_names_the_remote_phase(
+    remote: Path, monkeypatch: pytest.MonkeyPatch, no_local_service: None
+) -> None:
+    hangups: list[AuthenticatedUnixStream] = []
+
+    async def hang_up_after_hello(stream: AuthenticatedUnixStream) -> None:
+        from finishup.service import control_protocol
+
+        await read_control_frame(stream)
+        answer = control_protocol._hello_result_wire(  # pyright: ignore[reportPrivateUsage]
+            service_status(),
+            control_protocol._allowed_for(ControlClientKind.CLI),  # pyright: ignore[reportPrivateUsage]
+            workspace_binding="none",
+        )
+        await stream.send_all(encode_control_frame(answer))
+        hangups.append(stream)
+
+    spawned: list[Path] = []
+
+    async def exercise() -> ControlError:
+        tasks = _fake_connector(monkeypatch, hang_up_after_hello, spawned)
+        try:
+            client = await service_client.connect_service_on_demand(
+                ControlClientKind.CLI, timeout_seconds=10.0
+            )
+            try:
+                await hangups[0].aclose()
+                await client.wait_closed()
+                assert client.closed
+                with pytest.raises(ControlError) as raised:
+                    await client.service_status()
+                return raised.value
+            finally:
+                await client.close()
+        finally:
+            _stop(tasks)
+
+    error = asyncio.run(exercise())
+    assert (error.reason, error.phase) == ("service_unavailable", "remote_unreachable")

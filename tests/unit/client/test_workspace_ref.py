@@ -136,3 +136,24 @@ def test_the_connection_supplies_its_binding_and_handle() -> None:
         start_request_for_connection(
             request, SimpleNamespace(workspace_binding="client_claim", workspace_handle=None)
         )
+
+
+def test_a_connection_to_another_machine_never_sends_a_path_even_unbound() -> None:
+    """A remote connection that claimed nothing has no handle: the path is refused, not sent."""
+
+    request = _start()
+    for binding in ("none", "local_path"):
+        remote = SimpleNamespace(
+            workspace_binding=binding, workspace_handle=None, transport="connector"
+        )
+        with pytest.raises(WorkspaceRefNotPortable):
+            start_request_for_connection(request, remote)
+    # A label or no reference at all is still sent as written.
+    unbound = SimpleNamespace(workspace_binding="none", workspace_handle=None, transport="https")
+    labelled = _start("label")
+    assert start_request_for_connection(labelled, unbound) is labelled
+    bare = _start(None)
+    assert start_request_for_connection(bare, unbound) is bare
+    # The local endpoint keeps today's behavior byte for byte.
+    local = SimpleNamespace(workspace_binding="none", workspace_handle=None, transport="unix")
+    assert start_request_for_connection(request, local) is request

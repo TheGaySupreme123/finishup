@@ -123,7 +123,11 @@ async def test_a_binding_retired_during_discovery_never_gets_a_client_or_an_rpc(
     discovered = _RecordingClient()
 
     async def parked(
-        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator, timeout_seconds
         entered.set()
@@ -159,7 +163,11 @@ async def test_slow_roots_and_a_slow_rpc_end_by_the_status_ceiling(
     client = _Client(clock)
 
     async def on_demand(
-        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator, timeout_seconds
         return client
@@ -225,7 +233,11 @@ async def test_cursor_write_recovery_after_slow_roots_stays_under_the_ceiling(
     client = _RecoveringClient(clock)
 
     async def on_demand(
-        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator, timeout_seconds
         return client
