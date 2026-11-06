@@ -4757,7 +4757,9 @@ attested over the connection; the server did not read the repository itself." No
 user-controlled is ever rendered beside it.
 
 - Service side: the text and markdown receipt of a claim-bound task (its `SessionOpened`
-  `workspace_ref` is a `client:` handle) ends with `client_attested_receipt_block(
+  `workspace_ref` is a `client:` handle; a child attached by its attach handle on a claim-bound
+  connection records that connection's handle there through `execute_start(...,
+  session_workspace_ref=)`, outside the request identity) ends with `client_attested_receipt_block(
   service_instance_id, markdown=...)`: a "Workspace evidence" heading, the fixed line and `Served by
   FinishUP service <svc_…> (connection: client_claim).` The stored document and JSON receipts are
   unchanged.

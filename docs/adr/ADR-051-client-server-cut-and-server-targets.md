@@ -306,7 +306,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   FinishUP workspace agent and attested over the connection; the server did not read the
   repository itself." Two renderers carry it, and neither puts anything user-controlled beside it:
   - The service ends the text and markdown receipt of a claim-bound task (its session opened with
-    a `client:` handle, a durable fact a replay reads alike) with a "Workspace evidence" section:
+    a `client:` handle, a durable fact a replay reads alike; a delegated child attached by its
+    attach handle on a claim-bound connection opens with that connection's handle too, recorded
+    in the opening event only, never in the request's identity) with a "Workspace evidence" section:
     the fixed line, then `Served by FinishUP service <service_instance_id> (connection:
     client_claim).` The stored receipt document and JSON receipts are unchanged.
   - The client ends every human status and receipt rendering of a claim-bound connection — CLI
