@@ -1663,8 +1663,12 @@ async def _drain_pass(
             request = ObservationIngestRequest(
                 codex_session_id=row.codex_session_id, envelope=row.envelope
             )
-            if getattr(client, "workspace_handle", None) is not None:
-                # A remote server target receives each row attested (ADR-051 decision 12).
+            if (
+                getattr(client, "workspace_binding", None) == "client_claim"
+                or getattr(client, "workspace_handle", None) is not None
+            ):
+                # A remote server target receives each row attested (ADR-051 decision 12), or
+                # none at all while its server gave this connection no handle.
                 from finishup.client.observation_attestation import attest_for_connection
 
                 request = attest_for_connection(

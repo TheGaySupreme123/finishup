@@ -226,8 +226,10 @@ resource ripple.
   on a connection without a claim is `workspace_binding_conflict`. Without this rule the reviewer's
   workspace root would be a server directory that happens to share the path. The MCP bridge, the
   CLI and the SessionStart auto-attach rewrite an absolute `workspace_ref` to the handle before
-  sending; a claim-bound connection with no handle sends nothing and answers
-  `workspace_ref_not_portable` without naming a path.
+  sending. A claim-bound connection with no handle exists only because the server's vault was not
+  ready at hello: it sends no start and no observation row (never a path) and answers the
+  retryable `vault_locked`, so the client replaces the connection and the first call after the
+  unlock gets a handle.
 - **What stays identical.** Framing (6 MiB frames, 1 MiB ordinary), all 32 methods and their
   bodies, `rpc_id` multiplexing and cancel, the client-kind gate and the client's exact-set check,
   and idempotency by `(installation_id, request_id)`. The YZH1 human-control and YZS1 secret

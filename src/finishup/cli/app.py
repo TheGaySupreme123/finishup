@@ -908,7 +908,7 @@ async def _call_workflow(
                     return refused
             if type(request) is StartRequest:
                 # ADR-051: a server on another machine is sent the connection's handle, never a
-                # path; with none to send, nothing is sent (``WorkspaceRefNotPortable``).
+                # path; a claim the server could not key (a locked vault) sends nothing.
                 request = start_request_for_connection(request, client)
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))

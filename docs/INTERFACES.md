@@ -4734,9 +4734,12 @@ approved check such a worker started stays in its own process group).
   or `https` target. Both fail closed with the root's `TargetError`, never reading as local.
 - `finishup.client.workspace_ref`: `start_request_for_connection(request, connection)` rewrites
   an absolute `workspace_ref` to the connection's handle (the MCP start path, the CLI start path and
-  the SessionStart auto-attach use it); a claim-bound connection without a handle raises
-  `WorkspaceRefNotPortable` (`INVALID_REQUEST`, reason `workspace_ref_not_portable`) and nothing is
-  sent. `portable_start_request` and `portable_workspace_ref` are its parts.
+  the SessionStart auto-attach use it); a claim-bound connection without a handle (the server's
+  vault was not ready at hello, so it could not key the claim) raises the retryable `ControlError`
+  `vault_locked` and nothing is sent, so the MCP bridge discards that connection and its next call
+  reconnects with a fresh hello. `WorkspaceRefNotPortable` (`INVALID_REQUEST`, reason
+  `workspace_ref_not_portable`) stays for a caller that must refuse a path for another reason.
+  `portable_start_request` and `portable_workspace_ref` are its parts.
 - `finishup.client.observation_outbox.ClientObservationDrain(workspace, *, state=None,
   budget_seconds=20.0, ingest_deadline_ms=3000, spool_batch_limit=64)`: `drain(client) ->
   ClientDrainSummary(spool_replayed, delivery, stopped)` replays the claimed workspace's spooled
@@ -4780,7 +4783,11 @@ target root is the authority: consent, content profiles, the content-capture fen
 trust, the observation key, the lifecycle mappings and the outbox and spool stay on the client,
 and the `observe` commands and `/observe` (scope `any`) administer it there. Over a claim-bound
 connection every `observation_ingest` body carries `client_attestation` (control-request 2.10.0,
-golden vector CTL-2106), built by `finishup.client.observation_attestation` when the row is sent:
+golden vector CTL-2106), built by `finishup.client.observation_attestation` when the row is sent.
+Claim binding is decided by the connection's `workspace_binding` (`connection_claim_bound`), not
+by the handle alone: a claim-bound connection the server gave no handle sends no row at all
+(`attest_for_connection` raises the retryable `vault_locked` before encoding, so the row stays
+pending and never carries the workspace path):
 
 | Member | Value |
 |---|---|

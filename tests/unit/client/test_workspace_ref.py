@@ -13,7 +13,7 @@ from finishup.client.workspace_ref import (
     portable_workspace_ref,
     start_request_for_connection,
 )
-from finishup.ports.control import WorkspaceBinding
+from finishup.ports.control import ControlError, WorkspaceBinding
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.models import StartRequest, public_model_to_wire
 
@@ -97,17 +97,26 @@ def test_the_rewritten_request_differs_only_in_its_workspace_ref() -> None:
 
 
 @pytest.mark.parametrize("handle", [None, "client:XYZ", "/home/dev/private-project"])
-def test_no_handle_means_nothing_is_sent(handle: str | None) -> None:
-    with pytest.raises(WorkspaceRefNotPortable) as raised:
+def test_no_handle_means_nothing_is_sent_and_the_locked_vault_is_named(
+    handle: str | None,
+) -> None:
+    """ADR-051: the server keys a claim only while its vault is ready; with no handle the path is
+    never sent and the refusal is the server's own retryable ``vault_locked``."""
+
+    with pytest.raises(ControlError) as raised:
         portable_workspace_ref(_PATH, workspace_binding="client_claim", workspace_handle=handle)
-    refusal = raised.value
+    assert (raised.value.reason, raised.value.retryable) == ("vault_locked", True)
+    assert "private-project" not in repr(raised.value)
+
+
+def test_the_not_portable_refusal_keeps_its_fixed_shape() -> None:
+    refusal = WorkspaceRefNotPortable()
     assert refusal.code is PublicErrorCode.INVALID_REQUEST
     assert refusal.retryable is False
     assert dict(refusal.safe_details) == {
         "continuation": "workspace_handle_required",
         "reason_code": "workspace_ref_not_portable",
     }
-    assert "private-project" not in refusal.message
 
 
 def test_an_unknown_binding_is_a_caller_defect() -> None:
@@ -132,7 +141,8 @@ def test_the_connection_supplies_its_binding_and_handle() -> None:
         SimpleNamespace(workspace_binding=object(), workspace_handle=_HANDLE),
     ):
         assert start_request_for_connection(request, connection) is request
-    with pytest.raises(WorkspaceRefNotPortable):
+    with pytest.raises(ControlError) as raised:
         start_request_for_connection(
             request, SimpleNamespace(workspace_binding="client_claim", workspace_handle=None)
         )
+    assert raised.value.reason == "vault_locked"
