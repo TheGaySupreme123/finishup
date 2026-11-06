@@ -153,8 +153,11 @@ def client_protected_directories() -> tuple[str, ...]:
     """This client's own FinishUP directories, which no workspace call may ever read.
 
     The isolation root when one is in force, and every directory this process resolves for its
-    bundle, configuration, cache, state, logs and endpoints. A directory that cannot be resolved
-    is left out: it cannot be named, so there is nothing under that name to protect.
+    bundle, configuration, cache, state, logs and endpoints. Then the everyday installation's own
+    platform directories under both application names, which hold the vault, the ledgers and
+    every target root: a selected or isolated root resolves the first group elsewhere, and must
+    not make those readable. A directory that cannot be resolved is left out: it cannot be named,
+    so there is nothing under that name to protect.
     """
 
     found: list[str] = []
@@ -174,6 +177,13 @@ def client_protected_directories() -> tuple[str, ...]:
             continue
         if directory is not None and directory.is_absolute():
             found.append(os.path.normpath(os.fspath(directory)))
+    try:
+        ambient = config_paths.ambient_installation_dirs()
+    except Exception:  # noqa: BLE001 - an unresolvable directory has no name to protect
+        ambient = ()
+    found.extend(
+        os.path.normpath(os.fspath(directory)) for directory in ambient if directory.is_absolute()
+    )
     return tuple(dict.fromkeys(found))
 
 
