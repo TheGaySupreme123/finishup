@@ -591,6 +591,31 @@ answers bounded `workspace_call`s on a connection that declared it.
   stops when idle the displays can no longer tell the state and say nothing, although work still
   goes to the target. Agents cannot change the policy or the selection, so no MCP tool surfaces or
   answers the choice.
+- **Which server's policy a command changes is said before and after** (maintainer principle "be
+  clear on what happened", 2026-11-06). While a remote target is selected, `privacy tighten`,
+  `privacy propose` and the privacy step of `setup run` (the trusted questionnaire, which the
+  menu's setup and the terminal interface's first run also run) change the target's policy, not
+  this computer's everyday one. `cli/policy_server.py` names the target of the process's resolved
+  root (`active_target_record()`, not the selection read afresh: a process on this computer's
+  server changes this computer's policy and says nothing here), for the remote kinds only, by
+  `target_id` and `kind`, never the name the owner typed. Each path prints a fixed line before
+  anything is sent (`Privacy policy changes here apply to the selected FinishUP server t_… (kind),
+  not to this computer's everyday FinishUP.`) and one in its result: the change applied
+  (`tightening_applied`, or a configured questionnaire), waits for a decision on the server host
+  (`decision_required`), was not changed, or was not confirmed (the command failed after it may
+  have reached the server; `privacy show` shows the policy). The lines are the same with and
+  without `--json`: the `tighten|propose` result document is the released control result body,
+  so it keeps its shape and the lines go to stderr; the questionnaire prints them with its own
+  output, the setup summary's privacy lines end with `(on the FinishUP server t_… (kind))`, and
+  the terminal interface repeats the result line once the handed-over terminal returns. No output
+  schema involved is unreleased, so no field was added. `privacy decide-policy` stays
+  `server_host`: on this computer it is refused with `requires_server_host`, whose line names the
+  target, because a trusted decision runs only on the server host (decisions 7 and 11). For the
+  same reason the questionnaire on a remote target no longer opens the local decision ceremony
+  for a widening (it could only fail, the human-control channel never leaving the server host): it
+  reports the waiting proposal (`outcome` `cancelled`, its `proposal_id`, `reason`
+  `requires_server_host`). A named local target is this computer's own server host and is not
+  named; a target record that cannot be read is left to the connection, which refuses it.
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -874,6 +899,10 @@ installation is never touched by a target operation.
   selected. While the owner keeps the target, and after switching until open agent sessions
   restart, traffic to it continues, and the displays show the state only while this computer's
   service is running and unlocked.
+- Every path on this computer that changes a remote target's privacy policy names the target
+  (id and kind) before and after (decision 8). A widening proposed there waits on the server host
+  for its decision; setup's privacy step reports it as waiting instead of failing on a local
+  ceremony it cannot reach.
 - A Linux server whose runtime directory belongs to the login session loses its sockets at the
   last logout; `service endpoint --json` reports this, and the server needs linger or its own
   isolated root.

@@ -67,13 +67,14 @@ service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX des
 FinishUP server on another machine, on a local port, or on the web cannot be added or selected in
 that mode. While such a server is selected, a new FinishUP command does not change this computer's
 policy: the privacy commands either refuse to run (`requires_server_host`) or, like `finishup
-privacy tighten` and `finishup privacy propose`, change the selected server's policy. FinishUP that
-was already working with this computer's own FinishUP when the server was selected (an open
-terminal interface or menu, or a privacy step or setup already under way) can still turn the mode
-on here. When it does, FinishUP tells you which server is selected and that the mode does not stop
-traffic to it, and lets you choose: switch to this computer's own FinishUP now, or keep using the
-server. Enter, Ctrl-C or any answer but the switch keeps it; FinishUP never switches on its own.
-Without a terminal to ask in, or for a command that answers in JSON, it prints the same facts and
+privacy tighten` and `finishup privacy propose`, change the selected server's policy and say which
+server, by its id and kind, before and after the change. FinishUP that was already working with
+this computer's own FinishUP when the server was selected (an open terminal interface or menu, or
+a privacy step or setup already under way) can still turn the mode on here. When it does,
+FinishUP tells you which server is selected and that the mode does not stop traffic to it, and
+lets you choose: switch to this computer's own FinishUP now, or keep using the server. Enter,
+Ctrl-C or any answer but the switch keeps it; FinishUP never switches on its own. Without a
+terminal to ask in, or for a command that answers in JSON, it prints the same facts and
 the command that switches, `finishup server use local`. `finishup setup status --next`, `finishup
 server status` and the terminal interface keep showing it while this computer's FinishUP service
 is running and unlocked, because only that service can report this computer's policy; usually

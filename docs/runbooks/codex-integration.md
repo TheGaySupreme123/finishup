@@ -1502,6 +1502,14 @@ later process to the default service.
   this computer's server (an open terminal interface or menu, or a privacy step or setup under way).
   Host decision: supported, same code path; no MCP tool, hook or SessionStart context carries or
   answers the choice, because agents cannot change the policy or the selection.
+- **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
+  `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
+  interface's first run) change the target's policy and name it, by id and kind, before anything
+  is sent and in the result (stderr beside the unchanged `--json` document; the setup summary's
+  privacy line; one terminal-interface message). A widening waits on the server host for
+  `privacy decide-policy`, which is refused here (`requires_server_host`, naming the target). Host
+  decision: supported, same code path for Codex; no MCP tool or hook changes a privacy policy, so
+  none carries these lines.
 - **Switching mid-session.** The MCP bridge keeps the target it started with; hooks and shell
   calls follow a new selection at once. Restart open Codex sessions after `finishup server use`.
 - **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and

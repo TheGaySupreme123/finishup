@@ -69,7 +69,9 @@ While a server on another machine, a port or the web is chosen, a new FinishUP c
 change this computer's privacy policy. `finishup privacy setup`, the other privacy settings,
 `finishup ai` and the terminal interface's `/privacy` refuse to run (`requires_server_host`), and
 `finishup privacy tighten` and `finishup privacy propose` change the chosen server's policy, not
-this computer's. To change this computer's policy, run `finishup server use local` first.
+this computer's, and say so (see [Whose privacy policy a command
+changes](#whose-privacy-policy-a-command-changes)). To change this computer's policy, run
+`finishup server use local` first.
 
 FinishUP that was already working with this computer's own FinishUP when you chose the server can
 still change this computer's policy: a terminal interface or menu that was open then, or a privacy
@@ -406,6 +408,33 @@ ssh -t me@devbox.example finishup service status
 ```
 
 For a web server, its operator runs them on the server machine.
+
+### Whose privacy policy a command changes
+
+While a server on another machine, a port or the web is chosen, three things on this computer
+change that server's privacy policy, not this computer's: `finishup privacy tighten`, `finishup
+privacy propose`, and the privacy step of `finishup setup` (also when you run setup from `finishup
+menu` or the terminal interface's first run). Each one says so before it sends anything and again
+in its result, naming the server by its id and kind, never by the name you gave it:
+
+```text
+Privacy policy changes here apply to the selected FinishUP server t_1a2b3c4d (ssh), not to this computer's everyday FinishUP.
+Changed the privacy policy of the FinishUP server t_1a2b3c4d (ssh); this computer's everyday FinishUP was not changed.
+```
+
+- **A change that sends more waits on the server.** It needs your decision on the machine that
+  runs the server, so FinishUP says the change waits there and has not taken effect yet. Decide it
+  on that machine with `finishup privacy decide-policy`. On this computer that command stops with
+  `requires_server_host` and names the server, and setup's privacy step leaves the change waiting
+  instead of opening a decision here.
+- **When a command fails.** If the server never confirmed a change, FinishUP says no change was
+  confirmed; `finishup privacy show` shows the server's policy as it is now, and you can run the
+  command again.
+- **With `--json`.** `privacy tighten` and `privacy propose` print the same document as always, and
+  the same sentences go to standard error. The setup summary names the server on its privacy line,
+  and the terminal interface says it again once the privacy step returns.
+
+To change this computer's own policy instead, run `finishup server use local` first.
 
 ## Troubleshooting
 
