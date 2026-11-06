@@ -325,9 +325,20 @@ answers bounded `workspace_call`s on a connection that declared it.
   `root_not_admitted`, never read on the server's word, and the reviewer is not offered it. Both
   comparisons use the spelling the local read walks: a first component that is a link root owns
   (macOS `/tmp`, `/var`) counts as its target, so such a spelling never falsely refuses.
+- **Ignore rules on the agent** (amended 2026-11-06, same review). The server's reviewer broker
+  asks the agent whether Git ignores a workspace path before it reads it; a server that skipped
+  that question received an ignored file's bytes. The agent now asks Git itself before a
+  workspace file read (`read_text_beneath` on the handle) and before a declared-test read inside
+  the claimed workspace, and a path Git reports ignored reads as nothing. Only Git's own answer
+  refuses: where Git cannot answer (no repository, or a linked worktree, whose `.git` file the
+  change capture refuses as `unsafe_root`) the read is the local one, as before, and the honest
+  broker refuses such a reviewer read itself. A declared test that the agent placed in a
+  Git-ignored path is therefore not offered on a remote target, though a local service reads it.
 - **Honest limit: what a server that breaks the protocol can still obtain.** The agent cannot tell
   an honest server's question from any other. Within the claimed worktree, such a server can
-  obtain any file the adapters' fences pass, whether or not a task names it. Beneath a folder the
+  obtain any file the adapters' fences pass and Git does not report ignored, whether or not a task
+  names it: an ignored file too where Git cannot answer (a linked worktree), and the names, never
+  the bytes, of ignored entries in a directory listing. Beneath a folder the
   owner admitted for it, it can obtain any file that is not hidden, not credential-named and in no
   system or protected directory, and list the names in its directories. Anywhere on this machine,
   it can learn the metadata (existence, type, size and times, never content) of a path the local

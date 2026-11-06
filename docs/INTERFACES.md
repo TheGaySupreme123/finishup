@@ -4760,8 +4760,14 @@ confinement rules:
   walks it (`task_input_read.declared_test_top`: a first component that is a root-owned link to a
   directory at most two levels deep, macOS `/tmp` or `/var`, is replaced by its target). The read
   is the local `read_declared_test`, with its own fences.
+- A workspace file read (`read_text_beneath` on the handle, and `read_declared_test` inside the
+  claimed root) first asks `probe_requested_paths` for that path, relative to the claimed root, as
+  the reviewer broker does; a path Git reports ignored reads as absent. Where Git cannot answer
+  (`not_git`, a linked worktree's `unsafe_root`, any other `ChangeCaptureUnavailable`) the read
+  proceeds as locally. `list_beneath` returns names only and does not ask.
 - Honest limit: the agent cannot tell an honest server's question from any other, so a server
-  that breaks the protocol can obtain any file in the claimed worktree that the fences pass, any
+  that breaks the protocol can obtain any file in the claimed worktree that the fences pass and Git
+  does not report ignored (an ignored one where Git cannot answer), the names in its listings, any
   eligible file beneath an admitted folder (not hidden, not credential-named, in no system or
   protected directory) and its directories' names, and the `lstat` metadata of any path the
   outside-input candidate rule would look at.
