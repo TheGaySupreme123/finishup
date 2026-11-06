@@ -152,3 +152,26 @@ def test_key_list_shows_an_expired_key_as_expired(home: Path) -> None:
         active.key_id: "active",
         revoked.key_id: "revoked",
     }
+
+
+def test_an_unsupported_scope_is_a_usage_error_not_a_damaged_key_file(home: Path) -> None:
+    """``--scope admin`` is the operator's typo: it must not send them to repair a healthy key
+    file (``gateway_keys_invalid``, exit 20), and nothing is created."""
+
+    created = _invoke(
+        "service", "gateway", "key", "create", "--label", "ci", "--scope", "agent",
+        "--output-file", str(home / "ci.key"),
+    )  # fmt: skip
+    assert created.exit_code == 0, created.output
+    before = (_keys(home) / "keys.json").read_bytes()
+    output = home / "admin.key"
+    refused = _invoke(
+        "service", "gateway", "key", "create", "--label", "admin", "--scope", "admin",
+        "--output-file", str(output),
+    )  # fmt: skip
+    assert refused.exit_code == 2
+    assert refused.stderr.startswith("gateway_key_scope_invalid:")
+    assert "admin" not in refused.stderr.split(":", 1)[1]
+    assert "damaged" not in refused.stderr
+    assert not output.exists()
+    assert (_keys(home) / "keys.json").read_bytes() == before

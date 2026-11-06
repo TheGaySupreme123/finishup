@@ -8,6 +8,7 @@ import stat
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,7 +21,7 @@ from finishup.gateway.keys import (
     record_use,
     revoke_key,
 )
-from finishup.protocol.rest_binding import API_KEY_PATTERN
+from finishup.protocol.rest_binding import API_KEY_PATTERN, KeyScope
 
 _NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 
@@ -128,3 +129,10 @@ def test_a_damaged_or_shared_file_fails_closed(directory: Path) -> None:
         list_keys(directory)
     assert damaged.value.reason == "gateway_keys_invalid"
     assert KeyRing(directory).authenticate(key, _NOW) == "api_key_invalid"
+
+
+def test_an_unsupported_scope_is_its_own_reason_not_a_damaged_file(directory: Path) -> None:
+    with pytest.raises(GatewayKeyError) as invalid:
+        create_key(directory, label="ci", scope=cast(KeyScope, "admin"))
+    assert invalid.value.reason == "gateway_key_scope_invalid"
+    assert list_keys(directory) == ()
