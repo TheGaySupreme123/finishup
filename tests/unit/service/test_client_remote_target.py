@@ -352,7 +352,7 @@ def test_a_serving_binding_claims_the_workspace_and_offers_the_agent(
 
     _use(monkeypatch, _FakeTransport(remote, dial))
 
-    async def exercise() -> tuple[bool, str]:
+    async def exercise() -> str:
         binding = await client_module.serving_workspace_binding(WorkspaceLocator(str(tmp_path)))
         assert binding is not None and binding.agent is not None
         client = await client_module.connect_service(
@@ -362,9 +362,9 @@ def test_a_serving_binding_claims_the_workspace_and_offers_the_agent(
             await client.connect()
         finally:
             await client.close()
-        return binding.agent is not None, client.workspace_binding
+        return client.workspace_binding
 
-    assert asyncio.run(exercise()) == (True, "client_claim")
+    assert asyncio.run(exercise()) == "client_claim"
     (tap,) = taps
     assert b'"workspace_claim"' in tap.received
     assert b'"workspace_agent"' in tap.received

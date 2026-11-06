@@ -122,4 +122,3 @@ def test_gateway_commands_belong_to_the_server_host(
         assert result.exit_code != 0
         assert result.stderr.startswith("requires_server_host:")
         assert "gw.example" not in result.stderr
-
