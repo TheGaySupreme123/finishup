@@ -51,8 +51,9 @@ from finishup.domain.review_mode_render import (
 from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.domain.task_lifecycle_render import status_task_lifecycle_line
 from finishup.domain.workspace_provenance import (
-    WORKSPACE_PROVENANCE_UNKNOWN_LINES,
-    WORKSPACE_PROVENANCE_UNKNOWN_NOTICE,
+    WORKSPACE_PROVENANCE_REASONS,
+    workspace_provenance_unknown_lines,
+    workspace_provenance_unknown_notice,
 )
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
@@ -3095,16 +3096,21 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
 def _workspace_provenance_parts(source: Mapping[str, object]) -> list[Part]:
     """ADR-051 decision D4: the fixed unknown-provenance lines, required, when the receipt says so.
 
-    Only the exact fixed notice is admitted; the lines rendered are this module's own constants.
+    Only a closed reason with exactly its own fixed notice is admitted; the lines rendered are
+    the domain's own constants for that reason (a passing cause says to retry, a lasting one says
+    it will not clear).
     """
 
     member = source.get("workspace_provenance")
     if not isinstance(member, Mapping):
         return []
-    notice = cast(Mapping[str, object], member).get("notice")
-    if notice != WORKSPACE_PROVENANCE_UNKNOWN_NOTICE:
+    fields = cast(Mapping[str, object], member)
+    reason = fields.get("reason")
+    if reason not in WORKSPACE_PROVENANCE_REASONS:
         return []
-    return [_req(line) for line in WORKSPACE_PROVENANCE_UNKNOWN_LINES]
+    if fields.get("notice") != workspace_provenance_unknown_notice(reason):
+        return []
+    return [_req(line) for line in workspace_provenance_unknown_lines(reason)]
 
 
 def summary_for_receipt(envelope: object) -> str:

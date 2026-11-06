@@ -336,29 +336,33 @@ when a long receipt has its other sections shortened to fit. When your agent rec
 receipt in pages, every page names the service, and the receipt's workspace evidence section, on
 one of those pages, is the only place it says where the evidence was read. A receipt is never
 refused because the server cannot tell where the evidence was read. If the server cannot read the
-record of how the task's session was opened, for whatever reason (a passing storage fault, a
-record that was redacted or whose key is no longer available, or one the server could not load),
-the receipt is still made and says so, in three lines: what happened (that record could not be
-read from the server's ledger), why it matters (FinishUP cannot confirm whether the task's
-workspace evidence was read on your computer) and what to do: run the receipt again, and if this
-persists, restart the server's FinishUP service with `finishup service restart` on the server
-host, then run the receipt again. Every receipt format says this: a text or markdown receipt in
-its workspace evidence section, and a receipt in JSON format in its `workspace_provenance` entry
-(`status` `unknown`, `reason` `session_opening_unreadable`, and the same three lines), which the
-`finishup` command and the terminal interface show as the same section and which leads the first
-page of a long receipt your agent receives in pages. Such a receipt leaves out the line saying the
-evidence was read on your computer, and still names the service. Once the server can read that
-record again, for example after a passing fault clears or after it restarts, asking for the same
-receipt again shows where the evidence was read.
+record of how the task's session was opened, the receipt is still made and says so, in three
+lines: what happened (that record could not be read from the server's ledger), why it matters
+(FinishUP cannot confirm whether the task's workspace evidence was read on your computer), and
+whether trying again can help. That last line depends on the cause:
 
-Running the receipt again or restarting the service helps only when the cause passes. A record that
-was redacted or erased is never readable again, so every receipt of that task keeps saying that its
-provenance is unknown, however often you retry or restart. A record whose key is no longer available
-stays unreadable until the server has that key again, and one written in a format the server's
-FinishUP version does not know becomes readable once the server runs a version that does. The
-receipt's `reason` is the same in every one of these cases and in a passing fault, so it cannot tell
-you which one you have; a section that is still there after a restart most likely means one of these
-lasting causes.
+- **A cause that can pass.** The server hit a storage fault while it read the record, or could not
+  load the record when it opened the task. The receipt says what to do: run the receipt again, and
+  if this persists, restart the server's FinishUP service with `finishup service restart` on the
+  server host, then run the receipt again. Once the server can read that record again, asking for
+  the same receipt shows where the evidence was read. If the receipt still says this after a
+  restart, the server could not load its stored copy of the record even then, and the receipt
+  keeps saying so for as long as that lasts.
+- **A cause that lasts.** The record was redacted or erased, its key is gone, or it was written in
+  a format the server's FinishUP version cannot decode. The receipt says why it lasts: the record
+  will not become readable again, so every receipt of that task keeps saying that its provenance
+  is unknown, and running the receipt again or restarting the service will not change that. It
+  gives no retry or restart advice, because neither helps. The one exception is a record in a
+  format the server's version does not know: once the server runs a FinishUP version that knows
+  that format, the record reads and the receipt shows where the evidence was read.
+
+Every receipt format says this: a text or markdown receipt in its workspace evidence section, and a
+receipt in JSON format in its `workspace_provenance` entry, which holds `status` `unknown`, a
+`reason` that names the kind of cause (`session_opening_unreadable` for one that can pass,
+`session_opening_unrecoverable` for one that lasts), and the same three lines. The `finishup`
+command and the terminal interface show that entry as the same section, and it leads the first page
+of a long receipt your agent receives in pages. Such a receipt leaves out the line saying the
+evidence was read on your computer, and still names the service.
 
 ## The workspace agent
 

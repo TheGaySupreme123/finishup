@@ -1239,9 +1239,10 @@ def render_human_receipt(
     text already carries it, and the producing service.
 
     A receipt whose ``workspace_provenance`` says the provenance is unknown (decision D4) shows
-    the fixed "Workspace evidence" section saying what happened, why it matters and what to do,
-    unless its text already carries it (a JSON receipt, or one whose text was withheld, has no
-    such text); the connection's "read on the client machine" line is then left out.
+    the fixed "Workspace evidence" section for its ``reason`` saying what happened, why it
+    matters, and what to do for a passing cause or why it lasts for a lasting one, unless its
+    text already carries it (a JSON receipt, or one whose text was withheld, has no such text);
+    the connection's "read on the client machine" line is then left out.
     """
 
     if type(result) is not ReceiptSuccessModel:
@@ -1304,10 +1305,12 @@ def render_human_receipt(
             )
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
-    provenance_unknown = result.workspace_provenance is not None
-    if provenance_unknown and WORKSPACE_PROVENANCE_UNKNOWN_LINE not in shown:
-        # ADR-051 decision D4: fixed words only; a text or markdown receipt already ends with it.
-        lines.append(workspace_provenance_unknown_block(markdown=False))
+    provenance = result.workspace_provenance
+    provenance_unknown = provenance is not None
+    if provenance is not None and WORKSPACE_PROVENANCE_UNKNOWN_LINE not in shown:
+        # ADR-051 decision D4: fixed words for the result's closed reason only; a text or
+        # markdown receipt already ends with them.
+        lines.append(workspace_provenance_unknown_block(markdown=False, reason=provenance.reason))
     if result.agent_closing_prompt is not None:
         # #1240 D5: the same closing line the MCP reply carries (fixed words and counts only).
         lines.append(result.agent_closing_prompt)

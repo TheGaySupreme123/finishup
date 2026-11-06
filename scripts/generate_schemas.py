@@ -7909,13 +7909,15 @@ def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     The member is present, on every receipt format, exactly when the record that opened the
     task's session could not be read or could not say whether the task is claim-bound. Its
     ``status``, ``reason`` and ``notice`` admit only the fixed values of
-    ``finishup.domain.workspace_provenance``: nothing user-controlled.
+    ``finishup.domain.workspace_provenance``: nothing user-controlled. ``reason`` says whether the
+    cause can pass or lasts, and ``oneOf`` pairs each reason with its own notice, so a reader that
+    validates by schema alone admits no notice beside the other reason's token.
     """
 
     from finishup.domain.workspace_provenance import (
         WORKSPACE_PROVENANCE_REASONS,
         WORKSPACE_PROVENANCE_UNKNOWN,
-        WORKSPACE_PROVENANCE_UNKNOWN_NOTICE,
+        workspace_provenance_unknown_notice,
     )
 
     document = _load_versioned_template(entry, "operations/receipt-result-1.4.0.schema.json")
@@ -7926,10 +7928,22 @@ def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         raise SchemaGenerationError(
             "receipt_result_schema_template_invalid", entries=(entry.relative_path,)
         )
+    notices = [
+        workspace_provenance_unknown_notice(reason) for reason in WORKSPACE_PROVENANCE_REASONS
+    ]
     properties["workspace_provenance"] = {
         "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "reason": {"const": reason},
+                },
+            }
+            for reason, notice in zip(WORKSPACE_PROVENANCE_REASONS, notices, strict=True)
+        ],
         "properties": {
-            "notice": {"const": WORKSPACE_PROVENANCE_UNKNOWN_NOTICE, "type": "string"},
+            "notice": {"enum": cast(list[JsonValue], notices), "type": "string"},
             "reason": {"enum": list(WORKSPACE_PROVENANCE_REASONS), "type": "string"},
             "status": {"const": WORKSPACE_PROVENANCE_UNKNOWN, "type": "string"},
         },
