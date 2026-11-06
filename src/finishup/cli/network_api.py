@@ -18,13 +18,18 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Final, NoReturn, cast
+from typing import TYPE_CHECKING, Annotated, Final, NoReturn, cast
 
 import typer
 
 from finishup.protocol.canonical import JsonValue, canonical_encode
-from finishup.service.api_keys import ApiKeyError, ApiKeyRecord, default_api_key_store
-from finishup.service.network_protocol import ApiScope
+
+if TYPE_CHECKING:
+    from finishup.service.api_keys import ApiKeyRecord
+    from finishup.service.network_protocol import ApiScope
+
+# The key store is server-host code: each command imports it when it runs, so importing the CLI
+# (``finishup.cli.app``) reaches only the ordinary service client (tests/packaging boundary).
 
 __all__ = ["api_key_app"]
 
@@ -121,13 +126,15 @@ def api_key_create(
         _fail("api_key_scope_invalid")
     # The output file comes first: a key is created only when there is somewhere to put it, so a
     # failed attempt never leaves an active key nobody holds.
+    from finishup.service.api_keys import ApiKeyError, default_api_key_store
+
     output = None if output_file is None else _open_key_file(output_file)
     store = default_api_key_store()
     try:
         try:
             record, text = store.create(
                 label,
-                cast(ApiScope, scope),
+                cast("ApiScope", scope),
                 expires_in_days=expires_in_days,
                 rotate=rotate,
             )
@@ -188,6 +195,8 @@ def api_key_list(
 ) -> None:
     """List keys: id, label, scope, state, and dates (never a key)."""
 
+    from finishup.service.api_keys import ApiKeyError, default_api_key_store
+
     try:
         records = default_api_key_store().records()
     except ApiKeyError as error:
@@ -216,6 +225,8 @@ def api_key_list(
 @api_key_app.command("revoke")
 def api_key_revoke(key_id: Annotated[str, typer.Argument(help="The key id to revoke.")]) -> None:
     """Revoke a key; its next request and its registered agents are refused."""
+
+    from finishup.service.api_keys import ApiKeyError, default_api_key_store
 
     try:
         revoked = default_api_key_store().revoke(key_id)
