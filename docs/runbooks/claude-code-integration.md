@@ -494,7 +494,9 @@ process to the default service.
   interface's first run) change the target's policy and name it, by id and kind, before anything
   is sent and in the result (stderr beside the unchanged `--json` document; the setup summary's
   privacy line; one terminal-interface message). A widening waits on the server host for
-  `privacy decide-policy`, which is refused here (`requires_server_host`, naming the target). Host
+  `privacy decide-policy <proposal id>`, which is refused here (`requires_server_host`, naming the
+  target); every surface prints that exact command with the proposal's expiry (about five minutes,
+  in UTC), and setup's next steps name it instead of `--privacy` / `--set`. Host
   decision: supported, same code path for Claude Code; no MCP tool or hook changes a privacy policy, so
   none carries these lines.
 - **Switching mid-session.** The MCP bridge reads the selection once per process and keeps that
