@@ -255,25 +255,34 @@ def context_workspace(context: RepositoryPrivacyContext | None) -> str | None:
 
 def _require_portable_workspace_ref(
     request: StartRequest, context: RepositoryPrivacyContext | None
-) -> None:
+) -> str | None:
     """Refuse a start whose ``workspace_ref`` does not fit its connection's binding (ADR-051).
 
     On a claim-bound connection the service cannot read the client's paths, so the only
-    ``workspace_ref`` it records is the connection's own handle, and a start that opens a
-    session must name it: the handle in the session's opening event is the durable fact that
-    every workspace read of the task goes to the client's agent and that its receipts say so.
-    Only an attach to an existing session may omit it. A ``client:`` handle names a claim, so
-    a connection that carries no claim cannot record one. Every refusal comes before any
-    write and names no value.
+    ``workspace_ref`` it records is the connection's own handle: the handle in the session's
+    opening event is the durable fact that every workspace read of the task goes to the client's
+    agent and that its receipts say so. A start that names a workspace must name that handle. An
+    ordinary ``create`` or ``create_or_attach`` may name none, as on one computer, where such a
+    start reads the connection's own locator path; here the connection's claim names that same
+    workspace, so the handle is returned and the session opens on it. Only an attach may omit it
+    otherwise. A ``client:`` handle names a claim, so a connection that carries no claim cannot
+    record one. Every refusal comes before any write and names no value.
     """
 
     reference = request.workspace_ref
     claimed = context is not None and context.identity_kind == "client_claim"
     if claimed:
         assert context is not None
+        handle = workspace_handle_for_commitment(context.commitment)
         if reference is None and request.mode == "attach":
-            return
-        if reference != workspace_handle_for_commitment(context.commitment):
+            return None
+        if (
+            reference is None
+            and request.mode in {"create", "create_or_attach"}
+            and request.parent_session_id is None
+        ):
+            return handle
+        if reference != handle:
             raise PublicOperationError(
                 PublicErrorCode.INVALID_REQUEST,
                 (
@@ -283,7 +292,7 @@ def _require_portable_workspace_ref(
                 False,
                 safe_details={"reason_code": "workspace_ref_not_portable"},
             )
-        return
+        return None
     if reference is not None and workspace_handle_valid(reference):
         raise PublicOperationError(
             PublicErrorCode.INVALID_REQUEST,
@@ -291,6 +300,7 @@ def _require_portable_workspace_ref(
             False,
             safe_details={"reason_code": "workspace_binding_conflict"},
         )
+    return None
 
 
 def _declared_input_paths(request: PublishWorkRequest) -> tuple[str, ...]:
@@ -1232,7 +1242,7 @@ class Application:
         *,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> StartInternalResult:
-        _require_portable_workspace_ref(request, repository_privacy_context)
+        session_workspace_ref = _require_portable_workspace_ref(request, repository_privacy_context)
         # Delegate/self-register requests use a parent session as their authority but do not pass
         # through the start-catalog route transition that rotates or renews an existing session.
         # Touch that lease before executing the lineage operation so an active parent cannot be
@@ -1280,6 +1290,7 @@ class Application:
                         else repository_privacy_context.commitment
                     ),
                     input_capture=capture,
+                    session_workspace_ref=session_workspace_ref,
                 )
             await self._maybe_birth_implicit_repository_project(repository_privacy_context)
             await self._record_task_change_base(result, repository_privacy_context)

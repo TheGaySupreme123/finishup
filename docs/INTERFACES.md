@@ -4580,7 +4580,8 @@ output, an MCP frame or JSON output.
   `reason` (closed token or `null`).
 - On a claim-bound connection `start.workspace_ref` must equal the handle; an absolute path is
   `workspace_ref_not_portable`. The MCP bridge and the CLI rewrite an absolute `workspace_ref` to
-  the handle before sending.
+  the handle before sending. An ordinary `create` or `create_or_attach` naming neither reference
+  opens its session on the connection's handle.
 
 **Workspace-agent operation catalog** (`ports/workspace_agent.py`, the single source of truth).
 Each operation fixes its argument and result codecs and an argument byte bound and a result byte

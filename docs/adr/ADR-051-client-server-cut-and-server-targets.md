@@ -208,10 +208,14 @@ resource ripple.
   the control request: `kind`, `protocol_version: "1.0"`, `call_id`, `outcome: "ok" |
   "unavailable" | "refused" | "failed"`, `result`, `reason`). The daemon sends server→client
   frames only to connections whose hello declared `workspace_agent`.
-- **Claim-bound start.** On a claim-bound connection `start.workspace_ref` must equal the
-  connection's handle; an absolute path, or no `workspace_ref` on a start that opens a session
-  (only `mode: attach` may omit it), is refused with `workspace_ref_not_portable`, and a handle sent
-  on a connection without a claim is `workspace_binding_conflict`. Without this rule the reviewer's
+- **Claim-bound start.** On a claim-bound connection a `start.workspace_ref` must equal the
+  connection's handle; an absolute path, or no `workspace_ref` on a `delegate` or a
+  parent-registered start, is refused with `workspace_ref_not_portable`, and a handle sent on a
+  connection without a claim is `workspace_binding_conflict`. An ordinary `create` or
+  `create_or_attach` that names neither reference (the pair is both or neither) opens its session
+  on the connection's handle, as on one computer such a start reads the connection's own locator
+  path; `mode: attach` may omit it. The real-environment run found the first form refused: a host
+  that sends no reference could not start a task on a remote server. Without this rule the reviewer's
   workspace root would be a server directory that happens to share the path. The MCP bridge, the
   CLI and the SessionStart auto-attach rewrite an absolute `workspace_ref` to the handle before
   sending; a claim-bound connection with no handle sends nothing and answers

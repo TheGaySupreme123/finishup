@@ -29,6 +29,7 @@ from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
 from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
 from finishup.adapters.keys.secret_memory import LocalSecretMemory
 from finishup.config.models import FinishUpConfig
+from finishup.domain.events import SessionOpenedPayload
 from finishup.domain.receipts import CLIENT_ATTESTED_WORKSPACE_LINE
 from finishup.ports.change_capture import decode_task_change_base
 from finishup.ports.control import (
@@ -576,6 +577,72 @@ async def test_a_claim_bound_task_runs_its_whole_workflow_on_its_agent_alone(
             receipt.human_text
         )
         assert str(client_repo) not in receipt.human_text and str(claimed) not in receipt.human_text
+    finally:
+        await client.close()
+
+
+async def test_a_start_naming_no_workspace_opens_on_the_claims_handle_and_attests(
+    tmp_path: Path, spy: _Spy, service: _Service
+) -> None:
+    # A host that sends neither reference (valid: the pair is both or neither) works on one
+    # computer through the connection's locator. Over a claim it opens on the handle instead,
+    # so the change base comes from the agent and the receipt says so (real-environment run).
+    client_repo = tmp_path / "client" / "repo"
+    client_head = _repository(client_repo, "app.py", "print('client')\n")
+    agent = FakeWorkspaceAgent(client_repo)
+    client = await service.connect(claim=_claim_for(client_repo), agent=agent)
+    try:
+        handle = client.session.workspace_handle
+        assert handle is not None
+        started = (await _start(client, None)).root
+        assert started.ok is True, started
+        application = cast(Any, service.daemon._application)  # pyright: ignore[reportPrivateUsage]
+        runtime = await application.runtime.route(
+            RouteCommand(
+                started.session_id,
+                started.writer_id,
+                RouteAccess.WRITE,
+                frozenset({RuntimeCapability.WRITE, RuntimeCapability.PAYLOAD_READ}),
+            )
+        )
+        try:
+            opened = [
+                record.payload
+                async for record in runtime.ledger.load_events(runtime.session_id)
+                if isinstance(record.payload, SessionOpenedPayload)
+            ]
+            assert [payload.workspace_ref for payload in opened] == [handle]
+            ref = await runtime.ledger.load_task_change_base()
+            assert ref is not None
+            chunks: list[bytes] = [chunk async for chunk in runtime.objects.open_verified(ref)]
+            assert decode_task_change_base(b"".join(chunks)).commit == client_head
+        finally:
+            await application.runtime.release(runtime)
+        assert "read_task_base" in agent.operations
+        receipt = (
+            await client.call(
+                ControlMethod.RECEIPT,
+                ReceiptRequest.model_validate(
+                    {
+                        **_COMMON,
+                        "request_id": new_id(IdKind.REQUEST),
+                        "session_id": started.session_id,
+                        "writer_id": started.writer_id,
+                        "task_id": started.task_id,
+                        "expected_frontier": _frontier(started.frontier),
+                        "format": "text",
+                        "include": "summary",
+                        "redaction_profile": "full_local",
+                    }
+                ),
+            )
+        ).root
+        assert receipt.ok is True, receipt
+        assert receipt.human_text is not None
+        assert CLIENT_ATTESTED_WORKSPACE_LINE in receipt.human_text
+        assert all(
+            handle not in entry and str(client_repo) not in entry for entry in spy.workspaces
+        ), spy.workspaces
     finally:
         await client.close()
 

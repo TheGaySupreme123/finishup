@@ -596,6 +596,7 @@ async def _lifecycle_append(
     *,
     force_open: bool = False,
     lineage_snapshot: LineageSnapshot | None = None,
+    session_workspace_ref: str | None = None,
 ) -> AppendResult:
     current = await _current_frontier(task)
     if allocation.route_action == "created" or force_open:
@@ -606,7 +607,11 @@ async def _lifecycle_append(
             integration=request.client.integration,
             profile=app.profile,
             external_ref=request.external_ref,
-            workspace_ref=request.workspace_ref,
+            workspace_ref=(
+                request.workspace_ref
+                if request.workspace_ref is not None
+                else session_workspace_ref
+            ),
             parent_task_id=(
                 None
                 if lineage_snapshot is None or lineage_snapshot.parent_task_id is None
@@ -994,6 +999,7 @@ async def _execute_standard_start(
     provision_mode: BundleProvisionMode | None = None,
     sync_lineage: bool = True,
     input_capture: StartInputCapture | None = None,
+    session_workspace_ref: str | None = None,
 ) -> StartInternalResult:
     """Execute one seven-step start operation against service-owned ports."""
 
@@ -1058,6 +1064,7 @@ async def _execute_standard_start(
             task,
             force_open=force_open,
             lineage_snapshot=lineage_snapshot,
+            session_workspace_ref=session_workspace_ref,
         )
         if (
             len(appended.accepted) != 1
@@ -2057,8 +2064,14 @@ async def execute_start(
     *,
     repository_privacy_commitment: str | None = None,
     input_capture: StartInputCapture | None = None,
+    session_workspace_ref: str | None = None,
 ) -> StartInternalResult:
-    """Route ordinary starts and the lineage admission paths through one facade."""
+    """Route ordinary starts and the lineage admission paths through one facade.
+
+    ``session_workspace_ref`` is the workspace an ordinary start that names none opens its
+    session on: a claim-bound connection's ``client:`` handle (ADR-051). ``None`` everywhere
+    else, so the opening event records the request's own ``workspace_ref`` exactly as before.
+    """
 
     if request.mode == "delegate":
         return await _execute_delegation(app, request, repository_privacy_commitment)
@@ -2075,4 +2088,5 @@ async def execute_start(
         request,
         repository_privacy_commitment=repository_privacy_commitment,
         input_capture=input_capture,
+        session_workspace_ref=session_workspace_ref,
     )
