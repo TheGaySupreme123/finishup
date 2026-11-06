@@ -123,17 +123,20 @@ def gateway_run(
     raise typer.Exit(code)
 
 
-def _write_new_owner_only(path: Path, text: str) -> None:
+def _open_new_owner_only(path: Path) -> int:
+    """Create ``path`` owner-only (0600); an existing file is never written over."""
+
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        descriptor = os.open(path, flags, 0o600)
+        return os.open(path, flags, 0o600)
     except FileExistsError:
         raise _fail("gateway_key_output_exists") from None
-    try:
-        os.write(descriptor, (text + "\n").encode("ascii"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    except OSError:
+        raise _fail("gateway_keys_unsafe") from None
+
+
+def _stdin_is_terminal() -> bool:
+    return sys.stdin.isatty()
 
 
 def _show_on_console(text: str) -> None:
@@ -177,8 +180,10 @@ def key_create(
     if (label is None or scope is None) and rotate is None:
         typer.echo("usage: give --label and --scope, or --rotate KEY_ID", err=True)
         raise typer.Exit(_USAGE)
-    if output_file is None and not sys.stdin.isatty():
+    if output_file is None and not _stdin_is_terminal():
         raise _fail("trusted_console_required")
+    # The output file is made first, so a key is never created whose secret cannot be delivered.
+    descriptor = None if output_file is None else _open_new_owner_only(output_file)
     try:
         record, key = create_key(
             _keys_directory(),
@@ -188,9 +193,16 @@ def key_create(
             rotate=rotate,
         )
     except GatewayKeyError as error:
+        if descriptor is not None:
+            os.close(descriptor)
+            cast(Path, output_file).unlink(missing_ok=True)
         raise _fail(error.reason) from None
-    if output_file is not None:
-        _write_new_owner_only(output_file, key)
+    if descriptor is not None:
+        try:
+            os.write(descriptor, (key + "\n").encode("ascii"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
     else:
         _show_on_console(key)
     typer.echo(f"Created key {record.key_id} (scope {record.scope}).")
