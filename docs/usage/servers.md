@@ -319,9 +319,10 @@ finishup service gateway run --listen 0.0.0.0:8443 --tls-cert server.pem --tls-k
 ```
 
 The key is shown only once (or written only to that new file, readable by its owner). If it
-cannot be shown or written, FinishUP revokes it at once, so no key that nobody holds stays
-active. Copy it to your computer as a file only you can read, then run
-`finishup server login NAME --key-file FILE`.
+cannot be shown or written, FinishUP revokes it at once, because nobody holds it. If that revoke
+fails too, the error names the key and the exact `finishup service gateway key revoke` command to
+run, and the key stays active until you run it. Copy the key to your computer as a file only you
+can read, then run `finishup server login NAME --key-file FILE`.
 
 - **Key scopes.** An `agent` key allows what your agent's tools and hooks need: the six FinishUP
   operations and the service status. An `operator` key also allows project and review commands,
