@@ -3,8 +3,9 @@
 
 Each target has an outside-read mode: ``local`` (as a FinishUP service on this computer would
 read) or ``listed`` (only beneath the folders ``finishup server folders add`` records under the
-target's root). With no mode set, the kind's default applies from one table, with an exception
-for an official FinishUP endpoint. A workspace agent is bound to its own target's record when it
+target's root), the same two for every remote kind. There is no default per kind: with no mode
+recorded a target is ``listed``, except an official FinishUP endpoint, which is ``local``. A
+workspace agent is bound to its own target's record when it
 is built, reads it on every outside read, and reads ``listed`` with no folder when it cannot. The
 record is owner-only canonical JSON bound to its target, and a folder that holds the home
 directory, or lies in its private trees, is never admitted.
@@ -24,7 +25,6 @@ import pytest
 from builders.server_targets import ambient_home
 from finishup.client import server_folders, targets
 from finishup.client.server_folders import (
-    DEFAULT_OUTSIDE_READ_MODE,
     FOLDERS_SCHEMA,
     MAX_FOLDERS,
     OFFICIAL_ENDPOINT_HOSTS,
@@ -35,11 +35,11 @@ from finishup.client.server_folders import (
     OutsideReadSource,
     add_folder,
     clear_folders,
-    default_outside_read_mode,
     folder_admissible,
     folder_covers,
     folder_holds_home,
     folders_path,
+    official_address,
     official_endpoint,
     outside_reads_of,
     outside_reads_reader,
@@ -68,9 +68,9 @@ _NOTHING: OutsideReads = OutsideReads("listed", (), "unreadable")
 
 
 def _listed(*folders: str) -> OutsideReads:
-    """What an HTTPS target with no mode set reads: its kind's default, ``listed``."""
+    """What a target with no mode chosen reads: ``listed``, whatever its kind."""
 
-    return OutsideReads("listed", folders, "kind_default")
+    return OutsideReads("listed", folders, "not_chosen")
 
 
 @pytest.fixture
@@ -344,36 +344,27 @@ def _remote(kind: str, name: str, **fields: object) -> tuple[targets.ServerTarge
         )
 
 
-def test_the_defaults_are_one_table_by_kind(home: Path) -> None:
-    """The owner's own account elsewhere and this computer read as locally; the web is listed."""
+def test_every_remote_kind_is_listed_until_its_owner_chooses(home: Path) -> None:
+    """D2b: no default per kind. Local port, SSH and web servers alike read only listed folders
+    until the owner chooses, and the same two modes are open to each."""
 
     del home
-    assert dict(DEFAULT_OUTSIDE_READ_MODE) == {
-        "ssh": "local",
-        "local_port": "local",
-        "https": "listed",
-    }
-    expected: tuple[tuple[str, OutsideReadMode], ...] = (
-        ("ssh", "local"),
-        ("local_port", "local"),
-        ("https", "listed"),
-    )
-    for kind, mode in expected:
+    for kind in ("ssh", "local_port", "https"):
         record, root = _remote(kind, kind.replace("_", "-"))
-        assert default_outside_read_mode(record) == mode
-        assert outside_reads_of(root, record) == OutsideReads(mode, (), "kind_default")
-    with targets.registry_lock():
-        local, _root = targets.new_local_target("bench")
-    assert default_outside_read_mode(local) == "listed"  # a kind missing from the table
+        assert outside_reads_of(root, record) == OutsideReads("listed", (), "not_chosen"), kind
+        for mode in ("local", "listed"):
+            set_mode(root, record.target_id, mode)
+            assert outside_reads_of(root, record) == OutsideReads(mode, (), "owner"), kind
+    assert not hasattr(server_folders, "DEFAULT_OUTSIDE_READ_MODE")
 
 
-def test_a_record_with_no_mode_reads_as_its_kinds_default(home: Path, folder: str) -> None:
+def test_a_record_with_no_mode_reads_as_listed(home: Path, folder: str) -> None:
     del home
     record, root = _remote("ssh", "devbox")
     add_folder(root, record.target_id, folder)
     assert b'"mode"' not in folders_path(root).read_bytes()
     assert read_record(root, record.target_id) == FolderRecord((folder,), None)
-    assert outside_reads_of(root, record) == OutsideReads("local", (folder,), "kind_default")
+    assert outside_reads_of(root, record) == OutsideReads("listed", (folder,), "not_chosen")
 
 
 def test_the_mode_switches_both_ways_and_folder_changes_keep_it(
@@ -403,7 +394,7 @@ def test_the_mode_switches_both_ways_and_folder_changes_keep_it(
     add_folder(root, record.target_id, folder)
     assert set_mode(root, record.target_id, "listed") is True
     assert outside_reads_of(root, record) == OutsideReads("listed", (folder,), "owner")
-    # A mode the owner set is kept even where it equals the kind's default.
+    # A mode the owner set is recorded even where it equals what no choice reads as.
     assert read_record(root, record.target_id).mode == "listed"
     with pytest.raises(FolderError, match="outside_read_mode_invalid"):
         set_mode(root, record.target_id, cast("OutsideReadMode", "open"))
@@ -411,7 +402,7 @@ def test_the_mode_switches_both_ways_and_folder_changes_keep_it(
 
 @pytest.mark.parametrize("value", ['"open"', "null", '""', '"LOCAL"'])
 def test_a_record_with_an_unknown_mode_fails_closed(home: Path, folder: str, value: str) -> None:
-    """Even for a kind whose default is ``local``: a damaged record is ``listed``, no folder."""
+    """Even where the owner chose ``local``: a damaged record is ``listed``, no folder."""
 
     del home
     record, root = _remote("ssh", "devbox")
@@ -425,11 +416,12 @@ def test_a_record_with_an_unknown_mode_fails_closed(home: Path, folder: str, val
 
 
 @pytest.mark.parametrize("damage", ["mode", "json"])
-def test_an_unreadable_record_fails_closed_to_listed_where_the_default_is_local(
+def test_an_unreadable_record_fails_closed_to_listed_where_the_owner_chose_local(
     home: Path, folder: str, damage: str
 ) -> None:
     del home
     record, root = _remote("ssh", "devbox")
+    set_mode(root, record.target_id, "local")
     assert outside_reads_of(root, record).mode == "local"
     add_folder(root, record.target_id, folder)
     if damage == "mode":
@@ -439,7 +431,7 @@ def test_an_unreadable_record_fails_closed_to_listed_where_the_default_is_local(
         folders_path(root).chmod(0o600)
     assert outside_reads_of(root, record) == _NOTHING
     assert outside_reads_reader(root)() == _NOTHING
-    # Clearing it never widens it to the kind's 'local' default.
+    # Clearing it never widens it back to the 'local' the damaged record may have held.
     assert clear_folders(root, record.target_id) == "reset_to_listed"
     assert outside_reads_of(root, record) == OutsideReads("listed", (), "owner")
 
@@ -450,7 +442,7 @@ def test_no_official_endpoint_is_named_yet() -> None:
     assert OFFICIAL_ENDPOINT_HOSTS == frozenset()
 
 
-def test_an_official_endpoint_defaults_to_local_by_exact_host_and_system_trust(
+def test_an_official_endpoint_is_local_by_exact_host_and_system_trust(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     del home
@@ -468,8 +460,14 @@ def test_an_official_endpoint_defaults_to_local_by_exact_host_and_system_trust(
     for name, fields, mode in cases:
         record, root = _remote("https", name, **fields)
         assert official_endpoint(record) is (mode == "local"), name
-        assert default_outside_read_mode(record) == mode, name
-        source: OutsideReadSource = "official_endpoint" if mode == "local" else "kind_default"
+        # The same answer before the target exists, as 'server add' asks it.
+        assert official_address(
+            "https",
+            fields["base_url"],
+            ca_file=fields.get("ca_file"),
+            tls_pin=fields.get("tls_pin"),
+        ) is (mode == "local"), name
+        source: OutsideReadSource = "official_endpoint" if mode == "local" else "not_chosen"
         assert outside_reads_of(root, record) == OutsideReads(mode, (), source), name
     # The owner's own choice still wins over the official default.
     record, root = _remote("https", "chosen", base_url="https://fu.example")
@@ -478,3 +476,5 @@ def test_an_official_endpoint_defaults_to_local_by_exact_host_and_system_trust(
     # Neither kind but HTTPS counts, whatever its host.
     ssh, _root = _remote("ssh", "devbox")
     assert official_endpoint(ssh) is False
+    for kind in ("ssh", "local_port", "local"):
+        assert official_address(kind, "https://fu.example", ca_file=None, tls_pin=None) is False

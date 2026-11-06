@@ -4579,7 +4579,7 @@ never inside a repository, with exact field sets.
 |---|---|---|
 | `yoetz.server-target/1` | `<ambient state dir>/servers/t_<8 hex>/target.json` | `schema`, `target_id` (`t_` + 8 lowercase hex), `name`, `kind`, `created_at`. `ssh` adds `user`, `host`, `port`, `remote_root`, `remote_launcher`. `https` and `local_port` add `base_url`, one of `ca_file` or `tls_pin` (`sha256:<64 hex>`), and `credential` (`keyring\|file`). Every remote kind adds `claim_salt` (32 random bytes), `authorized_at` and `disclosure_version`. |
 | `yoetz.server-selection/1` | `<ambient config dir>/server-selection.json` | `schema`, `target_id`. Absent means the ambient service. |
-| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory), and `mode` (`local\|listed`) only once the owner set one. No `mode` means the kind's default (`client.server_folders.DEFAULT_OUTSIDE_READ_MODE`: `ssh` and `local_port` `local`, `https` `listed`; an HTTPS target whose exact hostname is in `OFFICIAL_ENDPOINT_HOSTS` and that trusts the system certificate store, `local`). An absent record means no folder and no mode; one that cannot be read means `listed` with no folder. Written only by `server folders add`/`remove`/`mode`, never sent to a server. |
+| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory), and `mode` (`local\|listed`) once the owner chose one (at `server add`, or with `server folders mode`). Every remote kind has the same two modes and no default: no `mode` means `listed` (`not_chosen`), except an HTTPS target whose exact hostname is in `client.server_folders.OFFICIAL_ENDPOINT_HOSTS` and that trusts the system certificate store, which is `local` (`official_endpoint`). An absent record means no folder and no mode; one that cannot be read means `listed` with no folder. Written only by `server add` and `server folders add`/`remove`/`mode`, never sent to a server. |
 
 A target name matches `[a-z0-9][a-z0-9-]{0,15}` and `local` is reserved. The name appears only in
 `target.json` and in owner displays (`server list`, `server status`, `server test`); errors, logs,
@@ -4612,12 +4612,25 @@ server-host guard runs, so the service never reads a selection its spawner did n
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` and `finishup server folders add NAME FOLDER|list NAME|remove
-NAME FOLDER|--all|mode NAME local|listed` (`cli/server.py`). `server folders mode NAME local`
-records `local` only after the typed name on the trusted console, unless the owner already set
-`local`, and even where `local` is the target's default, since a recorded mode outlives a change
-of default; without the console a target whose default is `local` is left unrecorded (it says so
-and exits 0) and any other is `trusted_console_required`. `mode NAME listed` is its reverse and
-asks nothing; any other value is `outside_read_mode_invalid`. `server folders add`
+NAME FOLDER|--all|mode NAME local|listed` (`cli/server.py`). `server add` for any remote kind
+asks the outside-read mode on the trusted console inside its typed confirmation, after the
+disclosure and before the typed name: the question `client.server_folders.OUTSIDE_READ_QUESTION`
+with one line per mode (`OUTSIDE_READ_MODE_LINES`), answered `local` or `listed`; Enter alone or
+another word asks again, up to three answers, and then, or at end of input or an interrupt,
+nothing is added (`outside_reads_not_chosen`). `--outside-reads local|listed` answers it up
+front (any other value is `outside_read_mode_invalid` before any console; with `--local` it is
+`usage`), and the console then shows the mode it authorizes. An official endpoint
+(`server_folders.official_address`) is not asked and is left unrecorded, `local`. The answer is
+written with `set_mode` under the registry lock that creates the target; where it cannot be,
+the target is still added and `add` says it is `listed` until the owner chooses. The terminal
+interface's `/server` add flow asks the same question (`OUTSIDE_READ_QUESTION`, the same lines)
+and prints `finishup server add NAME … --outside-reads MODE`. `server folders mode NAME local`
+records `local` only after the typed name on the trusted console, unless the owner already chose
+`local`, and even for an official endpoint, which is `local` unrecorded; without the console an
+official endpoint is left unrecorded (it says so and exits 0) and any other target is
+`trusted_console_required`. `mode NAME listed` is its reverse and asks nothing; any other value
+is `outside_read_mode_invalid`. A change of mode or folders applies from the workspace agent's
+next read; a read already in progress may still return files. `server folders add`
 refuses a folder that `client.server_folders.folder_admissible` rejects (`folder_invalid`: not the
 input-root shape, the home directory, a folder holding it by spelling or identity, or one in its
 private trees) before it asks on the trusted console, and `add_folder` applies the same rule again
@@ -4626,9 +4639,15 @@ replaces it with an empty one in `listed` mode (`clear_folders` → `reset_to_li
 add` prints a remote target's mode and the command that changes it. `server status --json` emits
 `server-target-status-1.0.0` and names the deciding root source, never a credential; for a remote
 target its `target.outside_reads` carries `mode` (`local|listed`), `mode_source`
-(`owner|kind_default|official_endpoint|unreadable`) and the listed `folders`, and is null for any
+(`owner|official_endpoint|not_chosen|unreadable`) and the listed `folders`, and is null for any
 other target (the golden vector is `fixtures/service/server-target-status.case.json`). The text
-form, `server folders list` and the terminal's `/server` status show the same.
+form, `server folders list` and the terminal's `/server` status show the same, and for
+`not_chosen` the two `server folders mode` commands that choose. The document's top-level
+`zero_network_selection` is null, or the zero-network item (ADR-051 decision 8): `reason`
+(`zero_network_remote_selected|zero_network_selection_unreadable`), `target_id`, `kind`
+(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is filled
+by `cli.server._zero_network_selection`, which reports null where no zero-network selection
+check runs.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds (the edge
@@ -4822,7 +4841,8 @@ confinement rules:
   `outside_reads_reader(claim_salt=...)` (as `remote_workspace_binding` does) for the target this
   process uses then, which must be the one whose salt the claim was made under. A handler built
   with no `outside_reads`, and `outside_reads_reader()` with neither argument, are `listed` with no
-  folder, never a kind's default: the process's selection alone may name another server. A later
+  folder, never the mode of the target in use: the process's selection alone may name another
+  server. A later
   change of the process's selection (`server use`, a `selection_override` probe of another
   target) never switches an agent to another target's record. A local root, a mismatched salt,
   a record that cannot be read, and an answer that fails or is not an `OutsideReads` are `listed`

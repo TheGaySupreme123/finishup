@@ -1518,8 +1518,10 @@ later process to the default service.
   the client's workspace agent serves the server's workspace reads. Outside the project folder it
   reads as the target's outside-read mode says: in `local` mode as a local service would, in
   `listed` mode only beneath a folder the owner listed for the target on this machine (`finishup
-  server folders mode|add`, ADR-051 decision 5; SSH and port targets default to `local`, web
-  targets to `listed`; the same for every host, with no registration change).
+  server folders mode|add`, ADR-051 decision 5; every remote kind gets the same choice, asked by
+  `finishup server add` on the owner's own terminal, an official endpoint being `local`; once
+  chosen, no hook, MCP tool or CLI call in a Codex session prompts for it again; the same for
+  every host, with no registration change).
   Inside it the agent returns a file only when Git answers that it is not ignored, so in a linked
   Git worktree or a submodule a declared test is not offered to the server's reviewer, though a
   local service offers it (ADR-051, a parity gap). Receipts carry the
