@@ -295,12 +295,18 @@ class SessionRegistry:
         self._idle = idle_seconds
         self._per_key = per_key
         self._sessions: dict[str, GatewaySession] = {}
+        # Sessions being opened, per key: they count against the bound from before the first
+        # await, so concurrent opens of one key cannot all pass it.
+        self._opening: dict[str, int] = {}
 
     def __len__(self) -> int:
         return len(self._sessions)
 
     def count_for(self, key_id: str) -> int:
-        return sum(1 for session in self._sessions.values() if session.key_id == key_id)
+        """Sessions of ``key_id``, open or being opened."""
+
+        live = sum(1 for session in self._sessions.values() if session.key_id == key_id)
+        return live + self._opening.get(key_id, 0)
 
     async def open(
         self,
@@ -321,6 +327,31 @@ class SessionRegistry:
 
         if self.count_for(key_id) >= self._per_key:
             raise SessionLimit
+        self._opening[key_id] = self._opening.get(key_id, 0) + 1
+        try:
+            return await self._open(
+                key_id=key_id,
+                scope=scope,
+                hello=hello,
+                hello_payload=hello_payload,
+                manifest_digest=manifest_digest,
+            )
+        finally:
+            remaining = self._opening[key_id] - 1
+            if remaining:
+                self._opening[key_id] = remaining
+            else:
+                del self._opening[key_id]
+
+    async def _open(
+        self,
+        *,
+        key_id: str,
+        scope: KeyScope,
+        hello: ControlFrame,
+        hello_payload: bytes,
+        manifest_digest: str,
+    ) -> OpenedSession:
         upstream = await self._connect()
         try:
             await upstream.send_all(struct.pack(">I", len(hello_payload)) + hello_payload)
