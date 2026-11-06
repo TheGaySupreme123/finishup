@@ -13909,6 +13909,31 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             ).IsolationReportContract
         ),
     ),
+    # ADR-051 approach A: the HTTPS binding v1 between a connector and the gateway.
+    _RegistryEntry(
+        "service/rest-error-1.0.0.schema.json",
+        "rest-error",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.rest_binding", fromlist=["RestErrorContract"]
+            ).RestErrorContract
+        ),
+    ),
+    _RegistryEntry(
+        "service/server-info-1.0.0.schema.json",
+        "server-info",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.rest_binding", fromlist=["ServerInfoContract"]
+            ).ServerInfoContract
+        ),
+    ),
     # ADR-051: ``finishup server status --json``.
     _RegistryEntry(
         "service/server-target-status-1.0.0.schema.json",

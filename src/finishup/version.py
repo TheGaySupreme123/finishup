@@ -135,8 +135,9 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # #1275: +2 canonical status vectors on the status-result 1.5.0 wire carrying closure readiness
 # (CAN-025, CAN-026); the released 1.4.0 vectors (CAN-011, CAN-012) stay append-only.
 # ADR-051: +10 for the control 2.10.0 envelopes and workspace-binding vectors, +2 schemas
-# (isolation-report 1.1.0 with the ``selection`` binding, server-target-status 1.0.0).
-REVIEWED_RESOURCE_COUNT: Final = 354
+# (isolation-report 1.1.0 with the ``selection`` binding, server-target-status 1.0.0); +2 schemas
+# for the HTTPS binding v1 (rest-error 1.0.0, server-info 1.0.0).
+REVIEWED_RESOURCE_COUNT: Final = 356
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -189,12 +190,14 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("receipt-result", "1.4.0"),
     ("respond-request", "1.1.0"),
     ("respond-result", "1.1.0"),
+    ("rest-error", "1.0.0"),
     ("review-packet-row", "2.0.0"),
     ("review-result", "7.0.0"),
     ("reviewer-reply", "1.0.0"),
     ("routine-read-summary", "1.0.0"),
     ("runtime-attempt-evidence", "1.1.0"),
     ("semantic-provenance", "1.2.0"),
+    ("server-info", "1.0.0"),
     ("server-target-status", "1.0.0"),
     ("service-status", "1.0.0"),
     ("session-health", "1.0.0"),
