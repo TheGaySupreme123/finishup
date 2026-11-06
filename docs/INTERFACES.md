@@ -5839,9 +5839,10 @@ Shared closed types:
   healed mapping, cursor, quarantine, or outbox condition remain current forever.
 - `HookSpool` — private legacy-host ingress only: `append(workspace, event, structural payload)`
   makes one fsync'd bounded record keyed by a workspace HMAC; `claim(workspace commitment)` uses
-  rename fencing and exposes records to the READY service. A stable spool UUID enters source
-  identity, so crash replay is at-least-once and normal local ingest deduplicates it. Pending spool
-  work projects `source_lag`; it is not an acknowledged observation.
+  rename fencing and exposes records to the READY service. A claim given a stop event stops waiting
+  for the workspace lock once that event is set and claims nothing. A stable spool UUID enters
+  source identity, so crash replay is at-least-once and normal local ingest deduplicates it.
+  Pending spool work projects `source_lag`; it is not an acknowledged observation.
 - `AdviceSnapshot` — ranked `AdviceItem` values (finding id, local rule code, priority,
   summary, evidence-linked detail, next action, evidence refs, coverage, freshness) plus exact
   evidence basis, confidence/coverage, recommended next action, freshness, and suppression
@@ -6591,7 +6592,15 @@ ordinary workflow control behind local outbox bookkeeping; the workspace lease a
 fence still serialize each row against recovery and bundle rotation. Legacy hook-spool normalization
 uses one generation-owned worker, advances a durable byte cursor in bounded batches, and retains its
 claim future across cancellation, so a later pass cannot overlap the same rename-and-replay
-operation; generation close stops between batches. The route inspection and fence verification
+operation; generation close stops between batches and waits for the active pass for up to the
+soft-lock drain budget (`LOCK_DRAIN_SECONDS`, 5 s). A pass told to stop before it lists the spool
+claims nothing. A pass waiting for a hook's spool lock stops waiting as soon as close asks it to
+stop and claims nothing, so a hook that keeps that lock cannot hold the pass's worker thread or the
+service process's exit. A batch already claimed is not interrupted: it finishes and commits its
+cursor, waiting for the lock as a hook's append does. A pass still running at the bound does not
+hold the close: the diagnostics ring records it (component `service.ready_composition`, operation
+`legacy_hook_spool_close`, reason `legacy_spool_pass_outstanding_at_close`). The route inspection
+and fence verification
 callbacks keep their synchronous SQLite snapshots off the control event loop. The manual `finishup
 observe drain` repeats full FIFO passes while the previous pass resolved at least one row, bounded
 by the backlog size at entry, and reports `passes`, `pending_after`, and a closed `terminal`:

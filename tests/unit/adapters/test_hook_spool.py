@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import fcntl
+import os
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -40,6 +45,111 @@ def test_claim_advances_a_durable_cursor_across_large_file_batches(tmp_path: Pat
             assert spool.pending_workspaces() == (commitment,)
 
     assert seen == ["Event0", "Event1", "Event2", "Event3", "Event4"]
+    assert spool.pending_workspaces() == ()
+
+
+def _spool_files(tmp_path: Path) -> dict[str, int]:
+    return {path.name: path.stat().st_size for path in (tmp_path / "hook-spool").iterdir()}
+
+
+@contextmanager
+def _hook_holds_lock(tmp_path: Path, commitment: str) -> Generator[None]:
+    """Hold the workspace's spool lock as a hook does, through its own open file description."""
+
+    digest = commitment.removeprefix("hmac-sha256:")
+    descriptor = os.open(tmp_path / "hook-spool" / f"{digest}.lock", os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        # Closing the descriptor releases the lock.
+        os.close(descriptor)
+
+
+class _ObservedStop(threading.Event):
+    """A stop flag that reports when a claim first waits on it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waited_on = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waited_on.set()
+        return super().wait(timeout)
+
+
+def _claim_in_thread(
+    spool: HookSpool, commitment: str, stop: threading.Event
+) -> tuple[threading.Thread, list[tuple[str, ...]]]:
+    claimed: list[tuple[str, ...]] = []
+
+    def claim() -> None:
+        with spool.claim(commitment, stop=stop) as records:
+            claimed.append(tuple(record.event_name for record in records))
+
+    # Daemon, so a claim that never returns fails its test without holding the run open.
+    worker = threading.Thread(target=claim, daemon=True)
+    worker.start()
+    return worker, claimed
+
+
+def test_claim_told_to_stop_leaves_the_spool_as_it_was(tmp_path: Path) -> None:
+    spool, workspace, commitment = _spool(tmp_path)
+    _append(spool, workspace, "Event0")
+    spooled = _spool_files(tmp_path)
+    stop = threading.Event()
+    stop.set()
+
+    with spool.claim(commitment, stop=stop) as records:
+        assert records == ()
+
+    assert _spool_files(tmp_path) == spooled
+    with spool.claim(commitment) as records:
+        assert tuple(record.event_name for record in records) == ("Event0",)
+    assert spool.pending_workspaces() == ()
+
+
+def test_claim_waiting_for_a_hooks_lock_returns_at_once_when_told_to_stop(
+    tmp_path: Path,
+) -> None:
+    """A hook that keeps its spool lock cannot keep a stopped claim's thread waiting."""
+
+    spool, workspace, commitment = _spool(tmp_path)
+    _append(spool, workspace, "Event0")
+    spooled = _spool_files(tmp_path)
+    stop = _ObservedStop()
+
+    with _hook_holds_lock(tmp_path, commitment):
+        worker, claimed = _claim_in_thread(spool, commitment, stop)
+        # The claim has found the lock busy and is waiting for it.
+        assert stop.waited_on.wait(5.0)
+        stop.set()
+        worker.join(5.0)
+        # Still inside the hook's hold: the claim gave up the wait rather than outlasting it.
+        assert not worker.is_alive()
+        assert claimed == [()]
+        assert _spool_files(tmp_path) == spooled
+
+    assert _spool_files(tmp_path) == spooled
+    with spool.claim(commitment) as records:
+        assert tuple(record.event_name for record in records) == ("Event0",)
+
+
+def test_claim_waiting_for_a_hooks_lock_claims_once_the_hook_lets_go(tmp_path: Path) -> None:
+    spool, workspace, commitment = _spool(tmp_path)
+    _append(spool, workspace, "Event0")
+    stop = _ObservedStop()
+
+    with _hook_holds_lock(tmp_path, commitment):
+        worker, claimed = _claim_in_thread(spool, commitment, stop)
+        assert stop.waited_on.wait(5.0)
+        # Waiting with a stop flag that is not set keeps waiting while the hook holds the lock.
+        assert worker.is_alive()
+        assert claimed == []
+
+    worker.join(5.0)
+    assert not worker.is_alive()
+    assert claimed == [("Event0",)]
     assert spool.pending_workspaces() == ()
 
 
