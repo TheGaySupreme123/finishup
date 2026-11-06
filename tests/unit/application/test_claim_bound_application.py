@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -14,6 +15,7 @@ import finishup.application.service as service_module
 from finishup.domain.events import (
     ClientKind,
     IntegrationKind,
+    RedactionState,
     RuntimeProfile,
     SessionOpenedPayload,
 )
@@ -22,7 +24,9 @@ from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASONS,
     CLIENT_ATTESTED_OBSERVATION_LINE,
     CLIENT_ATTESTED_WORKSPACE_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     client_attested_receipt_block,
+    workspace_provenance_unknown_block,
 )
 from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from finishup.ports.workspace_agent import workspace_handle_for_claim
@@ -260,9 +264,15 @@ def _runtime(ledger: _Ledger) -> Any:  # noqa: ANN401
     )
 
 
-def _opened(workspace_ref: str | None) -> object:
+def _record(payload: object, *, name: str = "session_opened", redaction: str = "present") -> object:
     return SimpleNamespace(
-        payload=SessionOpenedPayload(
+        schema=SimpleNamespace(name=name), redaction=RedactionState(redaction), payload=payload
+    )
+
+
+def _opened(workspace_ref: str | None) -> object:
+    return _record(
+        SessionOpenedPayload(
             task_title="Remote task",
             client_kind=ClientKind.TEST_CLIENT,
             client_version="0.1.0",
@@ -280,6 +290,74 @@ def test_the_attestation_reads_the_session_opening_and_none_means_not_claim_boun
     assert asyncio.run(attested_by(_runtime(_Ledger((_opened(_HANDLE),))))) == _INSTANCE
     assert asyncio.run(attested_by(_runtime(_Ledger((_opened("/srv/project"),))))) is None
     assert asyncio.run(attested_by(_runtime(_Ledger(())))) is None
+    # Only the session's opening event decides; a later record is never read for it.
+    later = _record(None, name="obligation_published")
+    assert asyncio.run(attested_by(_runtime(_Ledger((_opened(_HANDLE), later))))) == _INSTANCE
+
+
+def test_an_opening_event_the_ledger_holds_unread_refuses_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovering SQLite ledger keeps a payload it failed to read as None (finding A6).
+
+    The record is found by its schema name, so its missing payload is a retryable storage error
+    with a resolvable closed reason, never the None that would drop a claim-bound receipt's
+    client-attested block.
+    """
+
+    import finishup.observability.diagnostics as diagnostics
+    from builders.replay import genesis_session_opened
+    from finishup.application import receipt
+    from finishup.observability.diagnostics import lookup_diagnostic_records
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    attested_by: Any = getattr(receipt, "_attested_by")
+    unread = replace(genesis_session_opened(), payload=None)
+    assert unread.redaction is RedactionState.PRESENT
+    request_id = "req_00000000-0000-4000-8000-000000051003"
+    with pytest.raises(PublicOperationError) as raised:
+        asyncio.run(attested_by(_runtime(_Ledger((unread,))), request_id=request_id))
+    error = raised.value
+    assert error.code is PublicErrorCode.STORAGE_UNSAFE
+    assert error.retryable is True
+    assert error.correlation_id is not None
+    found = lookup_diagnostic_records(error.correlation_id, root=tmp_path)
+    assert [(row["reason"], row["operation"], row["request_id"]) for row in found] == [
+        ("session_opened_payload_unavailable", "receipt_attestation_read", request_id)
+    ]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _record(None, redaction="logically_redacted"),
+        _record(None, redaction="erased_claimed"),
+        _record(None, redaction="key_unavailable"),
+        # A session_opened version this service cannot read keeps its raw payload.
+        _record({"workspace_ref": _HANDLE}),
+    ],
+    ids=["logically_redacted", "erased_claimed", "key_unavailable", "unknown_version"],
+)
+def test_an_opening_event_that_cannot_say_leaves_the_binding_unknown(record: object) -> None:
+    """A retry cannot read it, so the receipt is built and says so instead of omitting it."""
+
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    unknown = getattr(receipt, "_Provenance").UNKNOWN
+    assert asyncio.run(attested_by(_runtime(_Ledger((record,))))) is unknown
+
+
+def test_the_unknown_provenance_block_is_fixed_words() -> None:
+    assert workspace_provenance_unknown_block(markdown=False).splitlines() == [
+        "Workspace evidence",
+        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    ]
+    assert workspace_provenance_unknown_block(markdown=True).splitlines() == [
+        "## Workspace evidence",
+        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    ]
+    assert "/" not in WORKSPACE_PROVENANCE_UNKNOWN_LINE
 
 
 @pytest.mark.parametrize(
