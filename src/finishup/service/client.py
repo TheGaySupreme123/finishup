@@ -111,6 +111,7 @@ from finishup.service.control_protocol import (
 )
 
 if TYPE_CHECKING:
+    from finishup.client.targets import ServerTarget
     from finishup.service.confidential_protocol import OwnerReceiptViewTarget
     from finishup.service.lifecycle import SingletonHolder
 
@@ -1721,6 +1722,88 @@ async def _connect_service_attempt(
         raise
 
 
+def _remote_target() -> tuple[ServerTarget, Path] | None:
+    """The active root's remote server target and root, or ``None`` for every local root.
+
+    Only a root whose ``target.json`` names a remote kind leaves the Unix-socket path. Anything
+    else — the everyday server, an isolated root, a named local server, or a root this check
+    cannot read — keeps today's path exactly, including its own failure for an unusable root.
+    """
+
+    from finishup.client.targets import TargetError, active_target_record
+
+    try:
+        record = active_target_record()
+        root = active_root()
+    except (TargetError, PathSafetyError):
+        return None
+    if record is None or not record.is_remote or root is None:
+        return None
+    return record, root
+
+
+async def _connect_remote(
+    client_kind: ControlClientKind,
+    target: tuple[ServerTarget, Path],
+    *,
+    workspace_locator: WorkspaceLocator | None,
+    timeout_seconds: float,
+    on_demand: bool,
+) -> ServiceClient:
+    """Connect to a remote target's network API (ADR-051); never spawn or supersede a service.
+
+    An on-demand caller also makes the target usable first (an SSH target's master), starts an
+    idle-stopped remote service once through the recorded launcher, and notes its workspace for
+    this target's workspace agent, starting that agent when none runs.
+    """
+
+    from finishup.client.rest_client import connect_rest_service
+
+    record, root = target
+    if workspace_locator is not None:
+        from finishup.client.agent import ensure_agent, note_workspace
+
+        note_workspace(root, workspace_locator)
+        ensure_agent(root)
+    deadline = time.monotonic() + timeout_seconds
+
+    async def attempt() -> ServiceClient:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+        try:
+            async with asyncio.timeout(remaining):
+                return await connect_rest_service(
+                    client_kind, record=record, root=root, workspace_locator=workspace_locator
+                )
+        except TimeoutError as exc:
+            raise ControlError(
+                "service_unavailable", retryable=True, phase="remote_unreachable"
+            ) from exc
+
+    if not on_demand or record.kind != "ssh":
+        return await attempt()
+    from finishup.client.rest_runtime import SshTargetRuntime
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    runtime = SshTargetRuntime()
+    try:
+        await asyncio.to_thread(runtime.ensure_master, record, root)
+    except TargetRuntimeError as error:
+        raise ControlError("service_unavailable", retryable=True, phase=error.reason) from None
+    try:
+        return await attempt()
+    except ControlError as error:
+        if error.phase not in {"remote_unreachable", "remote_service_not_running"}:
+            raise
+    # The master is up but nothing answered: the remote service may have stopped while idle.
+    try:
+        await asyncio.to_thread(runtime.start_remote_service, record, root)
+    except TargetRuntimeError as error:
+        raise ControlError("service_unavailable", retryable=True, phase=error.reason) from None
+    return await attempt()
+
+
 async def connect_service(
     client_kind: ControlClientKind,
     *,
@@ -1728,7 +1811,11 @@ async def connect_service(
     projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
     output_is_controlling_tty: bool = False,
 ) -> ServiceClient:
-    """Connect only to the verified fixed ordinary endpoint and perform the handshake."""
+    """Connect only to the verified fixed ordinary endpoint and perform the handshake.
+
+    A remote server target (ADR-051) is reached through its network API instead; the client
+    returned has the same methods and errors.
+    """
 
     if type(client_kind) is not ControlClientKind:
         raise TypeError("control_client_kind_invalid")
@@ -1738,6 +1825,15 @@ async def connect_service(
         raise TypeError("projection_render_mode_invalid")
     if type(output_is_controlling_tty) is not bool:
         raise TypeError("projection_tty_fact_invalid")
+    remote = _remote_target()
+    if remote is not None:
+        return await _connect_remote(
+            client_kind,
+            remote,
+            workspace_locator=workspace_locator,
+            timeout_seconds=_CONNECT_HANDSHAKE_TIMEOUT_SECONDS,
+            on_demand=False,
+        )
     return await _connect_service_attempt(
         client_kind,
         workspace_locator=workspace_locator,
@@ -1921,6 +2017,16 @@ async def connect_service_on_demand(
         raise TypeError("workspace_locator_invalid")
     if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
         raise ValueError("service_start_timeout_invalid")
+    remote = _remote_target()
+    if remote is not None:
+        # A remote target's service runs elsewhere: never spawned or superseded from here.
+        return await _connect_remote(
+            client_kind,
+            remote,
+            workspace_locator=workspace_locator,
+            timeout_seconds=timeout_seconds,
+            on_demand=True,
+        )
     deadline = time.monotonic() + timeout_seconds
 
     async def connect_with_remaining_budget() -> ServiceClient:

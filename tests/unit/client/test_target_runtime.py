@@ -21,13 +21,30 @@ def test_the_local_kind_has_the_built_in_runtime() -> None:
 
 
 @pytest.mark.parametrize("kind", ["local_port", "ssh", "https"])
-def test_an_unregistered_remote_kind_is_a_closed_refusal(kind: str) -> None:
+def test_an_unregistered_remote_kind_is_a_closed_refusal(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        target_runtime,
+        "_RUNTIME_LOADERS",
+        {"local": target_runtime._RUNTIME_LOADERS["local"]},  # pyright: ignore[reportPrivateUsage]
+    )
     with pytest.raises(TargetRuntimeError) as raised:
         runtime_for(kind)  # type: ignore[arg-type]
     assert (raised.value.reason, raised.value.phase) == (
         "remote_unreachable",
         "runtime_unavailable",
     )
+
+
+def test_the_network_api_serves_every_remote_kind() -> None:
+    """Approach C: the server-native network API registers a runtime for each remote kind."""
+
+    from finishup.client.rest_runtime import RestTargetRuntime, SshTargetRuntime
+
+    assert type(runtime_for("https")) is RestTargetRuntime
+    assert type(runtime_for("local_port")) is RestTargetRuntime
+    assert type(runtime_for("ssh")) is SshTargetRuntime
 
 
 def test_an_approach_registers_its_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

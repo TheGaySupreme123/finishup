@@ -22,6 +22,8 @@ _RESOLVERS: Final = frozenset({"isolated_root", "active_root", "_expected_isolat
 _FOLLOWS_SELECTION: Final = {
     # Forwards the resolved root to the service (or connector) it spawns.
     ("service/client.py", "_service_environment", "active_root"): 1,
+    # A remote target's root decides the network API this client reaches (ADR-051).
+    ("service/client.py", "_remote_target", "active_root"): 1,
     # The instance-binding check: a named local server's marker lives in an isolated root.
     ("service/daemon.py", "_production_composition", "active_root"): 1,
     # ``service isolation`` reports the root this process really uses.
@@ -127,9 +129,11 @@ def test_the_audit_covers_the_design_table() -> None:
     """Design section 5 lists 20 lines: 5 switch to ``active_root()`` and 15 stay explicit. One
     of the 15 (``codex_mcp.py:578``) is the definition of the Codex adapter's
     ``_expected_isolated_root`` helper, which resolves through ``isolated_root_environment``, so
-    the explicit side has 14 calls here."""
+    the explicit side has 14 calls here. The server-native network API adds one site that
+    follows the selection by design: ``service/client.py:_remote_target`` picks the API client
+    for a remote target root."""
 
-    assert len(_FOLLOWS_SELECTION) == 5
+    assert len(_FOLLOWS_SELECTION) == 6
     assert len(_STAYS_EXPLICIT) == 14
 
 

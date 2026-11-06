@@ -19,6 +19,7 @@ import typer
 from pydantic import BaseModel, ValidationError
 
 from finishup import __version__
+from finishup.cli.agent import agent_app
 from finishup.cli.agent_start import AGENT_START_HANDOFF
 from finishup.cli.ai import ai_app, register_credential_remove
 from finishup.cli.bootstrap import (
@@ -266,6 +267,7 @@ app.add_typer(observe_app, name="observe")
 observe_app.add_typer(observe_checks_app, name="checks")
 app.add_typer(project_app, name="project")
 app.add_typer(server_app, name="server")
+app.add_typer(agent_app, name="agent")
 
 
 def _recommend_operation(name: str) -> Callable[..., None]:

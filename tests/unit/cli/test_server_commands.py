@@ -63,8 +63,16 @@ def authorized(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     def confirm(name: str, kind: str) -> None:
         confirmations.append((name, kind))
 
+    def discover(**address: object) -> object:
+        # Approach C asks an SSH server for its API socket; no ssh runs in these tests.
+        from finishup.client.rest_runtime import SshEndpoint
+
+        launcher = address["remote_launcher"] or "/home/owner/.local/bin/finishup"
+        return SshEndpoint("/srv/finishup/run/api.sock", cast(str, launcher))
+
     monkeypatch.setattr(server_cli, "_zero_network_in_force", lambda: False)
     monkeypatch.setattr(server_cli, "_confirm_on_trusted_console", confirm)
+    monkeypatch.setattr(server_cli, "_discover_ssh_endpoint", discover)
     return confirmations
 
 
@@ -203,8 +211,17 @@ def test_a_loopback_port_target_is_not_a_network_hop(
 
 
 def test_remote_add_and_use_record_the_owner_authorization(
-    home: Path, authorized: list[tuple[str, str]], quiet_probe: None
+    home: Path,
+    authorized: list[tuple[str, str]],
+    quiet_probe: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from finishup.client.target_runtime import ProbeResult
+
+    def unreachable(_self: object, _root: Path | None) -> ProbeResult:
+        return ProbeResult("unavailable", reason="remote_unreachable", phase="ssh_connect")
+
+    monkeypatch.setattr("finishup.client.rest_runtime.SshTargetRuntime.probe", unreachable)
     added = _invoke(
         "add",
         "lab",
@@ -222,7 +239,9 @@ def test_remote_add_and_use_record_the_owner_authorization(
         "lab.example",
         2222,
     )
-    assert record.remote_endpoint == "/srv/finishup/run/control.sock"
+    # The server-native API: the SSH master forwards to the server's owner-only API socket.
+    assert record.remote_endpoint == "/srv/finishup/run/api.sock"
+    assert record.remote_launcher == "/opt/finishup/bin/finishup"
     assert record.disclosure_version == targets.DISCLOSURE_VERSION
     assert authorized == [("lab", "ssh")]
 
@@ -235,11 +254,11 @@ def test_remote_add_and_use_record_the_owner_authorization(
     authorization = cast(dict[str, JsonValue], target["authorization"])
     assert authorization["current"] is True
     probe = cast(dict[str, JsonValue], status["probe"])
-    # The foundation registers no remote runtime: a closed token, never a local fallback.
+    # An unreachable remote server is a closed token, never a local fallback.
     assert (probe["outcome"], probe["reason"], probe["phase"]) == (
         "unavailable",
         "remote_unreachable",
-        "runtime_unavailable",
+        "ssh_connect",
     )
     assert "claim_salt" not in json.dumps(status)
 
@@ -367,8 +386,15 @@ def test_ssh_targets_take_no_api_key(home: Path, authorized: list[tuple[str, str
 
 
 def test_remote_connect_without_a_runtime_is_a_typed_refusal(
-    home: Path, authorized: list[tuple[str, str]]
+    home: Path, authorized: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from finishup.client import target_runtime
+
+    monkeypatch.setattr(
+        target_runtime,
+        "_RUNTIME_LOADERS",
+        {"local": target_runtime._RUNTIME_LOADERS["local"]},  # pyright: ignore[reportPrivateUsage]
+    )
     assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
     for command in ("connect", "disconnect"):
         result = _invoke(command, "lab")

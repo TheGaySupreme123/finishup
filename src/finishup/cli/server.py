@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, NoReturn, cast
 
 import typer
 
@@ -36,6 +36,9 @@ from finishup.client.target_runtime import (
     TargetRuntimeError,
     runtime_for,
 )
+
+if TYPE_CHECKING:
+    from finishup.client.rest_runtime import SshEndpoint as SshEndpointFacts
 from finishup.client.targets import (
     DISCLOSURE_VERSION,
     ServerTarget,
@@ -180,6 +183,32 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     "usage": (
         "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
         _USAGE,
+    ),
+    # The remote connection phases (design section 8); the phase rides along as detail.
+    "remote_unreachable": (
+        "the server could not be reached; check that this computer reaches it over SSH or "
+        "HTTPS, then run 'finishup server test'",
+        _UNAVAILABLE,
+    ),
+    "remote_auth_failed": (
+        "the server did not accept this computer: for SSH load your key (ssh-add) or check your "
+        "SSH configuration; for HTTPS run 'finishup server login'",
+        _UNAVAILABLE,
+    ),
+    "remote_identity_changed": (
+        "the server's host key or certificate is not one this computer trusts; connect with ssh "
+        "once to confirm a new host key, or confirm the server another way and add it again",
+        _UNAVAILABLE,
+    ),
+    "remote_service_not_running": (
+        "the server answered but its FinishUP service is not running; start it there with "
+        "'finishup service start'",
+        _UNAVAILABLE,
+    ),
+    "remote_incompatible": (
+        "the server runs another FinishUP release or does not offer its network API (an SSH "
+        "server needs 'api_socket = true' under [network] in its config.toml); see the phase",
+        _UNAVAILABLE,
     ),
 }
 
@@ -381,6 +410,30 @@ def _authorize_remote(name: str, kind: str) -> None:
     _confirm_on_trusted_console(name, kind)
 
 
+def _discover_ssh_endpoint(
+    *,
+    user: str | None,
+    host: str,
+    port: int,
+    remote_root: str | None,
+    remote_launcher: str | None,
+) -> SshEndpointFacts:
+    """Where an SSH server's API socket is, through one batch-mode SSH command (ADR-051)."""
+
+    from finishup.client.rest_runtime import discover_ssh_endpoint
+
+    try:
+        return discover_ssh_endpoint(
+            user=user,
+            host=host,
+            port=port,
+            remote_root=remote_root,
+            remote_launcher=remote_launcher,
+        )
+    except TargetRuntimeError as error:
+        _runtime_failure(error)
+
+
 def _emit(lines: tuple[str, ...]) -> None:
     for line in lines:
         typer.echo(line)
@@ -473,6 +526,19 @@ def server_add(
         raise ServerCommandRefused("target_name_taken")
     if kind != "local":
         _authorize_remote(name, kind)
+    api_socket: str | None = None
+    if kind == "ssh":
+        # Ask the server where its owner-only API socket is (and which launcher answered),
+        # after the owner authorized the hop and before anything is recorded.
+        discovered = _discover_ssh_endpoint(
+            user=user,
+            host=cast(str, host),
+            port=cast(int, ssh_port),
+            remote_root=remote_root,
+            remote_launcher=remote_launcher,
+        )
+        api_socket = discovered.api_socket
+        remote_launcher = discovered.launcher
     try:
         with registry_lock():
             if kind == "local":
@@ -494,6 +560,9 @@ def server_add(
                     remote_root=remote_root,
                     remote_launcher=remote_launcher,
                 )
+                if api_socket is not None:
+                    record = replace(record, remote_endpoint=api_socket)
+                    write_target(target_root(record.target_id), record)
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     typer.echo(f"Added server target {record.name} ({record.target_id}, {record.kind}).")
