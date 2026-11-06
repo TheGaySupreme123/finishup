@@ -1889,11 +1889,19 @@ def _vault_initialization_required_message(include_authorize: bool) -> str:
 
 
 def _remote_locked_continuation() -> str | None:
-    """The continuation for a locked vault on a selected remote server; None for a local root."""
+    """The continuation for a locked vault on a selected remote server; None for a local root.
+
+    A target record that cannot be read (``OSError``) answers as remote, like
+    ``active_root_may_be_remote``: the typed ``VAULT_LOCKED`` result is never lost to the lookup.
+    """
 
     from finishup.client.targets import active_target_is_remote
 
-    if not active_target_is_remote():
+    try:
+        remote = active_target_is_remote()
+    except OSError:
+        remote = True
+    if not remote:
         return None
     return continuation_for_local_reason("remote_vault_locked")
 
