@@ -10140,6 +10140,7 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                 ),
             ]
         )
+        _add_observation_client_attestation(entry, document)
     elif entry.schema_name == "control-result":
         branches = document.get("oneOf")
         if not isinstance(branches, list) or not branches:
@@ -10178,6 +10179,96 @@ def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
             }
         )
     return document
+
+
+def _add_observation_client_attestation(
+    entry: _RegistryEntry, document: dict[str, JsonValue]
+) -> None:
+    """Let a claim-bound ``observation_ingest`` carry the client's own attestation (ADR-051).
+
+    For a remote target the client's observation store is the authority: the consent state, its
+    grant time, the enabled content profiles, the client's content-capture fence, the one trusted
+    approved-check policy digest and the route its lifecycle mapping names. The service accepts the
+    member only on a claim-bound connection, as ``client_attested``; every member is required (the
+    nullable ones say "none" explicitly) so an attestation is never partial.
+    """
+
+    from finishup.domain.observation import (
+        OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION,
+        OBSERVATION_CLIENT_CONSENT_STATES,
+    )
+    from finishup.domain.observation_profiles import ORDINARY_CONTENT_CAPTURE_PROFILE_IDS
+
+    definitions = document.get("$defs")
+    ingest = definitions.get("observation_ingest_body") if isinstance(definitions, dict) else None
+    properties = ingest.get("properties") if isinstance(ingest, dict) else None
+    if not isinstance(properties, dict) or "client_attestation" in properties:
+        raise SchemaGenerationError(
+            "control_request_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    digest: dict[str, JsonValue] = {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": _CONTROL_DIGEST_PATTERN,
+        "type": "string",
+    }
+    properties["client_attestation"] = {
+        "additionalProperties": False,
+        "properties": {
+            "authority_generation": {"anyOf": [dict(digest), {"type": "null"}]},
+            "check_policy_digest": {"anyOf": [dict(digest), {"type": "null"}]},
+            "consent": {
+                "enum": cast(
+                    list[JsonValue], sorted(OBSERVATION_CLIENT_CONSENT_STATES, key=str.encode)
+                ),
+                "type": "string",
+            },
+            "content_capture_profiles": {
+                "items": {
+                    "enum": cast(
+                        list[JsonValue],
+                        sorted(ORDINARY_CONTENT_CAPTURE_PROFILE_IDS, key=str.encode),
+                    ),
+                    "type": "string",
+                },
+                "maxItems": len(ORDINARY_CONTENT_CAPTURE_PROFILE_IDS),
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "granted_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": _CONTROL_TIMESTAMP_PATTERN,
+                "type": "string",
+            },
+            "route": {
+                "anyOf": [
+                    {
+                        "additionalProperties": False,
+                        "properties": {
+                            "session_id": _control_id_schema("session_id"),
+                            "task_id": _control_id_schema("task_id"),
+                            "writer_id": _control_id_schema("writer_id"),
+                        },
+                        "required": ["task_id", "session_id", "writer_id"],
+                        "type": "object",
+                    },
+                    {"type": "null"},
+                ]
+            },
+            "schema_version": {"const": OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION},
+        },
+        "required": [
+            "schema_version",
+            "consent",
+            "granted_at",
+            "content_capture_profiles",
+            "authority_generation",
+            "check_policy_digest",
+            "route",
+        ],
+        "type": "object",
+    }
 
 
 # The largest page ``privacy_receipts_list`` answers; a partial page cannot skip more rows than it
