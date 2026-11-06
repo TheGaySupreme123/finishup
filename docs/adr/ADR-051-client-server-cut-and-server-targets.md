@@ -1,6 +1,7 @@
 # ADR-051 — Client/server cut line, server targets and the workspace agent
 
-**Status:** Proposed for [issue #903](https://github.com/TheGaySupreme123/finishup/issues/903).
+**Status:** Proposed for [issue #1308](https://github.com/orgFinishUP/finishup/issues/1308), which
+scopes the original request in [issue #903](https://github.com/orgFinishUP/finishup/issues/903).
 Design gates: protocol (control envelopes 2.10.0 and the workspace frames), privacy/egress (the
 FinishUP server hop), storage layout (target roots and the selection file), release/packaging
 (client and edge processes, version lockstep) and the `OPEN_QUESTIONS` flip. Maintainer
@@ -9,11 +10,9 @@ FinishUP client from the server inside this repository; let a client use the loc
 local servers including ones reached on localhost ports, a server on another machine over SSH and
 web-hosted servers over HTTPS with an address and an API key; deliver three complete pull requests,
 one per way of doing the separation, each "full, plug and play". Under the intake rule in
-`AGENTS.md`, that explicit request is the design-gate acknowledgement for this scope. The GitHub
-integration available to the session returned 403 both for creating an issue and for commenting,
-so the acknowledgement is recorded here and in each pull request body; #903 stays the owning
-issue. The acknowledgement grants no runtime, credential, disclosure or destructive-action
-authority.
+`AGENTS.md`, that explicit request is the design-gate acknowledgement for this scope; it is
+recorded on #1308 and in each pull request body. The acknowledgement grants no runtime,
+credential, disclosure or destructive-action authority.
 **Implemented by (shared foundation, identical in all three pull requests):**
 `tests/unit/architecture/` (boundary map, crossing ledger and the AST boundary test),
 `src/finishup/cli/command_scope.py`, the `src/finishup/client/` package (targets, credentials,
