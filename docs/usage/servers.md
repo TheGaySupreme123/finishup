@@ -30,7 +30,10 @@ For an SSH server you can also give `--remote-root DIR` (the FinishUP folder on 
 runs in its own folder there) and `--remote-launcher PATH` (the full path of `finishup` on the
 server). For a web or port server, give the certificate authority that signed the server's
 certificate with `--ca-file FILE`, or pin the certificate with `--tls-pin sha256:…`. Plain `http`
-is refused.
+is refused. FinishUP checks certificates strictly: the authority's own certificate must be marked
+for signing certificates (the key-usage extension that current tools add to an authority). An
+older or hand-made authority without it is refused, and `server login` then reports
+`remote_identity_changed`; make a new authority, or pin the server's certificate instead.
 
 ## Add a server
 

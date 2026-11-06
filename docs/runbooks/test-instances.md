@@ -174,7 +174,10 @@ pattern.
 (`<server launcher> service start`); for an `https` or `local_port` target also create a key on
 its trusted console or into a new owner-only file (`service gateway key create --label L --scope
 agent --output-file F`) and run `service gateway run --listen 127.0.0.1:PORT --tls-cert C
---tls-key K` under that account. On the client account, install the same revision's wheel into an
+--tls-key K` under that account. Make the test authority with `keyUsage=critical,keyCertSign` (and
+`basicConstraints=critical,CA:TRUE`): the client verifies with Python's strict X.509 rules, which
+refuse an authority without key usage, and `server login` then fails as `remote_identity_changed`
+(`--tls-pin` does not depend on the authority). On the client account, install the same revision's wheel into an
 unpinned runtime so the selection applies, then add the target (`server add NAME
 ssh://user@host:port --remote-launcher <server launcher>`, or `server add NAME https://… --ca-file
 CA` / `--port PORT --ca-file CA` followed by `server login NAME --key-file F`) and select it
