@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Final
 
 from finishup.client.targets import ServerTarget
+from finishup.config.installation import socket_path_fits
 
 __all__ = [
     "MASTER_NAME",
@@ -52,8 +53,6 @@ MASTER_NAME: Final = "m"
 UPSTREAM_NAME: Final = "upstream.sock"
 # OpenSSH binds a ControlPath at ``<path>.<16 random characters>`` and renames it into place.
 _OPENSSH_TEMPORARY_SUFFIX: Final = 17
-# ``sun_path`` holds 104 bytes on macOS and 108 on Linux, each with a terminating NUL.
-_MAX_SOCKET_PATH_BYTES: Final = 103
 _MASTER_START_SECONDS: Final = 20.0
 _REMOTE_COMMAND_SECONDS: Final = 30.0
 _POLL_SECONDS: Final = 0.05
@@ -118,11 +117,16 @@ def _port(record: ServerTarget) -> str:
 
 
 def ssh_root_fits(root: Path) -> bool:
-    """Whether the master's temporary bind path and the upstream socket fit ``sun_path``."""
+    """Whether the master's temporary bind path and the upstream socket fit ``sun_path``.
 
-    master = len(os.fsencode(root / "run" / MASTER_NAME)) + _OPENSSH_TEMPORARY_SUFFIX
-    upstream = len(os.fsencode(root / "run" / UPSTREAM_NAME))
-    return max(master, upstream) <= _MAX_SOCKET_PATH_BYTES
+    The bound is the one ``server add`` checked the root against (``target_root_too_long``), so
+    a root it accepted is never refused here.
+    """
+
+    master = root / "run" / MASTER_NAME
+    return socket_path_fits(
+        master, temporary_suffix_bytes=_OPENSSH_TEMPORARY_SUFFIX
+    ) and socket_path_fits(root / "run" / UPSTREAM_NAME)
 
 
 def _forward_path(text: str) -> str:

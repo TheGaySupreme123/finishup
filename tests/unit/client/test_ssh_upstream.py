@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from finishup.client.ssh_upstream import (
     remote_command_line,
     ssh_root_fits,
 )
+from finishup.config.installation import MAX_SOCKET_PATH_BYTES
 
 
 @pytest.fixture
@@ -112,8 +114,13 @@ def test_a_remote_endpoint_that_cannot_be_forwarded_is_refused(
 
 def test_socket_paths_include_openssh_s_temporary_suffix() -> None:
     assert ssh_root_fits(Path("/srv/owner/.local/state/finishup/servers/t_01234567"))
-    deep = Path("/" + "d" * 80)
-    assert len(str(deep / "run" / "m")) <= 103 < len(str(deep / "run" / "m")) + 17
+    bound = MAX_SOCKET_PATH_BYTES
+    # ``<root>/run/m`` is 6 bytes beneath the root, and OpenSSH binds it 17 bytes longer first.
+    fits = Path("/" + "d" * (bound - 23 - 1))
+    assert len(os.fsencode(fits / "run" / "m")) + 17 == bound
+    assert ssh_root_fits(fits)
+    deep = Path("/" + "d" * (bound - 23))
+    assert len(os.fsencode(deep / "run" / "m")) <= bound < len(os.fsencode(deep / "run" / "m")) + 17
     assert not ssh_root_fits(deep)
 
 
