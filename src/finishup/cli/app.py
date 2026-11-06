@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     # Runtime resolution is deliberately lazy: the client/service trust boundary pins
     # cli.app's import graph to the ordinary service client, and finishup.service.lifecycle
     # is service-composition side (see tests/packaging/test_service_boundary_imports.py).
+    from finishup.cli.policy_server import PolicyServer
     from finishup.service.lifecycle import LifecycleError
 
 __all__ = [
@@ -2080,12 +2081,24 @@ async def _call_support(
         # Every support body passes through here, whichever branch built it, so the normalization
         # is one step rather than a property of one path.
         request = with_body_schema_version(method, request)
-        client = await build_service_client()
+        # ADR-051 decision 8: with a remote server selected the change is that server's, so it is
+        # named before and after. The result document is released, so the lines go to stderr.
+        policy_server = _policy_server_for(method)
+        if policy_server is not None:
+            _stderr(policy_server.before_line())
         try:
-            result = await getattr(client, method)(request, deadline_ms=deadline_ms)
-        finally:
-            await client.close()
+            client = await build_service_client()
+            try:
+                result = await getattr(client, method)(request, deadline_ms=deadline_ms)
+            finally:
+                await client.close()
+        except BaseException:
+            if policy_server is not None:
+                _stderr(policy_server.unconfirmed_line())
+            raise
         _human_or_json(result, json_output=json_output)
+        if policy_server is not None:
+            _stderr(policy_server.outcome_line(result.get("outcome")))
         if method in _POLICY_CHANGE_METHODS and result.get("outcome") == "tightening_applied":
             await _surface_zero_network_selection(json_output)
         if method == "privacy_get_effective" and not json_output and sys.stdout.isatty():
@@ -2105,6 +2118,16 @@ async def _call_support(
 
 
 _POLICY_CHANGE_METHODS: Final = frozenset({"privacy_propose_policy", "privacy_tighten_policy"})
+
+
+def _policy_server_for(method: str) -> PolicyServer | None:
+    """The remote server whose policy ``method`` changes; ``None`` for any other method or root."""
+
+    if method not in _POLICY_CHANGE_METHODS:
+        return None
+    from finishup.cli.policy_server import selected_policy_server
+
+    return selected_policy_server()
 
 
 async def _surface_zero_network_selection(json_output: bool) -> None:
