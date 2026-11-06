@@ -4538,7 +4538,14 @@ upgrade guard stay on `isolated_root()`, and an AST test locks that classificati
 site. `isolation_binding()` is the closed set
 `ambient|environment|runtime_pin|environment_and_pin|selection`; isolation report schema
 `service/isolation-report-1.1.0` adds `selection` to `binding`. A selection naming a missing or
-unsafe root fails with `isolation_root_invalid` and never resolves to ambient.
+unsafe root fails with `isolation_root_invalid` and never resolves to ambient; `finishup server`
+commands name that state `selection_invalid`, and `server use local` and `server remove
+--select-local` clear it without resolving it (they check only the variable and the pin).
+`config.paths.server_target_kind(root)` is the service's own minimal, fail-closed read of a root's
+`target.json` kind. A service started on demand serves its spawner's root: a resolved root rides in
+the isolation variable, and the everyday installation in the hidden `service run --ambient-root`
+flag, whose parameter callback calls `config.paths.ignore_server_selection()` before the
+server-host guard runs, so the service never reads a selection its spawner did not use.
 
 **Commands and the runtime seam.** `finishup server add|list|use|status [--json]|test|remove|
 login|logout|connect|disconnect` (`cli/server.py`). `server status --json` emits
