@@ -254,6 +254,12 @@ read was missing.
   server's credential store or in a file only you can read, so a restarted service comes back
   ready. A vault you unlock with a passphrase you chose stays locked after every restart until you
   unlock it on the server.
+- With that same unlock secret, the server's FinishUP also **re-opens by itself** after it locked
+  itself (after a while without use, or when the server's session locks or the machine sleeps):
+  the next request from your computer re-opens it. Locking it yourself, or the server's session
+  locking, still takes effect at once while a re-open is under way. A re-open that cannot finish
+  within 30 seconds, for example because the server's credential store does not answer, stops and
+  leaves the server locked, and the next request tries again.
 - On **Linux**, a service started from an SSH login loses its connection folder when you log out
   unless lingering is on for your account (`loginctl enable-linger`), or FinishUP runs in its own
   folder on the server. `finishup service endpoint --json`, run on the server, reports both.
