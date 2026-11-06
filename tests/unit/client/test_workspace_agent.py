@@ -661,6 +661,51 @@ def test_opened_workspaces_are_bounded_and_unknown_handles_are_reported(
     ) == ("unavailable", "handle_unknown")
 
 
+def _keyed_handler(repository: Path, protected: Path, key: bytes) -> WorkspaceAgentHandler:
+    return WorkspaceAgentHandler(
+        WorkspaceLocator(os.fspath(repository)),
+        protected=(os.fspath(protected),),
+        check_sandbox=_ReadySandbox(),
+        opened_handle_key=key,
+    )
+
+
+def test_a_keyed_opened_handle_is_answered_by_another_agent_of_the_client(
+    repository: Path, protected: Path
+) -> None:
+    """ADR-051 approach B: each process serves its own connection; any of them answers a handle."""
+
+    _change(repository)
+    key = b"k" * 32
+    opener = _keyed_handler(repository, protected, key)
+    other = _keyed_handler(repository, protected, key)
+    opened = _open(opener)
+    # The same open gives the same keyed handle, for this root only.
+    assert _open(opener) == opened
+    assert _open(other) == opened
+    fresh = _keyed_handler(repository, protected, key)
+    changed = _ok(fresh, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened))
+    assert changed == list_changed_relative_paths(open_local_workspace(repository))
+    # Without the key, or with another, the handle names nothing this agent opened.
+    for stranger in (
+        _handler(repository, protected),
+        _keyed_handler(repository, protected, b"x" * 32),
+    ):
+        assert _refused(
+            stranger, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(opened)
+        ) == ("unavailable", "handle_unknown")
+    # A well-formed handle the key never made is refused, never opened.
+    forged = "rws_" + "0" * 32
+    assert _refused(
+        fresh, WorkspaceOperation.LIST_CHANGED_PATHS, ListChangedPathsArguments(forged)
+    ) == ("unavailable", "handle_unknown")
+
+
+def test_an_opened_handle_key_must_be_32_bytes(repository: Path, protected: Path) -> None:
+    with pytest.raises(ValueError, match="opened_handle_key_invalid"):
+        _keyed_handler(repository, protected, b"short")
+
+
 def test_opening_a_directory_without_git_reports_the_closed_limitation(
     tmp_path: Path, protected: Path
 ) -> None:
