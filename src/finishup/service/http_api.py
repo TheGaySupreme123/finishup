@@ -14,6 +14,12 @@ Every TCP request carries ``Authorization: Bearer fuk_…``; keys are hashed in 
 (``finishup.service.api_keys``) and each carries a scope. A request with an ``Origin`` header is
 refused (browsers and DNS rebinding), and nothing answers before authentication.
 
+The TCP listeners bound what an unauthenticated peer can hold before that: open connections in
+total and per peer address (a connection over either cap is closed before TLS), the time from
+accepting a connection (or answering its last request) to a complete request head, TLS handshake
+included, and the time a request's body may take. The service raises its own descriptor limit and
+keeps most descriptors for its control plane, ledgers and key file.
+
 Routes (bodies and answers are canonical JSON; see ``finishup.service.network_protocol``):
 
 * ``GET /v1/server`` — release, schema-manifest digest, the service status, the caller's key id,
@@ -137,6 +143,10 @@ __all__ = [
     "API_SOCKET_NAME",
     "MAX_AGENTS_PER_KEY",
     "MAX_PENDING_OPERATIONS_PER_KEY",
+    "MAX_TCP_CONNECTIONS",
+    "MAX_TCP_CONNECTIONS_PER_PEER",
+    "REQUEST_BODY_SECONDS",
+    "REQUEST_HEAD_SECONDS",
     "NetworkApi",
     "NetworkApiBindings",
     "NetworkApiServer",
@@ -160,6 +170,20 @@ _MAX_CALL_BODY_BYTES: Final = MAX_CONTROL_FRAME_BYTES
 _MAX_SMALL_BODY_BYTES: Final = 65_536
 _CALLER_SCOPE_KEY: Final = "finishup.caller"
 _HTTP_SERVER_LOGGERS: Final = ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi")
+# Open TCP connections over every listener, and from one peer address; a connection over either
+# cap is closed at once, before TLS and before a byte is read (ADR-051, "256 concurrent
+# connections"). Both shrink with the descriptor budget (``_tcp_connection_budget``).
+MAX_TCP_CONNECTIONS: Final = 256
+MAX_TCP_CONNECTIONS_PER_PEER: Final = 64
+# A TCP connection finishes TLS and sends a complete request head this soon after it is accepted
+# or answered, and a request's body arrives this soon after its head; otherwise it is closed. A
+# request the API is serving (a long-poll, say) has no such bound.
+REQUEST_HEAD_SECONDS: Final = 10.0
+REQUEST_BODY_SECONDS: Final = 120.0
+# The soft descriptor limit the service asks for when it listens on TCP; at most a quarter of
+# the limit it gets goes to the API's TCP connections.
+_DESCRIPTOR_TARGET: Final = 4_096
+_DESCRIPTOR_SHARE: Final = 4
 
 
 class WorkspaceAgentRegistry(Protocol):
@@ -1092,6 +1116,242 @@ def _owner_only_protocol() -> type[Any]:
     return _OwnerOnlyH11Protocol
 
 
+def _tcp_connection_budget(
+    *,
+    getrlimit: Callable[[int], tuple[int, int]] | None = None,
+    setrlimit: Callable[[int, tuple[int, int]], None] | None = None,
+) -> tuple[int, int]:
+    """``(total, per peer address)`` open TCP connections, after raising the descriptor limit.
+
+    The soft ``RLIMIT_NOFILE`` is raised toward ``_DESCRIPTOR_TARGET`` (never past the hard
+    limit), and at most a quarter of what the service then has goes to the API's TCP connections,
+    so a peer that fills them still leaves the control socket, the ledgers and the key file their
+    descriptors.
+    """
+
+    import resource
+
+    get = getrlimit or resource.getrlimit
+    put = setrlimit or resource.setrlimit
+    infinity = resource.RLIM_INFINITY
+    try:
+        soft, hard = get(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        soft = hard = 256
+    if soft != infinity and soft < _DESCRIPTOR_TARGET:
+        wanted = _DESCRIPTOR_TARGET if hard == infinity else min(hard, _DESCRIPTOR_TARGET)
+        if wanted > soft:
+            try:
+                put(resource.RLIMIT_NOFILE, (wanted, hard))
+            except (OSError, ValueError):
+                pass
+            else:
+                soft = wanted
+    usable = _DESCRIPTOR_TARGET if soft == infinity else soft
+    total = max(1, min(MAX_TCP_CONNECTIONS, usable // _DESCRIPTOR_SHARE))
+    return total, max(1, min(MAX_TCP_CONNECTIONS_PER_PEER, total))
+
+
+class _ConnectionGate:
+    """The TCP listeners' open connections, in total and per peer address."""
+
+    __slots__ = ("_members", "_per_peer", "per_peer_limit", "total_limit")
+
+    def __init__(self, total_limit: int, per_peer_limit: int) -> None:
+        if total_limit < 1 or per_peer_limit < 1:
+            raise ValueError("connection_limit_invalid")
+        self.total_limit = total_limit
+        self.per_peer_limit = per_peer_limit
+        self._per_peer: dict[str, int] = {}
+        self._members: set[_GatedConnection] = set()
+
+    @property
+    def open(self) -> int:
+        return len(self._members)
+
+    def admit(self, peer: str, member: _GatedConnection) -> bool:
+        held = self._per_peer.get(peer, 0)
+        if len(self._members) >= self.total_limit or held >= self.per_peer_limit:
+            return False
+        self._per_peer[peer] = held + 1
+        self._members.add(member)
+        return True
+
+    def release(self, peer: str, member: _GatedConnection) -> None:
+        if member not in self._members:
+            return
+        self._members.discard(member)
+        held = self._per_peer.get(peer, 0) - 1
+        if held > 0:
+            self._per_peer[peer] = held
+        else:
+            self._per_peer.pop(peer, None)
+
+    def abort_all(self) -> None:
+        """Close every connection still open (the listeners are stopping)."""
+
+        for member in tuple(self._members):
+            member.abort_connection()
+
+
+class _GatedConnection(Protocol):
+    def abort_connection(self) -> None: ...
+
+
+def _peer_address(transport: asyncio.BaseTransport) -> str | None:
+    peer = transport.get_extra_info("peername")
+    if not isinstance(peer, tuple) or not peer:
+        return None
+    host = cast(tuple[object, ...], peer)[0]
+    return host if isinstance(host, str) and host else None
+
+
+def _tcp_protocol(gate: _ConnectionGate, tls: ssl.SSLContext | None) -> type[Any]:
+    """uvicorn's h11 protocol behind the TCP listeners' admission and time bounds.
+
+    The listener hands each accepted connection to this protocol before TLS: one over the gate's
+    caps is aborted at once. An admitted one runs TLS itself (``loop.start_tls``) when the
+    listener speaks it, then serves HTTP exactly as uvicorn does. Until a complete request head
+    arrives — from acceptance, TLS included, and again after every answer — the connection lives
+    at most ``REQUEST_HEAD_SECONDS``; a request's body must then arrive within
+    ``REQUEST_BODY_SECONDS``. A request being answered has no bound here.
+    """
+
+    import h11
+    from uvicorn.protocols.http.h11_impl import H11Protocol
+
+    class _BoundedH11Protocol(H11Protocol):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._peer: str | None = None
+            self._raw: asyncio.BaseTransport | None = None
+            self._serving = False
+            self._deadline: asyncio.TimerHandle | None = None
+            self._watching: object = None
+            self._securing: asyncio.Task[None] | None = None
+            # Bytes TLS decrypted with its last handshake flight, before ``start_tls`` handed the
+            # secured transport back (at most one read).
+            self._early: list[bytes] = []
+
+        # --- admission and TLS ---------------------------------------------------------------
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            # Called once, by the listener, with the raw TCP transport.
+            peer = _peer_address(transport)
+            if peer is None or not gate.admit(peer, self):
+                cast(asyncio.Transport, transport).abort()
+                _audit("network_refusal", "connection_limit")
+                return
+            self._peer = peer
+            self._raw = transport
+            self._watch(h11.IDLE, REQUEST_HEAD_SECONDS)
+            if tls is None:
+                self._serve(cast(asyncio.Transport, transport))
+                return
+            # Nothing is read until TLS owns the connection.
+            cast(asyncio.Transport, transport).pause_reading()
+            self._securing = self.loop.create_task(
+                self._secure(cast(asyncio.Transport, transport), tls)
+            )
+
+        async def _secure(self, raw: asyncio.Transport, context: ssl.SSLContext) -> None:
+            try:
+                secured = await self.loop.start_tls(
+                    raw,
+                    self,
+                    context,
+                    server_side=True,
+                    ssl_handshake_timeout=REQUEST_HEAD_SECONDS,
+                )
+            except asyncio.CancelledError:
+                self._drop()
+                raise
+            except Exception:
+                self._drop()
+                return
+            if secured is None or self._peer is None:
+                self._drop()
+                return
+            self._serve(secured)
+
+        def _serve(self, transport: asyncio.Transport) -> None:
+            self._serving = True
+            super().connection_made(transport)
+            early, self._early = self._early, []
+            for chunk in early:
+                self.data_received(chunk)
+
+        def _drop(self) -> None:
+            self._unwatch()
+            self._early.clear()
+            if self._raw is not None:
+                cast(asyncio.Transport, self._raw).abort()
+            self._release()
+
+        def _release(self) -> None:
+            if self._peer is not None:
+                gate.release(self._peer, self)
+                self._peer = None
+
+        def abort_connection(self) -> None:
+            self._drop()
+
+        def connection_lost(self, exc: Exception | None) -> None:
+            self._unwatch()
+            self._release()
+            if self._serving:
+                self._serving = False
+                super().connection_lost(exc)
+
+        # --- request deadlines ---------------------------------------------------------------
+
+        def data_received(self, data: bytes) -> None:
+            if not self._serving:
+                self._early.append(data)
+                return
+            super().data_received(data)
+            self._follow()
+
+        def on_response_complete(self) -> None:
+            super().on_response_complete()
+            self._follow()
+
+        def _follow(self) -> None:
+            """Watch what the peer owes next: a request head, a body, or nothing."""
+
+            transport = cast(asyncio.Transport | None, self.transport)
+            if transport is None or transport.is_closing():
+                self._unwatch()
+                return
+            state = self.conn.their_state
+            if state is h11.IDLE:
+                self._watch(h11.IDLE, REQUEST_HEAD_SECONDS)
+            elif state is h11.SEND_BODY:
+                self._watch(h11.SEND_BODY, REQUEST_BODY_SECONDS)
+            else:
+                self._unwatch()
+
+        def _watch(self, state: object, seconds: float) -> None:
+            if self._watching is state and self._deadline is not None:
+                return
+            self._unwatch()
+            self._watching = state
+            self._deadline = self.loop.call_later(seconds, self._expire)
+
+        def _unwatch(self) -> None:
+            if self._deadline is not None:
+                self._deadline.cancel()
+                self._deadline = None
+            self._watching = None
+
+        def _expire(self) -> None:
+            self._deadline = None
+            _audit("network_refusal", "request_timeout")
+            self._drop()
+
+    return _BoundedH11Protocol
+
+
 def _quiet_http_server_logs() -> None:
     """uvicorn's own log lines may carry addresses and request lines; FinishUP records closed
     tokens instead, so they go nowhere."""
@@ -1104,8 +1364,10 @@ def _quiet_http_server_logs() -> None:
 
 @dataclass(slots=True)
 class _ServerRun:
+    transport: NetworkTransport
     server: uvicorn.Server
     sockets: list[socket.socket]
+    protocol: type[Any]
     task: asyncio.Task[None] | None = None
 
 
@@ -1113,9 +1375,10 @@ class NetworkApiServer:
     """The bound listeners of one ``[network]`` table and the uvicorn servers that serve them.
 
     ``bind`` runs during service composition, under the singleton lock and before any endpoint is
-    published, so a listener that cannot be bound fails the service start with a closed
-    configuration reason. ``start`` serves the API on the daemon's own event loop; ``close`` stops
-    accepting, ends the API's agents and calls, and removes the API socket.
+    published: it binds every listener and prepares its HTTP server, so a listener that cannot be
+    bound or served fails the service start with a closed configuration reason. ``start`` serves
+    the API on the daemon's own event loop; ``close`` stops accepting, ends the API's agents and
+    calls, and removes the API socket.
     """
 
     def __init__(
@@ -1126,6 +1389,7 @@ class NetworkApiServer:
         tls: ssl.SSLContext | None,
         unix_socket: socket.socket | None,
         unix_path: Path | None,
+        tcp_limits: tuple[int, int] = (MAX_TCP_CONNECTIONS, MAX_TCP_CONNECTIONS_PER_PEER),
     ) -> None:
         self._keys = keys
         self._tcp_sockets = tcp_sockets
@@ -1133,8 +1397,14 @@ class NetworkApiServer:
         self._unix_socket = unix_socket
         self._unix_path = unix_path
         self._api: NetworkApi | None = None
-        self._runs: list[_ServerRun] = []
+        self._applications: dict[NetworkTransport, ASGIApp] = {}
+        self._gate = _ConnectionGate(*tcp_limits)
         self._closed = False
+        try:
+            self._runs = self._prepare()
+        except Exception:
+            # An HTTP stack this service cannot drive is a configuration it cannot serve.
+            raise ConfigError("network_listener_unavailable") from None
 
     def __repr__(self) -> str:
         return "NetworkApiServer(<redacted>)"
@@ -1161,58 +1431,107 @@ class NetworkApiServer:
         keys: ApiKeyStore,
         tls: ssl.SSLContext | None,
         runtime: Path | None,
+        tcp_limits: tuple[int, int] | None = None,
     ) -> NetworkApiServer:
-        """Bind explicit addresses (port 0 picks a free port, for tests) and the API socket."""
+        """Bind explicit addresses (port 0 picks a free port, for tests) and the API socket.
+
+        ``tcp_limits`` overrides the connection caps (tests); by default they come from the
+        descriptor budget, which is claimed only when there is a TCP address to serve.
+        """
 
         bound: list[socket.socket] = []
+        unix_socket: socket.socket | None = None
         try:
             for address in addresses:
                 bound.append(_bind_tcp(address))
             unix_socket = None if runtime is None else _bind_api_socket(runtime)
+            limits = tcp_limits or (
+                _tcp_connection_budget()
+                if bound
+                else (MAX_TCP_CONNECTIONS, MAX_TCP_CONNECTIONS_PER_PEER)
+            )
+            return cls(
+                keys=keys,
+                tcp_sockets=tuple(bound),
+                tls=tls,
+                unix_socket=unix_socket,
+                unix_path=None if runtime is None else runtime / API_SOCKET_NAME,
+                tcp_limits=limits,
+            )
         except BaseException:
-            for item in bound:
-                item.close()
+            for item in (*bound, unix_socket):
+                if item is not None:
+                    with contextlib.suppress(OSError):
+                        item.close()
+            if unix_socket is not None and runtime is not None:
+                with contextlib.suppress(OSError):
+                    (runtime / API_SOCKET_NAME).unlink()
             raise
-        return cls(
-            keys=keys,
-            tcp_sockets=tuple(bound),
-            tls=tls,
-            unix_socket=unix_socket,
-            unix_path=None if runtime is None else runtime / API_SOCKET_NAME,
-        )
 
     @property
     def tcp_ports(self) -> tuple[int, ...]:
         return tuple(int(item.getsockname()[1]) for item in self._tcp_sockets)
 
     @property
+    def tcp_limits(self) -> tuple[int, int]:
+        return self._gate.total_limit, self._gate.per_peer_limit
+
+    @property
+    def open_tcp_connections(self) -> int:
+        return self._gate.open
+
+    @property
     def api(self) -> NetworkApi | None:
         return self._api
 
-    @staticmethod
-    def _uvicorn_server(
-        application: Callable[..., Awaitable[None]],
-        *,
-        http: type[Any] | str,
-        tls: ssl.SSLContext | None,
-    ) -> uvicorn.Server:
+    def _forward(self, transport: NetworkTransport) -> ASGIApp:
+        """The listener's application: the API once ``start`` made it."""
+
+        async def application(scope: Scope, receive: Receive, send: Send) -> None:
+            served = self._applications.get(transport)
+            if served is not None:
+                await served(scope, receive, send)
+
+        return application
+
+    def _prepare(self) -> list[_ServerRun]:
+        """One uvicorn server per listener kind, configured and loaded (nothing served yet).
+
+        TLS is the listener's own (``_tcp_protocol``), never uvicorn's, so only uvicorn's
+        long-standing configuration is used.
+        """
+
         import uvicorn
 
-        config = uvicorn.Config(
-            application,
-            http=http,
-            ws="none",
-            lifespan="off",
-            log_config=None,
-            access_log=False,
-            proxy_headers=False,
-            server_header=False,
-            date_header=False,
-            timeout_graceful_shutdown=2,
-            limit_concurrency=256,
-            ssl_context_factory=None if tls is None else (lambda _config, _default: tls),
-        )
-        return uvicorn.Server(config)
+        runs: list[_ServerRun] = []
+        kinds: list[tuple[NetworkTransport, list[socket.socket], type[Any], int | None]] = []
+        if self._tcp_sockets:
+            transport: NetworkTransport = "https" if self._tls is not None else "http"
+            # The gate bounds TCP connections; uvicorn's own 503 above a count is not needed.
+            kinds.append(
+                (transport, list(self._tcp_sockets), _tcp_protocol(self._gate, self._tls), None)
+            )
+        if self._unix_socket is not None:
+            kinds.append(("unix", [self._unix_socket], _owner_only_protocol(), 256))
+        for transport, sockets, protocol, concurrency in kinds:
+            config = uvicorn.Config(
+                self._forward(transport),
+                http=protocol,
+                ws="none",
+                lifespan="off",
+                log_config=None,
+                access_log=False,
+                proxy_headers=False,
+                server_header=False,
+                date_header=False,
+                timeout_graceful_shutdown=2,
+                limit_concurrency=concurrency,
+            )
+            config.load()
+            server = uvicorn.Server(config)
+            server.lifespan = config.lifespan_class(config)
+            runs.append(_ServerRun(transport, server, sockets, protocol))
+        return runs
 
     async def start(self, bindings: NetworkApiBindings) -> None:
         """Serve the API on this event loop until ``close``."""
@@ -1221,20 +1540,43 @@ class NetworkApiServer:
             raise RuntimeError("network_api_already_started")
         _quiet_http_server_logs()
         self._api = NetworkApi(bindings, self._keys)
-        if self._tcp_sockets:
-            transport: NetworkTransport = "https" if self._tls is not None else "http"
-            server = self._uvicorn_server(self._api.asgi(transport), http="h11", tls=self._tls)
-            self._runs.append(_ServerRun(server, list(self._tcp_sockets)))
-        if self._unix_socket is not None:
-            server = self._uvicorn_server(
-                self._api.asgi("unix"), http=_owner_only_protocol(), tls=None
-            )
-            self._runs.append(_ServerRun(server, [self._unix_socket]))
         for run in self._runs:
-            run.server.config.load()
-            run.server.lifespan = run.server.config.lifespan_class(run.server.config)
-            await run.server.startup(sockets=run.sockets)
+            self._applications[run.transport] = self._api.asgi(run.transport)
+        for run in self._runs:
+            await self._listen(run)
             run.task = asyncio.create_task(self._serve(run))
+
+    @staticmethod
+    async def _listen(run: _ServerRun) -> None:
+        """Accept on the run's sockets with its protocol (uvicorn's ``startup``, minus TLS)."""
+
+        loop = asyncio.get_running_loop()
+        server = run.server
+        config = server.config
+
+        def connection() -> asyncio.Protocol:
+            return cast(
+                asyncio.Protocol,
+                run.protocol(
+                    config=config,
+                    server_state=server.server_state,
+                    app_state=server.lifespan.state,
+                    _loop=loop,
+                ),
+            )
+
+        listening: list[asyncio.Server] = []
+        try:
+            for item in run.sockets:
+                listening.append(
+                    await loop.create_server(connection, sock=item, backlog=_LISTEN_BACKLOG)
+                )
+        except BaseException:
+            for each in listening:
+                each.close()
+            raise
+        server.servers = listening
+        server.started = True
 
     @staticmethod
     async def _serve(run: _ServerRun) -> None:
@@ -1252,6 +1594,8 @@ class NetworkApiServer:
             run.server.should_exit = True
         tasks = [run.task for run in self._runs if run.task is not None]
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Connections still in TLS or before their first request are not uvicorn's to close.
+        self._gate.abort_all()
         for item in (*self._tcp_sockets, self._unix_socket):
             if item is not None:
                 with contextlib.suppress(OSError):

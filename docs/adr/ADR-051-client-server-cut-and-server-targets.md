@@ -559,8 +559,17 @@ except an explicit loopback opt-in; keys are hashed, scoped and revocable; any `
 refused; nothing answers before authentication; service stop, backup, restore, migrate,
 integration and observation administration never cross the network, and neither do unlock,
 consent, the owner receipt view, the human-control or secret endpoints, or `control.sock`;
-requests are bounded (frame sizes, 32 running operations and 16 agents per key, 256 concurrent
-connections, 25-second long-polls).
+requests are bounded (frame sizes, 32 running operations and 16 agents per key, 25-second
+long-polls). Before any key is checked, the TCP listeners bound what a peer can hold: at most 256
+open connections in total and 64 from one peer address (a connection over either cap is closed
+before TLS or a byte is read), 10 seconds from acceptance — TLS included — or from the last answer
+to a complete request head, and 120 seconds from a head to its body; a request being answered,
+such as a long-poll, is not cut. The listener runs TLS itself (`loop.start_tls`), so a stalled
+handshake counts against the caps and ends on the same deadline. A service with a TCP listener
+raises its soft descriptor limit toward 4096 and gives the API's TCP connections at most a quarter
+of what it gets (the caps shrink with it), so a full set of connections never starves the control
+socket, the ledgers or the key file. The HTTP server is prepared during composition, so an HTTP
+stack the service cannot drive fails the start with `network_listener_unavailable`.
 
 **Workspace remoting over the API.**
 
