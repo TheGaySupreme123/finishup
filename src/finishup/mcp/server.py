@@ -1880,6 +1880,61 @@ def _vault_initialization_required_message(include_authorize: bool) -> str:
     )
 
 
+_REMOTE_UNAVAILABLE_MESSAGE: Final = (
+    "The selected FinishUP server on another machine could not serve this request, so nothing "
+    "was recorded. Follow the continuation for this phase, then retry this operation with the "
+    "same request_id. Never fall back to another server or a local service, and never run "
+    "local service lifecycle commands for this."
+)
+_REMOTE_LOCKED_MESSAGE: Final = (
+    "The selected FinishUP server's vault is locked, so nothing was recorded. Its owner unlocks "
+    "it on the server host; then retry this operation with the same request_id. Never run local "
+    "service lifecycle commands for this, and never send secrets over MCP."
+)
+
+
+def _remote_control_error_result(
+    error: ControlError,
+    request_id: str | None,
+    operation: str,
+    *,
+    host_profile: McpHostProfile,
+) -> types.CallToolResult | None:
+    """The bridge's answer when the selected server is on another machine (ADR-051), else None.
+
+    The remote phase travels as the ``reason_code``, so its ADR-030 continuation attaches as for
+    any other reason; no host, user, name or path is ever in the text.
+    """
+
+    from finishup.client.remote_remedy import remote_remedy
+
+    remedy = remote_remedy(error)
+    if remedy is None:
+        return None
+    if remedy.directive is None:
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.VAULT_LOCKED,
+            message=_REMOTE_LOCKED_MESSAGE,
+            retryable=error.retryable,
+            host_profile=host_profile,
+            safe_details={"reason_code": "vault_locked"},
+        )
+    return _control_public_error_result(
+        error,
+        request_id,
+        operation,
+        code=PublicErrorCode.SERVICE_UNAVAILABLE,
+        message=_REMOTE_UNAVAILABLE_MESSAGE,
+        retryable=error.retryable,
+        host_profile=host_profile,
+        safe_details={"reason_code": remedy.reason},
+        diagnostic_reason=remedy.reason,
+    )
+
+
 def _control_error_result(
     error: ControlError,
     request_id: str | None,
@@ -1895,6 +1950,12 @@ def _control_error_result(
     # Prefer the service-minted diagnostic id when present so the agent-facing public error
     # resolves the same durable sink record the daemon already wrote. Never mint a second id for
     # a failure the service already correlated.
+    if error.reason in {"service_unavailable", "vault_locked"}:
+        remote = _remote_control_error_result(
+            error, request_id, operation, host_profile=host_profile
+        )
+        if remote is not None:
+            return remote
     if error.reason == "vault_locked":
         # The daemon's retryable flag distinguishes a soft lock or transient re-unlock
         # failure (heals on a later attempt) from a hard lock or missing setup (needs a

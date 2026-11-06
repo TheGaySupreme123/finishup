@@ -1772,7 +1772,7 @@ def _claim_bound_drain(
     the other workspaces' rows. Every other root drains as before.
     """
 
-    from finishup.cli.observe_hooks import remote_root_selected
+    from finishup.client.remote_remedy import remote_root_selected
 
     if not remote_root_selected():
         return workspace, connect

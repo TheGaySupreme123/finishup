@@ -19,6 +19,7 @@ from builders.server_targets import ambient_home
 from finishup.cli import observe as observe_module
 from finishup.cli import observe_hooks
 from finishup.client import targets
+from finishup.client.remote_remedy import remote_root_selected
 from finishup.config.paths import reset_selection_memo
 from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 
@@ -57,7 +58,7 @@ async def test_a_local_root_drains_exactly_as_before(
     del home
     recorder = _Recorder()
     monkeypatch.setattr(observe_hooks, "connect_service", recorder, raising=False)
-    assert observe_hooks.remote_root_selected() is False
+    assert remote_root_selected() is False
     connect = observe_hooks._claim_bound_drain_connector("/home/me/repo")  # pyright: ignore[reportPrivateUsage]
     await connect(ControlClientKind.CLI)
     assert recorder.calls == [{"kind": ControlClientKind.CLI}]
@@ -71,7 +72,7 @@ async def test_a_remote_root_drains_over_a_connection_that_names_the_workspace(
     _select_remote()
     recorder = _Recorder()
     monkeypatch.setattr(observe_hooks, "connect_service", recorder, raising=False)
-    assert observe_hooks.remote_root_selected() is True
+    assert remote_root_selected() is True
     connect = observe_hooks._claim_bound_drain_connector("/home/me/repo")  # pyright: ignore[reportPrivateUsage]
     await connect(ControlClientKind.CLI)
     assert recorder.calls == [

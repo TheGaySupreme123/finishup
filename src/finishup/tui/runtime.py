@@ -2879,6 +2879,7 @@ class FinishUpRuntime:
             "provider_binding": "run /provider to choose a provider and model",
             "credential_stored": "run /provider to store an API key",
             "privacy_permission": "run /privacy if you want external review",
+            **_remote_doctor_remediation(),
         }
         for layer in snapshot.layers:
             entries.append(
@@ -2893,6 +2894,22 @@ class FinishUpRuntime:
                 )
             )
         return DoctorReport(entries=tuple(entries))
+
+
+def _remote_doctor_remediation() -> dict[str, str]:
+    """On a server on another machine, the service and vault steps are not this machine's."""
+
+    from finishup.client.remote_remedy import REMOTE_LOCKED_SUMMARY, remote_root_selected
+
+    if not remote_root_selected():
+        return {}
+    from finishup.protocol.recovery import directive_for
+
+    directive = directive_for("remote_server_test")
+    return {
+        "service_reachable": "" if directive is None else directive.directive,
+        "vault_ready": REMOTE_LOCKED_SUMMARY,
+    }
 
 
 def _connect_failure(error: BaseException) -> RuntimeError_:
@@ -2913,6 +2930,17 @@ def _connect_failure(error: BaseException) -> RuntimeError_:
             path_reason,
             "FinishUP's local folders cannot be used safely",
             details=() if remedy is None else (remedy,),
+        )
+    from finishup.client.remote_remedy import remote_remedy
+
+    remote = remote_remedy(error)
+    if remote is not None:
+        # The selected server is on another machine: its phase and directive, never a local
+        # service remedy (ADR-051).
+        return RuntimeError_(
+            remote.reason,
+            remote.summary,
+            details=() if remote.directive is None else (remote.directive.directive,),
         )
     return RuntimeError_(
         str(getattr(error, "reason", "service_unavailable")),

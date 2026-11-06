@@ -462,23 +462,6 @@ def _connect_service() -> object:
     return connect_service
 
 
-def remote_root_selected() -> bool:
-    """Whether this hook's root is a FinishUP server on another machine (ADR-051).
-
-    Read the way the connect seam reads it: a root whose record cannot be read is not treated as
-    remote here, and the seam then keeps today's path for it too.
-    """
-
-    from finishup.client.targets import TargetError, active_target_record
-    from finishup.config.paths import PathSafetyError
-
-    try:
-        record = active_target_record()
-    except (TargetError, PathSafetyError):
-        return False
-    return record is not None and record.is_remote
-
-
 def _claim_bound_drain_connector(workspace_locator: str | None) -> HookDrainConnector:
     """The drains' connector: claim-bound to this hook's workspace on a remote root (ADR-051).
 
@@ -491,6 +474,8 @@ def _claim_bound_drain_connector(workspace_locator: str | None) -> HookDrainConn
     """
 
     async def connect(kind: ControlClientKind) -> _HookDrainClient:
+        from finishup.client.remote_remedy import remote_root_selected
+
         real = cast(Callable[..., Awaitable[object]], _connect_service())
         if not remote_root_selected():
             return cast(_HookDrainClient, await real(kind))
@@ -4947,13 +4932,11 @@ def _session_start_attach(
     # SessionStart-only status/attach helpers: they drag protocol.models
     # and service.client, which no other event needs (#242).
     from finishup.cli.hooks import (
-        _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-        _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         SessionWorkspace,
@@ -4962,7 +4945,9 @@ def _session_start_attach(
         _read_status,  # pyright: ignore[reportPrivateUsage]
         _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
         bound_connector,
+        locked_context,
         resolve_session_workspace,
+        unavailable_context,
     )
 
     additional = ""
@@ -5102,7 +5087,7 @@ def _session_start_attach(
                         record_hook_diagnostic(f"status_{kind}", event, _state=_state)
                         record_hook_diagnostic(selection.diagnostic_reason, event, _state=_state)
                 elif kind == "locked":
-                    additional = _LOCKED_CONTEXT
+                    additional = locked_context(outcome)
                 elif kind == "retry":
                     additional = _RETRY_CONTEXT
                 elif kind == "privacy":
@@ -5119,7 +5104,7 @@ def _session_start_attach(
                     with contextlib.suppress(Exception):
                         record_hook_diagnostic(kind, event, _state=_state)
                 else:
-                    additional = _UNAVAILABLE_CONTEXT
+                    additional = unavailable_context(outcome)
     return _SessionStartAttach(
         mapping=mapping,
         pending_mapping_deferred=pending_mapping_deferred,
