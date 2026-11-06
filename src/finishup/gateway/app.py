@@ -398,7 +398,9 @@ class GatewayApp:
         frame = _frame(payload := await self._body(request))
         if frame.get("kind") != "cancel":
             raise _Refused("frame_invalid")
-        await session.forward(payload)
+        # Never a cancel the daemon would end the connection for (a finished call, one this
+        # gateway answered itself); one that overtook its call follows it (``sessions``).
+        await session.forward_cancel(cast(str, frame["target_rpc_id"]), payload)
         return _Answer(202)
 
     async def post_frame(self, request: Request, key: GatewayKey) -> _Answer:

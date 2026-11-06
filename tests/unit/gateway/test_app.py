@@ -348,6 +348,68 @@ async def test_a_pending_call_long_polls_and_is_delivered_at_most_once(gateway: 
     assert unknown.status_code == 400 and _reason(unknown) == "frame_invalid"
 
 
+def _cancel(target: int, sequence: int = 0x5200) -> bytes:
+    return encode_control_frame(
+        {
+            "kind": "cancel",
+            "protocol_version": "1.0",
+            "rpc_id": rpc_id(sequence),
+            "service_instance_id": SERVICE_ID,
+            "service_generation": "1",
+            "target_rpc_id": rpc_id(target),
+        }
+    )[4:]
+
+
+@pytest.mark.anyio
+async def test_a_cancel_the_daemon_would_refuse_is_never_forwarded(gateway: _Gateway) -> None:
+    """The service ends a connection whose cancel names a call it is not running, and every call
+    on it with it; over HTTPS a cancel easily arrives after its call finished."""
+
+    sid = await _open(gateway)
+    finished = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(7), headers=gateway.headers()
+    )
+    assert finished.status_code == 200
+    refused = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000",
+        content=_call(8, ControlMethod.SERVICE_LOCK),
+        headers=gateway.headers(),
+    )
+    assert json.loads(refused.content)["body"]["code"] == "method_forbidden"
+    for late in (_cancel(7, 0x5201), _cancel(8, 0x5202)):
+        cancelled = await gateway.client.post(
+            f"/v1/sessions/{sid}/cancel", content=late, headers=gateway.headers()
+        )
+        assert cancelled.status_code == 202
+    assert not any(b'"kind":"cancel"' in frame for frame in gateway.daemon.received())
+    # The session and its daemon connection are still alive.
+    after = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=_call(9), headers=gateway.headers()
+    )
+    assert after.status_code == 200
+    assert gateway.daemon.connections == 1
+
+
+@pytest.mark.anyio
+async def test_a_cancel_that_overtook_its_call_follows_it_to_the_daemon(gateway: _Gateway) -> None:
+    """A call and its cancel are separate HTTP requests: the daemon still sees call, then cancel."""
+
+    sid = await _open(gateway)
+    early = await gateway.client.post(
+        f"/v1/sessions/{sid}/cancel", content=_cancel(0x51F0), headers=gateway.headers()
+    )
+    assert early.status_code == 202
+    assert len(gateway.daemon.received()) == 1  # held: the daemon has only the hello
+    slow = encode_control_frame(call_request(0x51F0, ControlMethod.STATUS))[4:]
+    answered = await gateway.client.post(
+        f"/v1/sessions/{sid}/calls?wait_ms=5000", content=slow, headers=gateway.headers()
+    )
+    assert answered.status_code == 200
+    assert json.loads(answered.content)["body"]["code"] == "request_cancelled"
+    assert gateway.daemon.received()[1:] == [slow, _cancel(0x51F0)]
+
+
 @pytest.mark.anyio
 async def test_server_frames_long_poll_and_replies_reach_the_daemon(gateway: _Gateway) -> None:
     sid = await _open(gateway, agent=True)

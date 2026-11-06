@@ -234,17 +234,22 @@ class ScriptedDaemon:
                     continue
                 request = parse_control_request(frame)
                 if not isinstance(request, ControlCallRequest):
-                    # A cancel may overtake its call on a transport with concurrent requests.
-                    slow.setdefault(request.target_rpc_id, asyncio.Event()).set()
+                    # As the service admits a cancel (``ControlSession.admit``): one that names
+                    # no running call ends the connection, and every call on it with it.
+                    running = slow.get(request.target_rpc_id)
+                    if running is None:
+                        return
+                    running.set()
                     continue
                 if request.method is SLOW_METHOD and request.rpc_id.endswith("51f0"):
-                    event = slow.setdefault(request.rpc_id, asyncio.Event())
+                    event = slow[request.rpc_id] = asyncio.Event()
 
                     async def answer_after_cancel(
                         call: ControlCallRequest = request, done: asyncio.Event = event
                     ) -> None:
                         await done.wait()
                         async with write_lock:
+                            slow.pop(call.rpc_id, None)
                             await self._send(
                                 stream, _result(call, ControlError("request_cancelled"))
                             )

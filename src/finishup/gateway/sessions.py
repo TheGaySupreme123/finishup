@@ -11,6 +11,14 @@ readable for a minute afterwards (bounded in bytes) so a client whose answer was
 polls it instead of posting again; a duplicate post of a pending or unfetched ``rpc_id`` is
 answered from that slot and never sent to the daemon again, and a post of an ``rpc_id`` already
 delivered is refused as ``frame_invalid``.
+
+A cancel reaches the daemon only while its call runs there, in the order the client wrote them:
+the daemon ends a connection whose cancel names a call it is not running (and every call on it
+with it). A cancel for a call that already finished, or that the gateway answered itself (a scope
+refusal), is dropped, since that result is final. A cancel and its call are separate HTTP requests
+and may arrive in either order; one that arrives first is held (bounded, briefly) and forwarded
+right after its call.
+
 A session ends when its upstream closes, when its key no longer authenticates, after
 ``SESSION_IDLE_SECONDS`` without a request (closing the upstream so the daemon's idle relock and
 idle stop still work), or on ``DELETE``.
@@ -90,6 +98,10 @@ class GatewaySession:
     _retained: dict[str, tuple[bytes, float]] = field(
         default_factory=dict[str, tuple[bytes, float]]
     )
+    # Cancels that arrived before their call: target rpc_id -> (payload, expiry).
+    _early_cancels: dict[str, tuple[bytes, float]] = field(
+        default_factory=dict[str, tuple[bytes, float]]
+    )
     _frames: asyncio.Queue[bytes] = field(
         default_factory=lambda: asyncio.Queue[bytes](maxsize=_FRAME_QUEUE)
     )
@@ -152,7 +164,28 @@ class GatewaySession:
         """Write one already-validated frame payload upstream, prefixed, under the write lock."""
 
         async with self._write_lock:
-            await self.upstream.send_all(struct.pack(">I", len(payload)) + payload)
+            await self._write(payload)
+
+    async def _write(self, payload: bytes) -> None:
+        await self.upstream.send_all(struct.pack(">I", len(payload)) + payload)
+
+    async def forward_cancel(self, target_rpc_id: str, payload: bytes) -> None:
+        """Forward one validated cancel only while its call runs upstream; see the module notes."""
+
+        async with self._write_lock:
+            slot = self._results.get(target_rpc_id)
+            if slot is not None:
+                if not slot.done():
+                    await self._write(payload)
+                return
+            if target_rpc_id in self._delivered or target_rpc_id in self._retained:
+                return
+            now = time.monotonic()
+            for held, (_payload, expires) in tuple(self._early_cancels.items()):
+                if expires <= now:
+                    del self._early_cancels[held]
+            if len(self._early_cancels) < MAX_ACTIVE_REQUESTS_PER_SESSION:
+                self._early_cancels[target_rpc_id] = (payload, now + _RETAIN_SECONDS)
 
     async def forward_call(self, rpc_id: str, payload: bytes) -> asyncio.Future[bytes]:
         """Forward one call once and return the slot its result lands in."""
@@ -166,6 +199,10 @@ class GatewaySession:
         except BaseException:
             self._results.pop(rpc_id, None)
             raise
+        early = self._early_cancels.pop(rpc_id, None)
+        if early is not None and early[1] > time.monotonic():
+            # Its cancel overtook it on another request: send it now, after the call.
+            await self.forward_cancel(rpc_id, early[0])
         return slot
 
     def take(self, rpc_id: str) -> bytes | None:

@@ -4849,7 +4849,11 @@ expires after 120 seconds idle, and one key holds at most 64 sessions. Delivery 
 call is forwarded once per `(sid, rpc_id)`; a repeated post of a pending `rpc_id` waits on the same
 result, and a post of an `rpc_id` already delivered is `frame_invalid`. A result stays readable by
 `GET …/results/{rpc_id}` until it is fetched and for 60 seconds after (at most 8 MiB per session),
-so a client whose answer was lost in transit polls instead of posting again. Workflow outcomes —
+so a client whose answer was lost in transit polls instead of posting again. A cancel reaches the
+daemon only while its call runs there, after that call: one for a call that already finished, or
+that the gateway answered itself, is answered `202` and dropped (the result is final), and one
+that arrived before its call is held (at most 32 per session, 60 seconds) and sent right after it,
+since the daemon ends a connection whose cancel names a call it is not running. Workflow outcomes —
 `vault_locked`, `service_generation_changed`, validation errors, `method_forbidden` — stay inside
 a `200` control-result, byte-identical to the socket. Transport and authentication failures use
 `rest-error-1.0.0` (`schema_version`, `reason`) with closed reasons only:
