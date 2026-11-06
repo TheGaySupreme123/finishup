@@ -8,8 +8,10 @@
   reported as it is;
 * ``stop`` signals only the pid stamped in the connector's held lock, and for an SSH target asks
   the master to exit through its control socket (``ssh -O exit``) — never by process pattern;
-* ``probe`` connects through the connector like any client, then times ``PROBE_SAMPLES``
-  ``service_status`` round trips for the p95 that ``server test`` compares with hook budgets.
+* ``probe`` connects through the connector like any client, makes one untimed ``service_status``
+  call (a freshly started connector opens its upstream connections on its first calls, a one-time
+  cost a warm connector's hooks never pay), then times ``PROBE_SAMPLES`` ``service_status`` round
+  trips for the p95 that ``server test`` compares with hook budgets.
 """
 
 from __future__ import annotations
@@ -121,7 +123,9 @@ class ConnectorTargetRuntime:
                 return ProbeResult("unavailable", reason=error.phase or error.reason)
             samples: list[float] = []
             try:
-                status = None
+                # Untimed warm-up: with 10 samples the p95 is the slowest one, and a just-started
+                # connector's first call also opens its upstream connections.
+                status = await client.service_status()
                 for _sample in range(PROBE_SAMPLES):
                     started = time.monotonic()
                     status = await client.service_status()
@@ -130,7 +134,6 @@ class ConnectorTargetRuntime:
                 return ProbeResult("unavailable", reason=error.phase or error.reason)
             finally:
                 await client.close()
-            assert status is not None
             return ProbeResult(
                 "ready" if status.state is ServiceState.READY else "reachable",
                 service_version=status.service_version,

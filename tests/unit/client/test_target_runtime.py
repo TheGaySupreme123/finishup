@@ -90,3 +90,56 @@ def test_runtime_errors_carry_only_closed_tokens() -> None:
 )
 def test_p95_is_nearest_rank(samples: list[float], expected: int) -> None:
     assert target_runtime._p95(samples) == expected  # pyright: ignore[reportPrivateUsage]
+
+
+def test_the_connector_probe_times_only_warm_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A just-started connector's first call opens its upstream; the probe does not time it.
+
+    Found in the real-environment run: with ten samples the p95 is the slowest call, so the one
+    cold call made ``server test`` warn that agent tools would be denied right after ``server
+    connect``, while every later probe read about 30 ms.
+    """
+
+    import finishup.client.connector_runtime as connector_runtime
+    import finishup.service.client as service_client
+    from finishup.client.target_runtime import PROBE_SAMPLES
+    from finishup.ports.control import ServiceState, ServiceStatus
+
+    clock = [100.0]
+    calls: list[int] = []
+    status = ServiceStatus(
+        protocol_version="1.0",
+        service_version="0.3.0",
+        service_instance_id="svc_00000000-0000-4000-8000-000000000081",
+        service_generation="1",
+        state=ServiceState.READY,
+        state_reason="none",
+        vault_mode="passphrase",
+        capabilities=("workflow",),
+        session_monitor="unavailable",
+    )
+
+    class _Client:
+        async def service_status(self) -> ServiceStatus:
+            # The first call is the cold one: 900 ms; every later call takes 20 ms.
+            clock[0] += 0.9 if not calls else 0.02
+            calls.append(1)
+            return status
+
+        async def close(self) -> None:
+            return None
+
+    async def on_demand(*_args: object, **_kwargs: object) -> _Client:
+        return _Client()
+
+    monkeypatch.setattr(service_client, "connect_service_on_demand", on_demand)
+    monkeypatch.setattr(connector_runtime.time, "monotonic", lambda: clock[0])
+    result = connector_runtime.ConnectorTargetRuntime().probe(tmp_path)
+    assert len(calls) == PROBE_SAMPLES + 1
+    assert (result.outcome, result.samples, result.round_trip_p95_ms) == (
+        "ready",
+        PROBE_SAMPLES,
+        20,
+    )
