@@ -30,8 +30,12 @@ _FOLLOWS_SELECTION: Final = {
     ("cli/runtime_facts.py", "_owned_roots", "active_root"): 1,
     # Which folders this installation uses (``isolated`` for any non-ambient root).
     ("cli/service_installation.py", "installation_folders", "active_root"): 1,
+    # A remote target is reached through its connector, whichever source chose its root.
+    ("service/client.py", "_remote_target_root", "active_root"): 1,
 }
 _STAYS_EXPLICIT: Final = {
+    # The connector refuses to serve a root other than the one an isolation variable or pin names.
+    ("client/connector.py", "run_connector", "isolated_root"): 1,
     # Registrations and launch lines stamp only an explicit isolation root.
     ("adapters/integrations/cursor_integration.py", "_render_isolation_root", "isolated_root"): 1,
     ("adapters/integrations/codex_mcp.py", "isolated_root_environment", "isolated_root"): 1,
@@ -127,10 +131,12 @@ def test_the_audit_covers_the_design_table() -> None:
     """Design section 5 lists 20 lines: 5 switch to ``active_root()`` and 15 stay explicit. One
     of the 15 (``codex_mcp.py:578``) is the definition of the Codex adapter's
     ``_expected_isolated_root`` helper, which resolves through ``isolated_root_environment``, so
-    the explicit side has 14 calls here."""
+    the explicit side has 14 calls here. The edge relay (approach A) adds one of each: the
+    client's remote-root check follows the selection, and the connector's own-root check stays
+    explicit."""
 
-    assert len(_FOLLOWS_SELECTION) == 5
-    assert len(_STAYS_EXPLICIT) == 14
+    assert len(_FOLLOWS_SELECTION) == 5 + 1
+    assert len(_STAYS_EXPLICIT) == 14 + 1
 
 
 def test_registration_and_upgrade_sites_never_follow_the_selection() -> None:
