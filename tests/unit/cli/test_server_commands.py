@@ -126,6 +126,9 @@ class _ScriptedConsole:
         self.answers = answers
         self.shown: list[str] = []
         self.asked: list[tuple[bytes, ...]] = []
+        # How many writes were shown when each question was asked, so a test can tell what the
+        # owner saw before typing each answer.
+        self.asked_at: list[int] = []
         self.opened = 0
 
     def __call__(self) -> Self:
@@ -148,6 +151,7 @@ class _ScriptedConsole:
 
     def read_choice(self, _prompt: str, allowed: tuple[bytes, ...]) -> bytes:
         self.asked.append(allowed)
+        self.asked_at.append(len(self.shown))
         if not self.answers:
             raise trusted_console.TrustedConsoleError("eof")
         answer = self.answers.pop(0)
@@ -421,6 +425,77 @@ def test_remote_add_asks_every_kind_the_same_question_in_its_typed_confirmation(
     assert console.opened == 1
 
 
+# The sentence of the local-mode notice that names what a rule-breaking server could read.
+_RULE_BREAKING: Final = "such a server could read any other such file on this computer"
+
+
+def _shown_before_ask(console: _ScriptedConsole, ask: int) -> str:
+    return "".join(console.shown[: console.asked_at[ask]])
+
+
+@pytest.mark.parametrize(("arguments", "kind"), _REMOTE_KINDS)
+@pytest.mark.parametrize("how", ["answered", "flag"])
+def test_choosing_local_at_add_shows_what_it_lets_the_server_read_before_the_name(
+    home: Path,
+    remote_seams: None,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+    kind: str,
+    how: str,
+) -> None:
+    """ADR-051 decision 5: recording ``local`` at ``server add``, answered or by the flag, shows
+    the notice ``server folders mode NAME local`` shows, a rule-breaking server included, before
+    the typed name; it adds no prompt. ``listed`` narrows and shows none."""
+
+    if how == "answered":
+        console = _scripted(monkeypatch, b"local", b"gw")
+        result = _invoke("add", "gw", *arguments)
+    else:
+        console = _scripted(monkeypatch, b"gw")
+        result = _invoke("add", "gw", *arguments, "--outside-reads", "local")
+    assert result.exit_code == 0, result.output
+    name_prompt = len(console.asked) - 1
+    assert console.asked[name_prompt] == (b"gw",)
+    before_name = _shown_before_ask(console, name_prompt)
+    assert _RULE_BREAKING in before_name
+    assert "Undo it with 'finishup server folders mode gw listed'." in before_name
+    if how == "answered":
+        # After the answer, not before: the owner who answers listed never sees it.
+        assert _RULE_BREAKING not in _shown_before_ask(console, 0)
+    (record,) = targets.list_targets()
+    assert (record.kind, _mode_on_record(record)) == (kind, "local")
+
+    for name, extra, answers in (
+        ("asked", (), (b"listed", b"asked")),
+        ("flagged", ("--outside-reads", "listed"), (b"flagged",)),
+    ):
+        narrowed = _scripted(monkeypatch, *answers)
+        listed = _invoke("add", name, "ssh://owner@lab.example", *extra)
+        assert listed.exit_code == 0, listed.output
+        assert _RULE_BREAKING not in narrowed.text
+
+
+def test_the_question_names_commands_that_run_as_written(
+    home: Path, remote_seams: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The way to change the mode later is named with its mode, so it runs as written."""
+
+    console = _scripted(monkeypatch, b"listed", b"gw")
+    result = _invoke("add", "gw", "ssh://owner@lab.example")
+    assert result.exit_code == 0, result.output
+    question = _shown_before_ask(console, 0)
+    assert (
+        "You can change it later with 'finishup server folders mode gw local' or "
+        "'finishup server folders mode gw listed'." in question
+    )
+    assert "'finishup server folders mode gw'" not in question
+    for mode in ("local", "listed"):
+        if mode == "local":
+            _scripted(monkeypatch, b"gw")
+        changed = _invoke("folders", "mode", "gw", mode)
+        assert changed.exit_code == 0, changed.output
+
+
 def test_an_explicit_answer_is_required_and_asked_again(
     home: Path, remote_seams: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -528,6 +603,8 @@ def test_an_official_endpoint_is_not_asked_and_reads_as_local(
     assert console.asked == [(b"fu",)]
     assert OUTSIDE_READ_QUESTION not in console.text
     assert "it is an official FinishUP server" in console.text
+    # Its 'local' is not the owner's choice: no notice asks them to weigh a rule-breaking server.
+    assert _RULE_BREAKING not in console.text
     assert "(mode local, an official FinishUP server)" in official.stdout
     (record,) = targets.list_targets()
     # Nothing is recorded: its 'local' follows the reviewed list of official hosts.

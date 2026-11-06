@@ -56,18 +56,22 @@ outside your projects on this computer, its *mode* (see
 What may this server read outside your projects on this computer?
   local   what FinishUP on this computer would read there; choose it for a server you trust as you trust this computer
   listed  only folders you list for it with 'finishup server folders add'; nothing else there
-You can change it later with 'finishup server folders mode devbox'.
+You can change it later with 'finishup server folders mode devbox local' or 'finishup server folders mode devbox listed'.
 Type local or listed:
 ```
 
 Every kind of server, SSH, a port of this computer or the web, gets the same question and the same
-two choices. Type `local` or `listed`; Enter alone does not choose. Then type the server's name to
-confirm both. You do this yourself, in a terminal you are typing in. An agent cannot add or choose
-such a server: there is no agent tool for it, and the command refuses to run without a terminal.
-To answer the question up front, add `--outside-reads local` or `--outside-reads listed`; you
-still confirm with the server's name. An official FinishUP service is not asked: it reads what
-FinishUP on this computer would read. If the disclosure changes in a later release, FinishUP asks
-you to confirm again before using the server. Once the server is added, FinishUP says which mode
+two choices. Type `local` or `listed`; Enter alone does not choose. If you choose `local`,
+FinishUP then shows what that lets the server read, including what a server that breaks
+FinishUP's rules could read, the same notice `finishup server folders mode NAME local` shows.
+Then type the server's name to confirm both. You do this yourself, in a terminal you are typing
+in. An agent cannot add or choose such a server: there is no agent tool for it, and the command
+refuses to run without a terminal. To answer the question up front, add `--outside-reads local`
+or `--outside-reads listed`; you still see the notice for `local`, and still confirm with the
+server's name. An official FinishUP service is not asked: it reads what FinishUP on this computer
+would read. Add one without `--outside-reads`: an answer you give is kept as your own choice
+rather than following FinishUP's list of official services. If the disclosure changes in a later
+release, FinishUP asks you to confirm again before using the server. Once the server is added, FinishUP says which mode
 it has and the one command that changes it. After that, nothing asks again: your agents' hooks
 and FinishUP tools, the `finishup` command and the terminal interface all follow your choice.
 
@@ -546,5 +550,6 @@ In the terminal interface, the header shows which server is in use, and `/server
 servers and can switch between them with the same confirmation. Adding a server there asks where
 it runs and, for a server on another machine, a port or the web, the same question as `server
 add`; it then prints the `finishup server add` command with your answer for you to run in your
-shell. Its status view shows the server's mode and the folders listed for it, and it prints the
+shell. As with `server add`, an official FinishUP service is not asked: where one exists,
+`/server` offers it as its own choice and prints its command without an answer. Its status view shows the server's mode and the folders listed for it, and it prints the
 `finishup server folders` commands for you to run in your shell.

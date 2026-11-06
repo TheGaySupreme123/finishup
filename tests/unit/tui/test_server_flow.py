@@ -175,6 +175,68 @@ async def test_adding_a_remote_server_asks_what_it_may_read_outside_your_project
     assert runtime.server_uses == []
 
 
+async def test_no_official_service_is_offered_while_none_is_reviewed() -> None:
+    """``OFFICIAL_ENDPOINT_HOSTS`` is empty: the add flow offers no official service, and the
+    question names none."""
+
+    from finishup.client.server_folders import OFFICIAL_ENDPOINT_HOSTS
+
+    assert OFFICIAL_ENDPOINT_HOSTS == frozenset()
+    runtime = FakeRuntime(servers=_ROWS)
+    harness = _Harness(runtime, ["add", "add:remote", "listed"])
+
+    await harness.app.command_server()
+
+    where, question = harness.views[1], harness.views[2]
+    assert isinstance(where, SelectionView) and isinstance(question, SelectionView)
+    keys = [option.key for option in where._all_options]  # pyright: ignore[reportPrivateUsage]
+    assert keys == ["add:local", "add:remote"]
+    assert not any("official" in line for line in question._body)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_an_official_service_is_not_asked_and_its_command_carries_no_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-051 decision 5: ``server add`` never asks an official FinishUP service and leaves its
+    ``local`` unrecorded, following the reviewed list; ``/server`` does the same, so it never
+    turns that into the owner's own recorded choice with ``--outside-reads``."""
+
+    from finishup.client import server_folders
+
+    monkeypatch.setattr(
+        server_folders, "OFFICIAL_ENDPOINT_HOSTS", frozenset({"fu.example", "api.fu.example"})
+    )
+    runtime = FakeRuntime(servers=_ROWS)
+    harness = _Harness(runtime, ["add", "add:official"])
+
+    await harness.app.command_server()
+
+    where = harness.views[1]
+    assert isinstance(where, SelectionView)
+    keys = [option.key for option in where._all_options]  # pyright: ignore[reportPrivateUsage]
+    assert keys == ["add:local", "add:official", "add:remote"]
+    assert len(harness.views) == 2  # no outside-read question
+    level, title, body = harness.said[-1]
+    assert (level, title) == (Level.OPTIONAL, "Run this in your shell")
+    assert body[:2] == (
+        "    finishup server add NAME https://api.fu.example",
+        "    finishup server add NAME https://fu.example",
+    )
+    assert not any("--outside-reads" in line for line in body)
+    assert any("mode local" in line for line in body)
+    assert runtime.server_uses == []
+
+    # The question for any other server says an official one is not asked.
+    asked = _Harness(FakeRuntime(servers=_ROWS), ["add", "add:remote", "listed"])
+    await asked.app.command_server()
+    question = asked.views[2]
+    assert isinstance(question, SelectionView)
+    assert any(
+        "An official FinishUP service is not asked" in line
+        for line in question._body  # pyright: ignore[reportPrivateUsage]
+    )
+
+
 @pytest.mark.parametrize("answers", [["add", None], ["add", "add:remote", None]])
 async def test_going_back_from_the_add_flow_adds_nothing(answers: list[str | None]) -> None:
     runtime = FakeRuntime(servers=_ROWS)

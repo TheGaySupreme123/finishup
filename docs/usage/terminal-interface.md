@@ -333,7 +333,10 @@ on the command line, so for those `/server` shows the command to run (`finishup 
 mode` for the mode, and `add`, `list` and `remove` for folders). Adding a server on another
 machine, a port or the web first asks the same question as `finishup server add`: what it may read
 outside your projects, local or listed. The command it shows carries your answer, so in your
-terminal you only confirm with the server's name. Its status view also shows the server's mode
+terminal you only confirm with the server's name. As with `finishup server add`, an official
+FinishUP service is not asked: where one exists, `/server` offers it as its own choice, and the
+command it shows carries no answer, because the service reads what FinishUP on this computer
+would read. Its status view also shows the server's mode
 for reads outside your projects on this computer, why it has that mode (or how to choose one),
 and the folders listed for it. The header always shows the kind and short id
 of the server in use. See [FinishUP servers](servers.md).
