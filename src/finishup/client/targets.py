@@ -70,6 +70,7 @@ __all__ = [
     "ServerTarget",
     "TargetError",
     "TargetKind",
+    "active_root_record",
     "active_target_record",
     "clear_selection",
     "find_target",
@@ -837,6 +838,22 @@ def selection_source() -> SelectionSource:
     return isolation_binding()
 
 
+def active_root_record() -> tuple[Path, ServerTarget | None] | None:
+    """The root this process uses and its target record; ``None`` for the everyday installation.
+
+    Unlike ``active_target_record`` the two failures stay apart. A root that cannot be resolved
+    raises its ``PathSafetyError`` (every local path fails on it too, exactly as before). A root
+    that holds a ``target.json`` this process cannot read (unsafe permissions, damaged, another
+    root's) raises ``TargetError``: that record may name a server on another machine, so callers
+    fail closed and never take the root for a local one.
+    """
+
+    root = active_root()
+    if root is None:
+        return None
+    return root, read_target(root)
+
+
 def active_target_record() -> ServerTarget | None:
     """The target record of the root this process uses, or ``None`` for an ordinary local root.
 
@@ -845,9 +862,7 @@ def active_target_record() -> ServerTarget | None:
     """
 
     try:
-        root = active_root()
+        state = active_root_record()
     except PathSafetyError:
         raise TargetError("target_root_unsafe") from None
-    if root is None:
-        return None
-    return read_target(root)
+    return None if state is None else state[1]

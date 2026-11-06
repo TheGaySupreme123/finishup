@@ -65,19 +65,22 @@ class RemoteRemedy:
 def remote_root_selected() -> bool:
     """Whether the root this process uses is a FinishUP server on another machine.
 
-    Read the way the connect seam reads it: a root whose record cannot be read is not treated as
-    remote here, and the seam keeps today's path for it too. Hook-safe: it loads only the target
-    records.
+    Read the way the connect seam reads it: a root that holds a target record this process cannot
+    read may be a remote target's, so it counts as remote (no surface then names a local remedy
+    for it), while a root that cannot be resolved at all keeps its local wording. Hook-safe: it
+    loads only the target records.
     """
 
-    from finishup.client.targets import TargetError, active_target_record
+    from finishup.client.targets import TargetError, active_root_record
     from finishup.config.paths import PathSafetyError
 
     try:
-        record = active_target_record()
-    except (TargetError, PathSafetyError):
+        state = active_root_record()
+    except PathSafetyError:
         return False
-    return record is not None and record.is_remote
+    except TargetError:
+        return True
+    return state is not None and state[1] is not None and state[1].is_remote
 
 
 def remote_connection_phase(error: object) -> str | None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -147,14 +148,16 @@ def test_guarded_callbacks_keep_their_signature() -> None:
 
 
 def test_require_server_host_passes_on_a_local_root(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: None)
+    monkeypatch.setattr("finishup.client.targets.active_root_record", lambda: None)
     require_server_host("service run")
     require_server_host("/observe")
 
 
 def test_require_server_host_refuses_a_remote_target(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _remote_record()
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    monkeypatch.setattr(
+        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
+    )
     with pytest.raises(ServerHostRequired) as raised:
         require_server_host("service run")
     assert raised.value.target_id == "t_0a1b2c3d"
@@ -173,7 +176,9 @@ def test_observe_commands_run_on_the_client_of_a_remote_target(
     """The client's observation store is the remote target's authority (ADR-051 decision 12)."""
 
     record = _remote_record()
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    monkeypatch.setattr(
+        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
+    )
     observe = [path for path in _paths() if path.split()[0] == "observe"]
     assert observe
     for path in observe:
@@ -191,7 +196,9 @@ def test_a_guarded_command_refuses_before_running_with_no_owner_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record = _remote_record()
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    monkeypatch.setattr(
+        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
+    )
     result = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
     assert result.exit_code == 2
     assert "requires_server_host" in result.stderr
@@ -203,7 +210,9 @@ def test_a_guarded_command_refuses_before_running_with_no_owner_text(
 
 def test_root_wizard_flags_refuse_a_remote_target(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _remote_record()
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    monkeypatch.setattr(
+        "finishup.client.targets.active_root_record", lambda: (Path("/r/t_0a1b2c3d"), record)
+    )
     for flag in ("--privacy", "--set"):
         result = CliRunner().invoke(cli.app, [flag])
         assert result.exit_code == 2, flag
@@ -213,7 +222,7 @@ def test_root_wizard_flags_refuse_a_remote_target(monkeypatch: pytest.MonkeyPatc
 def test_a_guarded_command_runs_unchanged_on_a_local_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: None)
+    monkeypatch.setattr("finishup.client.targets.active_root_record", lambda: None)
     result = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
     assert result.exit_code == 0, result.output
     report = cast(dict[str, object], json.loads(result.stdout))
@@ -222,11 +231,26 @@ def test_a_guarded_command_runs_unchanged_on_a_local_root(
 
 
 def test_an_unresolvable_root_is_left_to_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    from finishup.client.targets import TargetError
+    from finishup.config.paths import PathSafetyError
 
     def broken() -> None:
+        raise PathSafetyError("isolation_root_invalid")
+
+    monkeypatch.setattr("finishup.client.targets.active_root_record", broken)
+    require_server_host("service run")
+
+
+def test_a_root_whose_record_cannot_be_read_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    # It may be a remote target's root: a server-host command there would make a local vault or
+    # service in it.
+    from finishup.client.targets import TargetError
+
+    def unreadable() -> None:
         raise TargetError("target_root_unsafe")
 
-    monkeypatch.setattr("finishup.client.targets.active_target_record", broken)
-    require_server_host("service run")
+    monkeypatch.setattr("finishup.client.targets.active_root_record", unreadable)
+    with pytest.raises(ServerHostRequired) as raised:
+        require_server_host("service run")
+    assert (raised.value.target_id, raised.value.kind) == (None, "unreadable")
+    require_server_host("server use")
     assert command_scope.REQUIRES_SERVER_HOST == "requires_server_host"

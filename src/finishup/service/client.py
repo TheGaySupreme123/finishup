@@ -1980,19 +1980,27 @@ def _check_workspace_binding(
 def _remote_target() -> tuple[ServerTarget, Path] | None:
     """The active root's remote server target and root, or ``None`` for every local root.
 
-    Only a root whose ``target.json`` names a remote kind leaves the Unix-socket path. Anything
-    else — the everyday server, an isolated root, a named local server, or a root this check
-    cannot read — keeps today's path exactly, including its own failure for an unusable root.
+    Only a root whose ``target.json`` names a remote kind leaves the Unix-socket path. The
+    everyday server, an isolated root, and a named local server keep today's path exactly, and so
+    does a root that cannot be resolved at all (its own failure is reported there). A root that
+    holds a ``target.json`` this process cannot read fails closed: it may be a remote target's, so
+    no local service is ever spawned or reached in it.
     """
 
-    from finishup.client.targets import TargetError, active_target_record
+    from finishup.client.targets import TargetError, active_root_record
 
     try:
-        record = active_target_record()
-        root = active_root()
-    except (TargetError, PathSafetyError):
+        state = active_root_record()
+    except PathSafetyError:
         return None
-    if record is None or not record.is_remote or root is None:
+    except TargetError:
+        raise ControlError(
+            "service_unavailable", retryable=False, phase="remote_unreachable"
+        ) from None
+    if state is None:
+        return None
+    root, record = state
+    if record is None or not record.is_remote:
         return None
     return record, root
 

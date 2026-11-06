@@ -316,3 +316,83 @@ def test_the_terminal_interface_keeps_its_local_text(home: Path) -> None:
         "service_unavailable",
         "the local FinishUP service is not reachable",
     )
+
+
+# --- a target record that cannot be read --------------------------------------------------------
+
+
+def _selected(home: Path, kind: str) -> Path:
+    del home
+    with targets.registry_lock():
+        if kind == "local":
+            record, root = targets.new_local_target(_NAME)
+        else:
+            record, root = targets.new_remote_target(_NAME, "https", base_url=f"https://{_HOST}")
+        targets.write_selection(record)
+    reset_selection_memo()
+    return root
+
+
+def test_an_unreadable_target_record_fails_closed_on_every_check(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from finishup.cli.command_scope import (
+        ServerHostRequired,
+        require_server_host,
+        server_host_refusal_line,
+    )
+    from finishup.client.remote_remedy import remote_root_selected
+    from finishup.ports.control import ControlClientKind
+    from finishup.service import client as client_module
+
+    root = _selected(home, "https")
+    # Restored from a backup, say: the record is group-readable, so it is refused as unsafe.
+    (root / "target.json").chmod(0o640)
+    spawned: list[str] = []
+
+    def no_spawn() -> object:
+        spawned.append("spawn")
+        raise AssertionError("a local service was spawned in a remote target's root")
+
+    monkeypatch.setattr(client_module, "_spawn_service_process", no_spawn)
+    with pytest.raises(ControlError) as raised:
+        asyncio.run(
+            client_module.connect_service_on_demand(
+                ControlClientKind.CLI, workspace_locator=None, timeout_seconds=1.0
+            )
+        )
+    assert (raised.value.reason, raised.value.phase) == (
+        "service_unavailable",
+        "remote_unreachable",
+    )
+    assert raised.value.retryable is False
+    with pytest.raises(ControlError):
+        asyncio.run(client_module.connect_service(ControlClientKind.CLI))
+    assert spawned == []
+    assert not (root / "run" / "control.sock").exists()
+    # Every surface names the remote remedy, never a local one.
+    assert remote_root_selected() is True
+    remedy = remote_remedy(ControlError("service_unavailable", retryable=True))
+    assert remedy is not None and remedy.reason == "remote_unreachable"
+    text, _ = _cli(raised.value)
+    _assert_remote_words(text)
+    # A server-host command (a vault, a local service) is refused there too.
+    with pytest.raises(ServerHostRequired) as refused:
+        require_server_host("setup vault")
+    line = server_host_refusal_line(refused.value)
+    assert line.startswith("requires_server_host: ") and "cannot be read" in line
+    _assert_remote_words(line)
+    assert root.name not in line
+
+
+def test_a_readable_named_local_record_keeps_the_local_path(home: Path) -> None:
+    from finishup.cli.command_scope import require_server_host
+    from finishup.client.remote_remedy import remote_root_selected
+    from finishup.service import client as client_module
+
+    _selected(home, "local")
+    assert client_module._remote_target() is None  # pyright: ignore[reportPrivateUsage]
+    assert remote_root_selected() is False
+    require_server_host("setup vault")

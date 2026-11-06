@@ -161,7 +161,9 @@ class ServerHostRequired(Exception):
 
     reason: Final = REQUIRES_SERVER_HOST
 
-    def __init__(self, target_id: str, kind: str) -> None:
+    def __init__(self, target_id: str | None, kind: str) -> None:
+        # ``target_id`` None, kind ``unreadable``: the root's record cannot be read, so whether it
+        # is this machine is not known.
         self.target_id = target_id
         self.kind = kind
         super().__init__(REQUIRES_SERVER_HOST)
@@ -189,12 +191,15 @@ def require_server_host(command: str) -> None:
 
     ``command`` is a CLI command path or a slash command token (``/observe``). A local root — the
     everyday server, an explicitly isolated root, or a named local server — is the server host, so
-    this returns. Only a target root whose ``target.json`` names a remote kind raises
-    ``ServerHostRequired``. A root that cannot be resolved is left to the command's own
-    fail-closed path, so a broken root is reported exactly as before.
+    this returns. A target root whose ``target.json`` names a remote kind raises
+    ``ServerHostRequired``, and so does a root whose ``target.json`` cannot be read (it may be a
+    remote target's: a server-host command run there would make a local vault or service in it).
+    A root that cannot be resolved at all is left to the command's own fail-closed path, so a
+    broken root is reported exactly as before.
     """
 
-    from finishup.client.targets import TargetError, active_target_record
+    from finishup.client.targets import TargetError, active_root_record
+    from finishup.config.paths import PathSafetyError
 
     scope = (
         tui_command_scope(command.removeprefix("/"))
@@ -204,9 +209,12 @@ def require_server_host(command: str) -> None:
     if scope != "server_host":
         return
     try:
-        record = active_target_record()
-    except TargetError:
+        state = active_root_record()
+    except PathSafetyError:
         return
+    except TargetError:
+        raise ServerHostRequired(None, "unreadable") from None
+    record = None if state is None else state[1]
     if record is not None and record.is_remote:
         raise ServerHostRequired(record.target_id, record.kind)
 
@@ -214,6 +222,13 @@ def require_server_host(command: str) -> None:
 def server_host_refusal_line(error: ServerHostRequired) -> str:
     """One bounded operator line for a refused server-host command (closed tokens and an id)."""
 
+    if error.target_id is None:
+        return (
+            f"{REQUIRES_SERVER_HOST}: this command runs on the FinishUP server host, and the "
+            "selected server target's record cannot be read, so it is not known to be this "
+            "machine and nothing was run; check it with 'finishup server status', or select "
+            "this machine's server with 'finishup server use local'"
+        )
     return (
         f"{REQUIRES_SERVER_HOST}: this command runs on the FinishUP server host, and the "
         f"selected server target {error.target_id} ({error.kind}) is not this machine; run it "

@@ -532,7 +532,12 @@ SSH (owner-equivalent, no key)
 - `client/rest_client.py`: `RestServiceClient` subclasses `ServiceClient` (every typed method is
   shared; only the transport methods are overridden) and is what `connect_service` and
   `connect_service_on_demand` return for a root whose `target.json` names a remote kind. A remote
-  root never spawns or supersedes a local service. HTTPS trusts the target's `--ca-file`, its
+  root never spawns or supersedes a local service. A root whose `target.json` cannot be read (unsafe
+  permissions, damaged) fails closed the same way: the connection fails `service_unavailable` in
+  phase `remote_unreachable` (not retryable) with no local service spawned or reached in it, every
+  surface names the remote remedy, and server-host commands refuse there
+  (`client.targets.active_root_record` keeps that failure apart from a root that cannot be resolved
+  at all, which keeps its local failure). HTTPS trusts the target's `--ca-file`, its
   `--tls-pin` (checked inside the TLS handshake, so a key is never sent to a mismatching server), or
   the public store; proxy variables are ignored. Failures carry the remote phases on
   `service_unavailable`.
