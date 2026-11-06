@@ -919,13 +919,17 @@ def selection_source() -> SelectionSource:
 def active_target_is_remote() -> bool:
     """Whether the root this process uses is a remote target, for choosing a remedy's words.
 
-    Never raises: a root or record that cannot be read answers False, so a renderer keeps the
-    remedy it gives every local root. Connection paths decide for themselves and fail closed
-    (``finishup.client.remote_binding.is_remote_active_root``, ``active_root_may_be_remote``).
+    Never raises. A root that resolves but whose record cannot be read counts as remote, as in
+    ``active_root_may_be_remote``: that record may name a server on another machine, and the
+    connection paths refuse it there (``finishup.client.remote_binding.is_remote_active_root``),
+    so the remedy never sends the owner to repair a local service that is not in use. A root
+    that cannot be resolved at all answers False and keeps the remedy every local root gets.
     """
 
     try:
         record = active_target_record()
+    except TargetRecordUnreadable:
+        return True
     except TargetError:
         return False
     return record is not None and record.is_remote

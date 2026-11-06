@@ -9,6 +9,7 @@ prints a host or a target name. With a local root every one of them keeps its ex
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -178,6 +179,40 @@ def test_a_locked_remote_server_is_unlocked_there_on_every_surface(remote: Path)
     failure = _connect_failure(locked)
     assert failure.reason == "vault_locked"
     assert failure.details == (directive.directive,)
+
+
+def test_an_unreadable_target_record_counts_as_remote_and_never_raises(
+    remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As ``active_root_may_be_remote``: the record may name a server on another machine."""
+
+    from finishup.cli.hooks import locked_context
+    from finishup.cli.remote_remedy import remote_locked_directive
+
+    record = remote / "target.json"
+    record.chmod(0o644)  # not owner-only: unreadable as a record
+    reset_selection_memo()
+    assert targets.active_target_is_remote() is True
+    assert remote_locked_directive() == RECOVERY_DIRECTIVES[_LOCKED_TOKEN]
+    assert locked_context().endswith(f" Continuation: {_LOCKED_TOKEN}.")
+
+    record.chmod(0o600)
+    real_open = os.open
+
+    def denied(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:  # noqa: ANN401
+        if os.fspath(path) == os.fspath(record):
+            raise PermissionError(13, "denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", denied)
+    reset_selection_memo()
+    assert targets.active_target_is_remote() is True
+
+    def unresolvable() -> None:
+        raise targets.TargetError("target_root_unsafe")
+
+    monkeypatch.setattr(targets, "active_target_record", unresolvable)
+    assert targets.active_target_is_remote() is False  # a root that cannot be resolved at all
 
 
 def test_hooks_name_the_remote_phase_and_its_token(remote: Path) -> None:
