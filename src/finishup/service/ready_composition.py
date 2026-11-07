@@ -89,6 +89,7 @@ from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEv
 from finishup.application.check_change import (
     CheckChangeOutcome,
     CurrentInputReader,
+    CurrentInputsRead,
     OutsideInputReader,
     capture_check_time_change,
     check_change_shown_files,
@@ -273,6 +274,7 @@ from finishup.domain.privacy import (
     ReviewSelectionPolicy,
 )
 from finishup.domain.receipts import (
+    OUTSIDE_READS_NOT_LISTED_GAP,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
@@ -420,6 +422,7 @@ from finishup.ports.start_catalog import (
     TaskRouteState,
 )
 from finishup.ports.workspace_agent import (
+    OutsideInputsRead,
     WorkspaceAgentUnavailable,
 )
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
@@ -2720,9 +2723,9 @@ def _outside_input_reader(
 
     def read(
         values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
-    ) -> tuple[TaskInputFile, ...]:
+    ) -> tuple[TaskInputFile, ...] | OutsideInputsRead:
         client = None if routing is None else routing.reads_for(workspace)
-        reader = read_outside_inputs if client is None else client.read_outside_inputs
+        reader = read_outside_inputs if client is None else client.outside_inputs
         return reader(
             roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
         )
@@ -2768,6 +2771,23 @@ def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tupl
     return tuple(sorted({*gaps, TASK_INPUT_BASELINE_UNAVAILABLE_GAP}, key=str.encode))
 
 
+def _with_not_listed_gap(
+    gaps: Sequence[str], outcome: CheckChangeOutcome, declared_tests_not_listed: bool
+) -> tuple[str, ...]:
+    """``gaps`` plus ``outside_reads_not_listed`` when a claim-bound task's agent kept files from
+    this server under its owner's listed mode (ADR-051 decision 5).
+
+    Either the check-time read left task-named inputs unread (frozen into the check change as
+    ``outside_inputs_not_listed``) or a declared test was refused (frozen into the job's case
+    object); a closed code with no path, so new and recovered jobs agree.
+    """
+
+    inputs = outcome.change is not None and outcome.change.capture.outside_inputs_not_listed
+    if not (inputs or declared_tests_not_listed):
+        return tuple(gaps)
+    return tuple(sorted({*gaps, OUTSIDE_READS_NOT_LISTED_GAP}, key=str.encode))
+
+
 def _with_oracle_directory_gap(
     gaps: Sequence[str], case: DeterministicCase, selection: ReviewSelectionPolicy
 ) -> tuple[str, ...]:
@@ -2797,12 +2817,10 @@ def _current_input_reader(
     """
 
     client = None if routing is None else routing.reads_excluding(excluded)
-    snapshot = snapshot_outside_inputs if client is None else client.snapshot_outside_inputs
 
-    def read(paths: tuple[str, ...]) -> dict[str, bytes | None]:
-        return {
-            row.path: row.text
-            for row in snapshot(
+    def read(paths: tuple[str, ...]) -> dict[str, bytes | None] | CurrentInputsRead:
+        if client is None:
+            rows = snapshot_outside_inputs(
                 roots,
                 paths,
                 limit=len(paths),
@@ -2810,8 +2828,21 @@ def _current_input_reader(
                 seconds=MAX_SNAPSHOT_ADMISSION_SECONDS,
                 excluded=excluded,
             )
-            if row.reason != "unreadable"
-        }
+            return {row.path: row.text for row in rows if row.reason != "unreadable"}
+        # A claim-bound task's agent also names the kept paths its owner no longer lists for this
+        # server (ADR-051 decision 5): their copies are not sent.
+        answer = client.outside_snapshots(
+            roots,
+            paths,
+            limit=len(paths),
+            max_bytes=MAX_SNAPSHOT_FILE_BYTES,
+            seconds=MAX_SNAPSHOT_ADMISSION_SECONDS,
+            excluded=excluded,
+        )
+        return CurrentInputsRead(
+            {row.path: row.text for row in answer.reads if row.reason != "unreadable"},
+            frozenset(paths[index] for index in answer.unlisted if index < len(paths)),
+        )
 
     return read
 
@@ -3862,12 +3893,13 @@ def _execution_from_json(value: object) -> _SemanticExecution:
 async def _read_semantic_case(
     runtime: TaskRuntime,
     ref: ObjectRef,
-) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None]:
+) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None, bool]:
     """The frozen execution, case identity and check-time change pointer of one job's case.
 
     The fifth value is the case digest of the check's own first review when this job is an
-    in-check follow-up round (issue #1047), else ``None``; the last the declared tests the job
-    pinned (issue #1220), else ``None``.
+    in-check follow-up round (issue #1047), else ``None``; the sixth the declared tests the job
+    pinned (issue #1220), else ``None``; the last whether a claim-bound task's agent kept a
+    declared test from the server under listed mode (ADR-051 decision 5).
     """
 
     from finishup.protocol.canonical import strict_json_parse
@@ -3904,6 +3936,9 @@ async def _read_semantic_case(
     # Absent on jobs created before ADR-031 or without a trusted workspace source: such a job
     # rebuilds its case without a check-time change, exactly as it was first built. The declared
     # tests (#1220) are absent on a job that pinned none, and it rebuilds without them.
+    not_listed = body.get("declared_tests_not_listed", False)
+    if type(not_listed) is not bool:
+        raise ValueError("semantic_execution_invalid")
     return (
         execution,
         case_id,
@@ -3911,6 +3946,7 @@ async def _read_semantic_case(
         body.get("check_change"),
         base_digest,
         body.get("declared_tests"),
+        not_listed,
     )
 
 
@@ -3992,6 +4028,7 @@ async def _publish_semantic_case_object(
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
     declared_tests: CanonicalJsonValue | None = None,
+    declared_tests_not_listed: bool = False,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
@@ -4014,6 +4051,9 @@ async def _publish_semantic_case_object(
         # #1220: the declared tests' paths and pinned digests, so recovery rebuilds the same case
         # without reading a file that may have changed since.
         body["declared_tests"] = declared_tests
+    if declared_tests_not_listed:
+        # ADR-051 decision 5: written only when set, so every other case object keeps its bytes.
+        body["declared_tests_not_listed"] = True
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4709,6 +4749,12 @@ def _task_input_counts(
         ),
         "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
+        # ADR-051 decision 5: a claim-bound task's agent left task-named inputs unread under its
+        # owner's listed mode (a flag, as the frozen object records it; never which or a path).
+        "semantic_task_inputs_outside_not_listed": int(
+            check_change.change is not None
+            and check_change.change.capture.outside_inputs_not_listed
+        ),
     }
 
 
@@ -5306,18 +5352,22 @@ def _pin_declared_tests(
     workspace_root: str | None,
     excluded: tuple[str, ...],
     reads: ClientWorkspaceReads | None = None,
-) -> tuple[DeclaredTest, ...]:
-    """The declared test files that are readable now, each with the digest of its bytes (#1220).
+) -> tuple[tuple[DeclaredTest, ...], bool]:
+    """The declared test files that are readable now, each with the digest of its bytes (#1220),
+    and whether a claim-bound task's agent kept one from this server under listed mode.
 
     The candidates are the frozen case's own (``declared_test_candidates``); a file refused by
     shape, missing, unreadable, binary or over 1 MiB is not listed. Nothing read here enters the
     case but the digest. ``reads`` is a claim-bound task's agent (ADR-051); a test it could not
-    reach is not listed, as for a local file that could not be read. Blocking: run it in a
-    worker thread.
+    reach is not listed, as for a local file that could not be read. One it refused as
+    ``root_not_admitted`` exists but lies beyond what its owner listed for this server (ADR-051
+    decision 5): not listed either, and reported, so the check discloses
+    ``outside_reads_not_listed`` with the owner's ways out. Blocking: run it in a worker thread.
     """
 
     statement = None if case.task_statement is None else case.task_statement.text
     tests: list[DeclaredTest] = []
+    not_listed = False
     for candidate in declared_test_candidates(case.projection, statement):
         location = declared_test_location(candidate.path, workspace_root)
         if location is None or scan_for_sensitive_content(candidate.path.encode()):
@@ -5328,8 +5378,13 @@ def _pin_declared_tests(
             data = read_declared_test(location, excluded=excluded)
         else:
             try:
-                data = reads.read_declared_test(location, excluded=excluded)
-            except (WorkspaceAgentUnavailable, ReadDeadline):
+                data = reads.declared_test(location, excluded=excluded)
+            except WorkspaceAgentUnavailable as exc:
+                not_listed = not_listed or (
+                    exc.reason == "agent_refused" and exc.agent_reason == "root_not_admitted"
+                )
+                data = None
+            except ReadDeadline:
                 data = None
         if data is None:
             continue
@@ -5343,7 +5398,7 @@ def _pin_declared_tests(
                 candidate.expected_from,
             )
         )
-    return tuple(tests)
+    return tuple(tests), not_listed
 
 
 def _record_case_narrowing(
@@ -5633,6 +5688,7 @@ def _privacy_gated_semantic_evaluator(
             recovered_case_digest: str | None = None
             recovered_check_change: object | None = None
             recovered_declared_tests: object | None = None
+            recovered_declared_tests_not_listed = False
             if runtime is not None:
                 job = await runtime.ledger.load_semantic_job(
                     frozen.lease.writer_id, frozen.lease.operation_id
@@ -5645,6 +5701,7 @@ def _privacy_gated_semantic_evaluator(
                         recovered_check_change,
                         base_case_digest,
                         recovered_declared_tests,
+                        recovered_declared_tests_not_listed,
                     ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if base_case_digest is not None:
                         # An in-check follow-up job (issue #1047): the check's own review job is
@@ -5663,6 +5720,7 @@ def _privacy_gated_semantic_evaluator(
                             recovered_check_change,
                             _,
                             recovered_declared_tests,
+                            recovered_declared_tests_not_listed,
                         ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if execution is None:
                         return await _finish_legacy_semantic_job(
@@ -5908,6 +5966,9 @@ def _privacy_gated_semantic_evaluator(
             # Never on a channel no larger than the minimal policy's (PR #1221 review): nothing is
             # read or planned, so such a review is byte-identical to one without declared tests.
             declared_tests: tuple[DeclaredTest, ...] = ()
+            # ADR-051 decision 5: a claim-bound task's agent kept a declared test from this
+            # server under listed mode; frozen into the job's case object, so recovery agrees.
+            declared_tests_not_listed = recovered_declared_tests_not_listed
             if job is not None:
                 declared_tests = declared_tests_from_json(recovered_declared_tests)
             elif (
@@ -5931,7 +5992,7 @@ def _privacy_gated_semantic_evaluator(
             ):
                 # Off the event loop: each test is read whole, and a claim-bound task's tests are
                 # read by its workspace agent, whose reply this loop delivers (ADR-051).
-                declared_tests = await asyncio.to_thread(
+                declared_tests, declared_tests_not_listed = await asyncio.to_thread(
                     _pin_declared_tests,
                     frozen.case,
                     workspace_root,
@@ -5940,6 +6001,9 @@ def _privacy_gated_semantic_evaluator(
                     if workspace_routing is None
                     else workspace_routing.reads_for(workspace_root),
                 )
+            captured_content_gaps = _with_not_listed_gap(
+                captured_content_gaps, check_change, declared_tests_not_listed
+            )
 
             def build_case(
                 selection: ReviewSelectionPolicy,
@@ -6332,6 +6396,7 @@ def _privacy_gated_semantic_evaluator(
                         if declared_tests
                         else None
                     ),
+                    declared_tests_not_listed=declared_tests_not_listed,
                 )
                 job = await runtime.ledger.enqueue_semantic_job(
                     frozen.lease,

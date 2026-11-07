@@ -12,6 +12,7 @@ from finishup.adapters.task_input_read import ReadDeadline
 from finishup.ports.change_capture import ChangeCaptureUnavailable, TaskChangeBase
 from finishup.ports.workspace_agent import (
     LstatFacts,
+    OutsideSnapshotsRead,
     ReadTextBeneathArguments,
     WorkspaceAgentUnavailable,
     WorkspaceOnlyArguments,
@@ -581,6 +582,7 @@ def test_an_approval_this_policy_does_not_hold_is_refused_before_anything_is_sen
 def test_an_agent_call_never_waits_past_the_catalog_deadline() -> None:
     hub = _Hub(answer=_BASE)
     _routed(hub).read_task_base(_HANDLE)
+    hub.answer = OutsideSnapshotsRead(())  # the snapshot's own answer shape
     reads = ClientWorkspaceReads(cast(WorkspaceAgentHub, hub), _HANDLE)
     reads.snapshot_outside_inputs(("/srv",), ("/srv/a",), limit=1, max_bytes=1, seconds=299.0)
     assert all(0 < call[3] <= 300.0 for call in hub.calls)

@@ -52,6 +52,7 @@ from finishup.domain.receipts import (
     COMPLETION_SCOPE_UNDECLARED_GAP,
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
+    OUTSIDE_READS_NOT_LISTED_GAP,
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     PREEXISTING_TEST_SKIP_UNKNOWN_GAP,
@@ -274,6 +275,8 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
         TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
         TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
         VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
+        # Files a remote server's listed mode kept from review (ADR-051 decision 5): likewise.
+        OUTSIDE_READS_NOT_LISTED_GAP,
         # The reduced review's sent content could not be recorded (issue #904): a limit of that
         # review, never of the complete local case. For AI-powered proof it blocks.
         SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP,
@@ -423,6 +426,7 @@ SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS: Final = (
             TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
             TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
             VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
+            OUTSIDE_READS_NOT_LISTED_GAP,
         }
     )
     | TASK_STATEMENT_GAPS

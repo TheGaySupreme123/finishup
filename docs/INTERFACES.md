@@ -1971,11 +1971,28 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   be a different finding. The review still dispatches once with the other findings.
 - `task_statement_unavailable`, `task_statement_not_supplied`, `task_statement_not_authorized` —
   what the reviewer knew of the user's request (issue #908; see "Task statement" below).
+- `outside_reads_not_listed` — a claim-bound task's server is in `listed` mode for the client's
+  owner, and the client's workspace agent left unread an existing file the task names (a
+  `read_outside_inputs` or kept-copy `snapshot_outside_inputs` answer with a non-empty
+  `unlisted`, frozen as `CheckChangeCapture.outside_inputs_not_listed`) or refused a declared test
+  (`root_not_admitted`, frozen as the case object's `declared_tests_not_listed`), because its
+  folder is not listed for that server (or, for a test in the project, Git ignores it or cannot
+  answer for it). Only those files are missing; the rest of the check-time change reaches review
+  (ADR-051 decision 5, amended 2026-11-07). Its fixed sentence names both of the owner's ways out
+  with their full arguments and where to run them: `finishup server folders add NAME FOLDER`, or,
+  for a server they trust, `finishup server folders mode NAME local`, on the client machine; an
+  agent cannot. A closed disclosure code with no path and no count (the `semantic_case_built`
+  diagnostic counts it as the flag `semantic_task_inputs_outside_not_listed`), classified like
+  `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only). The MCP check
+  summary shows its sentence, or its short form, in the same part as that code's.
 - `task_input_baseline_unavailable` — an outside input reached review as its current bytes and
   FinishUP kept no copy of it from the task's start or from when the task first named it, so the
   reviewer could not tell whether the agent changed it (issue #1118 unit 1, ADR-031 amendment;
   `ready_composition._with_baseline_gap`). A closed disclosure code with no path; it is
   classified like `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only).
+  Its sentence adds that a copy is kept only of a file review may read at that moment, so letting
+  review read the folder before the task starts keeps one (an admitted root, or on a remote
+  server in `listed` mode a listed folder).
 - `verification_input_directory_unresolved` — a recorded verification command named a file after
   a directory change FinishUP cannot follow (`cd -`, `cd $X`, `cd` with no or several operands, a
   `..` above the workspace, `popd`, a `cd` in a pipeline, behind a condition or an assignment
@@ -1996,7 +2013,12 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   `CheckChangeCapture.outside_inputs_not_admitted` (stored key written only when true), which the
   composition reads for new and recovered jobs alike; it carries no path. Its fixed sentence
   (`check_time_change_gap_sentence`) names the owner's step, `finishup privacy input-roots add
-  <folder>` on a trusted terminal. Readiness `S`, disclosed on both routes (gap rule G4c): never
+  <folder>` in a trusted terminal on the computer the FinishUP service runs on, and says that for
+  a remote server that is its server host, where the folder must exist (a folder only on the
+  client cannot be admitted for a remote server yet, ADR-051 open question 1); its MCP short form
+  (`TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE`) names the same place. On a remote target the
+  command's `requires_server_host` line adds that meaning in fixed words
+  (`command_scope.server_host_refusal_line(error, command)`). Readiness `S`, disclosed on both routes (gap rule G4c): never
   agent work, a Stop-gate item or a closure blocker. A capture baseline for AI-powered absence
   proof (`SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS`), never a veto of local proof.
 
@@ -4879,8 +4901,8 @@ Bytes travel as base64 strings inside canonical JSON, and every codec round-trip
 | `probe_requested_paths` | git | `probe_requested_paths` | `RequestedPathProbe` tuple |
 | `count_change_lines` | git | `count_change_lines` | `ChangeLineCounts` |
 | `classify_undeclared_references` | git | `classify_undeclared_references` | reference triples |
-| `read_outside_inputs` | reads | `task_input_read.read_outside_inputs` | `TaskInputFile` tuple |
-| `snapshot_outside_inputs` | reads | `task_input_read.snapshot_outside_inputs` | `OutsideSnapshotRead` tuple |
+| `read_outside_inputs` | reads | `task_input_read.read_outside_inputs` | `OutsideInputsRead` (`inputs`: `TaskInputFile` tuple; `unlisted`: ascending indices into the call's `values`) |
+| `snapshot_outside_inputs` | reads | `task_input_read.snapshot_outside_inputs` | `OutsideSnapshotsRead` (`reads`: `OutsideSnapshotRead` tuple; `unlisted` as above) |
 | `read_declared_test` | reads | `task_input_read.read_declared_test` | bytes or absent |
 | `read_text_beneath` | reads | `task_input_read.read_text_beneath` | `(bytes, size)` or absent |
 | `list_beneath` | reads | `task_input_read.list_beneath` | bounded listing |
@@ -4945,40 +4967,57 @@ confinement rules:
     inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
     `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a
     narrower folder included).
-  - `read_outside_inputs` and `snapshot_outside_inputs` are `root_not_admitted` when any value at
-    or beneath a named root lies neither inside the claimed worktree nor at or beneath an admitted
-    folder. The server records that as the check's `workspace_agent_refused` (an input the owner
-    did not admit is never passed over in silence). Otherwise they walk the named roots that are
-    admitted or hold an admitted folder, and each input keeps the server's own root
-    (`TaskInputFile.root`); a named root with no value beneath it is left out unopened.
+  - `read_outside_inputs` and `snapshot_outside_inputs` judge each value at or beneath a named
+    root on its own (amended 2026-11-07): one that lies neither inside the claimed worktree nor at
+    or beneath an admitted folder is left unread, and its index joins the answer's `unlisted`
+    when it names something that exists and passes the outside-input candidate rule (no hidden
+    component, not credential-named, in no system or protected directory); one that names
+    nothing is not reported, as a local read finds nothing there. The rest is read: the call
+    walks the named roots that are admitted or hold an admitted folder, for the values it kept,
+    and each input keeps the server's own root (`TaskInputFile.root`); a named root with no
+    value beneath it is left out unopened. The server freezes a non-empty `unlisted` of the
+    check-time read, or of the current read of a kept copy (whose copy it then does not send),
+    as `CheckChangeCapture.outside_inputs_not_listed` and discloses `outside_reads_not_listed`
+    (below); a task-start snapshot simply keeps no copy of an unlisted value.
   Outside reads never enter the claimed workspace through an outside root and never enter a
   protected directory, whatever the server lists as excluded; an `lstat` candidate inside either
   is reported as not found. An exclusion naming a directory this user cannot examine does not
   empty the read.
-- `read_declared_test` reads a location strictly beneath the claimed root (handle-relative, or
-  absolute under the root's spelling), or outside it in mode `local`, or at or beneath a listed
-  folder in mode `listed`; anything else is `root_not_admitted`. Both comparisons are made on the location as written and as the local read
-  walks it (`task_input_read.declared_test_top`: a first component that is a root-owned link to a
-  directory at most two levels deep, macOS `/tmp` or `/var`, is replaced by its target). The read
-  is the local `read_declared_test`, with its own fences; one read outside the claimed root also
-  excludes the claimed root, by case-folded spelling and by device and inode, as every other
-  outside read does, so another spelling of the workspace (another case on a case-insensitive
-  volume, a bind mount) never reaches a file Git would report ignored.
-- A workspace file read (`read_text_beneath` on the handle, and `read_declared_test` inside the
-  claimed root) first asks `probe_requested_paths` for that path, relative to the claimed root, as
-  the reviewer broker does, and reads only when the probe answers `ignored is False`, the
-  broker's own rule. Anything else reads as absent: a path Git reports ignored, and one Git
+- `read_declared_test` in mode `local` is the local `read_declared_test` with the server's and
+  this client's protected exclusions, exactly as a local service reads the test its agent declared
+  (#1220): inside the claimed root or outside it, whether or not Git ignores it or can answer for
+  it (amended 2026-11-07). In mode `listed` it reads a location strictly beneath the claimed root
+  (handle-relative, or absolute under the root's spelling) that Git answers is not ignored (next
+  item), or one at or beneath a listed folder; an existing location (one `lstat` finds that the
+  outside-input candidate rule would look at) that is neither is `root_not_admitted`, and one
+  that does not exist reads as `None`, as locally. Both comparisons are made on the location as
+  written and as the local read walks it (`task_input_read.declared_test_top`: a first component
+  that is a root-owned link to a directory at most two levels deep, macOS `/tmp` or `/var`, is
+  replaced by its target). One read outside the claimed root in mode `listed` also excludes the
+  claimed root, by case-folded spelling and by device and inode, as every other outside read
+  does, so another spelling of the workspace (another case on a case-insensitive volume, a bind
+  mount) never reaches a file Git would report ignored. The server's declared-test pinning reads
+  through `ClientWorkspaceReads.declared_test`, which lets the refusal through: a
+  `root_not_admitted` refusal is not pinned, and the check discloses `outside_reads_not_listed`
+  (frozen into the job's `yoetz.semantic-case/2` object as `declared_tests_not_listed: true`,
+  written only when set).
+- A reviewer's workspace file read (`read_text_beneath` on the handle) first asks
+  `probe_requested_paths` for that path, relative to the claimed root, as the reviewer broker
+  does, and reads only when the probe answers `ignored is False`, the broker's own rule, which a
+  local service keeps too. Anything else reads as absent: a path Git reports ignored, and one Git
   cannot answer for (`ignored` None for a path inside a submodule or a home-private path;
   `not_git`, a linked worktree's `unsafe_root` or any other `ChangeCaptureUnavailable`), as well
-  as a handle read that names the claimed root itself. A declared test there is not pinned on a
-  remote target, though a local service pins it. `list_beneath` returns names only and does not
-  ask.
+  as a handle read that names the claimed root itself. In mode `listed` a reviewer read on an
+  absolute root that reaches a path that does not exist reads as `None` rather than
+  `root_not_admitted`. `list_beneath` returns names only and does not ask.
 - Honest limit: the agent cannot tell an honest server's question from any other, so a server
   that breaks the protocol can obtain any file in the claimed worktree that the fences pass and Git
-  answers is not ignored, the names in its listings (ignored entries included), any
+  answers is not ignored (in mode `local`, as a declared test, one Git ignores too, as a local
+  service could), the names in its listings (ignored entries included), any
   eligible file beneath an admitted folder (not hidden, not credential-named, in no system or
   protected directory) and its directories' names, and the `lstat` metadata of any path the
-  outside-input candidate rule would look at.
+  outside-input candidate rule would look at (in mode `listed`, also whether such a path exists,
+  from a refusal or an `unlisted` index).
 - `lstat_candidates` answers only for a candidate the local outside-input rule
   (`outside_input_candidates`) would look at: no hidden component, not credential-named, in no
   system directory, at or beneath a path an owner may admit. Any other candidate is reported as
@@ -5100,16 +5139,20 @@ names a `workspace_locator`. Local clients keep naming their path.
 would have read. The check-time change records one of two reasons, each with its own fixed sentence
 and registered in the gap-effect tables: `check_time_change_unavailable_workspace_agent_refused`
 when the agent refused the read or never offered the operation (hub reasons `agent_refused`,
-`operation_not_declared`): "the FinishUP workspace agent on the client machine refused a read the
-check needed, such as a task's input file in a folder the owner has not let this server read, so
-the server could not see the change. Only the owner can let this server read it, on the client
-machine: list the folder with `finishup server folders add`, or, for a server they trust, switch
-it to mode local with `finishup server folders mode NAME local`."; and
+`operation_not_declared`). Listed mode no longer refuses a check-time read (it leaves an unlisted
+input unread, `outside_reads_not_listed`), so this is a request the agent does not answer: "the
+FinishUP workspace agent on the client machine refused a request the check needed as one it does
+not answer (for a workspace it did not claim, an operation or argument it does not know, or a
+folder no owner could admit), so the server could not see the change. This usually means the two
+computers run different FinishUP releases: install the same release on both, run `finishup server
+connect NAME` on the client machine, the computer that holds the project, and check again."; and
 `check_time_change_unavailable_workspace_agent_unavailable` for every other loss (no agent, a
 dropped connection, a deadline, a busy agent, an undecodable reply, an agent that failed): "the
 FinishUP workspace agent on the client machine gave no usable answer to the server's read of the
 workspace (it was not connected, did not answer in time, or failed), so the server could not see
-the change." A reviewer read the agent refused reads as nothing. A reviewer whose file
+the change. On the client machine, the computer that holds the project, `finishup server status
+NAME` shows the connection and `finishup server connect NAME` makes it again; checking again then
+can help." A reviewer read the agent refused reads as nothing. A reviewer whose file
 read finds the agent gone ends `workspace_agent_unavailable`
 (`application.reviewer_loop.WORKSPACE_AGENT_UNAVAILABLE_ENDING`), which becomes an unavailable
 semantic result with failure class `transport`, never a judgment.

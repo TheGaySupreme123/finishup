@@ -75,6 +75,8 @@ from finishup.ports.workspace_agent import (
     LstatCandidatesArguments,
     LstatFacts,
     OpenWorkspaceArguments,
+    OutsideInputsRead,
+    OutsideSnapshotsRead,
     ProbeRequestedPathsArguments,
     ReadDeclaredTestArguments,
     ReadOutsideInputsArguments,
@@ -458,6 +460,50 @@ class ClientWorkspaceReads:
             ),
         )
 
+    def declared_test(self, location: str, *, excluded: tuple[str, ...]) -> bytes | None:
+        """``read_declared_test`` that lets the agent's refusal through.
+
+        A refusal is ``WorkspaceAgentUnavailable`` (``agent_refused``, with the agent's closed
+        reason), so the caller can tell a test the owner did not let this server read
+        (``root_not_admitted``, ADR-051 decision 5) from one that could not be read.
+        """
+
+        return cast(
+            bytes | None,
+            _call(
+                self._hub,
+                self._handle,
+                WorkspaceOperation.READ_DECLARED_TEST,
+                ReadDeclaredTestArguments(location, tuple(excluded)),
+                _READ_SECONDS,
+            ),
+        )
+
+    def outside_inputs(
+        self,
+        roots: tuple[str, ...],
+        values: tuple[str, ...],
+        *,
+        limit: int = MAX_TASK_INPUT_FILES,
+        excluded: tuple[str, ...] = (),
+        space_cut: frozenset[str] = frozenset(),
+    ) -> OutsideInputsRead:
+        """The agent's whole answer: the inputs it read, and the indices of ``values`` it left
+        unread because its owner did not list them for this server (ADR-051 decision 5)."""
+
+        return cast(
+            OutsideInputsRead,
+            _call(
+                self._hub,
+                self._handle,
+                WorkspaceOperation.READ_OUTSIDE_INPUTS,
+                ReadOutsideInputsArguments(
+                    tuple(roots), tuple(values), limit, tuple(excluded), frozenset(space_cut)
+                ),
+                _READ_SECONDS,
+            ),
+        )
+
     def read_outside_inputs(
         self,
         roots: tuple[str, ...],
@@ -467,16 +513,35 @@ class ClientWorkspaceReads:
         excluded: tuple[str, ...] = (),
         space_cut: frozenset[str] = frozenset(),
     ) -> tuple[TaskInputFile, ...]:
-        found = _call(
-            self._hub,
-            self._handle,
-            WorkspaceOperation.READ_OUTSIDE_INPUTS,
-            ReadOutsideInputsArguments(
-                tuple(roots), tuple(values), limit, tuple(excluded), frozenset(space_cut)
+        return self.outside_inputs(
+            roots, values, limit=limit, excluded=excluded, space_cut=space_cut
+        ).inputs
+
+    def outside_snapshots(
+        self,
+        roots: tuple[str, ...],
+        values: tuple[str, ...],
+        *,
+        limit: int,
+        max_bytes: int,
+        seconds: float,
+        excluded: tuple[str, ...] = (),
+    ) -> OutsideSnapshotsRead:
+        """The agent's whole snapshot answer, ``unlisted`` included (``outside_inputs``)."""
+
+        budget_ms = max(0, int(seconds * 1000))
+        return cast(
+            OutsideSnapshotsRead,
+            _call(
+                self._hub,
+                self._handle,
+                WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+                SnapshotOutsideInputsArguments(
+                    tuple(roots), tuple(values), limit, max_bytes, budget_ms, tuple(excluded)
+                ),
+                seconds + _SNAPSHOT_GRACE_SECONDS,
             ),
-            _READ_SECONDS,
         )
-        return cast(tuple[TaskInputFile, ...], found)
 
     def snapshot_outside_inputs(
         self,
@@ -488,17 +553,12 @@ class ClientWorkspaceReads:
         seconds: float,
         excluded: tuple[str, ...] = (),
     ) -> tuple[OutsideSnapshotRead, ...]:
-        budget_ms = max(0, int(seconds * 1000))
-        found = _call(
-            self._hub,
-            self._handle,
-            WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
-            SnapshotOutsideInputsArguments(
-                tuple(roots), tuple(values), limit, max_bytes, budget_ms, tuple(excluded)
-            ),
-            seconds + _SNAPSHOT_GRACE_SECONDS,
-        )
-        return cast(tuple[OutsideSnapshotRead, ...], found)
+        """Rows only: a value the owner did not list is not kept, as one that could not be read
+        is not (a later check reports it, ``outside_reads_not_listed``)."""
+
+        return self.outside_snapshots(
+            roots, values, limit=limit, max_bytes=max_bytes, seconds=seconds, excluded=excluded
+        ).reads
 
 
 @dataclass(frozen=True, slots=True)

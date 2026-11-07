@@ -514,10 +514,14 @@ process to the default service.
   server folders mode|add`, ADR-051 decision 5). Every remote kind gets the same choice, asked by
   `finishup server add` on the owner's own terminal (an official endpoint is `local`); once
   chosen, no hook, MCP tool or CLI call in a Claude Code session prompts for it again. The
-  decision is the same for every host and changes no registration. Inside it the agent returns a
-  file only when Git answers that it is not ignored, so in a linked Git worktree or a submodule a
-  declared test is not offered to the server's reviewer, though a local service offers it
-  (ADR-051, a parity gap).
+  decision is the same for every host and changes no registration. Inside it a reviewer's file
+  read returns a file only when Git answers that it is not ignored, as a local service's does; a
+  declared test is read in `local` mode as a local service reads it (Git-ignored, linked worktree
+  or submodule included), and in `listed` mode only where Git answers. In `listed` mode a file
+  left unread (a task input or declared test outside the listed folders, or such a test) costs
+  only that file, and the receipt says so in one fixed line, `outside_reads_not_listed`, naming
+  `finishup server folders add NAME FOLDER` and `finishup server folders mode NAME local` on this
+  machine (ADR-051 decision 5).
 - **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
   trust, mappings and the outbox live in the selected target's client-side root, and
   `finishup observe ...` administers them here. Each row a remote target receives carries the
@@ -2399,7 +2403,10 @@ outside directory named without a trailing `/` is listed; an `other` follow-up r
 only from rows FinishUP recorded for the run or edit it names. When the task names a file or folder
 outside the workspace that no admitted root covers, the check records
 `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
-(`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
+(`finishup privacy input-roots add <folder>` on a trusted terminal of the computer the FinishUP
+service runs on: for a remote server its server host, where the folder must exist; a folder only
+on the client cannot be admitted for a remote server yet, ADR-051 open question 1); it is a
+disclosure only, never
 a Stop-gate item or a continuation on Claude Code. Claude Code still has no write path to admitted roots,
 and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
 owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,

@@ -123,6 +123,8 @@ __all__ = [
     "LstatCandidatesArguments",
     "LstatFacts",
     "OpenWorkspaceArguments",
+    "OutsideInputsRead",
+    "OutsideSnapshotsRead",
     "ProbeRequestedPathsArguments",
     "ReadDeclaredTestArguments",
     "ReadOutsideInputsArguments",
@@ -726,6 +728,30 @@ class SnapshotOutsideInputsArguments:
         _int(self.max_bytes, 0, MAX_SNAPSHOT_FILE_BYTES)
         _int(self.budget_ms, 0, MAX_WORKSPACE_DEADLINE_MS)
         _client_locations(self.excluded, _MAX_PATH_LIST)
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideInputsRead:
+    """``read_outside_inputs``'s answer: the task inputs the agent read, and ``unlisted``.
+
+    ``unlisted`` are the indices, ascending, of the call's ``values`` the agent left unread
+    because they name an existing file or folder beneath a named root that this client's owner
+    has not listed for the server (``listed`` mode, ADR-051 decision 5). Every other value is
+    read as a local service reads it; a value that names nothing is not reported, as a local read
+    finds nothing there. Indices only: the answer never names a path the server did not send.
+    """
+
+    inputs: tuple[TaskInputFile, ...] = field(repr=False)
+    unlisted: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideSnapshotsRead:
+    """``snapshot_outside_inputs``'s answer: the rows read, and ``unlisted`` as for
+    ``OutsideInputsRead``."""
+
+    reads: tuple[OutsideSnapshotRead, ...] = field(repr=False)
+    unlisted: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1452,6 +1478,44 @@ def _decode_task_inputs(value: object) -> tuple[TaskInputFile, ...]:
     return tuple(task_input_file_from_wire(row) for row in _list(value, MAX_TASK_INPUT_FILES))
 
 
+def _unlisted_valid(value: object) -> tuple[int, ...]:
+    """Indices into a call's ``values``: ascending, unique, each within the argument bound."""
+
+    if type(value) is not tuple:
+        raise _fail()
+    items = cast(tuple[object, ...], value)
+    if len(items) > _MAX_PATH_LIST or any(
+        type(item) is not int or not 0 <= item < _MAX_PATH_LIST for item in items
+    ):
+        raise _fail()
+    indices = cast(tuple[int, ...], items)
+    if list(indices) != sorted(set(indices)):
+        raise _fail()
+    return indices
+
+
+def _decode_unlisted(value: object) -> tuple[int, ...]:
+    return _unlisted_valid(
+        tuple(_int(item, 0, _MAX_PATH_LIST - 1) for item in _list(value, _MAX_PATH_LIST))
+    )
+
+
+def _encode_outside_read(value: OutsideInputsRead) -> JsonValue:
+    if type(value) is not OutsideInputsRead:
+        raise _fail()
+    return {
+        "inputs": _encode_task_inputs(value.inputs),
+        "unlisted": list(_unlisted_valid(value.unlisted)),
+    }
+
+
+def _decode_outside_read(value: object) -> OutsideInputsRead:
+    fields_ = _object(value, frozenset({"inputs", "unlisted"}))
+    return OutsideInputsRead(
+        _decode_task_inputs(fields_["inputs"]), _decode_unlisted(fields_["unlisted"])
+    )
+
+
 _SNAPSHOT_REASONS: Final = frozenset({"too_large", "not_text", "unreadable"})
 
 
@@ -1502,6 +1566,22 @@ def _decode_snapshot_reads(value: object) -> tuple[OutsideSnapshotRead, ...]:
         _snapshot_row_valid(row)
         reads.append(row)
     return tuple(reads)
+
+
+def _encode_snapshots_read(value: OutsideSnapshotsRead) -> JsonValue:
+    if type(value) is not OutsideSnapshotsRead:
+        raise _fail()
+    return {
+        "reads": _encode_snapshot_reads(value.reads),
+        "unlisted": list(_unlisted_valid(value.unlisted)),
+    }
+
+
+def _decode_snapshots_read(value: object) -> OutsideSnapshotsRead:
+    fields_ = _object(value, frozenset({"reads", "unlisted"}))
+    return OutsideSnapshotsRead(
+        _decode_snapshot_reads(fields_["reads"]), _decode_unlisted(fields_["unlisted"])
+    )
 
 
 def _encode_optional_bytes(value: bytes | None) -> JsonValue:
@@ -2126,18 +2206,18 @@ _SPECS: Final[tuple[WorkspaceOperationSpec[Any, Any], ...]] = (
         _encode_references,
         _decode_references,
     ),
-    WorkspaceOperationSpec[ReadOutsideInputsArguments, tuple[TaskInputFile, ...]](
+    WorkspaceOperationSpec[ReadOutsideInputsArguments, OutsideInputsRead](
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         "reads",
         ReadOutsideInputsArguments,
         _MIB,
-        _MIB,
+        _MIB + 64 * _KIB,
         _encode_outside,
         _decode_outside,
-        _encode_task_inputs,
-        _decode_task_inputs,
+        _encode_outside_read,
+        _decode_outside_read,
     ),
-    WorkspaceOperationSpec[SnapshotOutsideInputsArguments, tuple[OutsideSnapshotRead, ...]](
+    WorkspaceOperationSpec[SnapshotOutsideInputsArguments, OutsideSnapshotsRead](
         WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
         "reads",
         SnapshotOutsideInputsArguments,
@@ -2145,8 +2225,8 @@ _SPECS: Final[tuple[WorkspaceOperationSpec[Any, Any], ...]] = (
         MAX_WORKSPACE_PAYLOAD_BYTES,
         _encode_snapshot,
         _decode_snapshot,
-        _encode_snapshot_reads,
-        _decode_snapshot_reads,
+        _encode_snapshots_read,
+        _decode_snapshots_read,
     ),
     WorkspaceOperationSpec[ReadDeclaredTestArguments, bytes | None](
         WorkspaceOperation.READ_DECLARED_TEST,

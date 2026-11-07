@@ -209,6 +209,8 @@ __all__ = [
     "VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
+    "OUTSIDE_READS_NOT_LISTED_GAP",
+    "OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE",
     "check_time_change_unavailable_reason_gap",
 ]
 
@@ -442,10 +444,14 @@ CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # carries only the generic code.
 CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "git_unavailable": "Git is not installed where the FinishUP service runs.",
+        "git_unavailable": (
+            "Git is not installed on the computer that read the repository: the one the FinishUP "
+            "service runs on, or, for a remote server, the client machine that holds the project."
+        ),
         "git_version_unsupported": (
-            "the Git where the FinishUP service runs is older than 2.25, the oldest Git FinishUP "
-            "supports."
+            "the Git on the computer that read the repository (the one the FinishUP service runs "
+            "on, or, for a remote server, the client machine that holds the project) is older "
+            "than 2.25, the oldest Git FinishUP supports."
         ),
         "not_git": "the check's directory is not a Git repository.",
         "unsafe_root": (
@@ -479,15 +485,17 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         "workspace_agent_unavailable": (
             "the FinishUP workspace agent on the client machine gave no usable answer to the "
             "server's read of the workspace (it was not connected, did not answer in time, or "
-            "failed), so the server could not see the change."
+            "failed), so the server could not see the change. On the client machine, the "
+            "computer that holds the project, `finishup server status NAME` shows the connection "
+            "and `finishup server connect NAME` makes it again; checking again then can help."
         ),
         "workspace_agent_refused": (
-            "the FinishUP workspace agent on the client machine refused a read the check needed, "
-            "such as a task's input file in a folder the owner has not let this server read, so "
-            "the server could not see the change. Only the owner can let this server read it, on "
-            "the client machine: list the folder with `finishup server folders add`, or, for a "
-            "server they trust, switch it to mode local with `finishup server folders mode NAME "
-            "local`."
+            "the FinishUP workspace agent on the client machine refused a request the check "
+            "needed as one it does not answer (for a workspace it did not claim, an operation or "
+            "argument it does not know, or a folder no owner could admit), so the server could "
+            "not see the change. This usually means the two computers run different FinishUP "
+            "releases: install the same release on both, run `finishup server connect NAME` on "
+            "the client machine, the computer that holds the project, and check again."
         ),
     }
 )
@@ -547,10 +555,23 @@ TASK_INPUT_BASELINE_UNAVAILABLE_GAP: Final = "task_input_baseline_unavailable"
 # cannot resolve (``cd -``, ``cd $X``, a subshell), so that oracle was left out rather than read
 # as a same-named file elsewhere. A closed disclosure code with no path, on the same terms.
 VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directory_unresolved"
+# ADR-051 decision 5: a server in listed mode whose client's workspace agent left unread an
+# existing file the task names, or a test the agent declared, because the client's owner has not
+# listed its folder for that server (or, for a test in the project, Git ignores it or cannot
+# answer for it). Only those files are missing; the rest of the read reached review. A closed
+# disclosure code with no path and no count, on the same terms as the codes above: it never bounds
+# the receipt's conclusion, and only the owner, on the client machine, can clear it.
+OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
-    " it: `finishup privacy input-roots add <folder>`."
+    " it, on the computer the FinishUP service runs on (for a remote server, its server host):"
+    " `finishup privacy input-roots add <folder>`."
+)
+OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
+    "Review lacked files outside the folders the owner listed for this server; only the owner can"
+    " allow them, on the client machine: `finishup server folders add NAME FOLDER`, or `finishup"
+    " server folders mode NAME local` for a server they trust."
 )
 
 
@@ -581,14 +602,30 @@ def check_time_change_gap_sentence(code: str) -> str | None:
         return (
             "The task names a file or folder outside the workspace that AI-powered review may not"
             " read, so the reviewer judged the work without it. Only the owner can let review"
-            " read it, with `finishup privacy input-roots add <folder>` on a trusted terminal; an"
-            " agent cannot, and copying it into the workspace does not help."
+            " read it, with `finishup privacy input-roots add <folder>` in a trusted terminal on"
+            " the computer the FinishUP service runs on. For a remote server that is its server"
+            " host, and the folder must exist there: a folder only on the client machine cannot"
+            " be admitted for a remote server yet. An agent cannot admit it, and copying it into"
+            " the workspace does not help."
+        )
+    if code == OUTSIDE_READS_NOT_LISTED_GAP:
+        return (
+            "This server reads outside the project only the folders the owner listed for it"
+            " (listed mode), so the FinishUP workspace agent on the client machine did not let it"
+            " read some files the task names or tests the agent declared that lie outside them"
+            " (or, for a test in the project, that Git ignores or cannot answer for); the reviewer"
+            " judged the work without just those files. Only the owner can change that, on the"
+            " client machine, the computer that holds the project: list the folder with"
+            " `finishup server folders add NAME FOLDER`, or, for a server they trust as they"
+            " trust FinishUP on that computer, switch it to local mode with `finishup server"
+            " folders mode NAME local`; checking again then reads them. An agent cannot."
         )
     if code == TASK_INPUT_BASELINE_UNAVAILABLE_GAP:
         return (
             "Review read a task-named file outside the workspace as it is now. FinishUP kept no"
             " copy from when the task started or first named it, so the reviewer could not tell"
-            " whether the agent changed it."
+            " whether the agent changed it. A copy is kept only of a file review may read at that"
+            " moment, so letting review read its folder before the task starts keeps one."
         )
     if code == VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP:
         return (

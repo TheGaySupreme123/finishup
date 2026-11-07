@@ -73,12 +73,13 @@ from finishup.ports.change_capture import (
 from finishup.ports.clock import ClockPort
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
 from finishup.ports.runtime import TaskRuntime
-from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
+from finishup.ports.workspace_agent import OutsideInputsRead, WorkspaceAgentUnavailable
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
     "declared_output_paths",
     "CurrentInputReader",
+    "CurrentInputsRead",
     "OutsideInputReader",
     "outside_input_candidates",
     "outside_inputs_not_admitted",
@@ -500,9 +501,11 @@ def _with_input_origins(
 # ``(values, room, workspace, space_cut)``, ``space_cut`` the values only the spaces of a quoted
 # value cut out (``space_cut_input_paths``, issue #1112 review). Bound by the service to the
 # effective policy's roots, so this layer never sees a root itself; the workspace is never read
-# from, by path or by identity.
+# from, by path or by identity. A claim-bound task's reader answers ``OutsideInputsRead``: the
+# inputs, and the values its client's owner has not listed for the server (ADR-051 decision 5).
 type OutsideInputReader = Callable[
-    [tuple[str, ...], int, str, frozenset[str]], tuple[TaskInputFile, ...]
+    [tuple[str, ...], int, str, frozenset[str]],
+    tuple[TaskInputFile, ...] | OutsideInputsRead,
 ]
 
 
@@ -526,11 +529,15 @@ def _snapshot_inputs(
     current_reader: CurrentInputReader | None,
     present: set[str],
     room: int,
-) -> list[TaskInputFile]:
-    """The kept snapshot copies of outside files the task names, each beside its current state.
+) -> tuple[list[TaskInputFile], bool]:
+    """The kept snapshot copies of outside files the task names, each beside its current state,
+    and whether a kept copy was left out because the owner no longer lets the server read it.
 
     ``current_reader`` returns, per path it reached, the whole current file (``None`` when it is
-    no longer text within the snapshot bound); a path it did not reach is ``unavailable``.
+    no longer text within the snapshot bound); a path it did not reach is ``unavailable``. A
+    claim-bound task's reader also names the paths its client's owner no longer lists for the
+    server (``CurrentInputsRead.unlisted``, ADR-051 decision 5): their copies are not sent, as a
+    copy whose root the owner no longer admits is not, and the read is flagged instead.
     """
 
     wanted = tuple(os.path.normpath(value) for value in outside)
@@ -543,12 +550,20 @@ def _snapshot_inputs(
         and any(item.path == path or item.path.startswith(path + "/") for path in wanted)
     ][:room]
     if not kept:
-        return []
-    current: Mapping[str, bytes | None] = (
+        return [], False
+    found: Mapping[str, bytes | None] | CurrentInputsRead = (
         {} if current_reader is None else current_reader(tuple(i.path for _, i in kept))
     )
+    current: Mapping[str, bytes | None]
+    unlisted: frozenset[str] = frozenset()
+    if type(found) is CurrentInputsRead:
+        current, unlisted = found.current, found.unlisted
+    else:
+        current = cast(Mapping[str, bytes | None], found)
     added: list[TaskInputFile] = []
     for boundary, item in kept:
+        if item.path in unlisted:
+            continue
         state: TaskInputCurrentState = "unavailable"
         if item.path in current:
             now = current[item.path]
@@ -574,13 +589,26 @@ def _snapshot_inputs(
                 current_state=state,
             )
         )
-    return added
+    return added, any(item.path in unlisted for _boundary, item in kept)
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentInputsRead:
+    """A claim-bound task's current bytes of kept-copy paths (ADR-051): ``current`` as a local
+    reader returns it, and ``unlisted``, the paths the client's owner no longer lists for the
+    server, whose kept copies are therefore not sent."""
+
+    current: Mapping[str, bytes | None]
+    unlisted: frozenset[str] = frozenset()
 
 
 # Reads the whole current bytes of outside paths beneath the admitted roots, for comparing a
 # snapshot with the file now (#1118 unit 1): path -> bytes, ``None`` when no longer whole text
-# within the snapshot bound; a path it could not reach is absent.
-type CurrentInputReader = Callable[[tuple[str, ...]], Mapping[str, bytes | None]]
+# within the snapshot bound; a path it could not reach is absent. A claim-bound task's reader
+# answers ``CurrentInputsRead``.
+type CurrentInputReader = Callable[
+    [tuple[str, ...]], Mapping[str, bytes | None] | CurrentInputsRead
+]
 
 
 def _with_outside_inputs(
@@ -612,6 +640,11 @@ def _with_outside_inputs(
     Issue #1102: a file the task names outside the workspace outranks what the repository read
     chose beneath a task-named directory (its listing and the members FinishUP picked), so that
     material gives way to it and keeps only the room left after it.
+
+    ADR-051 decision 5: a claim-bound task's reader leaves unread the inputs its client's owner
+    has not listed for the server and says so; only those inputs are left out, and the capture
+    records that it happened (``outside_inputs_not_listed``), never which, so the receipt can say
+    so and name the owner's two ways out while the rest of the change still reaches review.
     """
 
     named = tuple(item for item in capture.inputs if not _directory_material(item))
@@ -629,10 +662,16 @@ def _with_outside_inputs(
     present = {item.path for item in capture.inputs}
     # #1118 unit 1 (AIP-1): a kept snapshot of a file the task names is sent in place of its
     # current bytes, so a later rewrite cannot pose as the original; only while its root is
-    # still admitted (E2E-2).
-    added = _snapshot_inputs(snapshots, outside, admitted_roots, current_reader, present, room)
+    # still admitted (E2E-2), and, on a remote server, while its folder is still listed.
+    added, not_listed = _snapshot_inputs(
+        snapshots, outside, admitted_roots, current_reader, present, room
+    )
     present.update(item.path for item in added)
-    for item in reader(outside, room, workspace, space_cut_paths & frozenset(outside)):
+    found = reader(outside, room, workspace, space_cut_paths & frozenset(outside))
+    if type(found) is OutsideInputsRead:
+        not_listed = not_listed or bool(found.unlisted)
+        found = found.inputs
+    for item in cast(tuple[TaskInputFile, ...], found):
         if (
             item.origin != "outside_workspace"
             or not item.path.startswith("/")
@@ -643,6 +682,8 @@ def _with_outside_inputs(
             continue
         present.add(item.path)
         added.append(item)
+    if not_listed:
+        capture = replace(capture, outside_inputs_not_listed=True)
     if not added:
         return capture
     return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])
