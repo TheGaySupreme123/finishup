@@ -126,21 +126,22 @@ def handler_for_workspace(locator: WorkspaceLocator, root: Path) -> WorkspaceCal
     claimed workspace and the admitted roots the server names. Besides the directories every
     handler protects (this process's own FinishUP directories and the everyday installation's),
     the target root itself is protected: it holds this client's credential and outbox. Outside
-    reads are admitted only beneath the folders the owner recorded for ``root``'s own target
-    (``finishup server folders add``, ADR-051 decision 5), read on every call; never those of
-    the target this process happens to select, and none when ``root`` holds no remote target.
+    reads follow the outside-read mode and folders the owner recorded for ``root``'s own target
+    (``finishup server folders mode|add``, ADR-051 decision 5), read on every call; never those of
+    the target this process happens to select, and ``listed`` with no folder when ``root`` holds
+    no remote target.
     """
 
     import os
 
-    from finishup.client.server_folders import folders_reader
+    from finishup.client.server_folders import outside_reads_reader
     from finishup.client.workspace_agent import WorkspaceAgentHandler, client_protected_directories
 
     protected = (*client_protected_directories(), os.path.normpath(os.fspath(root)))
     return WorkspaceAgentHandler(
         locator,
         protected=tuple(dict.fromkeys(protected)),
-        outside_folders=folders_reader(root),
+        outside_reads=outside_reads_reader(root),
     )
 
 

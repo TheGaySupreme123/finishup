@@ -25,6 +25,7 @@ from finishup.client.remote_workspace import (
     claim_salt,
     handler_for_workspace,
 )
+from finishup.client.server_folders import OutsideReads
 from finishup.client.targets import ServerTarget, TargetError
 from finishup.client.workspace_agent import WorkspaceAgentHandler
 from finishup.client.workspace_claim import workspace_claim
@@ -127,7 +128,7 @@ def test_the_handler_reads_the_folders_of_its_own_target_whatever_is_selected(
         assert type(handler) is WorkspaceAgentHandler
 
         def admitted() -> tuple[str, ...]:
-            return handler._folders()  # pyright: ignore[reportPrivateUsage]
+            return handler._outside().folders  # pyright: ignore[reportPrivateUsage]
 
         assert admitted() == (os.fspath(mine),)
         # A removal takes effect at the next call; the selected target's folder never applies.
@@ -136,7 +137,9 @@ def test_the_handler_reads_the_folders_of_its_own_target_whatever_is_selected(
         # A root that holds no remote target's record admits nothing.
         unbound = handler_for_workspace(_repository(tmp_path / "other"), tmp_path / "target")
         assert type(unbound) is WorkspaceAgentHandler
-        assert unbound._folders() == ()  # pyright: ignore[reportPrivateUsage]
+        assert unbound._outside() == OutsideReads(  # pyright: ignore[reportPrivateUsage]
+            "listed", (), "unreadable"
+        )
 
 
 class _Client:
