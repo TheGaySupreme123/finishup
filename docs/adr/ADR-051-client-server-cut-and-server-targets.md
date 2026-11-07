@@ -643,7 +643,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   leaves an unlisted input unread instead of refusing the read (decision 5, amended 2026-11-07),
   a check-time refusal is now a request the agent does not answer (a handle it did not claim, an
   unknown operation or argument, a root no owner could admit), in practice two releases that do
-  not match; its sentence says so and names `finishup server connect NAME` on the client. The
+  not match; its sentence says so and names `finishup server disconnect NAME` on the client,
+  which stops the `finishup agent run` still on the old release so that checking again starts it
+  from the new one (`server connect` readies only the connection here). The
   unavailable sentence names `finishup server status NAME` and `finishup server connect NAME`
   on the client and that checking again can help. Files listed mode kept from review are the
   disclosure `outside_reads_not_listed` (decision 5), never a check-time change gap: the rest of

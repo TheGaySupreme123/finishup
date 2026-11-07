@@ -503,8 +503,9 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
             "needed as one it does not answer (for a workspace it did not claim, an operation or "
             "argument it does not know, or a folder no owner could admit), so the server could "
             "not see the change. This usually means the two computers run different FinishUP "
-            "releases: install the same release on both, run `finishup server connect NAME` on "
-            "the client machine, the computer that holds the project, and check again."
+            "releases: install the same release on both, run `finishup server disconnect NAME` "
+            "on the client machine, the computer that holds the project, to stop the workspace "
+            "agent still running the old release, and check again."
         ),
     }
 )

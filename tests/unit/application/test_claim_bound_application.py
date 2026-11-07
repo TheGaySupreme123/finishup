@@ -207,12 +207,15 @@ def test_a_refusal_says_what_it_now_means_and_where_to_reconnect() -> None:
     unlisted inputs unread, ``outside_reads_not_listed``), so a refusal here is a request the
     agent does not answer, usually a release mismatch. The sentence says so, names the computer
     and the full command, and that checking again can help; it never claims a listed-mode
-    refusal or names a path."""
+    refusal or names a path. Here the workspace agent is ``finishup agent run``, which keeps
+    running the release it started with: ``server disconnect`` stops it, and checking again
+    from the project starts it from the release now installed (``server connect`` does not)."""
 
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_refused"]
     assert "read of the workspace" not in sentence
     assert "same release on both" in sentence
-    assert "`finishup server connect NAME`" in sentence
+    assert "`finishup server disconnect NAME`" in sentence
+    assert "server connect" not in sentence
     assert "on the client machine, the computer that holds the project" in sentence
     assert "check again" in sentence
     assert "folders" not in sentence
