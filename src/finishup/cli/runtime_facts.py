@@ -334,9 +334,9 @@ def _owned_roots() -> tuple[str, ...]:
 
     roots: list[str] = []
     with contextlib.suppress(Exception):
-        from finishup.config.paths import isolated_root, state_dir
+        from finishup.config.paths import active_root, state_dir
 
-        isolated = isolated_root()
+        isolated = active_root()
         if isolated is not None:
             roots.append(str(isolated))
         roots.append(str(state_dir()))

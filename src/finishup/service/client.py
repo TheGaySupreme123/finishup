@@ -8,12 +8,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Final, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, BinaryIO, Final, Literal, Protocol, TypedDict, cast
 
 from finishup import __version__
 from finishup.adapters.control.unix_socket import (
@@ -21,12 +23,13 @@ from finishup.adapters.control.unix_socket import (
     LocalControlTransportError,
     connect_control,
 )
+from finishup.client.attribution import CONNECTION_TRANSPORTS, ConnectionTransport
 from finishup.config.env import canonical_env_name
 from finishup.config.paths import (
     ISOLATED_ROOT_ENV_NAMES,
     PathSafetyError,
+    active_root,
     ensure_owner_only_dir,
-    isolated_root,
     log_dir,
 )
 from finishup.domain.privacy import (
@@ -72,7 +75,12 @@ from finishup.ports.control import (
     ProjectionRenderMode,
     ServiceStatus,
     ServiceStopResult,
+    WorkspaceAgentDeclaration,
+    WorkspaceBinding,
+    WorkspaceCall,
+    WorkspaceClaim,
     WorkspaceLocator,
+    WorkspaceReply,
 )
 from finishup.ports.privacy import (
     LocalDisclosureReceiptView,
@@ -80,6 +88,7 @@ from finishup.ports.privacy import (
     PrivacyReceiptPage,
     PrivacyReceiptView,
 )
+from finishup.ports.workspace_agent import outcome_for_reason
 from finishup.protocol.canonical import parse_canonical_integer_string
 from finishup.protocol.errors import SERVICE_HANDSHAKE_PHASES, SERVICE_START_TIMEOUT_PHASE
 from finishup.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
@@ -103,18 +112,24 @@ from finishup.service.control_protocol import (
     ControlProtocolError,
     ControlSession,
     client_handshake,
+    encode_control_frame,
+    is_workspace_call_frame,
     parse_control_result,
+    parse_workspace_call,
     read_control_frame,
     validate_request,
     validate_result,
+    workspace_reply_frame,
     write_control_frame,
 )
 
 if TYPE_CHECKING:
+    from finishup.client.targets import ServerTarget
     from finishup.service.confidential_protocol import OwnerReceiptViewTarget
     from finishup.service.lifecycle import SingletonHolder
 
 __all__ = [
+    "ClientWorkspaceBinding",
     "GetPrivacyReceiptRequest",
     "ListPrivacyReceiptsRequest",
     "PreparedProjectRequest",
@@ -123,6 +138,7 @@ __all__ = [
     "PrivacyReceiptGetResult",
     "PrivacyReceiptNotFound",
     "ServiceClient",
+    "WorkspaceCallHandler",
     "accepted_but_unresponsive",
     "connect_service",
     "connect_service_on_demand",
@@ -135,6 +151,15 @@ __all__ = [
 ]
 
 _MAX_IN_FLIGHT: Final = 32
+# The hidden ``service run`` option a spawner whose root is the everyday installation passes, so the
+# service never reads a server selection its spawner did not use (``config.paths``).
+_AMBIENT_ROOT_OPTION: Final = "--ambient-root"
+# At most this many workspace calls run at once on one connection (ADR-051). A call beyond them is
+# answered ``agent_busy`` at once, so a slow read never holds the connection's other calls back,
+# and a slot stays taken until its worker thread has actually finished.
+_MAX_WORKSPACE_CALLS: Final = 4
+# The length prefix ``encode_control_frame`` puts before a frame's canonical JSON.
+_FRAME_PREFIX_BYTES: Final = 4
 _CANCEL_SEND_TIMEOUT_SECONDS: Final = 0.05
 _STREAM_CLOSE_TIMEOUT_SECONDS: Final = 0.05
 _WORKFLOW_METHODS: Final = frozenset(
@@ -217,9 +242,10 @@ def _service_environment() -> dict[str, str]:
     # A runtime pin resolves the root without the variable (issue #604). The detached service
     # runs the same interpreter and would resolve the same pin, but forwarding the resolved root
     # explicitly keeps the chain visible and identical to the environment-selected case. Both
-    # spellings carry it (ADR-048), so the child agrees with itself under either name.
+    # spellings carry it (ADR-048), so the child agrees with itself under either name. A server
+    # selection (ADR-051) is forwarded the same way: the spawned service is that target's own.
     try:
-        root = isolated_root()
+        root = active_root()
     except PathSafetyError:
         root = None
     if root is not None:
@@ -251,11 +277,39 @@ class _SpawnedService:
     startup_correlation_id: str
 
 
-def _spawn_service_process() -> _SpawnedService:
-    """Start one detached service that records any startup failure under a fresh id (#1040)."""
+def _refuse_remote_target_root() -> None:
+    """A remote server target's root never starts a local service (ADR-051).
 
+    Its record names a remote kind, or cannot be read and may: the spawn is refused at once with
+    the closed phase ``target_root_is_remote``, instead of starting a child that refuses unseen
+    while the caller waits out its whole start budget. A root that cannot be resolved at all is
+    left to the spawn's own path-safety refusal.
+    """
+
+    from finishup.client.targets import TargetError, TargetRecordUnreadable, active_target_record
+
+    try:
+        record = active_target_record()
+    except TargetRecordUnreadable:
+        remote = True
+    except TargetError:
+        return
+    else:
+        remote = record is not None and record.is_remote
+    if remote:
+        raise ControlError("service_unavailable", retryable=True, phase="target_root_is_remote")
+
+
+def _spawn_service_process() -> _SpawnedService:
+    """Start one detached service that records any startup failure under a fresh id (#1040).
+
+    A remote server target's root raises ``service_unavailable`` with the phase
+    ``target_root_is_remote`` and starts nothing.
+    """
+
+    _refuse_remote_target_root()
     startup_correlation_id = new_id(IdKind.CORRELATION)
-    command = (
+    command: tuple[str, ...] = (
         sys.executable,
         "-m",
         "finishup",
@@ -265,6 +319,12 @@ def _spawn_service_process() -> _SpawnedService:
         startup_correlation_id,
     )
     with _open_service_stderr_log() as stderr_log:
+        environment = _service_environment()
+        if not any(name in environment for name in ISOLATED_ROOT_ENV_NAMES):
+            # No variable, pin or selection decided this process's root, so it uses the everyday
+            # installation; the service it starts must too, whatever the selection file says by
+            # the time that service reads it (ADR-051). A resolved root rides in the variable.
+            command = (*command, _AMBIENT_ROOT_OPTION)
         if os.name == "nt":
             creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
                 getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -273,7 +333,7 @@ def _spawn_service_process() -> _SpawnedService:
                 command,
                 close_fds=True,
                 creationflags=creationflags,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,
@@ -282,7 +342,7 @@ def _spawn_service_process() -> _SpawnedService:
             process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
-                env=_service_environment(),
+                env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_log,
@@ -313,6 +373,39 @@ def _spawned_startup_failure(spawned: _SpawnedService) -> ControlError | None:
         correlation_id=failure.correlation_id,
         phase=failure.stage,
     )
+
+
+class WorkspaceCallHandler(Protocol):
+    """What answers ``workspace_call`` frames on a claim-bound connection (ADR-051).
+
+    ``finishup.client.workspace_agent.WorkspaceAgentHandler`` is the production handler. ``answer``
+    runs in a worker thread, never on the event loop; it returns the reply to the call it was given
+    and should never raise (a raise is answered ``failed`` with ``internal_error``).
+    """
+
+    @property
+    def declaration(self) -> WorkspaceAgentDeclaration: ...
+
+    def answer(self, call: WorkspaceCall, *, workspace_handle: str | None) -> WorkspaceReply: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ClientWorkspaceBinding:
+    """How a connection to a FinishUP server on another machine names its workspace (ADR-051).
+
+    ``claim`` takes the place of the workspace locator in the hello, so no path is sent. ``agent``,
+    when set, is declared in the hello and answers the server's workspace calls on this
+    connection; without one the connection answers none.
+    """
+
+    claim: WorkspaceClaim
+    agent: WorkspaceCallHandler | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.claim) is not WorkspaceClaim:
+            raise TypeError("workspace_claim_invalid")
+        if self.agent is not None and type(self.agent.declaration) is not WorkspaceAgentDeclaration:
+            raise TypeError("workspace_agent_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,6 +1077,9 @@ class ServiceClient(ControlClientPort):
     """
 
     __slots__ = (
+        "_agent",
+        "_agent_busy",
+        "_agent_calls",
         "_client_kind",
         "_closed",
         "_last_project_request",
@@ -993,6 +1089,7 @@ class ServiceClient(ControlClientPort):
         "_retired_rpc_ids",
         "_session",
         "_stream",
+        "_transport",
         "_write_lock",
     )
 
@@ -1003,13 +1100,27 @@ class ServiceClient(ControlClientPort):
         client_kind: ControlClientKind,
         *,
         _token: object,
+        workspace_agent: WorkspaceCallHandler | None = None,
+        transport: ConnectionTransport = "unix",
     ) -> None:
         if _token is not _PRIVATE_CONSTRUCTOR_TOKEN:
             raise TypeError("service_client_constructor_private")
         if type(client_kind) is not ControlClientKind:
             raise TypeError("control_client_kind_invalid")
+        if transport not in CONNECTION_TRANSPORTS:
+            raise ValueError("connection_transport_invalid")
+        if workspace_agent is not None and (
+            session.workspace_binding != "client_claim"
+            or session.workspace_agent != workspace_agent.declaration
+        ):
+            # An agent answers only on the claim-bound connection whose hello declared it.
+            raise ValueError("workspace_agent_invalid")
+        self._agent = workspace_agent
+        self._agent_busy = 0
+        self._agent_calls: dict[str, asyncio.Task[None]] = {}
         self._stream = stream
         self._session = session
+        self._transport: ConnectionTransport = transport
         self._client_kind = client_kind
         self._pid = os.getpid()
         self._closed = False
@@ -1044,6 +1155,34 @@ class ServiceClient(ControlClientPort):
         return self._session.service_status
 
     @property
+    def workspace_binding(self) -> WorkspaceBinding:
+        """How the service bound this connection to a workspace at handshake (ADR-051)."""
+
+        return self._session.workspace_binding
+
+    @property
+    def workspace_handle(self) -> str | None:
+        """The ``client:`` handle a claim-bound connection's tasks name their workspace by."""
+
+        return self._session.workspace_handle
+
+    @property
+    def service_instance_id(self) -> str:
+        """The instance id of the service that answered this connection's hello."""
+
+        return self._session.service_instance_id
+
+    @property
+    def transport(self) -> ConnectionTransport:
+        """How this connection reaches its service, a closed token (``finishup.client.attribution``).
+
+        Whoever builds the connection names it; ``unix`` for the local control endpoint. Human
+        renderings of a claim-bound connection's status and receipts show it (ADR-051).
+        """
+
+        return self._transport
+
+    @property
     def last_project_request(self) -> PreparedProjectRequest | None:
         """Return the most recently prepared project request for retry/recovery.
 
@@ -1074,6 +1213,11 @@ class ServiceClient(ControlClientPort):
         try:
             while not self._closed:
                 frame = await read_control_frame(self._stream)
+                if self._agent is not None and is_workspace_call_frame(frame):
+                    # Only a connection that declared an agent answers the server's calls; on
+                    # any other this frame fails as ``frame_invalid`` below, exactly as before.
+                    self._accept_workspace_call(parse_workspace_call(frame))
+                    continue
                 result = parse_control_result(frame)
                 validate_result(result)
                 if (
@@ -1106,6 +1250,100 @@ class ServiceClient(ControlClientPort):
             failure = ControlError("service_unavailable", retryable=True)
         await self._fail_connection(failure, from_receiver=True)
 
+    def _accept_workspace_call(self, call: WorkspaceCall) -> None:
+        """Start answering one workspace call; the receive loop never waits for the answer."""
+
+        if (
+            call.service_instance_id != self._session.service_instance_id
+            or call.service_generation != self._session.service_generation
+        ):
+            raise ControlError("service_unavailable", retryable=True)
+        if call.call_id in self._agent_calls:
+            raise ControlError("frame_invalid")
+        task = asyncio.create_task(self._answer_workspace_call(call))
+        self._agent_calls[call.call_id] = task
+        task.add_done_callback(partial(self._forget_workspace_call, call.call_id))
+
+    def _forget_workspace_call(self, call_id: str, task: asyncio.Task[None]) -> None:
+        if self._agent_calls.get(call_id) is task:
+            del self._agent_calls[call_id]
+        _consume_background_task(task)
+
+    async def _answer_workspace_call(self, call: WorkspaceCall) -> None:
+        agent = self._agent
+        if agent is None or self._closed:
+            # A closed connection's pool is gone; never start a new one for it.
+            return
+        if self._agent_busy >= _MAX_WORKSPACE_CALLS:
+            encoded = _encoded_workspace_reply(call.call_id, "agent_busy")
+        else:
+            encoded = await self._run_workspace_call(agent, call)
+        async with self._write_lock:
+            if self._closed:
+                return
+            try:
+                await self._stream.send_all(encoded)
+            except LocalControlTransportError as exc:
+                await self._fail_connection(_transport_error(exc))
+            except Exception:
+                await self._fail_connection(ControlError("service_unavailable", retryable=True))
+
+    async def _run_workspace_call(self, agent: WorkspaceCallHandler, call: WorkspaceCall) -> bytes:
+        """The encoded reply: the agent's, or ``deadline_exceeded`` once the call's deadline passes.
+
+        The agent runs in a daemon worker thread of its own, at most ``_MAX_WORKSPACE_CALLS`` at a
+        time per connection. A call past its deadline is answered without waiting; its worker
+        keeps its slot until the adapter's own bound ends it. Being daemon threads, workers never
+        hold a finished process open (a short-lived CLI exits after its command, not after a
+        background check its connection happened to be serving); work still running at exit
+        ends with the process, and an approved check it started stays in its own process group.
+        """
+
+        loop = asyncio.get_running_loop()
+        work: asyncio.Future[bytes] = loop.create_future()
+        answer = partial(
+            _answer_in_worker,
+            agent,
+            call,
+            self._session.workspace_handle,
+            agent.declaration.max_reply_bytes,
+        )
+
+        def deliver(encoded: bytes) -> None:
+            if not work.done():
+                work.set_result(encoded)
+
+        def run() -> None:
+            # ``_answer_in_worker`` answers every exception itself; anything that escapes it still
+            # frees the slot with a closed failure.
+            encoded = _encoded_workspace_reply(call.call_id, "internal_error")
+            try:
+                encoded = answer()
+            finally:
+                try:
+                    loop.call_soon_threadsafe(deliver, encoded)
+                except RuntimeError:
+                    # The loop already closed: the connection, and its answer, are gone.
+                    pass
+
+        self._agent_busy += 1
+        work.add_done_callback(self._release_workspace_slot)
+        try:
+            threading.Thread(target=run, name="finishup-workspace-agent", daemon=True).start()
+        except RuntimeError:
+            # No thread could be started (a process thread limit): nothing runs, the slot frees.
+            work.set_result(_encoded_workspace_reply(call.call_id, "agent_busy"))
+        try:
+            async with asyncio.timeout(call.deadline_ms / 1_000):
+                return await asyncio.shield(work)
+        except TimeoutError:
+            return _encoded_workspace_reply(call.call_id, "deadline_exceeded")
+
+    def _release_workspace_slot(self, work: asyncio.Future[bytes]) -> None:
+        self._agent_busy -= 1
+        if not work.cancelled():
+            work.exception()
+
     async def _fail_connection(self, error: ControlError, *, from_receiver: bool = False) -> None:
         if not self._closed:
             self._closed = True
@@ -1114,6 +1352,12 @@ class ServiceClient(ControlClientPort):
             for pending in tuple(self._pending.values()):
                 if not pending.done():
                     pending.set_exception(error)
+            current = asyncio.current_task()
+            for task in tuple(self._agent_calls.values()):
+                # Unanswered workspace calls are the server's to fail when the connection drops.
+                # Their daemon workers finish (or end with the process) without being waited for.
+                if task is not current:
+                    task.cancel()
             await _best_effort_close_stream(self._stream)
         if not from_receiver and self._receiver is not asyncio.current_task():
             self._receiver.cancel()
@@ -1568,16 +1812,63 @@ class ServiceClient(ControlClientPort):
         await self._fail_connection(ControlError("service_unavailable", retryable=True))
 
 
+def _encoded_workspace_reply(call_id: str, reason: str) -> bytes:
+    """One encoded non-``ok`` workspace reply carrying a closed reason and no result."""
+
+    reply = WorkspaceReply(
+        "workspace_reply", "1.0", call_id, outcome_for_reason(reason), None, reason
+    )
+    return encode_control_frame(workspace_reply_frame(reply))
+
+
+def _answer_in_worker(
+    agent: WorkspaceCallHandler,
+    call: WorkspaceCall,
+    workspace_handle: str | None,
+    max_reply_bytes: int,
+) -> bytes:
+    """Answer one call off the event loop and encode its reply frame there too.
+
+    A reply above the declared bound, or one no frame can carry, becomes ``result_too_large``;
+    anything else that goes wrong is ``internal_error``. No exception text reaches the reply.
+    """
+
+    try:
+        reply = agent.answer(call, workspace_handle=workspace_handle)
+        if type(reply) is not WorkspaceReply or reply.call_id != call.call_id:
+            raise TypeError("workspace_reply_invalid")
+        encoded = encode_control_frame(workspace_reply_frame(reply))
+    except ControlProtocolError as exc:
+        if exc.reason != "frame_too_large":
+            return _encoded_workspace_reply(call.call_id, "internal_error")
+        return _encoded_workspace_reply(call.call_id, "result_too_large")
+    except Exception as exc:
+        from finishup.observability.logging import record_unexpected_exception_without_raising
+
+        record_unexpected_exception_without_raising(
+            exc, component="service.client", operation="workspace_call_failed"
+        )
+        return _encoded_workspace_reply(call.call_id, "internal_error")
+    if len(encoded) - _FRAME_PREFIX_BYTES > max_reply_bytes:
+        return _encoded_workspace_reply(call.call_id, "result_too_large")
+    return encoded
+
+
 def _connected_client(
     stream: AuthenticatedUnixStream,
     session: ControlSession,
     client_kind: ControlClientKind,
+    workspace_agent: WorkspaceCallHandler | None = None,
+    *,
+    transport: ConnectionTransport = "unix",
 ) -> ServiceClient:
     return ServiceClient(
         stream,
         session,
         client_kind,
         _token=_PRIVATE_CONSTRUCTOR_TOKEN,
+        workspace_agent=workspace_agent,
+        transport=transport,
     )
 
 
@@ -1661,9 +1952,14 @@ async def _connect_service_attempt(
     projection_render_mode: ProjectionRenderMode,
     output_is_controlling_tty: bool,
     timeout_seconds: float,
+    workspace_binding: ClientWorkspaceBinding | None = None,
 ) -> ServiceClient:
-    """Connect and handshake within one attempt budget, preserving accepted-socket identity."""
+    """Connect and handshake within one attempt budget, preserving accepted-socket identity.
 
+    A ``workspace_binding`` sends its claim (and declares its agent) in place of a locator.
+    """
+
+    agent = None if workspace_binding is None else workspace_binding.agent
     stream: AuthenticatedUnixStream | None = None
     deadline = time.monotonic() + timeout_seconds
     try:
@@ -1678,6 +1974,8 @@ async def _connect_service_attempt(
                 client_kind,
                 __version__,
                 workspace_locator=workspace_locator,
+                workspace_claim=None if workspace_binding is None else workspace_binding.claim,
+                workspace_agent=None if agent is None else agent.declaration,
                 projection_render_mode=projection_render_mode,
                 output_is_controlling_tty=output_is_controlling_tty,
             )
@@ -1693,7 +1991,7 @@ async def _connect_service_attempt(
             handshake.add_done_callback(_consume_background_task)
             raise TimeoutError
         session = handshake.result()
-        return _connected_client(stream, session, client_kind)
+        return _connected_client(stream, session, client_kind, agent)
     except TimeoutError as exc:
         accepted = stream is not None
         if stream is not None:
@@ -1720,29 +2018,230 @@ async def _connect_service_attempt(
         raise
 
 
+def _check_workspace_binding(
+    workspace_locator: WorkspaceLocator | None, workspace_binding: ClientWorkspaceBinding | None
+) -> None:
+    if workspace_binding is None:
+        return
+    if type(workspace_binding) is not ClientWorkspaceBinding:
+        raise TypeError("workspace_binding_invalid")
+    if workspace_locator is not None:
+        # A hello names its workspace by a path or by a claim, never both (ADR-051).
+        raise ValueError("workspace_binding_conflict")
+
+
+def _remote_target() -> tuple[ServerTarget, Path] | None:
+    """The active root's remote server target and root, or ``None`` for every local root.
+
+    Only a root whose ``target.json`` names a remote kind leaves the Unix-socket path. The
+    everyday server, an isolated root, and a named local server keep today's path exactly, and so
+    does a root that cannot be resolved at all (its own failure is reported there). A root that
+    holds a ``target.json`` this process cannot read fails closed: it may be a remote target's, so
+    no local service is ever spawned or reached in it.
+    """
+
+    from finishup.client.targets import TargetError, read_target
+
+    try:
+        root = active_root()
+    except PathSafetyError:
+        return None
+    if root is None:
+        return None
+    try:
+        record = read_target(root)
+    except TargetError:
+        raise ControlError(
+            "service_unavailable", retryable=False, phase="remote_unreachable"
+        ) from None
+    if record is None or not record.is_remote:
+        return None
+    return record, root
+
+
+async def _remote_claim(
+    workspace_locator: WorkspaceLocator | None,
+    workspace_binding: ClientWorkspaceBinding | None,
+) -> WorkspaceClaim | None:
+    """The claim a remote target's requests carry; a locator is claimed here, never sent.
+
+    A caller's own binding gives its claim. A locator is bound with ``binding_for_active_root``
+    (claim only: on the network API the target's workspace agent answers the server's workspace
+    calls, never the calling connection). A locator the shared root rule cannot resolve gives no
+    claim, so the requests name no workspace at all, and a ``start`` naming a path is then refused
+    before it is sent (``WorkspaceRefNotPortable``).
+    """
+
+    if workspace_binding is not None:
+        return workspace_binding.claim
+    if workspace_locator is None:
+        return None
+    from finishup.adapters.workspace_root import RepositoryIdentityError
+    from finishup.client.remote_binding import binding_for_active_root
+    from finishup.client.targets import TargetError
+
+    try:
+        binding = await binding_for_active_root(workspace_locator, serve_workspace=False)
+    except RepositoryIdentityError:
+        return None
+    except TargetError as error:
+        # The record went unreadable after it was read: fail closed, never as a local root.
+        raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable") from (
+            error
+        )
+    return None if binding is None else binding.claim
+
+
+async def _connect_remote(
+    client_kind: ControlClientKind,
+    target: tuple[ServerTarget, Path],
+    *,
+    workspace_locator: WorkspaceLocator | None,
+    workspace_binding: ClientWorkspaceBinding | None,
+    timeout_seconds: float,
+    on_demand: bool,
+) -> ServiceClient:
+    """Connect to a remote target's network API (ADR-051); never spawn or supersede a service.
+
+    The workspace is named by its claim (``_remote_claim``), never by its path. A connection that
+    names a workspace by its locator also notes it for this target's workspace agent
+    (``finishup agent run``), starting that agent when none runs, so the server's workspace calls
+    for it are answered while this call is live and after it returns. An on-demand caller also
+    makes the target usable first (an SSH target's master) and starts an idle-stopped remote
+    service once through the recorded launcher.
+    """
+
+    from finishup.client.rest_client import connect_rest_service
+
+    record, root = target
+    claim = await _remote_claim(workspace_locator, workspace_binding)
+    noted = workspace_locator if claim is not None else None
+    if noted is not None:
+        from finishup.client.agent import ensure_agent, note_workspace
+
+        note_workspace(root, noted)
+        ensure_agent(root)
+    deadline = time.monotonic() + timeout_seconds
+
+    async def attempt() -> ServiceClient:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+        try:
+            async with asyncio.timeout(remaining):
+                connected = await connect_rest_service(
+                    client_kind, record=record, root=root, claim=claim
+                )
+        except TimeoutError as exc:
+            raise ControlError(
+                "service_unavailable", retryable=True, phase="remote_unreachable"
+            ) from exc
+        if noted is not None:
+            from finishup.client.agent import note_workspace
+
+            # The server answered: noting again lets an agent that is waiting out a retry (the
+            # server was unreachable, or was just restarted) register before this call needs it.
+            note_workspace(root, noted)
+        return connected
+
+    if record.kind != "ssh":
+        return await attempt()
+    unanswered = {"remote_unreachable", "remote_service_not_running"}
+    try:
+        # The master's forward is usually up: a connection then costs no process at all.
+        return await attempt()
+    except ControlError as error:
+        if error.phase not in unanswered:
+            raise
+    from finishup.client.rest_runtime import SshTargetRuntime
+    from finishup.client.target_runtime import TargetRuntimeError
+
+    runtime = SshTargetRuntime()
+
+    def budget() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControlError("service_unavailable", retryable=True, phase="remote_unreachable")
+        return remaining
+
+    try:
+        # The master is this client's own transport, like a TCP connection: any connection may
+        # bring it up, within this call's own budget (an unreachable host never holds a hook for
+        # ssh's own timeouts, and one that just failed fails at once). Only an on-demand caller
+        # may start the remote service.
+        await asyncio.to_thread(runtime.ensure_master, record, root, timeout=budget())
+    except TargetRuntimeError as error:
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=_remote_phase(error.reason)
+        ) from None
+    if not on_demand:
+        return await attempt()
+    try:
+        return await attempt()
+    except ControlError as error:
+        if error.phase not in unanswered:
+            raise
+    # The master is up but nothing answered: the remote service may have stopped while idle.
+    try:
+        await asyncio.to_thread(runtime.start_remote_service, record, root, timeout=budget())
+    except TargetRuntimeError as error:
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=_remote_phase(error.reason)
+        ) from None
+    return await attempt()
+
+
+def _remote_phase(reason: str) -> str:
+    """A target runtime's closed reason as a remote connection phase every surface knows."""
+
+    from finishup.protocol.errors import REMOTE_CONNECTION_PHASES
+
+    return reason if reason in REMOTE_CONNECTION_PHASES else "remote_unreachable"
+
+
 async def connect_service(
     client_kind: ControlClientKind,
     *,
     workspace_locator: WorkspaceLocator | None = None,
     projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
     output_is_controlling_tty: bool = False,
+    workspace_binding: ClientWorkspaceBinding | None = None,
 ) -> ServiceClient:
-    """Connect only to the verified fixed ordinary endpoint and perform the handshake."""
+    """Connect only to the verified fixed ordinary endpoint and perform the handshake.
+
+    ``workspace_binding`` is for a FinishUP server on another machine: the hello carries its claim
+    instead of a locator, and its agent, if any, answers the server's workspace calls.
+
+    A remote server target (ADR-051) is reached through its network API instead; the client
+    returned has the same methods and errors, and a locator is claimed there, never sent.
+    """
 
     if type(client_kind) is not ControlClientKind:
         raise TypeError("control_client_kind_invalid")
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
         raise TypeError("workspace_locator_invalid")
+    _check_workspace_binding(workspace_locator, workspace_binding)
     if type(projection_render_mode) is not ProjectionRenderMode:
         raise TypeError("projection_render_mode_invalid")
     if type(output_is_controlling_tty) is not bool:
         raise TypeError("projection_tty_fact_invalid")
+    remote = _remote_target()
+    if remote is not None:
+        return await _connect_remote(
+            client_kind,
+            remote,
+            workspace_locator=workspace_locator,
+            workspace_binding=workspace_binding,
+            timeout_seconds=_CONNECT_HANDSHAKE_TIMEOUT_SECONDS,
+            on_demand=False,
+        )
     return await _connect_service_attempt(
         client_kind,
         workspace_locator=workspace_locator,
         projection_render_mode=projection_render_mode,
         output_is_controlling_tty=output_is_controlling_tty,
         timeout_seconds=_CONNECT_HANDSHAKE_TIMEOUT_SECONDS,
+        workspace_binding=workspace_binding,
     )
 
 
@@ -1893,6 +2392,7 @@ async def connect_service_on_demand(
     workspace_locator: WorkspaceLocator | None = None,
     timeout_seconds: float = _SERVICE_START_TIMEOUT_SECONDS,
     supersede_incompatible: bool = True,
+    workspace_binding: ClientWorkspaceBinding | None = None,
 ) -> ServiceClient:
     """Connect to the fixed service, starting one detached successor only when absent.
 
@@ -1912,14 +2412,29 @@ async def connect_service_on_demand(
     is older than its own: sessions opened before an in-place upgrade keep that service, and the
     first session opened afterwards replaces it so the new package actually runs. When no holder
     can be identified the compatible service keeps serving.
+
+    ``workspace_binding`` sends a claim (and declares an agent) in place of the locator, as for
+    ``connect_service``; every connection this call opens carries it.
     """
 
     if type(client_kind) is not ControlClientKind:
         raise TypeError("control_client_kind_invalid")
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
         raise TypeError("workspace_locator_invalid")
+    _check_workspace_binding(workspace_locator, workspace_binding)
     if type(timeout_seconds) is not float or not 0.1 <= timeout_seconds <= 30.0:
         raise ValueError("service_start_timeout_invalid")
+    remote = _remote_target()
+    if remote is not None:
+        # A remote target's service runs elsewhere: never spawned or superseded from here.
+        return await _connect_remote(
+            client_kind,
+            remote,
+            workspace_locator=workspace_locator,
+            workspace_binding=workspace_binding,
+            timeout_seconds=timeout_seconds,
+            on_demand=True,
+        )
     deadline = time.monotonic() + timeout_seconds
 
     async def connect_with_remaining_budget() -> ServiceClient:
@@ -1932,6 +2447,7 @@ async def connect_service_on_demand(
             projection_render_mode=ProjectionRenderMode.MACHINE_READABLE,
             output_is_controlling_tty=False,
             timeout_seconds=min(_CONNECT_HANDSHAKE_TIMEOUT_SECONDS, remaining),
+            workspace_binding=workspace_binding,
         )
 
     try:

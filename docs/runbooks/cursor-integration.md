@@ -635,6 +635,115 @@ before its frozen opaque branch can classify the new pair. Fully restart the exa
 and re-prove descriptor plus correlated model use after upgrading before reporting the capability
 as active.
 
+## Server targets (ADR-051)
+
+Decision: **no Cursor registration changes.** The MCP entry, the project MCP entry and the hook
+commands keep their exact launcher, arguments and isolation environment. Which FinishUP server
+they use follows the owner's choice (see the [servers guide](../usage/servers.md)):
+
+- A Cursor connection made under **explicit isolation** carries both isolation-root spellings in
+  its MCP `env` and inline in each hook command; that stamped root always wins, and the selection
+  file never overrides it.
+- A Cursor connection made **without isolation** carries no root, so its bridge and hooks read the
+  owner-only selection file and talk to the selected target.
+
+Connecting Cursor while a target is selected does not stamp that target into a registration (the
+stamp comes only from an explicit isolation variable or pin), and existing ambient registrations
+do not show as drift. `finishup server use local` returns every later unstamped process to the
+default service.
+
+- **Roots.** The Cursor bridge still decodes only local `file:` roots (ADR-010); a root that is
+  itself remote stays refused. For a remote target the bridge sends a workspace claim derived from
+  that local root instead of the path, rewrites an absolute `workspace_ref` to the connection's
+  handle before `start`, and the client's workspace agent serves the server's workspace reads;
+  receipts carry the `client_attested` line. Outside the workspace root the agent reads as the
+  target's outside-read mode says: in `local` mode as a local service would, in `listed` mode only
+  beneath a folder the owner listed for the target on this machine (`finishup server folders
+  mode|add`, ADR-051 decision 5). Every remote kind gets the same choice, asked by `finishup
+  server add` on the owner's own terminal (an official endpoint is `local`); once chosen, no hook,
+  MCP tool or CLI call in a Cursor session prompts for it again. The decision is the same for
+  every host and changes no registration.
+  Inside it a reviewer's file read returns a file only when Git answers that it is not ignored, as
+  a local service's does; a declared test is read in `local` mode as a local service reads it
+  (Git-ignored, linked worktree or submodule included), and in `listed` mode only where Git
+  answers. In `listed` mode a file left unread (a task input or declared test outside the listed
+  folders, or such a test) costs only that file, and the receipt says so in one fixed line,
+  `outside_reads_not_listed`, naming `finishup server folders add NAME FOLDER` and `finishup
+  server folders mode NAME local` on this machine (ADR-051 decision 5).
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
+- **Zero-network with a remote target selected** (maintainer decision, 2026-11-06; ADR-051 decision
+  8). Setting this computer's privacy policy to zero-network does not stop Cursor's traffic to a
+  selected remote target. FinishUP surfaces it after the policy change (on the owner's terminal:
+  switch to this computer's everyday FinishUP or keep the target, Enter or Ctrl-C keeps it;
+  otherwise, or for `--json`, the facts and `finishup server use local` on stderr) and keeps showing
+  it in `setup status --next`, `server status` and the terminal interface while this computer's
+  FinishUP service is running and unlocked (only it can report this computer's policy; it relocks or
+  stops when idle); it never switches on its own. Switching (the choice, `finishup server use local`
+  or the terminal interface's "Use local") also stops this computer's connection to the target as
+  `finishup server disconnect` does: the target's workspace agent (`finishup agent run`) is asked to
+  stop and waited for, so server work already under way gets no more file text from here, and an SSH
+  master exits. After switching, restart open Cursor windows and Agent CLI sessions: the running MCP
+  bridge keeps the remote target until then (and its next call starts the target's workspace agent
+  again), while hooks follow at once. While a remote target is selected, fresh server-host privacy
+  commands are refused (`requires_server_host`) and `privacy tighten|propose` reach the target, so
+  the choice comes from a FinishUP process already on this computer's server (an open terminal
+  interface or menu, or a privacy step or setup under way). Host decision: supported, same code
+  path; no MCP tool, hook or SessionStart context carries or answers the choice, because agents
+  cannot change the policy or the selection.
+- **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
+  `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
+  interface's first run) change the target's policy and name it, by id and kind, before anything
+  is sent and in the result (stderr beside the unchanged `--json` document; the setup summary's
+  privacy line; one terminal-interface message). A widening waits on the server host for
+  `privacy decide-policy <proposal id>`, which is refused here (`requires_server_host`, naming the
+  target); every surface prints that exact command with the proposal's expiry (about five minutes,
+  in UTC), and setup's next steps name it instead of `--privacy` / `--set`. Host
+  decision: supported, same code path for Cursor; no MCP tool or hook changes a privacy policy, so
+  none carries these lines.
+- **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
+  still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
+  line it ends with the fixed provenance-unknown section (what happened, why it matters, and
+  whether a retry can help), and every receipt format, JSON included, carries the same words as
+  its `workspace_provenance` member, whose `reason` names the cause and whose last line says only
+  what is true of it (decision D4b). The passing cause (`session_opening_unreadable`: a failed
+  read, or a storage fault while the server loaded the record) says to run `receipt` again and, if it persists,
+  restart the server's service. Each lasting cause gives no retry or restart advice and says how
+  long the receipts will keep saying so: `session_opening_copy_unverifiable` (the server's stored
+  copy is missing or fails its integrity check, which reopening the task repeats: for as long as
+  that lasts), `session_opening_redacted` and `session_opening_erased` (the record will not become
+  readable again), `session_opening_key_unavailable` (while the server does not have the record's
+  key) and `session_opening_format_unknown` (until the server runs a FinishUP version that knows
+  the record's format). The agent sees the same words
+  in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
+  first page. A long receipt has its other sections shortened to fit and still ends with the
+  whole section.
+- **Switching mid-session.** The MCP bridge keeps the target it started with; hooks follow a new
+  selection at once. Restart open Cursor windows and Agent CLI sessions after `finishup server
+  use`. Required-mode `failClosed` gate hooks deny for an unreachable target exactly as for an
+  unreachable local service; nothing falls back to the local service.
+- **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
+  `remote_incompatible`, naming both releases.
+- **Network API (this tree, ADR-051 approach C).** The Cursor hooks and the MCP bridge reach a
+  remote server through the server's own network API. A hook pass's drains and its SessionStart
+  status read name the project folder, which the client turns into the workspace claim (the path is
+  never sent), so every observation row it delivers is attested; a remote drain with no project
+  folder sends nothing and leaves the rows for the workspace agent. The workspace agent is a
+  separate `finishup agent run` process that the first connection from a project starts: it answers
+  the server's workspace calls while a call runs and afterwards, and delivers the rows a hook could
+  not, until its idle exit, `finishup server disconnect` or a `finishup server use` that leaves the
+  target stops it. When the server cannot be reached the SessionStart context names it in fixed
+  words with the phase's continuation (for example `Continuation: remote_server_test.`), and a
+  locked server vault is named as the server owner's to unlock; neither names a host or tells the
+  agent to start or unlock a service on this machine. Host decision: supported, same code path as
+  the other hosts.
+- **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
+  runs for each target kind are recorded with the pull request that lands the chosen approach. No
+  Cursor cell is claimed for a remote target until that evidence exists.
+
 ## Legacy Yoetz registrations
 
 FinishUP was named Yoetz through 0.2.5 (ADR-048). A Cursor configuration connected by Yoetz carries
@@ -2382,7 +2491,10 @@ outside directory named without a trailing `/` is listed; an `other` follow-up r
 only from rows FinishUP recorded for the run or edit it names. When the task names a file or folder
 outside the workspace that no admitted root covers, the check records
 `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
-(`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
+(`finishup privacy input-roots add <folder>` on a trusted terminal of the computer the FinishUP
+service runs on: for a remote server its server host, where the folder must exist; a folder only
+on the client cannot be admitted for a remote server yet, ADR-051 open question 1); it is a
+disclosure only, never
 a Stop-gate item or a continuation on Cursor. Cursor still has no write path to admitted roots,
 and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
 owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,
@@ -2393,8 +2505,11 @@ admitted roots or, with none admitted, the step `finishup privacy input-roots ad
 the CLI, MCP and receipt print the sentence. `finishup service diagnostics` counts the task inputs on
 `semantic_case_built` as integers only: `semantic_task_input_candidates`,
 `semantic_task_inputs_read`, `semantic_task_input_listings`,
-`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates` and
-`semantic_task_inputs_outside_not_admitted`.
+`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates`,
+`semantic_task_inputs_outside_not_admitted`; for a remote server in `listed` mode, a separate
+`semantic_outside_reads_not_listed` record, written only when not zero, counts
+`semantic_task_inputs_outside_not_listed` (how many task inputs and declared tests its workspace
+agent kept back).
 
 ## Possible-credential filter opt-out (issue #982)
 

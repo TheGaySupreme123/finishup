@@ -152,6 +152,9 @@ from finishup.ports.publish_response_catalog import (
 )
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
 from finishup.ports.start_catalog import SessionState, StartCatalogPort, TaskRoute, TaskRouteState
+from finishup.ports.workspace_agent import (
+    workspace_handle_valid,
+)
 from finishup.protocol.canonical import (
     MAX_JSON_DEPTH,
     JsonValue,
@@ -209,6 +212,7 @@ __all__ = [
     "ServiceReadyContext",
     "UnprojectedControlBody",
     "VerificationPolicy",
+    "context_workspace",
     "internal_control_json",
     "resolve_client_disclosure_sink",
 ]
@@ -231,6 +235,69 @@ _LINEAGE_PUBLIC_LIFECYCLE_FAMILIES = frozenset(
         "contact_expectation_declared",
     }
 )
+
+
+def context_workspace(context: RepositoryPrivacyContext | None) -> str | None:
+    """The workspace a connection lets this service read for its task, if any.
+
+    A locator-bound connection's own path, read on this machine; or a claim-bound connection's
+    ``client:`` handle (ADR-051), which only the client's workspace agent reads and which is
+    never resolved to a path here.
+    """
+
+    if context is None:
+        return None
+    if context.identity_kind == "client_claim":
+        return context.workspace_handle
+    return None if context.workspace_locator is None else context.workspace_locator.path
+
+
+def _require_portable_workspace_ref(
+    request: StartRequest, context: RepositoryPrivacyContext | None
+) -> str | None:
+    """Refuse a start whose ``workspace_ref`` does not fit its connection's binding (ADR-051).
+
+    On a claim-bound connection the service cannot read the client's paths, so the only
+    ``workspace_ref`` it records is the connection's own handle: the handle in a session's
+    opening event is the durable fact that every workspace read of the task goes to the
+    client's agent and that its receipts say so. A start that names a workspace must name that
+    handle. A start may also name none, in every mode where it may on one computer (where it
+    then reads the connection's own locator path); here the connection's claim names that same
+    workspace, so the handle is returned and any session the start opens (a create, a
+    parent-registered child, a child attached by its attach handle) records it in its opening
+    event alone. The request's identity is unchanged, and a start that opens no session (an
+    attach to an existing one, a delegation) records nothing. A start that names the handle
+    returns None, as does every start on a connection without a claim. A ``client:`` handle
+    names a claim, so a connection that carries no claim cannot record one. Every refusal
+    comes before any write and names no value.
+    """
+
+    reference = request.workspace_ref
+    claimed = context is not None and context.identity_kind == "client_claim"
+    if claimed:
+        assert context is not None
+        handle = context.workspace_handle
+        if handle is not None and reference is None:
+            return handle
+        if handle is None or reference != handle:
+            raise PublicOperationError(
+                PublicErrorCode.INVALID_REQUEST,
+                (
+                    "This server cannot read paths on the client machine, so workspace_ref "
+                    "must be this connection's workspace handle."
+                ),
+                False,
+                safe_details={"reason_code": "workspace_ref_not_portable"},
+            )
+        return None
+    if reference is not None and workspace_handle_valid(reference):
+        raise PublicOperationError(
+            PublicErrorCode.INVALID_REQUEST,
+            "A workspace handle names a client's workspace claim; this connection carries none.",
+            False,
+            safe_details={"reason_code": "workspace_binding_conflict"},
+        )
+    return None
 
 
 def _declared_input_paths(request: PublishWorkRequest) -> tuple[str, ...]:
@@ -1172,6 +1239,7 @@ class Application:
         *,
         repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> StartInternalResult:
+        session_workspace_ref = _require_portable_workspace_ref(request, repository_privacy_context)
         # Delegate/self-register requests use a parent session as their authority but do not pass
         # through the start-catalog route transition that rotates or renews an existing session.
         # Touch that lease before executing the lineage operation so an active parent cannot be
@@ -1208,6 +1276,7 @@ class Application:
                             else repository_privacy_context.commitment
                         ),
                         input_capture=capture,
+                        session_workspace_ref=session_workspace_ref,
                     )
             else:
                 result = await execute_start(
@@ -1219,6 +1288,7 @@ class Application:
                         else repository_privacy_context.commitment
                     ),
                     input_capture=capture,
+                    session_workspace_ref=session_workspace_ref,
                 )
             await self._maybe_birth_implicit_repository_project(repository_privacy_context)
             await self._record_task_change_base(result, repository_privacy_context)
@@ -1279,12 +1349,8 @@ class Application:
         """
 
         port = self.change_capture
-        locator = (
-            None
-            if repository_privacy_context is None
-            else repository_privacy_context.workspace_locator
-        )
-        if port is None or locator is None or result.outcome not in {"created", "delegated"}:
+        workspace = context_workspace(repository_privacy_context)
+        if port is None or workspace is None or result.outcome not in {"created", "delegated"}:
             return
         try:
             runtime = await self.runtime.route(
@@ -1308,7 +1374,7 @@ class Application:
             await record_task_change_base(
                 runtime=runtime,
                 port=port,
-                workspace=locator.path,
+                workspace=workspace,
                 clock=self.clock,
                 request_id=result.request_id,
             )
@@ -2725,16 +2791,15 @@ class Application:
                 update={"mode": self.verification_policy.default_check_mode}
             )
         # The check-time change (ADR-031) may read only the directory this connection's own
-        # locator named; the composition still requires its commitment to equal the route's.
-        locator = (
-            None
-            if repository_privacy_context is None
-            else repository_privacy_context.workspace_locator
-        )
+        # locator named, or a claim-bound connection's workspace through its agent (ADR-051);
+        # the composition still requires its commitment to equal the route's.
+        workspace = context_workspace(repository_privacy_context)
         source = (
             None
-            if self.change_capture is None or locator is None or repository_privacy_context is None
-            else CheckWorkspaceSource(locator.path, repository_privacy_context.commitment)
+            if self.change_capture is None
+            or workspace is None
+            or repository_privacy_context is None
+            else CheckWorkspaceSource(workspace, repository_privacy_context.commitment)
         )
         with check_workspace_source_scope(source):
             result = await execute_check(
@@ -3083,8 +3148,21 @@ class Application:
     async def integration_execute(self, request: object) -> JsonObject:
         return await self._support(ControlMethod.INTEGRATION_EXECUTE, request)
 
-    async def observation_ingest(self, request: object) -> JsonObject:
-        return await self._support(ControlMethod.OBSERVATION_INGEST, request)
+    async def observation_ingest(
+        self,
+        request: object,
+        *,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
+    ) -> JsonObject:
+        # The daemon passes a context only for a claim-bound connection, whose rows go to that
+        # claim's client-attested store (ADR-051 decision 12); every other call is unchanged.
+        if repository_privacy_context is None:
+            return await self._support(ControlMethod.OBSERVATION_INGEST, request)
+        return await self._support(
+            ControlMethod.OBSERVATION_INGEST,
+            request,
+            repository_privacy_context=repository_privacy_context,
+        )
 
     async def observation_status(self, request: object) -> JsonObject:
         return await self._support(ControlMethod.OBSERVATION_STATUS, request)
@@ -3135,7 +3213,9 @@ class Application:
             ControlMethod.PRIVACY_GET_SETUP,
             ControlMethod.PRIVACY_GET_EFFECTIVE,
             ControlMethod.PRIVACY_PROPOSE_POLICY,
-        }:
+        } or (
+            method is ControlMethod.OBSERVATION_INGEST and repository_privacy_context is not None
+        ):
             kwargs["repository_privacy_context"] = repository_privacy_context
         result = await handler(request, **kwargs)
         if type(result) is not JsonObject or "privacy_projection" in result:

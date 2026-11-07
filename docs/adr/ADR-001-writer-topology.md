@@ -147,3 +147,31 @@ cross-user/system-wide service mode, TCP/network control, concurrent independent
 client-side direct-storage fallback are out of scope. Native autostart integration may be added
 only through explicit platform packaging specs; its absence must not weaken the foreground service
 contract.
+
+## Amendment proposed by ADR-051 (2026-11-05)
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) amends this
+record as follows once it is accepted. The single-writer core, the generation fences and the
+ownership mechanism above are unchanged: each target still has exactly one service and one writer
+authority.
+
+- **Named single-owner targets.** "One persistent, per-user local FinishUP service" becomes one
+  service *per target*. The default target is the ambient local service, exactly as today. The
+  owner may add named local targets (each its own ADR-028 persistent instance root with its own
+  service, vault and ledger) and remote targets: a FinishUP service the same owner runs on another
+  machine, reached over SSH or HTTPS. Every client process talks to the one target the owner
+  selected; none opens storage or a key backend on any machine.
+- **Attachment.** Endpoint discovery stays deterministic, but it may now also follow the
+  owner-only selection file (ADR-051 decision 2), the lowest-precedence root source. A remote
+  edge may authenticate a bearer credential (an HTTPS API key) or an SSH login; neither ever
+  *selects* the service — owner-written target configuration alone does. A caller-supplied path
+  still never selects a service, and a claim-bound connection carries no path at all.
+- **Decision 6 (the hook spool) is local-only.** For a remote target the spool and the
+  observation outbox stay on the client, and the client drains them over the ordinary control
+  channel (`observation_ingest` on a claim-bound connection). The server's sweeper ignores roots
+  it does not own. The spool writer still gains no bundle writer, key handle, decrypted object or
+  network route of its own.
+- **Deferred work, narrowed.** "Distributed service access" and "TCP/network control" leave the
+  out-of-scope list only for single-owner servers the owner hosts, reached through the
+  owner-authorized route ADR-051 defines. Cross-user or system-wide service mode, concurrent
+  independent writers and client-side direct-storage fallback stay out of scope.

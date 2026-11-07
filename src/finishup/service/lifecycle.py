@@ -71,6 +71,8 @@ _LIFECYCLE_REASONS: Final = frozenset(
         "session_monitor_unavailable",
         "human_authorization_required",
         "human_authorization_stale",
+        # ADR-051: a remote server target's root holds client state only; no service runs in it.
+        "target_root_is_remote",
     }
 )
 _ALLOWED_TRANSITIONS: Final[dict[ServiceState, frozenset[ServiceState]]] = {

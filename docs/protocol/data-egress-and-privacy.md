@@ -14,6 +14,24 @@ the egress gateway, key access, and structural receipts. CLI, MCP, a future UI, 
 and provider adapters are callers with bounded capabilities. An MCP caller or agent is never a
 local-human authorization principal, even when its request asserts that the user consented.
 
+When the owner selects a FinishUP server on another machine
+([ADR-051](../adr/ADR-051-client-server-cut-and-server-targets.md), Proposed), that server's
+service is this trusted service and this protocol runs there unchanged. The hop between the
+owner's FinishUP client and that server is the owner-authorized FinishUP server hop: it is not one
+of the five network channels below, and enabling it enables none of them. Adding or selecting a
+remote target is refused in the zero-network state (the ADR-009 amendment proposed by ADR-051).
+Setting the policy to that state does not by itself stop a target already selected: clients do
+not consult the policy before each connection. The owner is told instead and decides (ADR-051
+decision 8): after the change, the trusted console offers switching to this computer's everyday
+FinishUP (`finishup server use local`) or keeping the target, and keeping is the default; without
+that console the facts and the command are printed and nothing switches. While a remote target is
+selected, a fresh command does not set this computer's policy (the server-host privacy commands
+are refused with `requires_server_host`; `privacy tighten|propose` reach the selected server), so
+the choice arises when a process that resolved this computer's server before the selection
+changed commits the change. The owner displays name the state only while this computer's service
+is running and unlocked, the one source of its policy. While the owner keeps the target, and after
+switching until open agent sessions restart, traffic to it continues.
+
 ## Content classes
 
 Every candidate item is classified before policy evaluation as exactly one of:

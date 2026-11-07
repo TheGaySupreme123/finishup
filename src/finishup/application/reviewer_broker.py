@@ -18,11 +18,12 @@ pinned when the check ran; a result is at most 4 KiB and counts against the same
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Final, Literal, cast
+from typing import Final, Literal, Protocol, cast
 
 from finishup.adapters.privacy.local_enforcer import scan_exact_bytes_with_confidence
 from finishup.adapters.reviewer_artifacts import artifact_facts, image_attachment
@@ -55,7 +56,14 @@ from finishup.protocol.models import (
     ReviewerFileActionModel,
 )
 
-__all__ = ["MAX_READS", "ReadElement", "ReadExchangeFull", "ReadRoot", "ReviewerBroker"]
+__all__ = [
+    "MAX_READS",
+    "ReadElement",
+    "ReadExchangeFull",
+    "ReadRoot",
+    "ReviewerBroker",
+    "ReviewerFileReads",
+]
 
 MAX_READS: Final = MAX_REVIEWER_READS
 MAX_RESULT_BYTES: Final = 8192
@@ -161,13 +169,42 @@ class ReadExchangeFull(Exception):
         self.verdict_fits = verdict_fits
 
 
+class ReviewerFileReads(Protocol):
+    """Where a root's file reads go when it is not this service's own disk (ADR-051).
+
+    The same three trusted reads as ``adapters.task_input_read``, answered by a claim-bound
+    task's workspace agent on the client's machine.
+    """
+
+    def list_beneath(
+        self,
+        root: str,
+        relative: str,
+        *,
+        excluded: tuple[str, ...],
+        expired: Callable[[], bool],
+        inspect: int = 128,
+    ) -> tuple[tuple[tuple[str, bool], ...], bool] | None: ...
+
+    def read_text_beneath(
+        self, root: str, relative: str, *, excluded: tuple[str, ...], expired: Callable[[], bool]
+    ) -> tuple[bytes, int] | None: ...
+
+    def read_declared_test(
+        self, location: str, *, excluded: tuple[str, ...], expired: Callable[[], bool] = ...
+    ) -> bytes | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ReadRoot:
     """One ``read_file`` alias the service issued; the model names only ``alias``.
 
     ``path`` is the directory read beneath; ``input_root`` the owner-admitted outside root it
     binds (E2E-2), with ``declared`` the task-declared paths beneath it. A ``snapshot`` serves the
-    files FinishUP kept instead of current ones. ``refuse`` is the service's ignored-path rule.
+    files FinishUP kept instead of current ones. ``refuse`` is the service's ignored-path rule;
+    ``refuse_many``, when set, is the same rule asked once for every entry of a listing (the
+    paths it refuses), so a listing answered by a workspace agent costs one round trip per batch
+    rather than one per entry.
     """
 
     alias: str
@@ -178,9 +215,13 @@ class ReadRoot:
     subject_refs: tuple[str, ...] = ()
     snapshot: TaskInputSnapshotSet | None = None
     refuse: Callable[[str], bool] | None = None
+    refuse_many: Callable[[tuple[str, ...]], frozenset[str]] | None = None
     # #1220: ``(ref, absolute path, pinned digest, criterion ref)`` of each declared test this
     # root serves; a read is citable for its criterion ref when the case lets it be cited.
     pinned: tuple[tuple[str, str, str, str], ...] = ()
+    # A claim-bound task's reads, answered by its workspace agent (ADR-051); None reads this
+    # service's own disk through the trusted readers, as always.
+    reads: ReviewerFileReads | None = None
 
 
 @dataclass(slots=True)
@@ -307,7 +348,9 @@ class ReviewerBroker:
         }
         self.read_usage.append(usage)
         if isinstance(action, ReviewerFileActionModel):
-            selected = self._file(action.args, expired, tool_ref)
+            # Off the event loop: a file read blocks, and a claim-bound task's read waits on its
+            # workspace agent's reply, which this loop delivers (ADR-051).
+            selected = await asyncio.to_thread(self._file, action.args, expired, tool_ref)
         elif isinstance(args, ReadLedgerArgsModel):
             selected = self._ledger(args.view, args.refs, args.cursor)
         else:
@@ -680,11 +723,30 @@ class ReviewerBroker:
         return ("records", records, (selector, version, start), left)
 
     @staticmethod
-    def _refused(root: ReadRoot, path: str) -> str | None:
-        if root.refuse is not None and root.refuse(path):
+    def _refused(root: ReadRoot, path: str, *, ignored: bool | None = None) -> str | None:
+        """Why ``path`` may not be read here, if it may not; ``ignored`` is a batch's answer."""
+
+        if ignored if ignored is not None else (root.refuse is not None and root.refuse(path)):
             return "forbidden_path"
         inside = any(d == "" or path == d or path.startswith(f"{d}/") for d in root.declared)
         return "outside_scope" if root.declared and not inside else None
+
+    @classmethod
+    def _listed(
+        cls, root: ReadRoot, below: str, listed: Sequence[tuple[str, bool]]
+    ) -> list[tuple[str, bool]]:
+        """The listed entries this root may show; one batched refusal probe when it has one."""
+
+        if root.refuse_many is None:
+            return [(n, d) for n, d in listed if not cls._refused(root, below + n)]
+        refused: frozenset[str] = (
+            root.refuse_many(tuple(below + n for n, _ in listed)) if listed else frozenset()
+        )
+        return [
+            (n, d)
+            for n, d in listed
+            if not cls._refused(root, below + n, ignored=below + n in refused)
+        ]
 
     def _file(
         self,
@@ -717,13 +779,17 @@ class ReviewerBroker:
         if isinstance(args, ReadFileListArgsModel):
             below = f"{path}/" if path else ""
             if snap is None:
-                listing = list_beneath(root.path, path, excluded=root.excluded, expired=expired)
+                lister = list_beneath if root.reads is None else root.reads.list_beneath
+                listing = lister(root.path, path, excluded=root.excluded, expired=expired)
                 listed, truncated = listing if listing is not None else ((), False)
             else:
                 names = {m[len(below) :].split("/")[0] for m in kept if m.startswith(below)}
                 listed = tuple(sorted((n, f"{below}{n}" not in kept) for n in names))
                 truncated = False
-            children = [(n, d) for n, d in listed or () if not self._refused(root, below + n)]
+            if expired():
+                # Past the read's stop: no refusal probe is spent on a listing nobody receives.
+                raise ReadDeadline("reviewer_read_deadline")
+            children = self._listed(root, below, tuple(listed or ()))
             selector = f"{root.alias}\x00{path}"
             version = canonical_digest([[[n, d] for n, d in children], truncated])
             start = self._page(selector, version, args.cursor)
@@ -743,7 +809,8 @@ class ReviewerBroker:
         if snap is not None:
             read = None if path not in kept else (kept[path], len(kept[path]))
         else:
-            read = read_text_beneath(root.path, path, excluded=root.excluded, expired=expired)
+            reader = read_text_beneath if root.reads is None else root.reads.read_text_beneath
+            read = reader(root.path, path, excluded=root.excluded, expired=expired)
         if read is None:
             return ("unavailable", "not_recorded")
         data, size = read
@@ -826,7 +893,8 @@ class ReviewerBroker:
         if isinstance(args, ReadFileListArgsModel) or entry is None:
             return ("denied", "outside_scope")
         _ref, location, digest, criterion = entry
-        data = read_declared_test(location, excluded=root.excluded, expired=expired)
+        declared = read_declared_test if root.reads is None else root.reads.read_declared_test
+        data = declared(location, excluded=root.excluded, expired=expired)
         if data is None:
             return ("unavailable", "declared_test_not_visible")
         if "sha256:" + hashlib.sha256(data).hexdigest() != digest:

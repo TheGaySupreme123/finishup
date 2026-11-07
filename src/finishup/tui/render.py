@@ -535,20 +535,23 @@ def render_session_header(
     harness_state: str,
     privacy_summary: str,
     width: int,
+    server: str | None = None,
 ) -> tuple[str, ...]:
-    """The compact session header. One of the few boxed surfaces."""
+    """The compact session header. One of the few boxed surfaces.
+
+    ``server`` names a selected server target by kind and id (``ssh t_1a2b3c4d``); the row is
+    absent while this computer's everyday server is used, so that header is unchanged.
+    """
 
     inner = max(min(width, 78) - 4, 24)
-    rows = _labelled(
-        (
-            ("project:", project_root),
-            ("Codex:", harness_state),
-            ("review:", f"{privacy_summary}   /privacy to change"),
-        ),
-        inner,
-        gap=2,
-        paths=("project:",),
-    )
+    pairs: list[tuple[str, str]] = [
+        ("project:", project_root),
+        ("Codex:", harness_state),
+        ("review:", f"{privacy_summary}   /privacy to change"),
+    ]
+    if server is not None:
+        pairs.append(("server:", f"{server}   /server to change"))
+    rows = _labelled(tuple(pairs), inner, gap=2, paths=("project:",))
     return (f">_ FinishUP (v{version})", "", *rows)
 
 

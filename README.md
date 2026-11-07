@@ -157,7 +157,7 @@ state for future sessions—not that a later session loaded a hook or delivered 
 | **Six operations, two surfaces** | `start`, `publish_work`, `check`, `respond`, `status`, `receipt` — identical contracts on the CLI and over MCP. Everything else is a bounded support surface, not a seventh operation. |
 | **Works with any MCP agent** | No integration, no installed skill, no configuration. Codex, Claude Code, and Cursor have first-party integrations because each host's skill or plugin surface delivers the guidance natively — but integration buys ergonomics, never a stronger claim. |
 | **Honest receipts** | Coverage, provenance, freshness, findings, and limitations stay separate. A clean local check is never presented as proof that work is correct. |
-| **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; no work is sent anywhere until first-run setup commits a privacy policy you approve. |
+| **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; no work is sent anywhere until first-run setup commits a privacy policy you approve, or you choose to use a [FinishUP server](docs/usage/servers.md) on another machine. |
 | **Privacy-gated AI-powered review** | An optional reviewer model reads a bounded, minimized packet built from the ledger and, when your privacy recipe allows repository excerpts, the task's own change, read once per check. It never browses your repository, and it sits behind explicit provider binding and reauthenticated policy authority. |
 | **A full-screen terminal interface** | First run, status, privacy, provider, integration, service, and receipt flows in one interface; no secret ever enters it. |
 | **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, exact replay, backup/restore, and forward-only migrations. |
@@ -169,7 +169,13 @@ say.
 ## Private by default
 
 A fresh installation's unconfigured seed is **zero-egress and local-only**: no work is sent anywhere
-until first-run setup commits a policy, and FinishUP is fully useful in that state. Setup's
+until first-run setup commits a policy, and FinishUP is fully useful in that state. Using a FinishUP
+server on another machine is a separate choice you confirm yourself, server by server; it sends
+your work to that server and is refused while your policy forbids all network use. While such a
+server is chosen, new commands do not change this computer's policy; if FinishUP that was already
+running here forbids network use anyway, it tells you and lets you switch to this computer's own
+FinishUP or keep the server, and never switches on its own; while you keep it, your work goes
+there. After switching (`finishup server use local`), restart open agent sessions. Setup's
 proposed privacy policy states whether FinishUP may check PyPI for package updates (default yes, with an
 opt-out). That bounded check carries only the installation's package identity (`finishup`, or
 `yoetz` for an installation still updated under its former name) and version, never task or
@@ -220,7 +226,9 @@ See [Privacy and AI-powered review](docs/usage/privacy-and-semantic-review.md) a
 
 One trusted persistent local service owns the encryption keys, decrypted state, storage writers,
 privacy authority, and provider access. CLI, MCP, and the terminal interface are clients — they
-hold none of those things. The interface in particular is presentation only: it dispatches through
+hold none of those things. By default that service runs on your own computer; you can instead
+point FinishUP at a server you run elsewhere, over SSH or HTTPS, whose service then holds them on
+its machine (see [FinishUP servers](docs/usage/servers.md)). The interface in particular is presentation only: it dispatches through
 the same application services the commands do, and no secret ever enters it, because credential
 entry suspends the interface and hands the terminal to the existing confidential ceremony.
 External disclosure is denied by default and must pass centralized classification, policy,

@@ -9,6 +9,8 @@ second line that contradicts the first.
 
 from __future__ import annotations
 
+from types import EllipsisType
+
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static
@@ -30,6 +32,8 @@ class SessionHeader(Static):
         self._project = ""
         self._harness = "not connected"
         self._privacy = "local only"
+        # The selected server target's kind and id; ``None`` for this computer's everyday server.
+        self._server: str | None = None
 
     def set_state(
         self,
@@ -38,6 +42,7 @@ class SessionHeader(Static):
         project: str | None = None,
         harness: str | None = None,
         privacy: str | None = None,
+        server: str | None | EllipsisType = ...,
     ) -> None:
         if version is not None:
             self._version = version
@@ -47,6 +52,8 @@ class SessionHeader(Static):
             self._harness = harness
         if privacy is not None:
             self._privacy = privacy
+        if server is not ...:
+            self._server = server
         self.refresh_header()
 
     def on_mount(self) -> None:
@@ -61,8 +68,11 @@ class SessionHeader(Static):
         compact = (self.screen.size.height or 24) < 16
         self.set_class(compact, "compact")
         if compact:
+            server = "" if self._server is None else f"  ·  server {self._server}"
             self.update(
-                Text(f">_ FinishUP v{self._version}  ·  {self._harness}  ·  {self._privacy}")
+                Text(
+                    f">_ FinishUP v{self._version}  ·  {self._harness}  ·  {self._privacy}{server}"
+                )
             )
             return
         lines = render_session_header(
@@ -71,6 +81,7 @@ class SessionHeader(Static):
             harness_state=self._harness,
             privacy_summary=self._privacy,
             width=width,
+            server=self._server,
         )
         text = Text()
         for index, line in enumerate(lines):

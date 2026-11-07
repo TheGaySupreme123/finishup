@@ -35,7 +35,7 @@ def test_observation_config_toml_round_trip(tmp_path: Path) -> None:
     rendered = render_config_toml(config)
     assert "[observation]\nenabled = false\n" in rendered
     assert FinishUpConfig.model_validate(tomllib.loads(rendered), strict=True) == config
-    validate_schema_instance("yoetz-config", "1.3.0", cast(JsonValue, tomllib.loads(rendered)))
+    validate_schema_instance("yoetz-config", "1.4.0", cast(JsonValue, tomllib.loads(rendered)))
 
     path = write_config_toml(config, path=tmp_path / "config.toml")
     assert load_config({}, {}, path) == config
@@ -194,7 +194,7 @@ def test_unset_switch_is_never_persisted_and_turning_it_back_on_round_trips(
         "enabled": True,
         "semantic_advice_min_interval_seconds": 180,
     }
-    validate_schema_instance("yoetz-config", "1.3.0", cast(JsonValue, tomllib.loads(rendered)))
+    validate_schema_instance("yoetz-config", "1.4.0", cast(JsonValue, tomllib.loads(rendered)))
 
     # The reverse state: the owner turns background advice back on, and it stays on.
     enabled = FinishUpConfig(observation=ObservationConfig(semantic_advice_enabled=True))

@@ -1,0 +1,229 @@
+"""``finishup service api-key`` and ``service endpoint --json`` for the network API (ADR-051).
+
+The key commands edit the service's own key file on the server host: ``create`` shows the key
+once (or writes a new owner-only file), ``list`` never shows a key, ``revoke`` is the reverse.
+They are ``server_host`` commands, refused on a remote target. ``service endpoint --json`` reports
+the configured API socket only when ``[network]`` asks for one.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from typing import cast
+
+import pytest
+from typer.testing import CliRunner, Result
+
+from builders.server_targets import ambient_home
+from finishup.cli import app as cli
+from finishup.config.paths import config_file_path, runtime_dir
+from finishup.service.api_keys import default_api_key_store
+from finishup.service.network_protocol import parse_api_key
+
+_RUNNER = CliRunner()
+
+
+@pytest.fixture
+def home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    with ambient_home(monkeypatch) as root:
+        yield root
+
+
+def test_create_list_and_revoke_keys(home: Path) -> None:
+    created = _RUNNER.invoke(
+        cli.app, ["service", "api-key", "create", "--label", "laptop", "--scope", "agent"]
+    )
+    assert created.exit_code == 0, created.output
+    lines = created.stdout.splitlines()
+    token = lines[1]
+    parsed = parse_api_key(token)
+    assert parsed is not None and parsed.key_id in lines[0]
+    assert token.encode() not in default_api_key_store().path.read_bytes()
+
+    listed = _RUNNER.invoke(cli.app, ["service", "api-key", "list", "--json"])
+    assert listed.exit_code == 0, listed.output
+    document = cast(dict[str, object], json.loads(listed.stdout))
+    (row,) = cast(list[dict[str, object]], document["keys"])
+    assert (row["key_id"], row["label"], row["scope"], row["state"]) == (
+        parsed.key_id,
+        "laptop",
+        "agent",
+        "active",
+    )
+    assert token not in listed.stdout
+
+    revoked = _RUNNER.invoke(cli.app, ["service", "api-key", "revoke", parsed.key_id])
+    assert revoked.exit_code == 0
+    again = _RUNNER.invoke(cli.app, ["service", "api-key", "revoke", parsed.key_id])
+    assert "already revoked" in again.stdout
+    unknown = _RUNNER.invoke(cli.app, ["service", "api-key", "revoke", "not-a-key-id"])
+    assert unknown.exit_code == 2
+    assert unknown.stderr.startswith("api_key_unknown:")
+    assert "not-a-key-id" not in unknown.stderr
+
+
+def test_a_key_can_be_written_once_to_a_new_owner_only_file(home: Path) -> None:
+    target = home / "operator.key"
+    created = _RUNNER.invoke(
+        cli.app,
+        [
+            "service",
+            "api-key",
+            "create",
+            "--label",
+            "ops",
+            "--scope",
+            "operator",
+            "--output-file",
+            str(target),
+        ],
+    )
+    assert created.exit_code == 0, created.output
+    assert target.stat().st_mode & 0o777 == 0o600
+    token = target.read_text(encoding="ascii").strip()
+    assert parse_api_key(token) is not None and token not in created.stdout
+    refused = _RUNNER.invoke(
+        cli.app,
+        [
+            "service",
+            "api-key",
+            "create",
+            "--label",
+            "ops2",
+            "--scope",
+            "operator",
+            "--output-file",
+            str(target),
+        ],
+    )
+    assert refused.exit_code == 2
+    assert refused.stderr.startswith("output_file_unavailable:")
+    # A refused output file never leaves an active key nobody holds.
+    assert [record.label for record in default_api_key_store().records()] == ["ops"]
+
+
+def _create_into(target: Path, label: str = "ops") -> Result:
+    return _RUNNER.invoke(
+        cli.app,
+        [
+            "service",
+            "api-key",
+            "create",
+            "--label",
+            label,
+            "--scope",
+            "operator",
+            "--output-file",
+            str(target),
+        ],
+    )
+
+
+def test_an_output_file_that_cannot_be_made_creates_no_key(home: Path) -> None:
+    missing = _create_into(home / "no-such-folder" / "laptop.key")
+    assert missing.exit_code == 2
+    assert missing.stderr.startswith("output_file_unavailable:")
+    assert "no key was created" in missing.stderr
+    assert default_api_key_store().records() == ()
+    # Nor does a refused key leave an empty output file behind.
+    target = home / "refused.key"
+    refused = _create_into(target, label="bad\tlabel")
+    assert refused.stderr.startswith("api_key_label_invalid:")
+    assert not target.exists()
+
+
+def test_a_key_that_could_not_be_written_is_revoked(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.cli import network_api
+
+    def full_disk(_descriptor: int, _text: str) -> None:
+        raise OSError("no space left")
+
+    monkeypatch.setattr(network_api, "_write_key_file", full_disk)
+    target = home / "laptop.key"
+    result = _create_into(target)
+    assert result.exit_code == 20
+    assert result.stderr.startswith("output_file_write_failed:")
+    assert not target.exists()
+    (record,) = default_api_key_store().records()
+    assert record.revoked_at is not None
+
+
+@pytest.mark.parametrize(
+    ("arguments", "reason"),
+    [
+        (["--label", "x", "--scope", "root"], "api_key_scope_invalid"),
+        (["--label", "bad\tlabel", "--scope", "agent"], "api_key_label_invalid"),
+        (["--label", "x", "--scope", "agent", "--expires-in-days", "0"], "api_key_expiry_invalid"),
+        (["--label", "x", "--scope", "agent", "--rotate", "ffffffffffff"], "api_key_unknown"),
+    ],
+)
+def test_create_refusals_are_closed_reasons(home: Path, arguments: list[str], reason: str) -> None:
+    result = _RUNNER.invoke(cli.app, ["service", "api-key", "create", *arguments])
+    assert result.exit_code == 2
+    assert result.stderr.startswith(f"{reason}:")
+    assert "bad\tlabel" not in result.stderr and "ffffffffffff" not in result.stderr
+
+
+def test_key_commands_belong_to_the_server_host(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.client.targets import ServerTarget
+
+    record = ServerTarget(
+        "t_0a1b2c3d",
+        "lab",
+        "https",
+        "2026-11-05T00:00:00.000Z",
+        base_url="https://lab.example",
+        claim_salt="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        authorized_at="2026-11-05T00:00:00.000Z",
+        disclosure_version=1,
+    )
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    result = _RUNNER.invoke(cli.app, ["service", "api-key", "list"])
+    assert result.exit_code == 2
+    assert "requires_server_host" in result.stderr
+    assert "lab.example" not in result.stderr
+
+
+def test_endpoint_reports_the_api_socket_only_when_configured(home: Path) -> None:
+    plain = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
+    assert plain.exit_code == 0, plain.output
+    assert "network" not in json.loads(plain.stdout)
+    path = config_file_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("[network]\napi_socket = true\n", encoding="utf-8")
+    configured = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
+    assert configured.exit_code == 0, configured.output
+    network = json.loads(configured.stdout)["network"]
+    assert network == {
+        "api_socket": str(runtime_dir() / "api.sock"),
+        "listen": [],
+        "tls": False,
+    }
+    path.write_text('[network]\nlisten = ["10.0.0.1:443"]\n', encoding="utf-8")
+    broken = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
+    # The diagnostic still prints when the configuration is broken; the reason is on stderr and
+    # ``server add`` reads the server's configuration as unusable, not as no API socket.
+    assert broken.exit_code == 0, broken.output
+    assert broken.stderr.startswith("config_invalid: network_tls_required")
+    report = json.loads(broken.stdout)
+    assert report["network"] == "config_invalid"
+    assert str(report["endpoint"]).endswith("/control.sock")
+
+
+def test_endpoint_reports_the_rest_of_a_broken_plain_install(home: Path) -> None:
+    # A local install with no [network] table and an unrelated configuration error.
+    path = config_file_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("unknown_key = 1\n", encoding="utf-8")
+    result = _RUNNER.invoke(cli.app, ["service", "endpoint", "--json"])
+    assert result.exit_code == 0, result.output
+    assert result.stderr.startswith("config_invalid: ")
+    report = json.loads(result.stdout)
+    assert report["schema"] == "yoetz.service-endpoint/1"
+    assert report["network"] == "config_invalid"

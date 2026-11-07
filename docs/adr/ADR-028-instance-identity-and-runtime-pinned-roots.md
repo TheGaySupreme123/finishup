@@ -168,3 +168,27 @@ still sits next to whichever interpreter a hook command resolves; this amendment
 choose that interpreter for hooks, so a bare `finishup` hook command still resolves through
 `PATH` (issue #604). This amendment does not rewrite Claude Code or Cursor
 registrations. The project plugin source and the committed repository tree stay portable.
+
+## Amendment proposed by ADR-051 (2026-11-05): a deliberate, owner-written target registry
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) adds server
+targets. Once it is accepted, the consequence "there is deliberately no global registry … a shared
+index that can name roots is itself a redirection surface" is amended for one registry, on these
+terms:
+
+- **`<ambient state dir>/servers/` is a deliberately owner-written redirection surface.** It holds
+  one root per target, each with an owner-only `target.json` (`yoetz.server-target/1`), and the
+  selection file names at most one of them. Both are owner-only, symlink-free and never inside a
+  repository. Selecting a remote kind needs the trusted foreground console and a typed
+  confirmation; an agent has no tool to change either file.
+- **Never stamped into a registration.** Host registrations, launch lines, the Codex RECORD proof
+  and the upgrade guard keep resolving `isolated_root()` (environment or pin), never the
+  selection, so connecting a host while a target is selected does not bind it to that target and
+  existing ambient registrations do not show as drift.
+- **Pins and the environment always win.** A pinned runtime (decision 2) never sees the selection,
+  so a provisioned test instance cannot be redirected by it; `finishup server use` refuses while
+  the variable or a pin is in force (`selection_overridden`).
+- **Instances stay unlisted.** `finishup server list` lists targets, not ADR-028 instances; there is
+  still no `instance list`. A `local` target's root is a persistent instance root (decision 1)
+  created beneath `servers/`, and `server remove` disposes of it through the same owned-root-only
+  path as `instance dispose`.

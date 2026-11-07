@@ -299,3 +299,22 @@ stall startup. No host settings, grants, retry markers or caches are written by 
 
 The same adapters apply on macOS, Linux and WSL 2. Tests exercise host-specific stdout contracts and
 failure conditions in isolated state; fresh native host runs on those OS cells remain unverified.
+
+## Amendment proposed by ADR-051 (2026-11-05): strict route on a remote target
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets the MCP
+bridge reach a FinishUP service on another machine that the owner selected. Once it is accepted:
+
+- **Strict stays allowed on remote targets.** Strict means the route never requests AI-powered
+  review and never invokes an evaluator. The bridge still sends `route_profile` on every `check`
+  and `status`, and the server enforces it through the application route constraint exactly as a
+  local service does, so a strict route stays incapable of AI-powered review dispatch through
+  FinishUP whichever server it uses. Refusing strict on remote targets would break every default
+  registration, because strict is the default route.
+- **"Narrower than no network" now includes the server hop.** The bridge's control traffic may
+  reach the owner's consented FinishUP server over the route its target kind defines, with the
+  disclosure ADR-051 decision 8 describes. Decision 2's "local service IPC" reads "control traffic
+  to the selected FinishUP service".
+- **Disclosure names the server.** On a remote target the initialize instructions do not name a
+  local review destination; they say that AI-powered review, if any, is decided by the selected
+  FinishUP server, identified by its target id and a transport token, never by a host name.

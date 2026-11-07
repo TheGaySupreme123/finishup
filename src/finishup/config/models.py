@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -34,6 +35,8 @@ __all__ = [
     "LocalModelProfileConfig",
     "LoggingConfig",
     "LineageSettings",
+    "NetworkConfig",
+    "NetworkListenAddress",
     "NetworkPolicy",
     "ObservationConfig",
     "OwnerDeclaredEndpointConfig",
@@ -49,6 +52,7 @@ __all__ = [
     "background_advice_setting",
     "fallback_external_endpoint",
     "parse_https_origin",
+    "parse_listen_address",
     "primary_external_endpoint",
 ]
 
@@ -103,6 +107,12 @@ _CONFIG_ERROR_REASONS: Final = frozenset(
         "https_origin_invalid",
         "local_model_locator_forbidden",
         "max_findings_out_of_range",
+        "network_listen_invalid",
+        "network_listener_missing",
+        "network_listener_unavailable",
+        "network_tls_invalid",
+        "network_tls_required",
+        "network_tls_unusable",
         "owner_declared_endpoint_forbidden",
         "owner_declared_endpoint_required",
         "payload_logging_forbidden",
@@ -426,6 +436,126 @@ class LoggingConfig(StrictConfigModel):
         return value
 
 
+# The service's optional network API (ADR-051, server-native approach). A listen address is an IP
+# literal and a port; host names are refused because what a name resolves to can change.
+_MAX_NETWORK_LISTENERS: Final = 8
+_MAX_NETWORK_PATH_TEXT: Final = 1_024
+_NETWORK_KEYS: Final = frozenset(
+    {"listen", "api_socket", "tls_cert", "tls_key", "allow_plain_loopback"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkListenAddress:
+    """One validated TCP listen address of the network API."""
+
+    host: str
+    port: int
+
+    @property
+    def loopback(self) -> bool:
+        return ipaddress.ip_address(self.host).is_loopback
+
+    def text(self) -> str:
+        """The canonical ``host:port`` spelling (IPv6 in brackets)."""
+
+        return f"[{self.host}]:{self.port}" if ":" in self.host else f"{self.host}:{self.port}"
+
+
+def parse_listen_address(value: object) -> NetworkListenAddress:
+    """Parse ``IPv4:port`` or ``[IPv6]:port``; ``network_listen_invalid`` otherwise."""
+
+    if type(value) is not str or not 3 <= len(value) <= 64:
+        raise ConfigError("network_listen_invalid")
+    if value.startswith("["):
+        host_text, separator, port_text = value[1:].partition("]:")
+    else:
+        host_text, separator, port_text = value.rpartition(":")
+    if not separator or not port_text.isascii() or not port_text.isdigit():
+        raise ConfigError("network_listen_invalid")
+    try:
+        address = ipaddress.ip_address(host_text)
+    except ValueError:
+        raise ConfigError("network_listen_invalid") from None
+    if (address.version == 6) is not value.startswith("[") or len(port_text) > 5:
+        raise ConfigError("network_listen_invalid")
+    port = int(port_text)
+    if not 1 <= port <= 65_535 or address.is_multicast:
+        raise ConfigError("network_listen_invalid")
+    return NetworkListenAddress(address.compressed, port)
+
+
+def _network_path(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value.startswith("/")
+        or len(value) > _MAX_NETWORK_PATH_TEXT
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        raise ConfigError("network_tls_invalid")
+    return value
+
+
+class NetworkConfig(StrictConfigModel):
+    """``[network]``: the service's own network API listener (ADR-051).
+
+    Absent, the service opens no network listener at all, exactly as before. ``listen`` names TCP
+    addresses that serve HTTPS with ``tls_cert``/``tls_key`` (absolute paths; the key file stays a
+    file, never a value here). Plain HTTP is accepted only on loopback addresses and only with
+    ``allow_plain_loopback = true`` (a TLS-terminating proxy on the same host). ``api_socket``
+    serves the same API on an owner-only Unix socket in the service's runtime directory, which an
+    SSH client forwards to. API keys live in the service state, never in this file.
+    """
+
+    listen: tuple[str, ...] = ()
+    api_socket: bool = False
+    tls_cert: str | None = None
+    tls_key: str | None = None
+    allow_plain_loopback: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_raw(cls, value: object) -> object:
+        _scan_secret_keys(value)
+        _reject_unknown(value, _NETWORK_KEYS)
+        source = _mapping(value)
+        raw_listen = source.get("listen", ())
+        if type(raw_listen) not in {list, tuple}:
+            raise ConfigError("network_listen_invalid")
+        listen_items = cast(list[object] | tuple[object, ...], raw_listen)
+        if len(listen_items) > _MAX_NETWORK_LISTENERS:
+            raise ConfigError("network_listen_invalid")
+        addresses = tuple(parse_listen_address(item) for item in listen_items)
+        if len({(address.host, address.port) for address in addresses}) != len(addresses):
+            raise ConfigError("network_listen_invalid")
+        api_socket = source.get("api_socket", False)
+        plain = source.get("allow_plain_loopback", False)
+        if type(api_socket) is not bool or type(plain) is not bool:
+            raise ConfigError("config_value_invalid")
+        raw_cert = source.get("tls_cert")
+        raw_key = source.get("tls_key")
+        if (raw_cert is None) is not (raw_key is None):
+            raise ConfigError("network_tls_invalid")
+        cert = None if raw_cert is None else _network_path(raw_cert)
+        key = None if raw_key is None else _network_path(raw_key)
+        if not addresses and not api_socket:
+            raise ConfigError("network_listener_missing")
+        if cert is None and any(not (plain and address.loopback) for address in addresses):
+            # Every TCP listener speaks TLS, except loopback behind an explicit opt-in.
+            raise ConfigError("network_tls_required")
+        return {
+            "listen": tuple(address.text() for address in addresses),
+            "api_socket": api_socket,
+            "tls_cert": cert,
+            "tls_key": key,
+            "allow_plain_loopback": plain,
+        }
+
+    @property
+    def listen_addresses(self) -> tuple[NetworkListenAddress, ...]:
+        return tuple(parse_listen_address(item) for item in self.listen)
+
+
 class ProviderProfileConfig(StrictConfigModel):
     provider_id: str
     endpoint_profile_id: str
@@ -747,6 +877,8 @@ class FinishUpConfig(StrictConfigModel):
     external_runtime: ExternalRuntimeProfileConfig | None = None
     local_model: LocalModelProfileConfig | None = None
     semantic_fallback: SemanticFallbackConfig | None = None
+    # ADR-051: the service's optional network API; absent means no network listener.
+    network: NetworkConfig | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -765,6 +897,7 @@ class FinishUpConfig(StrictConfigModel):
                 "external_runtime",
                 "local_model",
                 "semantic_fallback",
+                "network",
             }
         )
         _reject_unknown(value, allowed)

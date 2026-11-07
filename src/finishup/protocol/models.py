@@ -46,6 +46,10 @@ from finishup.domain.coordination import (
 from finishup.domain.correctness_advisories import ADVISORY_ID_PATTERN
 from finishup.domain.receipt_closing import CLOSING_PROMPT_PATTERN
 from finishup.domain.review_guidance import ReviewGuidance
+from finishup.domain.workspace_provenance import (
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_notice,
+)
 from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.coverage import (
@@ -7957,11 +7961,40 @@ class ReceiptChildrenModel(_ClosedModel):
         return self
 
 
+class ReceiptWorkspaceProvenanceModel(_ClosedModel):
+    """ADR-051, decision D4: the receipt could not establish where its workspace evidence was read.
+
+    Present on every receipt format exactly when the record that opened the task's session could
+    not be read or could not say whether the task is claim-bound; the receipt is built anyway.
+    ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``) naming the cause: the one that
+    can pass (``session_opening_unreadable``) or one that lasts (``session_opening_redacted``,
+    ``session_opening_erased``, ``session_opening_key_unavailable``,
+    ``session_opening_format_unknown``, ``session_opening_copy_unverifiable``). ``notice`` is
+    exactly that reason's fixed text: what happened, why it matters, and what to do for the
+    passing cause or why that cause lasts; nothing in it is user-controlled, and a notice of
+    another reason is refused.
+    """
+
+    status: Literal["unknown"]
+    reason: WorkspaceProvenanceReason
+    notice: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_notice(self) -> ReceiptWorkspaceProvenanceModel:
+        if self.notice != workspace_provenance_unknown_notice(self.reason):
+            raise ValueError("workspace_provenance_notice_invalid")
+        return self
+
+
 class ReceiptSuccessModel(_ClosedModel):
-    optional_non_null_fields = frozenset({"agent_closing_prompt", "correctness_advisory_counts"})
+    optional_non_null_fields = frozenset(
+        {"agent_closing_prompt", "correctness_advisory_counts", "workspace_provenance"}
+    )
     correctness_advisory_counts: CorrectnessAdvisoryCountsModel | None = None
     # #1240 D5: asks the agent to tell the user the conclusion and the open or declined notes.
     agent_closing_prompt: AgentClosingPromptWire | None = None
+    # ADR-051 decision D4: the receipt's workspace provenance is unknown (receipt-result 1.5.0).
+    workspace_provenance: ReceiptWorkspaceProvenanceModel | None = None
 
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -9793,6 +9826,10 @@ _STATUS_COMMON_CONTENT_RULES: Final[tuple[tuple[str, DataCategory], ...]] = (
 )
 _ADVISORY_RECEIPT_STRUCTURAL_POINTERS: Final = (
     "/agent_closing_prompt",
+    # ADR-051 decision D4: fixed words and closed tokens only (``domain.workspace_provenance``).
+    "/workspace_provenance/status",
+    "/workspace_provenance/reason",
+    "/workspace_provenance/notice",
     "/correctness_advisory_counts/total",
     "/correctness_advisory_counts/no_recorded_response",
     "/correctness_advisory_counts/withheld_may_answer",
@@ -10003,7 +10040,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2099
+        len(result) != 2102
     ):  # ... #1239 +7 status task_lifecycle (with quiet_until); #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -10030,6 +10067,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1138 +6 semantic_redacted_values stage/match_class (check, status, receipt document).
         # #1244 +6 check (the brief reply's detail marker and its closure_state subset).
         # #1240 D5 +1 receipt (agent_closing_prompt).
+        # ADR-051 decision D4 +3 receipt (workspace_provenance status, reason and notice).
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

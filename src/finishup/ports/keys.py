@@ -13,6 +13,9 @@ from finishup.ports.secret_memory import SecretConsumer, SecretHandle, SecretPur
 from finishup.protocol.canonical import canonical_encode, strict_json_parse
 
 REPOSITORY_PRIVACY_MAC_DOMAIN = b"yoetz/repository-privacy/v1\x00"
+# A client's workspace claim, keyed into the repository identity a claim-bound task carries
+# (ADR-051). A separate domain: no claim commitment can equal a locator-resolved one.
+REPOSITORY_CLAIM_MAC_DOMAIN = b"yoetz/repository-claim/v1\x00"
 LINEAGE_ATTACH_MAC_DOMAIN = b"yoetz/lineage-attach/v1\x00"
 PROJECT_OPERATION_MAC_DOMAIN = b"yoetz/project-operation/v1\x00"
 
@@ -28,6 +31,7 @@ __all__ = [
     "RecoveryArtifact",
     "RecoveryKeyMaterialHandle",
     "RecoverySecret",
+    "REPOSITORY_CLAIM_MAC_DOMAIN",
     "REPOSITORY_PRIVACY_MAC_DOMAIN",
     "WrapKeyHandle",
     "WrappedDek",

@@ -56,6 +56,13 @@ from finishup.domain.verification_coverage import (
     verification_coverage_lines,
     verification_coverage_to_json,
 )
+from finishup.domain.workspace_provenance import (
+    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_lines,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.coverage import (
     Coverage,
@@ -64,7 +71,7 @@ from finishup.protocol.coverage import (
     weakest,
 )
 from finishup.protocol.errors import ProtocolValueError
-from finishup.protocol.ids import validate_opaque_item_id
+from finishup.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     ReceiptRedactionProfile,
     SemanticReason,
@@ -115,6 +122,14 @@ __all__ = [
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASONS",
+    "CLIENT_ATTESTED",
+    "CLIENT_ATTESTED_OBSERVATION_LINE",
+    "CLIENT_ATTESTED_WORKSPACE_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE",
+    "client_attested_receipt_block",
+    "workspace_provenance_unknown_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
     "COMPLETION_CLAIM_OUTSIDE_PLAN_GAP",
     "COMPLETION_PLAN_NOT_CLAIMED_GAP",
@@ -203,6 +218,8 @@ __all__ = [
     "VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
+    "OUTSIDE_READS_NOT_LISTED_GAP",
+    "OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE",
     "check_time_change_unavailable_reason_gap",
 ]
 
@@ -436,10 +453,14 @@ CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # carries only the generic code.
 CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "git_unavailable": "Git is not installed where the FinishUP service runs.",
+        "git_unavailable": (
+            "Git is not installed on the computer that read the repository: the one the FinishUP "
+            "service runs on, or, for a remote server, the client machine that holds the project."
+        ),
         "git_version_unsupported": (
-            "the Git where the FinishUP service runs is older than 2.25, the oldest Git FinishUP "
-            "supports."
+            "the Git on the computer that read the repository (the one the FinishUP service runs "
+            "on, or, for a remote server, the client machine that holds the project) is older "
+            "than 2.25, the oldest Git FinishUP supports."
         ),
         "not_git": "the check's directory is not a Git repository.",
         "unsafe_root": (
@@ -468,9 +489,52 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         "no_packet_room": (
             "the review recipe's excerpt budget is too small for any part of the change."
         ),
+        # ADR-051: a claim-bound task's workspace is read only by the FinishUP workspace agent
+        # on the client machine. Here that agent is ``finishup agent run``: a client connection
+        # naming the project starts it only when none holds its lock, and ``server connect``
+        # readies only the connection, so a stuck agent is replaced by ``server disconnect``.
+        "workspace_agent_unavailable": (
+            "the FinishUP workspace agent on the client machine gave no usable answer to the "
+            "server's read of the workspace (it was not connected, did not answer in time, or "
+            "failed), so the server could not see the change. On the client machine, the "
+            "computer that holds the project, any FinishUP tool or hook used in the project "
+            "starts the workspace agent when none is running, so checking again then can help. "
+            "If it fails again, `finishup server status NAME` there shows the connection, and "
+            "`finishup server disconnect NAME` stops a workspace agent that is stuck, so the "
+            "next one starts fresh; then check again."
+        ),
+        "workspace_agent_refused": (
+            "the FinishUP workspace agent on the client machine refused a request the check "
+            "needed as one it does not answer (for a workspace it did not claim, an operation or "
+            "argument it does not know, or a folder no owner could admit), so the server could "
+            "not see the change. This usually means the two computers run different FinishUP "
+            "releases: install the same release on both, run `finishup server disconnect NAME` "
+            "on the client machine, the computer that holds the project, to stop the workspace "
+            "agent still running the old release, and check again."
+        ),
     }
 )
 _CHECK_TIME_CHANGE_REASON_PREFIX: Final = CHECK_TIME_CHANGE_UNAVAILABLE_GAP + "_"
+# ADR-051: the provenance of workspace evidence a claim-bound task's workspace agent returned,
+# and the one fixed line every human rendering of such a task's receipt carries. Fixed words: no
+# host, user, path or target name ever joins it.
+CLIENT_ATTESTED: Final = "client_attested"
+CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
+    "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
+    "attested over the connection; the server did not read the repository itself."
+)
+# ADR-051 (owner decision D4): the lines a receipt's "Workspace evidence" section holds instead
+# when the record that opened its session could not be read, so whether the task is claim-bound is
+# unknown: what happened, why it matters, and what to do for a passing cause or why that cause
+# lasts, one line per cause (``domain.workspace_provenance``, which also gives every receipt format
+# its ``workspace_provenance`` member).
+# ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
+# committed on the client; the service accepted them as attested and verified neither.
+CLIENT_ATTESTED_OBSERVATION_LINE: Final = (
+    "Hook observations were captured on the client machine under its own observation consent "
+    "and delivered over the connection; the server did not verify that consent or the session "
+    "commitments."
+)
 CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS: Final = frozenset(
     _CHECK_TIME_CHANGE_REASON_PREFIX + reason for reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
 )
@@ -503,10 +567,26 @@ TASK_INPUT_BASELINE_UNAVAILABLE_GAP: Final = "task_input_baseline_unavailable"
 # cannot resolve (``cd -``, ``cd $X``, a subshell), so that oracle was left out rather than read
 # as a same-named file elsewhere. A closed disclosure code with no path, on the same terms.
 VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directory_unresolved"
+# ADR-051 decision 5: a server in listed mode whose client's workspace agent left unread an
+# existing file the task names, or a test the agent declared, because the client's owner has not
+# listed its folder for that server (or, for a test in the project, Git ignores it or cannot
+# answer for it). Only those files are missing; the rest of the read reached review. A closed
+# disclosure code with no path, on the same terms as the codes above: it never bounds the
+# receipt's conclusion, and only the owner, on the client machine, can clear it. How many files
+# were kept back is frozen with the check change and the job's case object and reaches the
+# ``semantic_case_built`` diagnostic; the receipt document has no field for a number.
+OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
-    " it: `finishup privacy input-roots add <folder>`."
+    " it, on the computer the FinishUP service runs on (for a remote server, its server host):"
+    " `finishup privacy input-roots add <folder>`."
+)
+OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
+    "Review lacked files outside the folders the owner listed for this server; only the owner can"
+    " allow them, on the client machine: `finishup server folders add NAME FOLDER` for a file"
+    " outside the project, or `finishup server folders mode NAME local` for a server they trust,"
+    " the only way for a test in the project that Git ignores."
 )
 
 
@@ -537,14 +617,32 @@ def check_time_change_gap_sentence(code: str) -> str | None:
         return (
             "The task names a file or folder outside the workspace that AI-powered review may not"
             " read, so the reviewer judged the work without it. Only the owner can let review"
-            " read it, with `finishup privacy input-roots add <folder>` on a trusted terminal; an"
-            " agent cannot, and copying it into the workspace does not help."
+            " read it, with `finishup privacy input-roots add <folder>` in a trusted terminal on"
+            " the computer the FinishUP service runs on. For a remote server that is its server"
+            " host, and the folder must exist there: a folder only on the client machine cannot"
+            " be admitted for a remote server yet. An agent cannot admit it, and copying it into"
+            " the workspace does not help."
+        )
+    if code == OUTSIDE_READS_NOT_LISTED_GAP:
+        return (
+            "This server reads outside the project only the folders the owner listed for it"
+            " (listed mode), so the FinishUP workspace agent on the client machine did not let it"
+            " read some files the task names or tests the agent declared that lie outside them"
+            " (or, for a test in the project, that Git ignores or cannot answer for); the reviewer"
+            " judged the work without just those files. Only the owner can change that, on the"
+            " client machine, the computer that holds the project. For a file outside the"
+            " project, list its folder with `finishup server folders add NAME FOLDER`. For a test"
+            " in the project, listing a folder does not help: stop Git ignoring it, or switch the"
+            " server to local mode, which also reads every file above, with `finishup server"
+            " folders mode NAME local`, only for a server they trust as they trust FinishUP on"
+            " that computer. Checking again then reads them. An agent cannot."
         )
     if code == TASK_INPUT_BASELINE_UNAVAILABLE_GAP:
         return (
             "Review read a task-named file outside the workspace as it is now. FinishUP kept no"
             " copy from when the task started or first named it, so the reviewer could not tell"
-            " whether the agent changed it."
+            " whether the agent changed it. A copy is kept only of a file review may read at that"
+            " moment, so letting review read its folder before the task starts keeps one."
         )
     if code == VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP:
         return (
@@ -2897,6 +2995,10 @@ def _declared_none_reason_for_render(document: ReceiptDocument) -> str | None:
 
 _HUMAN_TEXT_MAX: Final = 32_768
 _HUMAN_TEXT_MARKER_RESERVE: Final = 900
+# The longest closing section ``render_receipt_human`` admits (the "Workspace evidence" section a
+# claim-bound or provenance-unknown receipt ends with). Its room is taken from the bound before
+# any other section is placed, so the section is never cut and never pushes the text past it.
+_HUMAN_TEXT_TRAILER_MAX: Final = 2_048
 _HUMAN_TEXT_MARKER_NAMES: Final = 10
 # Who is granted room first when a long receipt must be shortened (tb4n3 RC-2, A7). Every section
 # keeps at least its heading and a "not shown" line, so no section silently disappears; these
@@ -2973,7 +3075,7 @@ def _human_block_variants(block: str) -> tuple[str, ...]:
     return tuple(variants)
 
 
-def _bound_human_text(parts: list[str], history_title: str) -> str:
+def _bound_human_text(parts: list[str], history_title: str, *, trailer: str = "") -> str:
     """Join the blocks, shortening by section when they exceed the bound (tb4n3 RC-2, A7).
 
     The old cut took the head of the joined text, so a long receipt silently lost whichever
@@ -2981,11 +3083,17 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     -- under a generic marker. Each block now keeps at least its heading and a line saying its
     content was not shown, disclosures and limitations are shortened last, and the marker names
     every shortened section.
+
+    A non-empty ``trailer`` is the closing section, kept whole after everything else: its room is
+    reserved first, so the joined text, the truncation marker included, plus the trailer never
+    exceed the bound (ADR-051, decision D4).
     """
 
+    tail = "\n\n" + trailer if trailer else ""
+    limit = _HUMAN_TEXT_MAX - len(tail)
     text = "\n\n".join(parts)
-    if len(text) <= _HUMAN_TEXT_MAX:
-        return text
+    if len(text) <= limit:
+        return text + tail
     names = [_human_block_name(part) for part in parts]
     blocks = [
         Part(
@@ -2997,7 +3105,7 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     ]
     composed = compose_parts(
         blocks,
-        _HUMAN_TEXT_MAX - _HUMAN_TEXT_MARKER_RESERVE,
+        limit - _HUMAN_TEXT_MARKER_RESERVE,
         sep="\n\n",
         ascii_only=False,
     )
@@ -3012,8 +3120,9 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
         + "The structured receipt (format json) holds every section in full.]"
     )
     return (
-        clip_to_limit(composed.text, _HUMAN_TEXT_MAX - len(marker), marker="...", ascii_only=False)
+        clip_to_limit(composed.text, limit - len(marker), marker="...", ascii_only=False)
         + marker
+        + tail
     )
 
 
@@ -3035,15 +3144,30 @@ def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
     return [f"Continuation: {directive.token}", f"Next: {directive.directive}"]
 
 
-def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
+def render_receipt_human(
+    document: ReceiptDocument, *, markdown: bool, trailer: str | None = None
+) -> str:
     """Project the canonical receipt sections into markdown or plain-text ``human_text``.
 
     JSON receipts carry the structured document; markdown/text receipts keep ``document``
     null by format and must still expose limitations and finding-count distinctions here
     (#437, #429). Compact one-line wording remains ``render_receipt_compact``.
+
+    ``trailer`` is a closing section that is not part of the stored document: the fixed
+    "Workspace evidence" section of a claim-bound or provenance-unknown receipt (ADR-051,
+    decision D4). The text ends with it whole, and the other sections are shortened around it, so
+    the result still fits the 32,768-character wire bound; appending it afterwards could push a
+    long receipt past the bound and make it undeliverable.
     """
 
-    if type(document) is not ReceiptDocument or type(markdown) is not bool:
+    if (
+        type(document) is not ReceiptDocument
+        or type(markdown) is not bool
+        or not (
+            trailer is None
+            or (type(trailer) is str and 0 < len(trailer) <= _HUMAN_TEXT_TRAILER_MAX)
+        )
+    ):
         raise ProtocolValueError("invalid_receipt_document")
     parts: list[str] = []
     for section in document.sections:
@@ -3324,13 +3448,13 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
+    if not parts:
+        compact = render_receipt_compact(document)
+        parts = [compact] if compact else []
     text = (
-        _bound_human_text(
-            parts,
-            HISTORICAL_GAPS_SECTION_TITLE,
-        )
+        _bound_human_text(parts, HISTORICAL_GAPS_SECTION_TITLE, trailer=trailer or "")
         if parts
-        else render_receipt_compact(document)
+        else ""
     )
     if not text:
         raise ProtocolValueError("invalid_receipt_document")
@@ -3592,3 +3716,52 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         prefix + "no unresolved local findings were recorded. Coverage is current cooperative "
         "local evidence; this is not proof of correctness."
     )
+
+
+def client_attested_receipt_block(
+    service_instance_id: str, *, markdown: bool, hook_observed: bool = False
+) -> str:
+    """The section a claim-bound task's text or markdown receipt ends with (ADR-051).
+
+    The fixed provenance line, then, when the task holds hook-observed evidence, the fixed
+    client-attested observation line (decision 12), then the serving service by its own instance
+    id and the closed binding token of the connection it served; nothing user-controlled.
+    """
+
+    validate_id(IdKind.SERVICE_INSTANCE, service_instance_id)
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return "\n".join(
+        (
+            heading,
+            CLIENT_ATTESTED_WORKSPACE_LINE,
+            *((CLIENT_ATTESTED_OBSERVATION_LINE,) if hook_observed else ()),
+            f"Served by FinishUP service {service_instance_id} (connection: client_claim).",
+        )
+    )
+
+
+def workspace_provenance_unknown_block(*, markdown: bool, reason: WorkspaceProvenanceReason) -> str:
+    """The section a receipt ends with when its claim binding is unknown (ADR-051, decision D4).
+
+    The record that opened the task's session could not be read. ``reason`` names the cause and
+    picks the last line, which says only what is true of it (decision D4b): a passing cause
+    (``session_opening_unreadable``: the ledger read failed or the record did not load) says to run
+    receipt again and then restart the server's service; a lasting one says why no retry or
+    restart reads the record and how long the receipt will keep saying so, with no retry or
+    restart advice (``session_opening_redacted`` and ``session_opening_erased``: it will not become
+    readable again; ``session_opening_key_unavailable``: while the server lacks its key;
+    ``session_opening_format_unknown``: until the server runs a FinishUP version that knows the
+    format; ``session_opening_copy_unverifiable``: for as long as its stored copy is missing or
+    fails its integrity check). The receipt is still built, and this section says what happened,
+    why it matters and whether a retry can help, rather than leave the section out. Fixed words;
+    nothing user-controlled. Any other ``reason`` is ``invalid_receipt_document``.
+    """
+
+    if type(markdown) is not bool:
+        raise ProtocolValueError("invalid_receipt_document")
+    try:
+        lines = workspace_provenance_unknown_lines(reason)
+    except ValueError as exc:
+        raise ProtocolValueError("invalid_receipt_document") from exc
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return "\n".join((heading, *lines))

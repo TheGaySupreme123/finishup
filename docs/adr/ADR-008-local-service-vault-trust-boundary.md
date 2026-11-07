@@ -526,3 +526,68 @@ weakens the at-rest boundary on those machines.
   - A pre-existing entry still blocks initialization rather than being adopted.
   - The agent-chat `vault_initialize` lane (ADR-015) now succeeds on these machines through the
     same helper-generated secret.
+
+## Amendment proposed by ADR-051 (2026-11-05)
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets a client
+use a FinishUP service on another machine that the same owner runs. Once it is accepted, this
+record changes as follows. The vault, its states, the confidential channels and the local
+ceremonies are unchanged on whichever host runs the service.
+
+- **The trusted authority is the selected target's service.** The trust-boundary row "Per-user
+  local FinishUP service" reads "the selected target's FinishUP service": the ambient local
+  service by default, a named local service, or the owner's service on another machine. A client
+  machine using a remote target holds no vault, ledger or decrypted state.
+- **Invariant 6, for the shared decisions.** Human-control (YZH1) and secret-ingress (YZS1)
+  endpoints are never forwarded, tunnelled or exposed beyond the service host; unlock, consent and
+  the owner receipt view run only there. The ordinary control channel is reached from another
+  machine only through the route the target's kind defines, never through a caller-selected
+  endpoint or caller content.
+- **The workspace agent.** A new narrowly trusted client-side component answers bounded workspace
+  calls for its own claimed workspace, using the existing local adapters and their fences. It has
+  no vault, storage, policy, provider or ceremony authority, and it never runs a command outside
+  the repository's owner-approved check policy. Its results are client-attested evidence, not
+  service reads.
+- **A new credential class: the target credential.** An API key (later an OAuth token) that
+  authenticates a client to a remote edge. It is kept in the OS credential store under
+  `yoetz.server-credential.v1`, or in the owner-only file store where none is usable; it never
+  appears in argv, the environment, `target.json`, a registration, a log, hook output, an MCP frame
+  or JSON output. It grants no vault, unlock or policy authority, and its scope bounds the methods
+  it reaches. As with auto-unlock custody (2026-10-19 amendment), software running as the same
+  user can read it.
+- **Selection (lines on the peer model).** "It never accepts a caller-selected endpoint" still
+  holds: owner-written target configuration alone selects the endpoint, and nothing an agent,
+  request body, repository or environment variable supplies can switch it.
+
+This pull request takes approach C, the server-native network API (ADR-051, topology section):
+the service itself serves a network API when its `[network]` table asks for one, so invariant 6
+changes at its root.
+
+- **Invariant 6 becomes:** "The service's *Unix* control, human-control and secret endpoints are
+  never TCP, never network-reachable and never forwarded. When the owner configures `[network]`,
+  the service additionally serves its network API itself: on TCP listeners that speak TLS (plain
+  HTTP only on a loopback address the owner opted into, behind a same-host TLS proxy), and on an
+  owner-only, peer-UID-checked Unix socket that an SSH client forwards to. Every TCP request
+  authenticates a hashed, scoped, revocable API key; any `Origin` header is refused; nothing
+  answers before authentication; and service stop, backup, restore, migrate, integration,
+  observation administration, unlock, consent and the owner receipt view are never reachable
+  through it." Without `[network]` the original invariant holds unchanged: the service opens no
+  network listener at all.
+- **The cost, stated plainly.** TLS and HTTP parsing run in the process that holds the vault. The
+  attack surface is the TLS stack, the HTTP parser (h11), the router and the key check, all before
+  any vault-backed code runs; requests are bounded in size, concurrency and wait. Independent
+  security review of this listener is required before the amendment is accepted.
+- **Trust table rows added.** *Network API listener* (inside the service): narrowly trusted to
+  authenticate keys, apply their scope, key a client's workspace claim by the key's principal and
+  never resolve a path, and dispatch exactly the allowed control methods; it adds no vault,
+  storage or policy authority beyond the methods it dispatches; it keys a claim with the
+  service's own installation MAC and hands calls to the same workspace hub a claim-bound socket
+  connection uses. *Workspace agent process* (`finishup agent run`, client host, no vault):
+  answers bounded workspace calls for the workspaces its own client processes noted, with the
+  same local adapters and fences a local service uses, and delivers the observation rows its
+  client captured, each attested from the client's own store (ADR-051 decision 12).
+- **Who reads the target credential:** every client process that dials an HTTPS or local-port
+  target (hooks, the MCP bridge, the CLI, the terminal interface, the workspace agent) reads it
+  from the target's credential store. This is weaker than a single holder; it matches today's
+  same-user access to auto-unlock custody, and no surface an agent reaches reveals or switches it.
+  SSH targets use no FinishUP credential.

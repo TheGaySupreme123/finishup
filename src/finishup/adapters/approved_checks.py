@@ -13,17 +13,25 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Final
 
 from finishup.adapters.check_sandbox import default_check_sandbox
 from finishup.observability.privacy import redact_high_confidence_content
+from finishup.ports.approved_checks import (
+    APPROVED_CHECK_FORMAT,
+    MAX_APPROVED_CHECK_OUTPUT_BYTES,
+    ApprovedCheckApproval,
+    ApprovedCheckOutcome,
+    ApprovedCheckResult,
+    ApprovedCheckStatus,
+    approval_commitment,
+    approved_check_result_digest,
+)
 from finishup.ports.check_sandbox import CheckSandboxPort, CheckSandboxStatus
 from finishup.ports.subject_state import LocalWorkspaceHandle
-from finishup.protocol.canonical import JsonValue, canonical_digest
 from finishup.protocol.errors import ProtocolValueError
 
 __all__ = [
@@ -37,14 +45,7 @@ __all__ = [
     "approval_commitment",
 ]
 
-APPROVED_CHECK_FORMAT: Final = "yoetz.approved-check/1"
 _DEFAULT_TIMEOUT_SECONDS: Final = 30.0
-_MAX_OUTPUT_BYTES: Final = 65_536
-_MAX_ARGV: Final = 32
-_MAX_ARG_BYTES: Final = 512
-_TOKEN_CHARS: Final = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/+-="
-)
 _REAP_DEADLINE_SECONDS: Final = 5.0
 # Once the leader is reaped and no group member is waitable by us, the only way the group can
 # still disappear is an external reaper (init/launchd). Give that a short grace window instead
@@ -54,66 +55,6 @@ _REAP_NO_PROGRESS_SECONDS: Final = 0.5
 # so this only pays for stragglers the check left behind.
 _COMPLETED_DRAIN_SECONDS: Final = 1.0
 _PR_SET_CHILD_SUBREAPER: Final = 36
-
-
-class ApprovedCheckStatus(str, Enum):  # noqa: UP042 - exact wire enum
-    PASSED = "passed"
-    FAILED = "failed"
-    REJECTED = "rejected"
-    TIMEOUT = "timeout"
-    STALE = "stale"
-
-
-class ApprovedCheckOutcome(str, Enum):  # noqa: UP042 - exact wire enum
-    SUCCESS = "success"
-    NONZERO_EXIT = "nonzero_exit"
-    NOT_APPROVED = "not_approved"
-    UNSAFE_ARGV = "unsafe_argv"
-    NETWORK_DENIED = "network_denied"
-    SANDBOX_UNAVAILABLE = "sandbox_unavailable"
-    OUTPUT_TRUNCATED = "output_truncated"
-    TIMEOUT = "timeout"
-    EXEC_FAILED = "exec_failed"
-    SUBJECT_STATE_MISMATCH = "subject_state_mismatch"
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovedCheckApproval:
-    """Commitment-backed approval for one exact argv under a workspace policy."""
-
-    approval_id: str
-    argv: tuple[str, ...]
-    allow_network: bool
-    timeout_seconds: float
-    approval_commitment: str
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.approval_id) is not str
-            or not self.approval_id
-            or len(self.approval_id) > 128
-            or type(self.argv) is not tuple
-            or not 1 <= len(self.argv) <= _MAX_ARGV
-            or type(self.allow_network) is not bool
-            or type(self.timeout_seconds) is not float
-            or not 0.1 <= self.timeout_seconds <= 300.0
-            or type(self.approval_commitment) is not str
-            or not self.approval_commitment.startswith("sha256:")
-        ):
-            raise ProtocolValueError("invalid_approved_check")
-        for arg in self.argv:
-            if (
-                type(arg) is not str
-                or not arg
-                or len(arg.encode("utf-8")) > _MAX_ARG_BYTES
-                or any(ch not in _TOKEN_CHARS and ch not in {":", "@"} for ch in arg)
-            ):
-                raise ProtocolValueError("invalid_approved_check")
-        expected = approval_commitment(
-            self.approval_id, self.argv, allow_network=self.allow_network
-        )
-        if self.approval_commitment != expected:
-            raise ProtocolValueError("invalid_approved_check")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,61 +74,6 @@ class ApprovedCheckCommand:
                 continue
             if type(digest) is not str or not digest.startswith("sha256:") or len(digest) != 71:
                 raise ProtocolValueError("invalid_approved_check")
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovedCheckResult:
-    status: ApprovedCheckStatus
-    outcome: ApprovedCheckOutcome
-    exit_status: int | None
-    output_digest: str | None
-    output_bytes: int
-    subject_state_digest: str
-    approval_commitment: str
-    result_digest: str
-    duration_ms: int
-
-    def __post_init__(self) -> None:
-        if type(self.status) is not ApprovedCheckStatus:
-            raise ProtocolValueError("invalid_approved_check")
-        if type(self.outcome) is not ApprovedCheckOutcome:
-            raise ProtocolValueError("invalid_approved_check")
-        if self.exit_status is not None and (
-            type(self.exit_status) is not int or not 0 <= self.exit_status <= 255
-        ):
-            raise ProtocolValueError("invalid_approved_check")
-        if self.output_digest is not None and (
-            type(self.output_digest) is not str
-            or not self.output_digest.startswith("sha256:")
-            or len(self.output_digest) != 71
-        ):
-            raise ProtocolValueError("invalid_approved_check")
-        if type(self.output_bytes) is not int or not 0 <= self.output_bytes <= _MAX_OUTPUT_BYTES:
-            raise ProtocolValueError("invalid_approved_check")
-        if (
-            type(self.subject_state_digest) is not str
-            or not self.subject_state_digest.startswith("sha256:")
-            or type(self.approval_commitment) is not str
-            or not self.approval_commitment.startswith("sha256:")
-            or type(self.result_digest) is not str
-            or not self.result_digest.startswith("sha256:")
-            or type(self.duration_ms) is not int
-            or self.duration_ms < 0
-        ):
-            raise ProtocolValueError("invalid_approved_check")
-
-
-def approval_commitment(approval_id: str, argv: Sequence[str], *, allow_network: bool) -> str:
-    """Return the commitment for one exact approved argv (not freeform shell)."""
-
-    return canonical_digest(
-        {
-            "format": APPROVED_CHECK_FORMAT,
-            "approval_id": approval_id,
-            "argv": tuple(argv),
-            "allow_network": allow_network,
-        }
-    )
 
 
 def _owner_private_temp_dirs() -> tuple[Path, Path, tempfile.TemporaryDirectory[str]]:
@@ -491,10 +377,23 @@ class ApprovedCheckRunner:
         *,
         sandbox: CheckSandboxPort | None = None,
         output_sink: Callable[[bytes, bool], None] | None = None,
+        run_seconds_cap: float | None = None,
     ) -> None:
+        """``run_seconds_cap`` ends a run sooner than its approval's own timeout.
+
+        A client workspace agent (ADR-051) sets it so a check's timeout result still reaches the
+        server within the call's deadline; the run then ends ``timeout`` at the cap. None, the
+        default, runs every check to its approval's timeout exactly as before.
+        """
+
+        if run_seconds_cap is not None and (
+            type(run_seconds_cap) is not float or not run_seconds_cap > 0.0
+        ):
+            raise ValueError("approved_check_run_cap_invalid")
         self._approvals = dict(approvals or {})
         self._sandbox = sandbox if sandbox is not None else default_check_sandbox()
         self._output_sink = output_sink
+        self._run_seconds_cap = run_seconds_cap
 
     def register(self, approval: ApprovedCheckApproval) -> None:
         self._approvals[approval.approval_commitment] = approval
@@ -613,8 +512,12 @@ class ApprovedCheckRunner:
                 process_group_id = process.pid
             stdout, truncated = _bounded_communicate(
                 process,
-                stdout_limit=_MAX_OUTPUT_BYTES,
-                timeout_seconds=approval.timeout_seconds,
+                stdout_limit=MAX_APPROVED_CHECK_OUTPUT_BYTES,
+                timeout_seconds=(
+                    approval.timeout_seconds
+                    if self._run_seconds_cap is None
+                    else min(approval.timeout_seconds, self._run_seconds_cap)
+                ),
             )
             _drain_completed_check_group(process, process_group_id)
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -693,17 +596,6 @@ class ApprovedCheckRunner:
         approval_commitment_value: str,
         duration_ms: int,
     ) -> ApprovedCheckResult:
-        payload: dict[str, JsonValue] = {
-            "format": APPROVED_CHECK_FORMAT,
-            "status": status.value,
-            "outcome": outcome.value,
-            "exit_status": exit_status,
-            "output_digest": output_digest,
-            "output_bytes": output_bytes,
-            "subject_state_digest": subject_state_digest,
-            "approval_commitment": approval_commitment_value,
-            "duration_ms": duration_ms,
-        }
         return ApprovedCheckResult(
             status=status,
             outcome=outcome,
@@ -712,6 +604,15 @@ class ApprovedCheckRunner:
             output_bytes=output_bytes,
             subject_state_digest=subject_state_digest,
             approval_commitment=approval_commitment_value,
-            result_digest=canonical_digest(payload),
+            result_digest=approved_check_result_digest(
+                status,
+                outcome,
+                exit_status,
+                output_digest,
+                output_bytes,
+                subject_state_digest,
+                approval_commitment_value,
+                duration_ms,
+            ),
             duration_ms=duration_ms,
         )

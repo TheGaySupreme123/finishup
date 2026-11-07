@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from finishup.config.load import load_config, validate_config_mapping
 from finishup.config.models import (
@@ -503,6 +503,11 @@ def _emit_table(lines: list[str], header: str, mapping: Mapping[str, object]) ->
             lines.append(f"{key} = {raw}")
         elif type(raw) is str:
             lines.append(f"{key} = {_toml_str(raw)}")
+        elif type(raw) is tuple and all(
+            type(item) is str for item in cast(tuple[object, ...], raw)
+        ):
+            items = ", ".join(_toml_str(cast(str, item)) for item in cast(tuple[object, ...], raw))
+            lines.append(f"{key} = [{items}]")
         else:
             raise ConfigError("config_value_invalid", safe_name=key[:256])
     lines.append("")
@@ -644,6 +649,16 @@ def render_config_toml(config: FinishUpConfig) -> str:
                 "timeout_seconds": local.timeout_seconds,
             },
         )
+
+    if config.network is not None:
+        # ADR-051: the service's own network API. Paths only; keys live in the service state.
+        network = config.network
+        table: dict[str, object] = {"listen": network.listen, "api_socket": network.api_socket}
+        if network.tls_cert is not None and network.tls_key is not None:
+            table["tls_cert"] = network.tls_cert
+            table["tls_key"] = network.tls_key
+        table["allow_plain_loopback"] = network.allow_plain_loopback
+        _emit_table(lines, "network", table)
 
     text = "\n".join(lines).rstrip() + "\n"
     # Round-trip through the canonical loader rule, not raw strict validation: a rendered

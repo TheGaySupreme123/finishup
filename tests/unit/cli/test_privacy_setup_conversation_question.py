@@ -12,17 +12,18 @@ from tests.unit.cli.test_privacy_setup import (
 
 import finishup.cli.privacy_setup as module
 from builders.privacy_policies import local_only_policy, minimal_external_policy
+from finishup.cli.policy_server import PendingProposal
 from finishup.domain.privacy import ConversationReview, PrivacyPolicy, ProviderBinding
 
 
 def _capture(monkeypatch: pytest.MonkeyPatch) -> list[PrivacyPolicy]:
     proposed: list[PrivacyPolicy] = []
 
-    async def propose(candidate: PrivacyPolicy, _digest: str, **_: object) -> str:
+    async def propose(candidate: PrivacyPolicy, _digest: str, **_: object) -> PendingProposal:
         proposed.append(candidate)
-        return "pvp_1"
+        return PendingProposal("pvp_1")
 
-    monkeypatch.setattr(module, "_propose", propose)
+    monkeypatch.setattr(module, "_propose_pending", propose)
     return proposed
 
 

@@ -43,6 +43,7 @@ from finishup.domain.privacy import (
 )
 from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
+    OUTSIDE_READS_NOT_LISTED_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,
     check_time_change_gap_sentence,
@@ -201,6 +202,7 @@ async def _composition(
     flagged: bool,
     statement: str | None = None,
     captures: list[Mapping[str, object]] | None = None,
+    not_listed: int = 0,
 ) -> tuple[FrozenCase, TaskRuntime, _PacketPrivacy, _Evaluator, list[Mapping[str, object]]]:
     from unit.application.test_review_follow_up import (
         _stale_edit_case,  # pyright: ignore[reportPrivateUsage]
@@ -209,7 +211,12 @@ async def _composition(
     built, captured, scope, change = _stale_edit_case(lead_first=True)
     change = CheckTimeChange(
         change.object_ref,
-        replace(change.capture, base_commit="a" * 40, outside_inputs_not_admitted=flagged),
+        replace(
+            change.capture,
+            base_commit="a" * 40,
+            outside_inputs_not_admitted=flagged,
+            outside_inputs_not_listed=not_listed,
+        ),
     )
     counts: list[Mapping[str, object]] = []
     recorded = ready_composition_module.record_bounded_counts_without_raising
@@ -217,6 +224,9 @@ async def _composition(
     def record(**kwargs: Any) -> str:
         if kwargs.get("operation") == "semantic_case_built":
             counts.append(cast(Mapping[str, object], kwargs["counts"]))
+        elif kwargs.get("operation") == "semantic_outside_reads_not_listed":
+            # ADR-051 decision 5: what listed mode kept back, in its own record.
+            counts.append({"not_listed_record": 1, **cast(Mapping[str, object], kwargs["counts"])})
         return recorded(**kwargs)
 
     async def resolve(**kwargs: object) -> CapturedContentResolution:
@@ -325,6 +335,41 @@ async def test_a_task_naming_an_unadmitted_outside_file_records_the_owner_step_c
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("not_listed", (2, 0), ids=("not-listed", "listed"))
+async def test_inputs_a_remote_servers_listed_mode_left_unread_record_the_owner_code(
+    monkeypatch: pytest.MonkeyPatch, not_listed: int
+) -> None:
+    """ADR-051 decision 5: the client's agent left task-named inputs unread because its owner has
+    not listed their folder for this server. The rest of the change still reaches review, and
+    the frozen count becomes the closed code ``outside_reads_not_listed``, whose fixed sentence
+    names the owner's two ways out, and the diagnostic counts them; replay recovers the same
+    case."""
+
+    frozen, runtime, privacy, evaluator, counts = await _composition(
+        memory_adapter(append_command()), monkeypatch, flagged=False, not_listed=not_listed
+    )
+
+    first = await evaluator(frozen, (), runtime)
+
+    assert first is not None and first.judgment is not None
+    assert (OUTSIDE_READS_NOT_LISTED_GAP in first.case_content_gaps) is bool(not_listed)
+    assert _CODE not in first.case_content_gaps
+    ((packet),) = privacy.packets
+    assert (OUTSIDE_READS_NOT_LISTED_GAP.encode() in packet) is bool(not_listed)
+    # The case's own record never carries the count (it is at the diagnostic line bound); a
+    # record of its own does, and only when listed mode kept something back.
+    assert "semantic_task_inputs_outside_not_listed" not in counts[0]
+    kept = [row for row in counts if row.get("not_listed_record") == 1]
+    assert [row["semantic_task_inputs_outside_not_listed"] for row in kept] == (
+        [not_listed] if not_listed else []
+    )
+    assert first.operation_lease is not None
+    again = await evaluator(FrozenCase(frozen.case, first.operation_lease), (), runtime)
+    assert again is not None and again.case_content_gaps == first.case_content_gaps
+    assert len(privacy.packets) == 1
+
+
+@pytest.mark.anyio
 async def test_an_object_frozen_without_the_flag_records_no_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -418,3 +463,58 @@ def test_every_surface_renders_the_owner_step_and_no_path() -> None:
     assert _SENTENCE in str(receipt_document_to_json(receipt))
     assert _SENTENCE in render_receipt_human(receipt, markdown=True)
     assert _SENTENCE in render_receipt_human(receipt, markdown=False)
+
+
+def test_every_surface_renders_the_listed_mode_line_and_no_path() -> None:
+    """ADR-051 decision 5: the line for files a remote server's listed mode kept from review
+    reaches the CLI check, the MCP check summary (beside the #1102 step, never hiding it) and
+    the receipt (JSON, markdown, text), with both ways out and no path."""
+
+    from finishup.cli.render import render_human_check
+    from finishup.domain.receipts import OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE
+    from finishup.kernel.deterministic_checks import CaseGap
+    from finishup.mcp.summaries import summary_for_check
+    from finishup.protocol.models import CheckSuccessModel
+    from unit.kernel.test_receipt_builder import (
+        _build,  # pyright: ignore[reportPrivateUsage]
+        _context,  # pyright: ignore[reportPrivateUsage]
+        _coverage,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    code = OUTSIDE_READS_NOT_LISTED_GAP
+    sentence = check_time_change_gap_sentence(code)
+    assert sentence is not None
+    for gaps in ((code,), (CHECK_TIME_CHANGE_UNAVAILABLE_GAP, code), (_CODE, code)):
+        summary = summary_for_check(
+            {"verdict": "insufficient_coverage", "coverage": {"known_gaps": list(gaps)}}
+        )
+        assert sentence in summary or OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE in summary
+        assert "finishup server folders add NAME FOLDER" in summary
+        if _CODE in gaps:
+            assert _OWNER_STEP in summary
+        check = CheckSuccessModel.model_construct(
+            verdict="insufficient_coverage",
+            semantic_status="succeeded",
+            semantic_reason="semantic_completed",
+            semantic_route_required=False,
+            findings=(),
+            review_mode=None,
+            totals=None,
+            observations_awaited=None,
+            review_input_manifest=None,
+            semantic_provenance=None,
+            suppressed_count=0,
+            coverage=SimpleNamespace(known_gaps=gaps),
+        )
+        assert sentence in render_human_check(check)
+    context = _context(
+        coverage=replace(_coverage(), known_gaps=("check_not_recorded", code)),
+        gaps=(
+            CaseGap("check_not_recorded", "check_not_recorded", ()),
+            CaseGap(code, code, ()),
+        ),
+    )
+    receipt = _build(context)
+    assert sentence in str(receipt_document_to_json(receipt))
+    assert sentence in render_receipt_human(receipt, markdown=True)
+    assert sentence in render_receipt_human(receipt, markdown=False)

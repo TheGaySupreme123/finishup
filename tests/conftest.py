@@ -124,6 +124,47 @@ def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[repor
 
 
 @pytest.fixture(autouse=True)
+def _fresh_server_selection() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Resolve the server selection afresh in every test (ADR-051).
+
+    ``active_root()`` memoizes the selection once per process, as an MCP bridge must; a test that
+    rebases the ambient directories or writes a selection would otherwise leak its answer into
+    the next test in the same process.
+    """
+
+    try:
+        from finishup.config.paths import reset_selection_memo
+    except ImportError:
+        yield
+        return
+    reset_selection_memo()
+    yield
+    reset_selection_memo()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_server_selection_read(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the zero-network item from reading the developer's real server selection (ADR-051).
+
+    After a privacy policy change, and on the setup, server, menu and terminal surfaces, FinishUP
+    reads the owner-only selection file and, when it names a remote server, asks this computer's
+    running service for its policy. A test that builds no ambient home of its own would read the
+    machine's real selection and could reach a live service, so the read answers "no selection"
+    unless a test puts ``read_selection_on_disk`` back (the zero-network tests do, in their own
+    ambient home). The import is inside the fixture for the dependency-free collection reason
+    above.
+    """
+
+    try:
+        import finishup.cli.zero_network_selection as zero_network_module
+    except ImportError:
+        return
+    monkeypatch.setattr(zero_network_module, "_selection_on_disk", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

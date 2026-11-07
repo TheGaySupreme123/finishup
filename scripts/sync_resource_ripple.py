@@ -21,7 +21,7 @@ _SCRIPT_ROOT = Path(__file__).resolve().parent
 _DEFAULT_REPO_ROOT = _SCRIPT_ROOT.parent
 
 _MAX_PASSES: Final = 5
-_VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.3.0.schema.json"
+_VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.4.0.schema.json"
 _OWNED_ROOTS: Final = (
     "schemas",
     "src/finishup/resources",
@@ -45,7 +45,7 @@ from finishup.version import build_version_manifest, version_manifest_json
 # catalog loader used by every public request before claiming the package is usable.
 load_schema_catalog()
 schema = json.loads(
-    pathlib.Path("schemas/version/version-manifest-2.3.0.schema.json").read_bytes()
+    pathlib.Path("schemas/version/version-manifest-2.4.0.schema.json").read_bytes()
 )
 document = json.loads(version_manifest_json(build_version_manifest(), include_resources=True))
 Draft202012Validator(schema).validate(document)
@@ -181,6 +181,9 @@ def _check(repo_root: Path) -> bool:
         and _run(repo_root, "generate_result_verification_fixture.py", "--check")
         and _run(repo_root, "generate_verification_coverage_fixture.py", "--check")
         and _run(repo_root, "generate_review_result_delivery_fixture.py", "--check")
+        and _run(repo_root, "generate_observation_status_fixture.py", "--check")
+        and _run(repo_root, "generate_control_capture_fixture.py", "--check")
+        and _run(repo_root, "generate_control_handshake_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
         and _run(repo_root, "verify_resource_manifest.py", "--check")
         and _installed_manifest_agrees_with_schema(repo_root)
@@ -212,6 +215,8 @@ def _write_pass(repo_root: Path) -> bool:
             "--only",
             "operations/receipt-result-1.4.0.schema.json",
             "--only",
+            "operations/receipt-result-1.5.0.schema.json",
+            "--only",
             "operations/status-result-1.5.0.schema.json",
             "--only",
             "operations/status-request-1.3.0.schema.json",
@@ -238,6 +243,9 @@ def _write_pass(repo_root: Path) -> bool:
         ("generate_publish_action_notices_fixture.py", "--write"),
         ("generate_publish_server_filled_fixture.py", "--write"),
         ("generate_review_result_delivery_fixture.py", "--write"),
+        ("generate_observation_status_fixture.py", "--write"),
+        ("generate_control_capture_fixture.py", "--write"),
+        ("generate_control_handshake_fixture.py", "--write"),
         (
             "generate_schemas.py",
             "--write",
@@ -258,6 +266,8 @@ def _write_pass(repo_root: Path) -> bool:
             "operations/check-result-1.7.0.schema.json",
             "--only",
             "operations/receipt-result-1.4.0.schema.json",
+            "--only",
+            "operations/receipt-result-1.5.0.schema.json",
             "--only",
             "operations/status-result-1.5.0.schema.json",
             "--only",
@@ -291,7 +301,9 @@ def _write_pass(repo_root: Path) -> bool:
             "--only",
             "integrations/setup-status-2.0.0.schema.json",
             "--only",
-            "service/isolation-report-1.0.0.schema.json",
+            "service/isolation-report-1.1.0.schema.json",
+            "--only",
+            "service/server-target-status-1.0.0.schema.json",
         ),
         ("sync_repository_authority_schemas.py", "--write"),
         ("sync_semantic_capacity_schemas.py",),

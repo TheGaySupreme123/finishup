@@ -44,6 +44,14 @@ _FORBIDDEN: Final = (
     "finishup.domain.events",
     "finishup.application.recommendations",
     "finishup.application.package_update",
+    # ADR-051: a hook never loads a network client, the credential store, or a target runtime.
+    # A transport an approach adds for HTTPS targets loads lazily, only for such a target.
+    "httpx",
+    "keyring",
+    "finishup.client.connector",
+    "finishup.client.transports",
+    "finishup.client.credentials",
+    "finishup.client.target_runtime",
 )
 # Drift ceiling: the measured set after the diet is well under this, so a
 # future eager import shows up here even if it is not on the named list.
@@ -96,6 +104,14 @@ def test_observe_hooks_module_import_set_is_bounded() -> None:
         f"the hook import graph grew to {len(loaded)} modules; every one of them "
         "is paid on every tool call"
     )
+
+
+def test_client_targets_module_is_hook_safe() -> None:
+    """ADR-051: a hook may read the server selection and target records; that costs no more."""
+
+    loaded = set(_modules("import finishup.client.targets"))
+    offenders = sorted(loaded & set(_FORBIDDEN))
+    assert not offenders, f"finishup.client.targets eagerly imported {offenders}"
 
 
 def test_finishup_application_package_import_is_lazy() -> None:

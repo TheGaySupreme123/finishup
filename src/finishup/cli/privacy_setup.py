@@ -34,6 +34,7 @@ from finishup.adapters.providers.data_use_catalog import data_use_record_for_end
 from finishup.adapters.providers.openai_responses_factory import (
     endpoint_profile_data_use_reviewed,
 )
+from finishup.cli.policy_server import PendingProposal, selected_policy_server
 from finishup.domain.privacy import (
     MAX_ADMITTED_INPUT_ROOTS,
     AuthorizationScopeKind,
@@ -194,6 +195,9 @@ class PrivacySetupReport:
     reason: str | None = None
     grant_state: Literal["granted", "missing"] | None = None
     migration_state: str | None = None
+    # The server's expiry of ``proposal_id`` when the proposal waits on a remote server's host
+    # for its decision (``requires_server_host``, ADR-051 decision 8); ``None`` otherwise.
+    expires_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1435,8 +1439,29 @@ async def _propose(
     authority_digest: str,
     *,
     workspace_locator: Path | None = None,
+    prompt: bool = True,
 ) -> str | None:
-    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+    """Propose ``candidate``: ``None`` once a tightening applied, else the waiting proposal's id."""
+
+    pending = await _propose_pending(
+        candidate, authority_digest, workspace_locator=workspace_locator, prompt=prompt
+    )
+    return None if pending is None else pending.proposal_id
+
+
+async def _propose_pending(
+    candidate: PrivacyPolicy,
+    authority_digest: str,
+    *,
+    workspace_locator: Path | None = None,
+    prompt: bool = True,
+) -> PendingProposal | None:
+    """Propose ``candidate``: ``None`` once a tightening applied, else the waiting proposal.
+
+    The proposal carries the server's expiry, which the questionnaire names when the proposal
+    waits on a remote server's host for its decision (ADR-051 decision 8).
+    """
+
     from finishup.cli.app import build_service_client
     from finishup.ports.control import ProjectionRenderMode, WorkspaceLocator
 
@@ -1460,10 +1485,11 @@ async def _propose(
         await client.close()
     if result.get("schema_version") != "2.0.0":
         raise ValueError("privacy_setup_proposal_invalid")
-    proposal_id = result.get("proposal_id")
-    if result.get("outcome") == "decision_required" and type(proposal_id) is str:
-        return proposal_id
+    pending = PendingProposal.from_answer(result)
+    if result.get("outcome") == "decision_required" and pending is not None:
+        return pending
     if result.get("outcome") == "tightening_applied":
+        await _surface_zero_network_selection(prompt=prompt)
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 
@@ -1474,12 +1500,17 @@ async def propose_privacy_candidate(
     *,
     workspace_locator: Path | None = None,
 ) -> str | None:
-    """Propose one exact privacy candidate through the public setup helper."""
+    """Propose one exact privacy candidate through the public setup helper.
+
+    Its caller relays an agent chat's approval, so a remote server left selected under
+    zero-network is reported on stderr, never asked about on a console (ADR-051 decision 8).
+    """
 
     return await _propose(
         candidate,
         authority_digest,
         workspace_locator=workspace_locator,
+        prompt=False,
     )
 
 
@@ -1495,8 +1526,25 @@ async def _decide(proposal_id: str) -> object:
     config = load_config({}, os.environ, None)
     passphrase = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir)).load()
     if passphrase is None:
-        return await decide_policy(proposal_id)
-    return await decide_policy_with_local_reauthentication(proposal_id, passphrase)
+        decision = await decide_policy(proposal_id)
+    else:
+        decision = await decide_policy_with_local_reauthentication(proposal_id, passphrase)
+    if getattr(decision, "status", None) == "committed":
+        await _surface_zero_network_selection()
+    return decision
+
+
+async def _surface_zero_network_selection(*, prompt: bool = True) -> None:
+    """After a committed policy change: a remote server still selected under zero-network.
+
+    ADR-051 decision 8 (maintainer decision, 2026-11-06): on this terminal the owner chooses to
+    switch to this computer's everyday FinishUP or keep the server; without one, or with
+    ``prompt`` off, the facts and the command are printed. FinishUP never switches on its own.
+    """
+
+    from finishup.cli.zero_network_selection import surface_after_policy_change_async
+
+    await surface_after_policy_change_async(interactive=prompt and _interactive_terminal())
 
 
 def _confirmed_candidate(
@@ -1748,6 +1796,54 @@ async def run_privacy_setup(
             "unknown",
             reason="local_terminal_required",
         )
+    # ADR-051 decision 8: with a remote server selected this is that server's policy; it is named
+    # before anything is read or sent and again in the result.
+    server = selected_policy_server()
+    if server is not None:
+        typer.echo(server.before_line())
+    try:
+        report = await _privacy_setup_questionnaire(
+            recipe_hint=recipe_hint,
+            offer_recommended=offer_recommended,
+            credential_probe_authorized=credential_probe_authorized,
+            update_checks_override=update_checks_override,
+            workspace_locator=workspace_locator,
+            credential_heuristic=credential_heuristic,
+            conversation_review=conversation_review,
+            ai_review_add_on=ai_review_add_on,
+            ai_review_add_on_when_hybrid=ai_review_add_on_when_hybrid,
+            decide_here=server is None,
+        )
+    except BaseException:
+        if server is not None:
+            typer.echo(server.unconfirmed_line())
+        raise
+    if server is not None:
+        typer.echo(server.result_line(report))
+    return report
+
+
+async def _privacy_setup_questionnaire(
+    *,
+    recipe_hint: PrivacyRecipe | None,
+    offer_recommended: bool,
+    credential_probe_authorized: bool,
+    update_checks_override: bool | None,
+    workspace_locator: Path | None,
+    credential_heuristic: CredentialHeuristic | None,
+    conversation_review: ConversationReview | None,
+    ai_review_add_on: bool,
+    ai_review_add_on_when_hybrid: bool,
+    decide_here: bool,
+) -> PrivacySetupReport:
+    """``run_privacy_setup`` on an interactive terminal.
+
+    ``decide_here`` is False on a remote server: its trusted decision runs only on its own host
+    (ADR-051 decisions 7 and 11), so a widening's proposal is left waiting there and reported
+    with ``requires_server_host``, its id and the server's expiry, instead of opening a ceremony
+    this computer cannot reach.
+    """
+
     locator = Path.cwd() if workspace_locator is None else workspace_locator
     snapshot = await get_privacy_setup_snapshot(locator)
     current = snapshot.composed_policy
@@ -1798,12 +1894,12 @@ async def run_privacy_setup(
             grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
-    proposal_id = await _propose(
+    pending = await _propose_pending(
         candidate,
         snapshot.authority_digest,
         workspace_locator=locator,
     )
-    if proposal_id is None:
+    if pending is None:
         await _warn_if_agent_route_cannot_dispatch(candidate)
         _reconcile_host_admission(candidate, locator)
         return PrivacySetupReport(
@@ -1811,6 +1907,20 @@ async def run_privacy_setup(
             candidate.profile.value,
             grant_state="granted",
             migration_state=snapshot.migration_state,
+        )
+    proposal_id = pending.proposal_id
+    if not decide_here:
+        from finishup.cli.command_scope import REQUIRES_SERVER_HOST
+
+        # The proposal waits on the server host until its expiry, which the result names.
+        return PrivacySetupReport(
+            "cancelled",
+            current.profile.value,
+            proposal_id,
+            REQUIRES_SERVER_HOST,
+            snapshot.grant_state,
+            snapshot.migration_state,
+            pending.expires_at,
         )
     typer.echo("")
     typer.echo("Final widening decision (trusted local ceremony)")
@@ -1891,6 +2001,7 @@ async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str
         await client.close()
     if result.get("outcome") != "tightening_applied":
         raise ValueError("privacy_tightening_not_applied")
+    await _surface_zero_network_selection()
 
 
 async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> str | None:
@@ -1913,6 +2024,7 @@ async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str
     if result.get("outcome") == "decision_required" and type(proposal_id) is str:
         return proposal_id
     if result.get("outcome") == "tightening_applied":
+        await _surface_zero_network_selection()
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 

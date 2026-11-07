@@ -9,7 +9,9 @@ signatures — live in [`docs/INTERFACES.md`](INTERFACES.md).
 
 A persistent local service owns the keys, the decrypted state, the writers, the privacy authority,
 and all outbound access; the CLI, the MCP bridge, and any future UI are clients that ask it to do
-things.
+things. By default that service runs on your own machine; the owner may instead select a FinishUP
+server they run elsewhere, which then holds the same authority on its host (see
+[Client and server](#client-and-server)).
 
 ## Trust topology
 
@@ -47,7 +49,10 @@ privacy authority.
 Secret material never travels over an ordinary CLI argument, environment variable, config file,
 log, trace, transcript, or LLM context. Credentials are provisioned through a confidential terminal
 ceremony ([ADR-015](adr/ADR-015-elevated-bootstrap-consent.md),
-[ADR-016](adr/ADR-016-human-review-non-default-actions.md)).
+[ADR-016](adr/ADR-016-human-review-non-default-actions.md)). The API key for a FinishUP server on
+another machine is entered at a masked prompt (or read once from an owner-only key file) and kept
+in the OS credential store or, where none is usable, an owner-only credential file
+([ADR-051](adr/ADR-051-client-server-cut-and-server-targets.md)).
 
 The terminal interface sits on the human-CLI leg and is bound by the same rule. It has no
 credential path of its own: when a secret is needed it suspends itself and hands the controlling
@@ -89,6 +94,93 @@ of the same operations, not a second authority over them: every gate — preview
 MCP entries, privacy widening, vault state, provider readiness — is enforced by the owning service
 and merely transcribed by the interface. The split makes that reviewable, because anything in
 `tui/` that reached past `runtime.py` would be visible as an import.
+
+## Client and server
+
+[ADR-051](adr/ADR-051-client-server-cut-and-server-targets.md) (Proposed) separates the FinishUP
+*client* — everything between the agent or user and the service: hooks, the MCP bridge, the CLI
+and the terminal interface — from the *server*, without moving a package. The cut line is a
+contract: every module carries one side, and an AST test that also sees imports inside functions
+fails on any crossing that its ledger of today's crossings does not list. That ledger may only
+shrink. A `finishup.client` module may carry one kind of entry only, `client_outbox`: the drain that
+delivers what a remote root's hooks captured opens that root's own observation outbox, a module the
+service's observation store still shares.
+
+| Side | Modules |
+|---|---|
+| **SHARED** (imports SHARED only) | `protocol`, `ports`, `domain`, `config`, `observability`, `resources`, `legacy_names`, `version`; `service.control_protocol` and `service.confidential_protocol` (wire codecs); `adapters.control`; the credential-store primitives `adapters.keys.os_keyring` and `adapters.keys.owner_file_store`; the pure renderers `kernel.fact_lineage` and `kernel.claim_verification`. |
+| **WORKSPACE** (imports WORKSPACE and SHARED only; CLIENT and SERVER may import it) | The workspace readers, which run wherever the workspace is: in the local service for a local root, and in the client's workspace agent for a remote one. `adapters.git_change_capture`, `task_input_read`, `approved_checks`, `check_sandbox`, `workspace_inspect`, `home_project_reads`, `input_summary`, `git_subject_state`, `git_rev_parse`, `git_version`; `adapters.workspace_root` (the one rule for "which directory is this workspace"); and `application.observation_check_policy` (the repository's own `checks.toml`). None of them reaches storage, the vault, providers, the service or a client surface. |
+| **CLIENT** | `cli`, `mcp`, `tui`, the new `client` package, `service.client`, `service.confidential_client`, the host integration adapters under `adapters.integrations` (except the observation store), `adapters.workspace_binding`, `workspace_fingerprint`, `mcp_stdio`, `process_lifetime`, `release_runtime`, `package_upgrade`, and the client-side application modules `harness_mcp`, `host_connection`, `codex_plugin`, `applied_mcp_route`, `upgrade`, `package_update`, `observation_drain`. |
+| **SERVER** | The rest of `service`, `application`, `kernel` and `adapters`: storage, the vault, providers, privacy and the runtime. |
+| **GATEWAY** (server host) | `gateway`: a same-user control client of the service, used only by the approaches that run one. It imports SHARED modules and `service.client`, never a workspace reader, and never touches the vault or storage. |
+
+Commands carry a scope too. Each CLI and terminal-interface command is `any`, `server_host` (vault
+setup and unlock, provider and privacy configuration, backup, restore, migrate, observation store
+administration) or `client_only` (host registration and `finishup server …`). A `server_host`
+command is refused while a remote target is active, with `requires_server_host`.
+
+**Targets.** The client talks to one *target*: the ambient local service by default, a named local
+service (its own isolated root, vault and ledger, started on demand), or a FinishUP service the
+same owner runs on another machine. The owner adds targets with `finishup server add` and picks
+one with `finishup server use`, which writes an owner-only selection file. That file is the
+lowest-precedence root source: the isolation variable and a runtime pin always win, a selection
+that names a missing root fails closed instead of falling back, and no host registration records
+it.
+
+**The workspace agent.** The service reads the agent's working tree for the task base, the
+check-time change, requested-output facts, task inputs, declared tests, reviewer file reads,
+observation verification and approved checks. A server on another machine cannot. For a remote
+target the client sends a keyed workspace *claim* instead of a path, and a client-side workspace
+agent answers the server's bounded `workspace_call`s with the same adapters and fences the local
+service uses. Evidence obtained that way is labelled `client_attested`, and every non-local receipt
+rendering says so in one fixed line. When no agent can be reached the receipt carries a typed gap;
+nothing passes silently.
+
+### Topology by target
+
+```
+LOCAL (default; unchanged)
+  hook / MCP / CLI / TUI ──AF_UNIX, peer-UID check──► <ambient runtime>/control.sock ──► service
+
+NAMED LOCAL (each an ADR-028 persistent instance root)
+  selected "work" ──► <state>/servers/t_1a2b3c4d/run/control.sock ──► service #2 (own vault, ledger)
+  selected "lab"  ──► <state>/servers/t_9f8e7d6c/run/control.sock ──► service #3
+
+REMOTE (local_port, ssh, https; the owner's own server)
+  client host                                           server host (same owner)
+  hook / MCP / CLI / TUI ═══ control frames, route per approach ═══► service (vault, ledger)
+  workspace agent ◄═════════ workspace_call / workspace_reply ══════ workspace hub
+  human-control and secret channels: never leave the server host
+```
+
+**Server-native network API (this tree's approach).** A remote target reaches the service's own
+network API, which the service serves only when its `[network]` configuration asks for one
+(`service/http_api.py`, bound during composition and served on the daemon's event loop):
+
+```
+HTTPS / LOCAL PORT
+  hook / MCP / CLI / TUI ──RestServiceClient, HTTPS + API key──► service API (TLS listener)
+  finishup agent run ──long-poll /v1/agents/{id}/work, POST replies──► workspace hub
+
+SSH
+  hook / MCP / CLI / TUI ──HTTP over <troot>/run/api.sock──► ssh master (-L socket:socket)
+                          ═══ SSH ═══► server's owner-only api.sock ──► service API
+```
+
+`connect_service` returns a `RestServiceClient` (`client/rest_client.py`) for a remote root: the
+same typed methods, each a stateless request whose body and answer are the control protocol's
+own bodies. The connect seam claims the caller's workspace (`binding_for_active_root`, claim only)
+and sends the claim header, never the path. Keys live hashed in the service's state and are
+managed with `finishup service api-key` on the server host; the daemon resolves a request's claim
+and registers REST workspace agents with its own claim resolver and `WorkspaceAgentHub`
+(`ServiceDaemon._network_api_bindings`). The workspace agent is a dedicated, pull-based client
+process (`client/agent.py`) that answers every workspace call, inline and background, with
+`WorkspaceAgentHandler`, and delivers the client's captured observation in the background
+(`client/remote_workspace.py`). Hook drains connect claim-bound on a remote root, and every
+surface names a remote failure through `client/remote_remedy.py`. SSH targets keep one OpenSSH
+master per target (`client/rest_runtime.py`). The Unix control, human-control and secret endpoints
+are never forwarded. ADR-051's topology section has the routes, scopes and the ADR-008
+amendment.
 
 ## The six operations
 

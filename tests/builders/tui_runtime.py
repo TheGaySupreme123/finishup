@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
+from finishup.cli.policy_server import PolicyServer
 from finishup.tui.models import (
     CheckMode,
     Detection,
@@ -26,6 +27,8 @@ from finishup.tui.models import (
     ProviderPosture,
     ReadinessLayer,
     ReceiptSummary,
+    ServerRow,
+    ServerSwitch,
     StatusSnapshot,
     TaskStatusPage,
     VaultPosture,
@@ -160,6 +163,28 @@ class FakeRuntime:
     progress_reads: list[str] = field(default_factory=lambda: [])
     task_views: list[tuple[str, str]] = field(default_factory=lambda: [])
     receipts: list[tuple[str, str, bool]] = field(default_factory=lambda: [])
+    # Server targets (ADR-051): ``local`` plus any named targets, the header indicator, and the
+    # names ``use_server`` was asked to select.
+    servers: tuple[ServerRow, ...] = (ServerRow("local", "local", None, None, True),)
+    server_selected: str | None = None
+    server_uses: list[str] = field(default_factory=lambda: [])
+    server_error: RuntimeError_ | None = None
+    # What a switch says of the remote server it left (``finishup server use``), and whether that
+    # connection did not close.
+    server_left_lines: tuple[str, ...] = ()
+    server_left_open: bool = False
+    # The zero-network item (ADR-051 decision 8): lines ``/server`` shows, and how often it was read.
+    zero_network: tuple[str, ...] = ()
+    zero_network_reads: int = 0
+    # The remote server whose privacy policy a questionnaire changes (ADR-051 decision 8), how
+    # often the interface read it, and whether the owner switches away from it during the
+    # questionnaire (the zero-network choice offers that), after which it reads as ``None``.
+    policy_server: PolicyServer | None = None
+    policy_server_reads: int = 0
+    switch_servers_during_privacy: bool = False
+    # What the questionnaire answers instead of its configured report: a report, or an error.
+    privacy_report: object | None = None
+    privacy_error: RuntimeError_ | None = None
 
     def project_root(self) -> Path:
         return Path("/tmp/project")
@@ -210,6 +235,12 @@ class FakeRuntime:
         from finishup.cli.privacy_setup import PrivacySetupReport
 
         self.credential_probes.append(credential_probe)
+        if self.switch_servers_during_privacy:
+            self.policy_server = None
+        if self.privacy_error is not None:
+            raise self.privacy_error
+        if self.privacy_report is not None:
+            return self.privacy_report
 
         # ``None`` means the CLI opens on its recommendation; the fake resolves it the same way
         # the real one does so the interface cannot be tested against a rule of its own. The
@@ -484,6 +515,42 @@ class FakeRuntime:
 
     async def service_stop(self) -> str:
         return "draining"
+
+    def server_indicator(self) -> str | None:
+        return self.server_selected
+
+    async def refresh_zero_network_item(self) -> tuple[str, ...]:
+        self.zero_network_reads += 1
+        return self.zero_network
+
+    def selected_policy_server(self) -> PolicyServer | None:
+        self.policy_server_reads += 1
+        return self.policy_server
+
+    async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
+        if self.server_error is not None:
+            raise self.server_error
+        lines = tuple(
+            f"{'*' if row.selected else ' '} {row.name}  {row.kind}  {row.target_id or '-'}"
+            for row in self.servers
+        )
+        return self.servers, lines
+
+    async def server_status_lines(self, name: str | None = None) -> tuple[str, ...]:
+        return (f"Server: {name or 'local'} (local); chosen by: ambient", "State: ready")
+
+    async def use_server(self, name: str) -> ServerSwitch:
+        if self.server_error is not None:
+            raise self.server_error
+        self.server_uses.append(name)
+        row = next(row for row in self.servers if row.name == name)
+        self.servers = tuple(replace(item, selected=item.name == name) for item in self.servers)
+        self.server_selected = None if row.target_id is None else f"{row.kind} {row.target_id}"
+        return ServerSwitch(
+            "everyday" if row.target_id is None else f"{row.kind} {row.target_id}",
+            self.server_left_lines,
+            self.server_left_open,
+        )
 
     async def status_snapshot(self) -> StatusSnapshot:
         return StatusSnapshot(

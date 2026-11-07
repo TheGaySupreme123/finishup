@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import contextvars
+import functools
 import hashlib
 import hmac
 import os
@@ -11,12 +14,12 @@ import signal
 import stat
 import struct
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, Never, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Never, Protocol, cast
 
 import anyio
 from pydantic import BaseModel
@@ -49,7 +52,10 @@ from finishup.adapters.memory.ledger import (
     acquire_ledger_executors,
     release_ledger_executors,
 )
-from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.adapters.repository_identity import (
+    claim_repository_privacy_context,
+    resolve_repository_privacy_context,
+)
 from finishup.adapters.session_events import SessionEventMonitor
 from finishup.adapters.sqlite.connection import StorageUnsafeError
 from finishup.application.observation_await import (
@@ -83,10 +89,12 @@ from finishup.config.load import load_config
 from finishup.config.models import ConfigError, FinishUpConfig
 from finishup.config.paths import (
     PathSafetyError,
+    active_root,
     bundle_root,
     ensure_owner_only_dir,
-    isolated_root,
     read_runtime_pin,
+    runtime_dir,
+    server_target_kind,
     service_generation_path,
     state_dir,
     unlock_throttle_path,
@@ -124,6 +132,8 @@ from finishup.ports.control import (
     ServiceState,
     ServiceStatus,
     ServiceStopResult,
+    WorkspaceCall,
+    WorkspaceClaim,
     WorkspaceLocator,
 )
 from finishup.ports.diagnostics import StartupCheckResult
@@ -221,12 +231,15 @@ from finishup.service.control_protocol import (
     ControlStream,
     HandshakeServiceFault,
     encode_control_frame,
+    is_workspace_reply_frame,
     parse_control_request,
+    parse_workspace_reply,
     read_control_frame,
     server_handshake,
     validate_request,
     validate_result,
     write_control_frame,
+    write_workspace_call,
 )
 from finishup.service.human_control import HumanControlError, HumanControlService, PresenceScope
 from finishup.service.installation_recovery import (
@@ -253,8 +266,59 @@ from finishup.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRout
 from finishup.service.startup_failure import ServiceStartupError, record_startup_failure
 from finishup.service.unlock import UnlockCoordinator, UnlockThrottleRecord, UnlockThrottleStore
 from finishup.service.vault import VaultError, VaultMode, VaultService
+from finishup.service.workspace_hub import (
+    WorkspaceAgentChannel,
+    WorkspaceAgentHub,
+    live_call_scope,
+    workspace_call_deadline,
+)
+
+if TYPE_CHECKING:
+    from finishup.service.http_api import NetworkApiBindings
 
 __all__ = ["ServiceComposition", "ServiceDaemon", "main", "run_service"]
+
+
+class _FrameWrites:
+    """One control connection's frame writes: one at a time, and none after one was cut off.
+
+    A write that a timeout, a cancellation or a transport failure interrupts may have left part
+    of a frame on the stream, and any frame written after it would be read as the rest of that
+    one: control results and workspace calls (ADR-051) share the connection. Such a connection is
+    out of step. Its write side is shut, so the peer reads the end of the stream rather than a
+    spliced frame, and every later write on it fails as a transport failure; the read side then
+    ends the connection as for any peer that went away.
+    """
+
+    __slots__ = ("lock", "out_of_step")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.out_of_step = False
+
+    async def write(self, stream: ControlStream, frame: Callable[[], Awaitable[None]]) -> None:
+        async with self.lock:
+            if self.out_of_step:
+                raise LocalControlTransportError("connection_failed")
+            try:
+                async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
+                    await frame()
+            except (TimeoutError, asyncio.CancelledError, LocalControlTransportError):
+                await self._end(stream)
+                raise
+            except ControlProtocolError as exc:
+                # An encoding refusal writes nothing; only a failed send leaves the stream torn.
+                if exc.reason == "transport_failed":
+                    await self._end(stream)
+                raise
+
+    async def _end(self, stream: ControlStream) -> None:
+        self.out_of_step = True
+        shutdown = getattr(stream, "shutdown_write", None)
+        if callable(shutdown):
+            with contextlib.suppress(Exception):
+                await cast(Callable[[], Awaitable[None]], shutdown)()
+
 
 _INSTALLATION_MARKER_NAME = "installation-state.json"
 _INSTALLATION_MARKER_DOMAIN = b"yoetz/installation-state/v1\x00"
@@ -321,6 +385,22 @@ _SOFT_LOCK_AUTO_READY_REASONS: Final = frozenset(
 # blip demoted a succeeded re-ready into a permanent LOCKED that nothing ever reconsidered
 # (#276). Credential-shaped failures are unaffected: they never reach this classification.
 _SOFT_REREADY_ACTIVATION_RETRY_LIMIT: Final = 3
+# One soft-lock re-ready attempt's own deadline, from taking the activation lock to READY. The
+# attempt repeats a cold start's work (the scoped auto-unlock read, the vault unlock and ready
+# activation), and an on-demand client allows a cold start 30 seconds (the client's service-start
+# budget) before giving up, with the endpoint published only once that activation finished. An
+# attempt still running then is stalled (a keyring read blocked on an unresponsive credential
+# service, a hung activation): it unwinds to LOCKED, keeps the soft-lock reason, and frees the
+# activation lock and UNLOCKING, and the next request tries again. The 5-second handshake deadline
+# would be too short: a slow but healthy activation could then never finish.
+_SOFT_REREADY_DEADLINE_SECONDS: Final = 30.0
+# How long a passphrase rotation's open waits for a staged-slot reconcile still running (#492
+# review). A healthy reconcile is a few credential-store calls, so the open normally proceeds
+# once it returned; one still running past this bound is a store that does not answer, and the
+# open is refused instead. The budget is the handshake deadline's: a claim hello waits the same
+# 5 seconds for the re-ready that started the reconcile. The human-control mutex is held while the
+# open waits, so another open, or shutdown closing the ceremony service, waits at most this long.
+_ROTATION_RECONCILE_WAIT_SECONDS: Final = _CONTROL_HANDSHAKE_DEADLINE_SECONDS
 # Response-frame send must complete within this wall-clock window. A stalled peer that stops
 # reading cannot retain an in-flight entry in ``calls`` (and thus the inactive-session exemption)
 # indefinitely via write backpressure on sock_sendall.
@@ -698,6 +778,14 @@ class _Closable(Protocol):
     async def close(self) -> None: ...
 
 
+class _NetworkApiServer(Protocol):
+    """The optional network API (``service.http_api.NetworkApiServer``, ADR-051)."""
+
+    async def start(self, bindings: NetworkApiBindings) -> None: ...
+
+    async def close(self) -> None: ...
+
+
 class _SyncClosable(Protocol):
     def close(self) -> None: ...
 
@@ -765,6 +853,40 @@ class _PrivacyPolicyAppRelay:
         return getter()
 
 
+class _StagedReconcileTracker:
+    """The staged-slot reconcile a soft re-ready started, while it runs (#492 review).
+
+    The daemon records it here and lets activation go on without it; the human effects read it,
+    so a passphrase rotation does not open beside it. The reconcile discards a staged rotation
+    entry it finds, and the trusted helper stages its replacement there once the rotation opened:
+    beside a reconcile, the rewrap could outlive that entry and leave the active one stale.
+    """
+
+    __slots__ = ("current",)
+
+    def __init__(self) -> None:
+        self.current: asyncio.Future[None] | None = None
+
+    def outstanding(self) -> bool:
+        current = self.current
+        return current is not None and not current.done()
+
+    async def returned_within(self, seconds: float) -> bool:
+        """Wait up to ``seconds`` for the reconcile, and any started meanwhile, to return.
+
+        Returns at once when none runs. The deadline ends only the wait: the reconcile runs on in
+        its worker thread. On True, nothing awaits between the last check and the return.
+        """
+
+        try:
+            async with asyncio.timeout(seconds):
+                while (current := self.current) is not None and not current.done():
+                    await asyncio.wait((current,))
+        except TimeoutError:
+            return False
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class ServiceComposition:
     """One generation's service-owned components, redacted by construction."""
@@ -788,6 +910,11 @@ class ServiceComposition:
     privacy_policy_app_relay: _PrivacyPolicyAppRelay | None = None
     auto_unlock_reason: str = "none"
     auto_unlock_bundle: Path | None = None
+    # The soft re-ready's staged-slot reconcile while it runs; a passphrase rotation does not
+    # open beside it. Shared with the human effects, which compose before the daemon.
+    staged_reconcile: _StagedReconcileTracker = field(
+        default_factory=_StagedReconcileTracker, repr=False
+    )
     # Where the per-session MCP serving route is remembered (#985); ``None`` keeps it in memory.
     session_route_path: Path | None = None
     maintenance_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -798,6 +925,15 @@ class ServiceComposition:
     observation_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # One-use owner receipt views minted only by the human-control ceremony (ADR-009 round 3).
     owner_view_grants: OwnerViewGrants = field(default_factory=OwnerViewGrants, repr=False)
+    # The service's own network API, bound only when ``[network]`` asks for it (ADR-051). None
+    # keeps the service exactly as before: no network listener of any kind.
+    network_api: _NetworkApiServer | None = None
+    # The client workspace agents of claim-bound connections (ADR-051). The ready application's
+    # workspace routing calls them through this same hub.
+    workspace_hub: WorkspaceAgentHub = field(default_factory=WorkspaceAgentHub, repr=False)
+    # An edge that admits only claims (a network gateway, say) closes a hello that names a
+    # workspace path on this machine. Off by default: local clients name their path.
+    refuse_workspace_locators: bool = False
 
     def __repr__(self) -> str:
         return "ServiceComposition(<redacted>)"
@@ -838,6 +974,20 @@ class ServiceDaemon:
         self._auto_unlock_reason = _composition.auto_unlock_reason
         self._monitor_state = "unavailable"
         self._soft_reready_activation_failures = 0
+        # The one soft-lock re-ready in flight (``_soft_lock_auto_ready_owned``): owned here, so a
+        # caller that stops waiting never interrupts it, and ``stop`` cancels and awaits it.
+        self._soft_reready_task: asyncio.Task[bool] | None = None
+        # Locks in progress: a lock outranks an automatic re-ready, so none starts until it applied.
+        self._locks_pending = 0
+        # A credential-store call of the re-ready (the scoped auto-unlock read, or the staged-slot
+        # reconcile) that a cancelled or expired attempt stopped waiting for, until it returns:
+        # no attempt starts another store call meanwhile, so a credential store that never
+        # answers pins one worker thread, not one more per retry.
+        self._outstanding_auto_unlock_store_call: asyncio.Future[Any] | None = None
+        # The staged-slot reconcile a re-ready started once the vault opened, while it still
+        # runs. That attempt never waits for it; the next attempt does, before it reads, and a
+        # passphrase rotation does not open beside it.
+        self._staged_reconcile = _composition.staged_reconcile
         self._stop_event = asyncio.Event()
         # ``serve`` owns the accept loops; a daemon driven by ``start`` alone never serves and
         # must never wait on an event nothing will set.
@@ -883,6 +1033,8 @@ class ServiceDaemon:
                 raise LifecycleError("invalid_transition")
             lifecycle = self._composition.lifecycle
             await lifecycle.acquire_singleton()
+            # Blocking workspace routing in worker threads reaches the agents through this loop.
+            self._composition.workspace_hub.bind_loop()
             # Own the process-wide ledger pools until this instance's stop() releases them; a
             # failed start releases through close() below (#1231).
             if not self._holds_ledger_pools:
@@ -1068,7 +1220,10 @@ class ServiceDaemon:
         heartbeat = asyncio.create_task(watchdog.run())
         stop_wait = asyncio.create_task(self._stop_event.wait())
         stop_reason = "shutdown_requested"
+        network = self._composition.network_api
         try:
+            if network is not None:
+                await network.start(self._network_api_bindings())
             done, _pending = await asyncio.wait(
                 {idle, stop_wait}, return_when=asyncio.FIRST_COMPLETED
             )
@@ -1077,6 +1232,10 @@ class ServiceDaemon:
                 stop_reason = "idle_shutdown"
         finally:
             try:
+                if network is not None:
+                    # Stop answering the network before the drain; its calls end cancelled.
+                    with contextlib.suppress(Exception):
+                        await network.close()
                 await self.stop(stop_reason)
             finally:
                 watchdog.close()
@@ -1086,6 +1245,56 @@ class ServiceDaemon:
                 for task in (idle, control, human, stop_wait, heartbeat):
                     if task is not None:
                         await asyncio.gather(task, return_exceptions=True)
+
+    def _network_api_bindings(self) -> NetworkApiBindings:
+        """What this daemon gives its network API (ADR-051).
+
+        ``status``, ``dispatch`` and the idle-hold ``activity`` serve calls as the control socket
+        does. ``claim_resolver`` keys a request's workspace claim with the installation MAC
+        exactly as a claim-bound hello is keyed (never a path), so a REST call and the socket
+        bind the same ``client_claim`` identity. ``agent_hub`` is the same hub claim-bound
+        socket connections register with: a REST workspace agent registers an in-process
+        channel there, and the ready application's workspace routing reaches it the same way.
+        Each dispatch runs inside ``live_call_scope()``, so a workspace call made while the
+        caller waits gets the shorter agent bound, and work that outlives the call the longer.
+        """
+
+        from finishup.service.http_api import NetworkApiBindings
+
+        async def dispatch(
+            client_kind: ControlClientKind,
+            request: ControlCallRequest,
+            context: RepositoryPrivacyContext | None,
+        ) -> ControlResult:
+            # Presentation facts never come from the network: the fail-safe machine-readable
+            # projection, exactly as a hello without a presentation context gets.
+            with live_call_scope():
+                return await self.dispatch(
+                    client_kind,
+                    request,
+                    repository_privacy_context=context,
+                    _defer_stop=True,
+                )
+
+        @contextlib.asynccontextmanager
+        async def activity() -> AsyncGenerator[None]:
+            # One network request, or one registered agent, holds idle shutdown like one open
+            # control connection does.
+            lifecycle = self._composition.lifecycle
+            await lifecycle.client_connected()
+            try:
+                yield
+            finally:
+                with contextlib.suppress(LifecycleError):
+                    await lifecycle.client_disconnected()
+
+        return NetworkApiBindings(
+            status=self.status,
+            dispatch=dispatch,
+            activity=activity,
+            claim_resolver=self._resolve_claim_context,
+            agent_hub=self._composition.workspace_hub,
+        )
 
     async def dispatch(
         self,
@@ -1173,18 +1382,30 @@ class ServiceDaemon:
         if not self._started or self._closed:
             return
         lifecycle = self._composition.lifecycle
-        async with self._activation_lock:
-            if lifecycle.state is ServiceState.READY:
-                await lifecycle.request_lock(reason)
-            elif lifecycle.state is ServiceState.UNLOCKING:
-                await self._composition.vault.lock()
-                await lifecycle.transition(ServiceState.LOCKED)
-            await self._close_ready_locked()
-            self._state_reason = (
-                reason
-                if reason in _SOFT_LOCK_AUTO_READY_REASONS or reason == "explicit_lock"
-                else "explicit_lock"
-            )
+        # A lock outranks an automatic re-ready: the attempt in flight is cancelled first (it
+        # unwinds to LOCKED and releases the activation lock it holds), and none starts until
+        # this lock has applied, so a stalled attempt never holds an explicit or session lock.
+        self._locks_pending += 1
+        try:
+            await self._cancel_soft_reready()
+            async with self._activation_lock:
+                if self._stopping or self._closed:
+                    # Shutdown began while this lock waited: it locks and drains everything
+                    # itself, and its reason stands.
+                    return
+                if lifecycle.state is ServiceState.READY:
+                    await lifecycle.request_lock(reason)
+                elif lifecycle.state is ServiceState.UNLOCKING:
+                    await self._composition.vault.lock()
+                    await lifecycle.transition(ServiceState.LOCKED)
+                await self._close_ready_locked()
+                self._state_reason = (
+                    reason
+                    if reason in _SOFT_LOCK_AUTO_READY_REASONS or reason == "explicit_lock"
+                    else "explicit_lock"
+                )
+        finally:
+            self._locks_pending -= 1
 
     async def stop(self, reason: str = "shutdown_requested") -> None:
         """Drain, unlink owned endpoints, release singleton authority, and stop serving."""
@@ -1195,11 +1416,19 @@ class ServiceDaemon:
                 return
             self._stopping = True
             try:
+                # Before the shutdown reason and the activation lock: a re-ready in flight unwinds
+                # to LOCKED and releases the lock it holds.
+                await self._cancel_soft_reready()
                 await self._check_waits.close()
-                self._state_reason = reason if reason == "internal_error" else "shutdown_requested"
+                stop_reason = reason if reason == "internal_error" else "shutdown_requested"
+                self._state_reason = stop_reason
                 lifecycle = self._composition.lifecycle
                 if self._started:
                     async with self._activation_lock:
+                        # Whoever held the activation lock before shutdown did (a lock applying,
+                        # or a re-ready a lock cancelled and that was still unwinding) may have
+                        # recorded its own reason meanwhile; shutdown's stands.
+                        self._state_reason = stop_reason
                         if lifecycle.state is ServiceState.UNLOCKING:
                             await self._composition.vault.lock()
                             await lifecycle.transition(ServiceState.LOCKED)
@@ -1286,7 +1515,9 @@ class ServiceDaemon:
                     # The wait runs inside the detached operation, before either dispatch gate
                     # is taken, so the sweeper can deliver rows while this check waits.
                     awaited = (
-                        await self._await_check_observations(check_body, request.deadline_ms)
+                        await self._await_check_observations(
+                            check_body, request.deadline_ms, repository_privacy_context
+                        )
                         if awaits_observations
                         else None
                     )
@@ -1307,7 +1538,9 @@ class ServiceDaemon:
                     request.deadline_ms,
                 )
             awaited = (
-                await self._await_check_observations(cast(CheckRequest, body), request.deadline_ms)
+                await self._await_check_observations(
+                    cast(CheckRequest, body), request.deadline_ms, repository_privacy_context
+                )
                 if awaits_observations
                 else None
             )
@@ -1328,17 +1561,27 @@ class ServiceDaemon:
             raise
 
     async def _await_check_observations(
-        self, body: CheckRequest, deadline_ms: int | None
+        self,
+        body: CheckRequest,
+        deadline_ms: int | None,
+        repository_privacy_context: RepositoryPrivacyContext | None = None,
     ) -> CheckObservationsAwaited:
         """Run the optional bounded wait for this task's pending hook rows (issue #1012).
 
         Runs before the dispatch gates: the sweeper takes the observation gate per row, so a
-        wait under the gates could only ever time out. Never raises for the wait itself.
+        wait under the gates could only ever time out. Never raises for the wait itself. A
+        claim-bound connection's rows wait in its client's outbox, which this service cannot
+        read (ADR-051 decision 12), so that wait is ``unavailable``, never ``complete``.
         """
 
         application = self._application
         sweep = None if application is None else getattr(application, "observation_sweep", None)
         probe = getattr(sweep, "task_pending_probe", None)
+        if (
+            repository_privacy_context is not None
+            and repository_privacy_context.identity_kind == "client_claim"
+        ):
+            probe = None
         return await await_task_observations(
             cast(TaskPendingProbe, probe) if callable(probe) else None,
             body.session_id,
@@ -1561,7 +1804,7 @@ class ServiceDaemon:
     ) -> object:
         application = self._application
         if application is None:
-            if await self._try_soft_lock_auto_ready():
+            if await self._soft_lock_auto_ready_owned():
                 application = self._application
         if application is None:
             # Honest retryability: a soft lock -- including a transient re-ready activation
@@ -1588,12 +1831,14 @@ class ServiceDaemon:
             routed = self._with_session_route(request)
             try:
                 if request.deadline_ms is None or detached_check:
-                    internal = await self._invoke_ready_handler(
-                        handler,
-                        routed,
-                        repository_privacy_context,
-                        observations_awaited=observations_awaited,
-                    )
+                    # Workspace calls the handler makes are cancelled with it (ADR-051).
+                    with workspace_call_deadline():
+                        internal = await self._invoke_ready_handler(
+                            handler,
+                            routed,
+                            repository_privacy_context,
+                            observations_awaited=observations_awaited,
+                        )
                 else:
                     # A read keeps only what is left of its one budget (#1231); a write keeps
                     # its full handler deadline after the gate waits, as before.
@@ -1602,14 +1847,16 @@ class ServiceDaemon:
                         if deadline_at is None
                         else deadline_at
                     )
-                    async with asyncio.timeout_at(handler_deadline):
-                        with read_stage("handler"):
-                            internal = await self._invoke_ready_handler(
-                                handler,
-                                routed,
-                                repository_privacy_context,
-                                observations_awaited=observations_awaited,
-                            )
+                    # Workspace calls the handler makes never outlast its deadline (ADR-051).
+                    with workspace_call_deadline(handler_deadline):
+                        async with asyncio.timeout_at(handler_deadline):
+                            with read_stage("handler"):
+                                internal = await self._invoke_ready_handler(
+                                    handler,
+                                    routed,
+                                    repository_privacy_context,
+                                    observations_awaited=observations_awaited,
+                                )
             except TimeoutError as exc:
                 # Includes local observation-store contention inside the handler: the wire
                 # vocabulary is closed, so it stays the retryable ``request_timeout`` while
@@ -1721,6 +1968,14 @@ class ServiceDaemon:
             ControlMethod.PRIVACY_PROPOSE_POLICY,
             ControlMethod.PROJECT,
         }:
+            kwargs["repository_privacy_context"] = repository_privacy_context
+        if (
+            request.method is ControlMethod.OBSERVATION_INGEST
+            and repository_privacy_context is not None
+            and repository_privacy_context.identity_kind == "client_claim"
+        ):
+            # A claim-bound row goes to that claim's client-attested store (ADR-051 decision
+            # 12); every other connection's ingest is called exactly as before.
             kwargs["repository_privacy_context"] = repository_privacy_context
         return await operation(request.body, **kwargs)
 
@@ -1926,11 +2181,46 @@ class ServiceDaemon:
         key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
         return await resolve_repository_privacy_context(locator, key)
 
+    async def _refuse_repository_locator(
+        self, locator: WorkspaceLocator
+    ) -> RepositoryPrivacyContext | None:
+        """An edge that admits only claims never resolves a path it was sent (ADR-051)."""
+
+        del locator
+        raise ControlProtocolError("workspace_binding_conflict")
+
+    async def _resolve_claim_context(
+        self, claim: WorkspaceClaim
+    ) -> RepositoryPrivacyContext | None:
+        """Key a client's workspace claim while an installation key is ready; never a path.
+
+        The commitment is the installation MAC over the claim (``yoetz/repository-claim/v1``), so
+        the session's repository identity is ``client_claim`` and its handle is the
+        commitment's ``client:`` prefix. Nothing on this machine's disk is consulted.
+
+        A soft lock (idle, session lock, suspend) re-opens here exactly as it would on the
+        connection's first request: a claim-bound connection's handle is fixed by this answer, so
+        a handle withheld for a lock the next request lifts would leave the connection unable to
+        name its workspace, register its agent or route a hook row for its whole life. A hard
+        lock stays locked and keys nothing. Locator connections are unchanged.
+        """
+
+        vault = self._composition.vault
+        if not vault.ready:
+            # Under the handshake deadline: the hello may stop waiting, never the re-ready.
+            await self._soft_lock_auto_ready_owned()
+        if not vault.ready:
+            return None
+        key = cast(KeyStorePort, vault).installation_mac_handle(MacKeyPurpose.CATALOG_LOOKUP)
+        return claim_repository_privacy_context(claim, key)
+
     async def _serve_control_connection(self, stream: ControlStream) -> None:
         session: ControlSession | None = None
         admission: str | None = None
         calls: dict[str, asyncio.Task[None]] = {}
-        write_lock = asyncio.Lock()
+        writes = _FrameWrites()
+        hub = self._composition.workspace_hub
+        channel: WorkspaceAgentChannel | None = None
         try:
             try:
                 async with asyncio.timeout(_CONTROL_HANDSHAKE_DEADLINE_SECONDS):
@@ -1938,7 +2228,12 @@ class ServiceDaemon:
                         stream,
                         stream.peer_identity,
                         self.status(),
-                        repository_context_resolver=self._resolve_repository_context,
+                        repository_context_resolver=(
+                            self._refuse_repository_locator
+                            if self._composition.refuse_workspace_locators
+                            else self._resolve_repository_context
+                        ),
+                        claim_context_resolver=self._resolve_claim_context,
                     )
             except TimeoutError:
                 return
@@ -1946,7 +2241,11 @@ class ServiceDaemon:
                 _record_handshake_service_fault(fault)
                 return
             except ControlProtocolError as exc:
-                if exc.reason in {"manifest_mismatch", "protocol_mismatch"}:
+                if exc.reason in {
+                    "manifest_mismatch",
+                    "protocol_mismatch",
+                    "workspace_binding_conflict",
+                }:
                     record_public_error_without_raising(
                         component="service.daemon",
                         operation="control_handshake",
@@ -1964,9 +2263,37 @@ class ServiceDaemon:
                     reason="connection_nonce_reused",
                 )
                 return
+            if session.workspace_agent is not None and session.workspace_handle is not None:
+                # A claim-bound connection that offered a workspace agent answers this service's
+                # workspace calls for its claim (ADR-051), written under this connection's lock.
+                async def write_call(call: WorkspaceCall) -> None:
+                    await writes.write(stream, lambda: write_workspace_call(stream, call))
+
+                try:
+                    channel = await hub.register(
+                        handle=session.workspace_handle,
+                        declaration=session.workspace_agent,
+                        service_instance_id=session.service_instance_id,
+                        service_generation=session.service_generation,
+                        writer=write_call,
+                        worktree=session.workspace_worktree,
+                    )
+                except ValueError:
+                    # A handle names one worktree; an agent for another under it is never admitted.
+                    record_public_error_without_raising(
+                        component="service.daemon",
+                        operation="control_handshake",
+                        reason="workspace_agent_worktree_conflict",
+                    )
+                    return
+            agent = channel
             while not self._stop_event.is_set():
                 try:
-                    frame = await self._read_control_frame_idle_aware(stream, calls)
+                    frame = await self._read_control_frame_idle_aware(
+                        stream,
+                        calls,
+                        agent_busy=None if agent is None else (lambda: agent.pending_count > 0),
+                    )
                 except TimeoutError:
                     return
                 except ControlProtocolError as exc:
@@ -1979,6 +2306,12 @@ class ServiceDaemon:
                             reason=exc.reason,
                         )
                     return
+                if is_workspace_reply_frame(frame):
+                    if channel is None:
+                        # A reply on a connection that offered no agent answers nothing here.
+                        return
+                    hub.deliver(channel, parse_workspace_reply(frame))
+                    continue
                 request = parse_control_request(frame)
                 session.admit(request)
                 if not isinstance(request, ControlCallRequest):
@@ -1987,7 +2320,9 @@ class ServiceDaemon:
                         target.cancel(EXPLICIT_CONTROL_CANCEL)
                     continue
                 task = asyncio.create_task(
-                    self._serve_call(stream, session, request, write_lock, admission)
+                    self._serve_call(
+                        stream, session, request, writes, admission, agent_channel=channel
+                    )
                 )
                 calls[request.rpc_id] = task
                 task.add_done_callback(lambda _task, rpc_id=request.rpc_id: calls.pop(rpc_id, None))
@@ -1996,6 +2331,9 @@ class ServiceDaemon:
         except Exception:
             return
         finally:
+            if channel is not None:
+                # Pending workspace calls fail now, typed, instead of waiting out their deadline.
+                await hub.unregister(channel)
             if admission is not None:
                 # Revoke on disconnect: a later socket gets a fresh admission, never this one.
                 self._composition.owner_view_grants.release(admission)
@@ -2010,6 +2348,8 @@ class ServiceDaemon:
         self,
         stream: ControlStream,
         calls: dict[str, asyncio.Task[None]],
+        *,
+        agent_busy: Callable[[], bool] | None = None,
     ) -> ControlFrame:
         """Read one frame; apply inactive-session idle only when no calls are active.
 
@@ -2019,6 +2359,9 @@ class ServiceDaemon:
         calls are not cancelled merely because no additional frame arrives. Independently, a frame
         that has begun must finish within ``_CONTROL_FRAME_READ_DEADLINE_SECONDS`` even while calls
         are active, so a partial body is never held open-ended (``frame_read_timeout``).
+
+        ``agent_busy`` (a workspace agent's connection, ADR-051) keeps the session live while a
+        workspace call this service sent it is still pending: its reply is the frame awaited.
         """
 
         read_task = asyncio.create_task(
@@ -2039,6 +2382,16 @@ class ServiceDaemon:
                         if task.done():
                             calls.pop(rpc_id, None)
                     continue
+                if agent_busy is not None:
+                    try:
+                        async with asyncio.timeout(_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS):
+                            return await asyncio.shield(read_task)
+                    except TimeoutError:
+                        if agent_busy():
+                            continue
+                        read_task.cancel()
+                        await asyncio.gather(read_task, return_exceptions=True)
+                        raise
                 try:
                     async with asyncio.timeout(_CONTROL_INACTIVE_SESSION_DEADLINE_SECONDS):
                         return await read_task
@@ -2076,8 +2429,10 @@ class ServiceDaemon:
         stream: ControlStream,
         session: ControlSession,
         request: ControlCallRequest,
-        write_lock: asyncio.Lock,
+        writes: _FrameWrites,
         admission: str | None = None,
+        *,
+        agent_channel: WorkspaceAgentChannel | None = None,
     ) -> None:
         call_started = time.monotonic()
         # Presentation facts from the hello describe rendering only. The owner view is the one
@@ -2089,26 +2444,27 @@ class ServiceDaemon:
             session.output_is_controlling_tty,
             owner_view=self._consume_owner_view(session, request, admission),
         )
-        if session.repository_privacy_context is None:
-            result = await self.dispatch(
-                session.client_kind,
-                request,
-                projection_context=projection_context,
-                _defer_stop=True,
-            )
-        else:
-            result = await self.dispatch(
-                session.client_kind,
-                request,
-                projection_context=projection_context,
-                repository_privacy_context=session.repository_privacy_context,
-                _defer_stop=True,
-            )
+        # Workspace calls this dispatch makes wait the shorter bound for an agent, and go to this
+        # connection's own agent first when it offered one (ADR-051).
+        with live_call_scope(agent_channel):
+            if session.repository_privacy_context is None:
+                result = await self.dispatch(
+                    session.client_kind,
+                    request,
+                    projection_context=projection_context,
+                    _defer_stop=True,
+                )
+            else:
+                result = await self.dispatch(
+                    session.client_kind,
+                    request,
+                    projection_context=projection_context,
+                    repository_privacy_context=session.repository_privacy_context,
+                    _defer_stop=True,
+                )
         session.correlate(result)
         try:
-            async with write_lock:
-                async with asyncio.timeout(_CONTROL_RESPONSE_WRITE_DEADLINE_SECONDS):
-                    await write_control_frame(stream, result)
+            await writes.write(stream, lambda: write_control_frame(stream, result))
         except (LocalControlTransportError, ControlProtocolError) as exc:
             if isinstance(exc, ControlProtocolError) and exc.reason != "transport_failed":
                 # A response this service could not encode is its own defect; keep it loud.
@@ -2658,8 +3014,84 @@ class ServiceDaemon:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
+    async def _soft_lock_auto_ready_owned(self) -> bool:
+        """Soft-lock re-ready in a daemon-owned task that a caller's cancellation cannot interrupt.
+
+        A caller with a deadline (a hello under the handshake deadline, a control call) may stop
+        waiting, but the attempt it started runs to its end: cancelled part-way it would leave
+        the lifecycle UNLOCKING, or record the terminal ``unlock_failed`` for a cancelled
+        activation, and no later request could re-ready the service. Callers that arrive while
+        an attempt runs wait on that one. A lock and ``stop`` cancel and await it, and its own
+        deadline bounds it.
+        """
+
+        if self._application is not None or not self._started or self._closed or self._stopping:
+            return self._application is not None
+        if self._locks_pending > 0 or self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS:
+            return False
+        task = self._soft_reready_task
+        if task is None or task.done():
+            # A clean context: the attempt and the READY maintenance it starts are background
+            # work, never the triggering call's (its live-call scope and agent channel, its read
+            # stages), and they outlive that call.
+            task = asyncio.create_task(
+                self._try_soft_lock_auto_ready(), context=contextvars.Context()
+            )
+            # Recorded here, so a failure is seen even when every caller has stopped waiting; a
+            # caller still waiting receives it as well.
+            task.add_done_callback(_record_soft_reready_failure)
+            self._soft_reready_task = task
+        # ``asyncio.wait`` never passes this caller's cancellation on to the attempt, and raises
+        # only for this caller's own. Unlike ``asyncio.shield`` it does not also hand the
+        # attempt's failure to the loop's exception handler once this caller stopped waiting.
+        await asyncio.wait((task,))
+        if task.cancelled():
+            return False  # a lock or shutdown cancelled the attempt, not this caller
+        return task.result()
+
+    async def _cancel_soft_reready(self) -> None:
+        task, self._soft_reready_task = self._soft_reready_task, None
+        if task is None or task.done():
+            return
+        task.cancel()
+        # Waits for the unwind without passing this caller's own cancellation (a SERVICE_LOCK
+        # whose connection closed) on to it, as ``asyncio.gather`` would.
+        await asyncio.wait((task,))
+
+    async def _abandon_soft_reready(self, soft_lock_reason: str) -> None:
+        """Unwind a cancelled re-ready: vault locked, lifecycle LOCKED, the soft reason kept.
+
+        The unwind runs to its end even if the attempt is cancelled again meanwhile (a lock or
+        shutdown cancelling an attempt whose deadline already ended it): cut short, it left the
+        lifecycle UNLOCKING, where no later re-ready or unlock could start. The caller then
+        re-raises the cancellation that ended the attempt. A lock that cancelled the attempt
+        records its own reason afterwards, and so does ``stop``.
+
+        The soft reason is restored before the first suspension. A cancelled activation records
+        the terminal ``unlock_failed`` as it unwinds, and while that showed, status reported a
+        hard lock and a request arriving then was refused as not retryable instead of joining
+        the attempt still unwinding.
+        """
+
+        self._state_reason = soft_lock_reason
+        unwind = asyncio.ensure_future(self._unwind_soft_reready(soft_lock_reason))
+        while not unwind.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait((unwind,))
+        unwind.result()
+
+    async def _unwind_soft_reready(self, soft_lock_reason: str) -> None:
+        with contextlib.suppress(Exception):
+            await self._composition.vault.lock()
+        await self._return_to_locked_after_soft_unlock()
+        self._state_reason = soft_lock_reason
+
     async def _try_soft_lock_auto_ready(self) -> bool:
-        """Re-apply scoped auto-unlock after idle/session soft lock; never after explicit lock."""
+        """Re-apply scoped auto-unlock after idle/session soft lock; never after explicit lock.
+
+        Run only as ``_soft_lock_auto_ready_owned``'s task, so only a lock or shutdown cancels
+        it, and its own deadline bounds how long it holds the activation lock and UNLOCKING.
+        """
 
         if self._application is not None or not self._started or self._closed:
             return self._application is not None
@@ -2672,73 +3104,111 @@ class ServiceDaemon:
             if self._application is not None:
                 return True
             if (
-                self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS
+                self._locks_pending > 0
+                or self._state_reason not in _SOFT_LOCK_AUTO_READY_REASONS
                 or lifecycle.state is not ServiceState.LOCKED
             ):
                 return False
-            soft_lock_reason = self._state_reason
-            vault = self._composition.vault
-            mode = getattr(vault.mode, "value", vault.mode)
-            try:
-                await lifecycle.transition(ServiceState.UNLOCKING)
-            except LifecycleError:
-                return False
-            unlocked = False
-            try:
-                if mode == "passphrase":
-                    unlocked = await self._soft_unlock_passphrase_locked()
-                elif mode == "os_keyring":
-                    await cast(VaultService, vault).retry_keyring(None)
-                    unlocked = vault.ready
-                    if not unlocked:
-                        self._state_reason = "keyring_locked"
-                else:
-                    unlocked = False
-                if not unlocked:
-                    await self._return_to_locked_after_soft_unlock()
-                    return False
-                await self._activate_ready_application_locked(
-                    lifecycle.instance.generation,
-                    vault.generation,
-                )
-            except Exception:
-                try:
-                    # Always best-effort lock: unlock may have left transient store state
-                    # even when ready is still false.
-                    await vault.lock()
-                except Exception:
-                    pass
-                await self._return_to_locked_after_soft_unlock()
-                if (
-                    unlocked
-                    and self._soft_reready_activation_failures
-                    < _SOFT_REREADY_ACTIVATION_RETRY_LIMIT
-                ):
-                    # The vault credential worked; only ready-application activation failed.
-                    # Restoring the soft-lock reason keeps auto-ready eligible, so the very
-                    # next dispatch retries instead of the service staying LOCKED until a
-                    # manual ceremony (#276).
-                    self._soft_reready_activation_failures += 1
-                    self._state_reason = soft_lock_reason
-                    get_logger("service.daemon").warning(
-                        "auto_unlock",
-                        outcome="failed",
-                        reason="activation_failed_retryable",
-                    )
-                    return False
+            outstanding = self._outstanding_auto_unlock_store_call
+            if outstanding is not None and not outstanding.done():
+                # A credential-store call an earlier attempt stopped waiting for (its scoped
+                # read, or a staged-slot reconcile) still waits on the store. Another call would
+                # pin one more worker thread of the shared pool that activation and the unlock
+                # ceremony need; stay LOCKED, keep the soft reason, and let the first request
+                # after that call returns try again.
                 get_logger("service.daemon").warning(
                     "auto_unlock",
                     outcome="failed",
-                    reason="unlock_failed",
+                    reason="auto_unlock_store_call_outstanding",
                 )
-                if (
-                    self._state_reason in _SOFT_LOCK_AUTO_READY_REASONS
-                    or self._state_reason == "none"
-                ):
-                    self._state_reason = "unlock_failed"
                 return False
-            self._soft_reready_activation_failures = 0
-            return self._application is not None
+            deadline = _soft_reready_deadline()
+            try:
+                async with deadline:
+                    return await self._soft_reready_locked(self._state_reason)
+            except TimeoutError:
+                if not deadline.expired():
+                    raise
+                # Unwound like any cancel: the vault locked, LOCKED, the soft reason kept, so
+                # the next request tries again.
+                get_logger("service.daemon").warning(
+                    "auto_unlock",
+                    outcome="failed",
+                    reason="reready_deadline_exceeded",
+                )
+                return False
+
+    async def _soft_reready_locked(self, soft_lock_reason: str) -> bool:
+        """One re-ready attempt under ``_activation_lock``: LOCKED to READY, or back to LOCKED."""
+
+        lifecycle = self._composition.lifecycle
+        vault = self._composition.vault
+        mode = getattr(vault.mode, "value", vault.mode)
+        try:
+            await lifecycle.transition(ServiceState.UNLOCKING)
+        except LifecycleError:
+            return False
+        except asyncio.CancelledError:
+            await self._abandon_soft_reready(soft_lock_reason)
+            raise
+        unlocked = False
+        try:
+            if mode == "passphrase":
+                unlocked = await self._soft_unlock_passphrase_locked()
+            elif mode == "os_keyring":
+                await cast(VaultService, vault).retry_keyring(None)
+                unlocked = vault.ready
+                if not unlocked:
+                    self._state_reason = "keyring_locked"
+            else:
+                unlocked = False
+            if not unlocked:
+                await self._return_to_locked_after_soft_unlock()
+                return False
+            await self._activate_ready_application_locked(
+                lifecycle.instance.generation,
+                vault.generation,
+            )
+        except asyncio.CancelledError:
+            # A lock, shutdown or the attempt's own deadline: lock what the unlock opened and
+            # return to LOCKED keeping the soft-lock reason, never the ``unlock_failed`` a
+            # cancelled activation records.
+            await self._abandon_soft_reready(soft_lock_reason)
+            raise
+        except Exception:
+            try:
+                # Always best-effort lock: unlock may have left transient store state
+                # even when ready is still false.
+                await vault.lock()
+            except Exception:
+                pass
+            await self._return_to_locked_after_soft_unlock()
+            if (
+                unlocked
+                and self._soft_reready_activation_failures < _SOFT_REREADY_ACTIVATION_RETRY_LIMIT
+            ):
+                # The vault credential worked; only ready-application activation failed.
+                # Restoring the soft-lock reason keeps auto-ready eligible, so the very
+                # next dispatch retries instead of the service staying LOCKED until a
+                # manual ceremony (#276).
+                self._soft_reready_activation_failures += 1
+                self._state_reason = soft_lock_reason
+                get_logger("service.daemon").warning(
+                    "auto_unlock",
+                    outcome="failed",
+                    reason="activation_failed_retryable",
+                )
+                return False
+            get_logger("service.daemon").warning(
+                "auto_unlock",
+                outcome="failed",
+                reason="unlock_failed",
+            )
+            if self._state_reason in _SOFT_LOCK_AUTO_READY_REASONS or self._state_reason == "none":
+                self._state_reason = "unlock_failed"
+            return False
+        self._soft_reready_activation_failures = 0
+        return self._application is not None
 
     async def _return_to_locked_after_soft_unlock(self) -> None:
         """Best-effort LOCKED transition after a failed soft auto-ready attempt."""
@@ -2749,6 +3219,92 @@ class ServiceDaemon:
                 await lifecycle.transition(ServiceState.LOCKED)
         except LifecycleError:
             pass
+
+    async def _read_auto_unlock_candidates(
+        self, store: AutoUnlockPassphraseStore
+    ) -> _AutoUnlockCandidates:
+        """Read the scoped auto-unlock entries in a worker thread, never leaving them unzeroed.
+
+        Cancelling the wait cannot stop the worker thread, and ``asyncio.to_thread`` would drop
+        the passphrase bytes it returns afterwards without overwriting them. On a cancel the
+        read stays the outstanding store call until it returns, and whatever it returns then is
+        overwritten.
+        """
+
+        read = asyncio.get_running_loop().run_in_executor(
+            None, contextvars.copy_context().run, store.load_candidates_with_reason
+        )
+        try:
+            return await self._await_auto_unlock_store_call(read)
+        except asyncio.CancelledError:
+            read.add_done_callback(_overwrite_unclaimed_candidates)
+            raise
+
+    async def _await_auto_unlock_store_call[T](self, call: asyncio.Future[T]) -> T:
+        """Wait for one credential-store call running in a worker thread.
+
+        A lock, shutdown or the attempt's deadline ends the wait, never the thread. The call's
+        own future is shielded, and a call this attempt stopped waiting for becomes the
+        outstanding store call until it returns, so no attempt starts another beside it.
+        """
+
+        try:
+            return await asyncio.shield(call)
+        except asyncio.CancelledError:
+            self._outstanding_auto_unlock_store_call = call
+            call.add_done_callback(self._settle_outstanding_auto_unlock_store_call)
+            raise
+
+    def _settle_outstanding_auto_unlock_store_call(self, call: asyncio.Future[Any]) -> None:
+        if self._outstanding_auto_unlock_store_call is call:
+            self._outstanding_auto_unlock_store_call = None
+
+    def _start_staged_reconcile(self, store: AutoUnlockPassphraseStore, accepted_slot: str) -> None:
+        """Reconcile the staged keyring entries in a worker thread the attempt never waits for.
+
+        The vault is already open, and the reconcile is credential-store hygiene only: neither
+        its failure nor a store that never answers it may hold the attempt under its deadline or
+        a lock's cancel, or relock the ready vault (#492 review). It stays the re-ready's store
+        call until it returns: the next attempt waits for it before reading, so a read never
+        overlaps it and no second store call starts beside it.
+
+        The caller starts it in the same step its unlock returned in, so a passphrase rotation,
+        which opens only on a ready vault, never opens before it is recorded and does not open
+        while it runs. None starts while a rotation is open: only an unlock starts one, and the
+        lock before it ends that ceremony as stale.
+        """
+
+        reconcile = asyncio.get_running_loop().run_in_executor(
+            None,
+            contextvars.copy_context().run,
+            functools.partial(_reconcile_staged_slots, store, accepted_slot),
+        )
+        self._staged_reconcile.current = reconcile
+        reconcile.add_done_callback(self._settle_staged_reconcile)
+
+    def _settle_staged_reconcile(self, reconcile: asyncio.Future[None]) -> None:
+        if self._staged_reconcile.current is reconcile:
+            self._staged_reconcile.current = None
+        if not reconcile.cancelled() and reconcile.exception() is not None:
+            get_logger("service.daemon").warning(
+                "auto_unlock",
+                outcome="degraded",
+                reason="staged_reconcile_failed",
+            )
+
+    async def _await_staged_reconcile(self) -> None:
+        """Let a staged-slot reconcile an earlier attempt started finish before this one reads.
+
+        Its failure was logged where it ended and does not concern this attempt. A lock, shutdown
+        or this attempt's deadline ends the wait, and the reconcile then becomes the outstanding
+        store call.
+        """
+
+        reconcile = self._staged_reconcile.current
+        if reconcile is None or reconcile.done():
+            return
+        with contextlib.suppress(Exception):
+            await self._await_auto_unlock_store_call(reconcile)
 
     async def _soft_unlock_passphrase_locked(self) -> bool:
         """Unlock passphrase vault from the bundle-scoped platform entry under activation lock."""
@@ -2761,8 +3317,9 @@ class ServiceDaemon:
             self._auto_unlock_reason = "auto_unlock_backend_unavailable"
             return False
 
+        await self._await_staged_reconcile()
         store = AutoUnlockPassphraseStore(bundle)
-        candidates, load_reason = await asyncio.to_thread(store.load_candidates_with_reason)
+        candidates, load_reason = await self._read_auto_unlock_candidates(store)
         if not candidates:
             reason = (
                 load_reason
@@ -2810,20 +3367,14 @@ class ServiceDaemon:
             )
             return False
         finally:
-            for candidate, _slot in candidates:
-                for index in range(len(candidate)):
-                    candidate[index] = 0
+            _overwrite_candidates(candidates)
         # The vault is ready from here on. Reconciling the staged keyring entries is
-        # credential-store hygiene only: a promote/discard failure must never relock a ready
-        # vault, so log it and continue activation (#492 review).
-        try:
-            await asyncio.to_thread(_reconcile_staged_slots, store, accepted_slot)
-        except Exception:
-            get_logger("service.daemon").warning(
-                "auto_unlock",
-                outcome="degraded",
-                reason="staged_reconcile_failed",
-            )
+        # credential-store hygiene only: a promote/discard failure, or a store that never
+        # answers it, must never relock a ready vault, so it runs on its own while activation
+        # continues, and its failure is logged (#492 review). Nothing awaits between the unlock
+        # and this call: a passphrase rotation must see the reconcile from the moment the vault
+        # is ready.
+        self._start_staged_reconcile(store, accepted_slot)
         if not vault.ready:
             self._state_reason = "unlock_failed"
             return False
@@ -2928,6 +3479,43 @@ def _is_ready_application(value: object) -> bool:
         and callable(getattr(value, "project_result_for_client", None))
         and callable(getattr(value, "close", None))
     )
+
+
+def _soft_reready_deadline() -> asyncio.Timeout:
+    """A fresh ``_SOFT_REREADY_DEADLINE_SECONDS`` deadline for one soft-lock re-ready attempt."""
+
+    return asyncio.timeout(_SOFT_REREADY_DEADLINE_SECONDS)
+
+
+def _record_soft_reready_failure(task: asyncio.Task[bool]) -> None:
+    """Record a re-ready attempt's unexpected failure, whether or not a caller still waits.
+
+    Retrieving it here also keeps a failure that no caller awaited from being reported as lost.
+    """
+
+    if task.cancelled():
+        return
+    failure = task.exception()
+    if failure is not None:
+        record_unexpected_exception_without_raising(
+            failure, component="service.daemon", operation="soft_lock_reready"
+        )
+
+
+type _AutoUnlockCandidates = tuple[tuple[tuple[bytearray, str], ...], str]
+
+
+def _overwrite_unclaimed_candidates(read: asyncio.Future[_AutoUnlockCandidates]) -> None:
+    if read.cancelled() or read.exception() is not None:
+        return
+    candidates, _reason = read.result()
+    _overwrite_candidates(candidates)
+
+
+def _overwrite_candidates(candidates: tuple[tuple[bytearray, str], ...]) -> None:
+    for candidate, _slot in candidates:
+        for index in range(len(candidate)):
+            candidate[index] = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -3597,6 +4185,7 @@ class _LockedHumanEffects:
         maintenance_gate: asyncio.Lock | None = None,
         observation_gate: asyncio.Lock | None = None,
         owner_view_grants: OwnerViewGrants | None = None,
+        staged_reconcile: _StagedReconcileTracker | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._vault = vault
@@ -3606,6 +4195,9 @@ class _LockedHumanEffects:
         self._unlock = unlock
         self._maintenance_gate = maintenance_gate or asyncio.Lock()
         self._observation_gate = observation_gate or asyncio.Lock()
+        self._staged_reconcile = (
+            staged_reconcile if staged_reconcile is not None else _StagedReconcileTracker()
+        )
         self._maintenance_request_id: str | None = None
         self._prepared_recovery_snapshots: dict[str, PreparedInstallationSnapshot] = {}
         self._prepared_root_rotations: dict[str, Path] = {}
@@ -3655,6 +4247,26 @@ class _LockedHumanEffects:
             if request.ceremony_kind is HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE:
                 if not self._vault.ready or mode != "passphrase":
                     raise HumanControlError("state_forbidden")
+                # A soft re-ready's staged-slot reconcile may still run beside the open vault. It
+                # discards a staged rotation entry it finds, and the trusted helper stages this
+                # rotation's replacement there once the rotation opened: opened beside it, the
+                # rewrap could outlive that entry and leave the active one stale (#492 review).
+                # The open waits for it briefly, since a healthy one returns in moments; one
+                # still running at the deadline is a store that does not answer, and the open is
+                # refused rather than held. The released ceremony vocabulary has no closer code
+                # than ``state_forbidden``: the trusted helper, which then sees a passphrase vault
+                # ready or still unlocking in the status, tells the owner to try again.
+                if not await self._staged_reconcile.returned_within(
+                    _ROTATION_RECONCILE_WAIT_SECONDS
+                ):
+                    get_logger("service.daemon").warning(
+                        "vault_passphrase_rotate",
+                        outcome="refused",
+                        reason="staged_reconcile_outstanding",
+                    )
+                    raise HumanControlError("state_forbidden")
+                if not self._vault.ready or self._vault.mode.value != "passphrase":
+                    raise HumanControlError("state_forbidden")  # locked while the open waited
                 return VaultPassphraseRotatePreview(), digest, None
             if request.ceremony_kind is HumanCeremonyKind.KEYRING_RETRY:
                 operation = "pristine_create" if mode == "uninitialized" else "existing_load"
@@ -4760,6 +5372,26 @@ class _HumanConnectionServer:
         raise HumanControlError("kind_forbidden")
 
 
+def _refuse_remote_target_root(root: Path | None) -> None:
+    """Refuse to serve a remote server target's root (ADR-051, ``target_root_is_remote``).
+
+    A remote target's root holds only client state. A root whose ``target.json`` names a remote
+    kind, or holds one that cannot be read (it may be remote), is refused before anything is
+    created, so a local vault, ledger or endpoint never appears in it and a hook dialing that
+    root never reaches a stray local service. The everyday root, an isolated root that is not a
+    target, and a named ``local`` server are served as before.
+    """
+
+    if root is None:
+        return
+    try:
+        kind = server_target_kind(root)
+    except PathSafetyError:
+        raise LifecycleError("target_root_is_remote") from None
+    if kind is not None and kind != "local":
+        raise LifecycleError("target_root_is_remote")
+
+
 async def _production_composition(
     *,
     _config: FinishUpConfig | None = None,
@@ -4771,6 +5403,9 @@ async def _production_composition(
     """Build the real locked-first service graph without opening ready-only state."""
 
     config = _config or load_config({}, os.environ, None)
+    root = active_root()
+    # Before any bundle, state or singleton is made: no service runs in a remote target's root.
+    _refuse_remote_target_root(root)
     paths = _paths or _ProductionPaths.canonical(config)
     clock = _SystemClock()
     # Instance identity gate (issue #604): an expired disposable instance, a re-pointed runtime
@@ -4779,7 +5414,8 @@ async def _production_composition(
     instance_identity = read_instance_identity(paths.state)
     verify_instance_binding(
         instance_identity,
-        isolated=isolated_root() is not None,
+        # A selected named local server is an isolated root too (ADR-051).
+        isolated=root is not None,
         pin=read_runtime_pin(),
         now=clock.now_utc(),
     )
@@ -4827,6 +5463,7 @@ async def _production_composition(
     )
     secret_memory: LocalSecretMemory | None = None
     vault: VaultService | None = None
+    network_api: _NetworkApiServer | None = None
     try:
         instance = await lifecycle.acquire_singleton()
         reconciled_marker = marker_store.load()
@@ -4935,6 +5572,8 @@ async def _production_composition(
         diagnostics = _NullDiagnostics()
         maintenance_gate = asyncio.Lock()
         observation_gate = asyncio.Lock()
+        # One hub: the daemon registers agent connections, the ready application calls them.
+        workspace_hub = WorkspaceAgentHub()
         ready_application_factory = (
             _ready_application_factory
             if _ready_application_factory is not None
@@ -4950,9 +5589,11 @@ async def _production_composition(
                     diagnostics=diagnostics,
                     observation_gate=observation_gate,
                     startup_bundle_upgrade=_startup_bundle_upgrade,
+                    workspace_hub=workspace_hub,
                 ),
             )
         )
+        staged_reconcile = _StagedReconcileTracker()
         unlock = UnlockCoordinator(
             clock=clock,
             throttle=throttle,
@@ -4962,6 +5603,17 @@ async def _production_composition(
         )
         privacy_relay = _PrivacyPolicyAppRelay()
         owner_view_grants = OwnerViewGrants()
+        if config.network is not None:
+            # ADR-051: bound under the singleton, before any endpoint is published, so a listener
+            # that cannot be bound fails this start with its closed configuration reason.
+            from finishup.service.api_keys import API_KEYS_DIRECTORY, ApiKeyStore
+            from finishup.service.http_api import NetworkApiServer
+
+            network_api = NetworkApiServer.bind(
+                config.network,
+                keys=ApiKeyStore(paths.state / API_KEYS_DIRECTORY),
+                runtime=runtime_dir(),
+            )
         human = HumanControlService(
             clock=clock,
             lifecycle=lifecycle,
@@ -4977,6 +5629,7 @@ async def _production_composition(
                 maintenance_gate,
                 observation_gate,
                 owner_view_grants,
+                staged_reconcile,
             ),
             user_presence=user_presence,
             # Scoped to the owner's receipt view (ADR-009, ADR-016 decision 4): presence never
@@ -5006,11 +5659,16 @@ async def _production_composition(
             privacy_policy_app_relay=privacy_relay,
             auto_unlock_reason=auto_unlock_reason,
             auto_unlock_bundle=paths.bundle,
+            staged_reconcile=staged_reconcile,
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
             owner_view_grants=owner_view_grants,
+            network_api=network_api,
+            workspace_hub=workspace_hub,
         )
     except BaseException:
+        if network_api is not None:
+            await network_api.close()
         await listeners.close()
         if vault is not None:
             await vault.close()
