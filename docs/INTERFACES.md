@@ -5493,8 +5493,10 @@ delivery_factory, …)` serves each noted workspace with, from `client.remote_wo
 `claim_for_workspace(record, locator) -> WorkspaceClaim | None` (`workspace_claim` under
 `claim_salt(record)`, the same claim a client process sends), `handler_for_workspace(locator,
 root) -> WorkspaceAgentHandler` (the target root added to its protected directories, and
-`outside_folders=folders_reader(root)`, so it admits only the folders recorded for `root`'s own
-target, never the selected target's), and
+`outside_reads=outside_reads_reader(root)`, which reads the outside-read mode (`local` or
+`listed`) and the listed folders of `root`'s own target on every call, never the selected
+target's; a root that holds no remote target, or a target record that cannot be read, reads as
+`listed` with no folder), and
 `CapturedObservationDelivery(record, root, locator, claim, *, connect=None)` whose `deliver()` runs
 one `ClientObservationDrain` pass (state `<troot>/state`) over one claim-bound `RestServiceClient`
 kept between passes and released after a pass that stopped at a control failure.
