@@ -86,6 +86,9 @@ _CLIENT_TARGETS: Final = {
     # A workspace agent is bound to the outside-read record (mode and listed folders) of the
     # target this process uses when the agent is built.
     ("client/server_folders.py", "outside_reads_reader", "active_root"): 1,
+    # The zero-network guard and marker (ADR-051 decision 8) act only for a process whose
+    # resolved root is this computer's everyday installation, not a selected server's.
+    ("cli/zero_network_selection.py", "_on_everyday_root", "active_root"): 1,
 }
 
 
