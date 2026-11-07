@@ -561,9 +561,10 @@ def test_equality_after_redaction_is_not_called_equality_of_the_file(tmp_path: P
     snapshot = TaskInputSnapshotSet(
         "task_start", (SnapshotFile(path, "/shared", kept, len(before), True),)
     )
-    (item,) = _snapshot_inputs(
+    (item,), not_listed = _snapshot_inputs(
         (snapshot,), (path,), ("/shared",), lambda paths: {paths[0]: after}, set(), 4
     )
+    assert not_listed is False
     label, _cut = _task_input_text(item)
     assert "still matches it" not in label
     assert "outside its redacted values; whether those values changed is unknown" in label
@@ -619,8 +620,10 @@ def test_plain_snapshot_labels_distinguish_current_states(state: str) -> None:
         current = (
             {} if state == "unavailable" else {path: _ORIGINAL if state == "same" else _REWRITTEN}
         )
-        (item,) = _snapshot_inputs((snapshot,), (path,), ("/shared",), lambda _: current, set(), 4)
-        assert item.current_state == state and item.text == _ORIGINAL
+        (item,), not_listed = _snapshot_inputs(
+            (snapshot,), (path,), ("/shared",), lambda _: current, set(), 4
+        )
+        assert item.current_state == state and item.text == _ORIGINAL and not not_listed
     label, _cut = _task_input_text(item)
     expected = {
         "same": "still matches it",
@@ -630,6 +633,35 @@ def test_plain_snapshot_labels_distinguish_current_states(state: str) -> None:
     }[state]
     assert expected in label and "not the agent's work" not in label
     assert "redacted" not in label
+
+
+def test_a_kept_copy_whose_folder_is_no_longer_listed_is_not_sent() -> None:
+    """ADR-051 decision 5: a claim-bound task's current read names the kept paths the client's
+    owner no longer lists for the server. Their copies are not sent, as a copy whose root the
+    owner no longer admits is not; the others are, and the read says one was left out, so the
+    rest of the check-time change still reaches review."""
+
+    from finishup.application.check_change import (  # noqa: PLC0415
+        CurrentInputsRead,
+        _snapshot_inputs,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    kept, gone = "/shared/spec.txt", "/shared/old/notes.txt"
+    snapshot = TaskInputSnapshotSet(
+        "task_start",
+        (
+            SnapshotFile(kept, "/shared", _ORIGINAL, len(_ORIGINAL)),
+            SnapshotFile(gone, "/shared", _ORIGINAL, len(_ORIGINAL)),
+        ),
+    )
+
+    def current(paths: tuple[str, ...]) -> CurrentInputsRead:
+        assert paths == (kept, gone)
+        return CurrentInputsRead({kept: _ORIGINAL}, frozenset({gone}))
+
+    added, not_listed = _snapshot_inputs((snapshot,), (kept, gone), ("/shared",), current, set(), 4)
+    assert [(item.path, item.current_state) for item in added] == [(kept, "same")]
+    assert not_listed is True
 
 
 @pytest.mark.anyio

@@ -238,9 +238,34 @@ def require_server_host(command: str) -> None:
         raise ServerHostRequired(record.target_id, record.kind)
 
 
-def server_host_refusal_line(error: ServerHostRequired) -> str:
-    """One bounded operator line for a refused server-host command (closed tokens and an id)."""
+# What a server-host command means for a remote server, where that is not plain from its name: a
+# fixed clause after the refusal line, keyed by command path prefix.
+_SERVER_HOST_MEANING: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "privacy input-roots": (
+            "; it admits a folder for the repository in the current folder on the server host, "
+            "and the folder must exist there: a folder that exists only on this computer cannot "
+            "be admitted for a remote server yet"
+        ),
+    }
+)
 
+
+def server_host_refusal_line(error: ServerHostRequired, command: str | None = None) -> str:
+    """One bounded operator line for a refused server-host command (closed tokens and an id).
+
+    ``command`` is the refused command's path; where running it on the server host means more
+    than its name says (``_SERVER_HOST_MEANING``), the line says so in fixed words.
+    """
+
+    meaning = next(
+        (
+            text
+            for prefix, text in _SERVER_HOST_MEANING.items()
+            if command is not None and (command == prefix or command.startswith(prefix + " "))
+        ),
+        "",
+    )
     if isinstance(error, ServerTargetUnreadable):
         which = "" if error.target_id is None else f" {error.target_id}"
         return (
@@ -253,6 +278,7 @@ def server_host_refusal_line(error: ServerHostRequired) -> str:
         f"{REQUIRES_SERVER_HOST}: this command runs on the FinishUP server host, and the "
         f"selected server target {error.target_id} ({error.kind}) is not this machine; run it "
         "on the server host, or select this machine's server with 'finishup server use local'"
+        f"{meaning}"
     )
 
 
@@ -280,7 +306,7 @@ def _guarded(callback: Callable[..., Any], path: str) -> Callable[..., Any]:
         try:
             require_server_host(path)
         except ServerHostRequired as error:
-            typer.echo(server_host_refusal_line(error), err=True)
+            typer.echo(server_host_refusal_line(error, path), err=True)
             from finishup.cli.exits import exit_code_for
             from finishup.protocol.errors import PublicErrorCode
 

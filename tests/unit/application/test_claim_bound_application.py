@@ -187,19 +187,81 @@ def test_an_unanswered_agent_is_a_closed_check_time_change_gap() -> None:
     )
 
 
-def test_a_refusal_names_both_of_the_owners_ways_out_and_not_only_the_workspace() -> None:
-    """ADR-051 decision 5: the usual refusal is a task input in a folder the owner has not let
-    this server read, so the sentence never says the read was of the workspace, and it names the
-    two steps only the owner can take: list the folder, or, for a server they trust, switch it
-    to mode local."""
+def test_a_refusal_says_what_it_now_means_and_where_to_reconnect() -> None:
+    """ADR-051 decision 5: listed mode no longer refuses a check-time read (it leaves only the
+    unlisted inputs unread, ``outside_reads_not_listed``), so a refusal here is a request the
+    agent does not answer, usually a release mismatch. The sentence says so, names the computer
+    and the full command, and that checking again can help; it never claims a listed-mode
+    refusal or names a path."""
 
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_refused"]
     assert "read of the workspace" not in sentence
-    assert "input file in a folder" in sentence
-    assert "Only the owner" in sentence and "`finishup server folders add`" in sentence
-    assert "for a server they trust" in sentence
-    assert "`finishup server folders mode NAME local`" in sentence
+    assert "same release on both" in sentence
+    assert "`finishup server connect NAME`" in sentence
+    assert "on the client machine, the computer that holds the project" in sentence
+    assert "check again" in sentence
+    assert "folders" not in sentence
     assert "/" not in sentence
+
+
+def test_an_unavailable_agent_names_where_to_reconnect_and_that_a_retry_can_help() -> None:
+    sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_unavailable"]
+    assert "`finishup server status NAME`" in sentence
+    assert "`finishup server connect NAME`" in sentence
+    assert "client machine, the computer that holds the project" in sentence
+    assert "checking again then can help" in sentence
+    assert "/" not in sentence
+
+
+def test_files_listed_mode_kept_from_review_name_both_ways_out_with_their_arguments() -> None:
+    """The fixed line for inputs and declared tests listed mode kept from review (ADR-051
+    decision 5): no path and no count, where to run each command, its full arguments, both ways
+    out, and that an agent cannot take them."""
+
+    from finishup.domain.receipts import (
+        OUTSIDE_READS_NOT_LISTED_GAP,
+        OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE,
+        check_time_change_gap_sentence,
+    )
+
+    sentence = check_time_change_gap_sentence(OUTSIDE_READS_NOT_LISTED_GAP)
+    assert sentence is not None
+    for text in (sentence, OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE):
+        assert "`finishup server folders add NAME FOLDER`" in text
+        assert "`finishup server folders mode NAME local`" in text
+        assert "client machine" in text
+        assert "/" not in text and not any(character.isdigit() for character in text)
+    assert "the computer that holds the project" in sentence
+    assert "listed mode" in sentence and "An agent cannot." in sentence
+    assert "checking again" in sentence
+
+
+def test_remedy_sentences_name_the_computer_they_concern() -> None:
+    """A claim-bound task's Git is the client's, its input roots are the server host's, and a kept
+    copy needs its folder readable before the task starts: each sentence says which computer, or
+    when, in fixed words (refusal-guide review)."""
+
+    from finishup.domain.receipts import (
+        TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
+        TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
+        TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,
+        check_time_change_gap_sentence,
+    )
+
+    for reason in ("git_unavailable", "git_version_unsupported"):
+        sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS[reason]
+        assert "the one the FinishUP service runs on" in sentence
+        assert "for a remote server, the client machine that holds the project" in sentence
+    admitted = check_time_change_gap_sentence(TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP)
+    assert admitted is not None
+    for text in (admitted, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE):
+        assert "`finishup privacy input-roots add <folder>`" in text
+        assert "the computer the FinishUP service runs on" in text
+        assert "server host" in text
+    assert "the folder must exist there" in admitted
+    assert "cannot be admitted for a remote server yet" in admitted
+    baseline = check_time_change_gap_sentence(TASK_INPUT_BASELINE_UNAVAILABLE_GAP)
+    assert baseline is not None and "before the task starts keeps one" in baseline
 
 
 @pytest.mark.parametrize(

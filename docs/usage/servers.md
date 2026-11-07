@@ -275,14 +275,31 @@ removes them too. A server on this computer does not use them: there, the privac
 which folders a review may read (`finishup privacy input-roots`).
 
 In listed mode, when a task names a file in a folder that the server's privacy policy covers but
-you have not listed for that server here, the workspace agent refuses to read it, and the check
-reports `workspace_agent_refused`: the server then checks without seeing your change, rather than
-without the file and without saying so. If you mean that server to read it, list the folder with
-`server folders add`, or, if you trust that server as you trust FinishUP on this computer, switch
-it to local mode with `server folders mode NAME local`. A file the reviewer asks for, or a test
-your agent declared, in a folder you have not listed is skipped without a message; if a review
-seems to miss one, run `finishup server folders list NAME` to see what that server may read. In
-local mode none of this is refused: the agent reads as FinishUP on this computer would.
+you have not listed for that server here, the workspace agent leaves just that file unread: the
+server still checks the rest of your work, your change included, and the receipt says, in one
+line, that some files outside the folders you listed were not read, with both ways out. The same
+line covers a test your agent declared outside those folders, and, in listed mode, a declared
+test in your project that Git ignores (or cannot answer for, such as one in a linked worktree).
+If you mean that server to read them, run one of these on this computer, in your own terminal,
+then check again:
+
+```text
+finishup server folders add NAME FOLDER
+finishup server folders mode NAME local
+```
+
+The first lists the folder; the second, for a server you trust as you trust FinishUP on this
+computer, switches it to local mode. Both apply to folders the server's own privacy policy already
+lets it read task inputs from: that policy is set on the server's machine, with `finishup privacy
+input-roots add <folder>` run there, in the project's folder there, and the folder must exist on
+that machine. A folder that exists only on this computer cannot be admitted for a server on
+another machine yet; the receipt then says `task_input_outside_not_admitted` and where to run
+that command. A path a task mentions that does not exist costs nothing:
+FinishUP reads nothing there, as FinishUP on this computer would. A file the reviewer asks to read
+in a folder you have not listed reads as absent; it is almost always one the task named, so the
+receipt line above already covers it, and `finishup server folders list NAME` shows what that
+server may read. In local mode nothing of this is left out: the agent reads as FinishUP on this
+computer would, declared tests that Git ignores included.
 
 ## What leaves this computer
 
@@ -537,8 +554,9 @@ repeated safely.
 | `zero_network_selection_unreadable` | Your privacy policy forbids all network use, and the saved server choice cannot be read, so FinishUP cannot tell whether a server elsewhere is still chosen. | Run `finishup server use local`; it clears the choice even when it cannot be read. Then restart open agent sessions. |
 | `selection_invalid` | The saved server choice is damaged, or names a server whose folder on this computer is missing or unsafe. `finishup server` commands say this instead of `isolation_root_invalid`. | Run `finishup server use local`; it clears the choice even when it cannot be read. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |
-| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | Keep the agent session open (or run `finishup server connect`) and check again; the receipt names what was not read. |
-| `workspace_agent_refused` | The workspace agent refused a request: in listed mode, outside your project and the folders you listed; or a check command not on the check list you approved and trusted on this computer. A receipt says so where the refusal kept the server from seeing your change. | Nothing to repair unless you meant the server to read there: list the folder with `finishup server folders add NAME FOLDER`, or, for a server you trust as you trust FinishUP on this computer, run `finishup server folders mode NAME local`. Or trust that check list. |
+| `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | On this computer: `finishup server status NAME` shows the connection, and `finishup server connect NAME` makes it again (or keep the agent session open); then check again. |
+| `workspace_agent_refused` | The workspace agent refused a request it does not answer, which usually means the two computers run different FinishUP releases; or a check command that is not on the check list you approved and trusted on this computer. A receipt says so where the refusal kept the server from seeing your change. | Install the same release on both computers, run `finishup server connect NAME` on this computer, and check again. For a check command, review the project's check list and trust it on this computer, in the project folder: `finishup observe checks trust --policy-digest <digest>` (the digest `finishup observe checks preview` shows). |
+| `outside_reads_not_listed` | In listed mode, the workspace agent left unread some files a task names, or tests your agent declared, outside the folders you listed for that server. The rest of the work was checked. | On this computer, in your own terminal: `finishup server folders add NAME FOLDER`, or, for a server you trust as you trust FinishUP on this computer, `finishup server folders mode NAME local`. Then check again. |
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
 | `folder_invalid` | `server folders add` was given a folder it cannot admit: not a full path, missing, reached through a link, hidden, a system folder, or your home folder, a folder that holds it or one of its private folders. | Give the full path of the existing folder you mean, inside your home folder if it is there. |

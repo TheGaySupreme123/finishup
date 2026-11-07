@@ -67,6 +67,8 @@ from finishup.ports.workspace_agent import (
     LstatCandidatesArguments,
     LstatFacts,
     OpenWorkspaceArguments,
+    OutsideInputsRead,
+    OutsideSnapshotsRead,
     ProbeRequestedPathsArguments,
     ReadDeclaredTestArguments,
     ReadOutsideInputsArguments,
@@ -291,19 +293,33 @@ _RESULTS: dict[WorkspaceOperation, tuple[object, ...]] = {
         (),
     ),
     WorkspaceOperation.READ_OUTSIDE_INPUTS: (
-        (
-            TaskInputFile(
-                "/data/inputs/spec.md", b"spec", 4, False, "outside_workspace", root="/data/inputs"
+        OutsideInputsRead(
+            (
+                TaskInputFile(
+                    "/data/inputs/spec.md",
+                    b"spec",
+                    4,
+                    False,
+                    "outside_workspace",
+                    root="/data/inputs",
+                ),
             ),
         ),
-        (),
+        OutsideInputsRead((), (0, 2)),
+        OutsideInputsRead(()),
     ),
     WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS: (
-        (
-            OutsideSnapshotRead("/data/inputs", "/data/inputs/a.txt", 5, b"hello", None),
-            OutsideSnapshotRead("/data/inputs", "/data/inputs/big.bin", 999_999, None, "too_large"),
-            OutsideSnapshotRead("/data/inputs", "/data/inputs/gone", 0, None, "unreadable"),
+        OutsideSnapshotsRead(
+            (
+                OutsideSnapshotRead("/data/inputs", "/data/inputs/a.txt", 5, b"hello", None),
+                OutsideSnapshotRead(
+                    "/data/inputs", "/data/inputs/big.bin", 999_999, None, "too_large"
+                ),
+                OutsideSnapshotRead("/data/inputs", "/data/inputs/gone", 0, None, "unreadable"),
+            ),
+            (1,),
         ),
+        OutsideSnapshotsRead(()),
     ),
     WorkspaceOperation.READ_DECLARED_TEST: (b"def test_x():\n    assert True\n", None),
     WorkspaceOperation.READ_TEXT_BENEATH: ((b"abc\x00\xff", 5), (b"", 2_000_000), None),

@@ -391,61 +391,80 @@ answers bounded `workspace_call`s on a connection that declared it.
   for reviewer reads alone that changes nothing the server sees, since a refused reviewer read
   reads as absent there (below); a task-input root there is excluded, not refused, once the
   listed-folder rule admits its paths. In `listed` mode what the read
-  reaches must also lie inside the claimed worktree or at or beneath a listed folder; otherwise
-  the read is `root_not_admitted`. For a single-root read
-  (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it the read names.
-  For a task-input read (`read_outside_inputs`, `snapshot_outside_inputs`) it is every path the
-  task names beneath a named root: one the owner did not list refuses the whole call, which the
-  server records as the check's `workspace_agent_refused`, so an input is never passed over in
-  silence, and a named root beneath which the task names nothing is left
-  unopened. The server's own privacy policy still decides which roots it asks for: in `listed`
-  mode the client's record narrows it, never widens it, and a folder narrower than the server's
-  root admits what lies beneath that folder alone. The refusal stays, as the last resort, and
-  its remedy names both ways out, which only the owner can take on the client: list the folder,
-  or, for a server they trust, switch it to `local` mode. A declared test inside the claimed
-  worktree is read under Git's ignore rule (next item) in both modes. Outside it, in `local` mode
-  it is read as a local service reads the test its own agent declared (#1220); in `listed` mode
-  only beneath a listed folder, so the local parity of #1220 holds within what the owner listed,
-  and anywhere else it is `root_not_admitted`, never read on the server's word, and the reviewer
-  is not offered it. One read outside the worktree is an outside read, which excludes the claimed
-  workspace by identity and case-folded spelling, so another spelling of the workspace beneath
-  that folder never skips Git's ignore rule. Both comparisons use the spelling the local read
-  walks: a first component that is a link root owns (macOS `/tmp`, `/var`) counts as its target,
-  so such a spelling never falsely refuses.
-- **Ignore rules on the agent** (amended 2026-11-06, same review). The server's reviewer broker
-  asks the agent whether Git ignores a workspace path before it reads it; a server that skipped
-  that question received an ignored file's bytes. The agent now asks Git itself before a
-  workspace file read (`read_text_beneath` on the handle) and before a declared-test read inside
-  the claimed workspace, and returns bytes only when Git answers that the path is not ignored,
-  the very answer the broker requires (`ignored is not False` refuses, locally and remotely).
+  reaches must also lie inside the claimed worktree or at or beneath a listed folder. For a
+  single-root read (`read_text_beneath`, `list_beneath`) that is the root, or the path beneath it
+  the read names; anything else that exists is `root_not_admitted`. For a task-input read
+  (`read_outside_inputs`, `snapshot_outside_inputs`) it is each path the task names beneath a
+  named root, judged one at a time (amended 2026-11-07, refusal-guide review): a path the owner
+  did not list is left unread and the rest of the read goes on, and the answer carries, beside
+  the files, the indices of the server's own values it left unread (`unlisted`; indices only,
+  never a path the server did not send). The server freezes that as the check-time change's
+  `outside_inputs_not_listed` flag and discloses the closed code `outside_reads_not_listed`,
+  whose fixed sentence names both ways out and where to run them; so a listed-mode input costs
+  only that input, never the whole check-time change, and is never passed over in silence. A
+  kept copy (#1118) whose folder the owner no longer lists is not sent, as a copy whose root the
+  owner no longer admits is not: the current read that compares it names it `unlisted` too.
+  Listed mode refuses or skips only what exists (same amendment): a path the read reaches that
+  does not exist reads as nothing, as it does locally, and is never counted, so a stray path in a
+  task statement costs nothing. Whether a path exists is answered only for one the local
+  outside-input candidate rule would look at (no hidden component, not credential-named, in no
+  system or protected directory), so the server learns no more than `lstat_candidates` already
+  tells it. A named root beneath which the task names nothing is left unopened, and one that
+  holds a listed folder is walked only to the values beneath that folder. The server's own
+  privacy policy still decides which roots it asks for: in `listed` mode the client's record
+  narrows it, never widens it, and a folder narrower than the server's root admits what lies
+  beneath that folder alone. Both ways out are the owner's, on the client: list the folder, or,
+  for a server they trust, switch it to `local` mode. A declared test is read in `local` mode
+  exactly as a local service reads the test its own agent declared (#1220): inside the claimed
+  worktree or outside it, whether or not Git ignores it or can answer for it, with FinishUP's
+  own directories excluded and no other rule (same amendment). In `listed` mode a declared test
+  inside the claimed worktree is read under Git's ignore rule (next item), and one outside it
+  only beneath a listed folder; an existing one beyond that is `root_not_admitted`, never read on
+  the server's word, the reviewer is not offered it, and the server discloses
+  `outside_reads_not_listed` for it (frozen into the job's case object as
+  `declared_tests_not_listed`, so a recovered job builds the same case). One read outside the
+  worktree in `listed` mode is an outside read, which excludes the claimed workspace by identity
+  and case-folded spelling, so another spelling of the workspace beneath that folder never skips
+  Git's ignore rule. Both comparisons use the spelling the local read walks: a first component
+  that is a link root owns (macOS `/tmp`, `/var`) counts as its target, so such a spelling never
+  falsely refuses.
+- **Ignore rules on the agent** (amended 2026-11-06, same review; narrowed 2026-11-07). The
+  server's reviewer broker asks the agent whether Git ignores a workspace path before it reads
+  it; a server that skipped that question received an ignored file's bytes. The agent now asks
+  Git itself before a workspace file read (`read_text_beneath` on the handle), and returns bytes
+  only when Git answers that the path is not ignored, the very answer the broker requires
+  (`ignored is not False` refuses, locally and remotely), so a local service has the same rule.
   Where Git cannot answer for a path, the read is nothing too: a linked worktree, whose `.git`
   file the change capture refuses as `unsafe_root`; a path inside a submodule, which the
   repository's own Git does not answer for; no repository at all (`not_git`); a home-private
   path. An honest reviewer read costs nothing, since the broker refuses those reads itself. A
-  declared test in such a place, or in a Git-ignored path, is therefore not offered on a remote
-  target, though a local service reads it (#1220). For a Git-ignored test that is the rule
-  itself. For a linked worktree or a submodule it is a parity gap that would narrow only if the
-  client's change capture could answer for them; in a folder with no repository it stays. A
-  listing (`list_beneath`) returns names only and is not asked about; the broker filters its
-  entries.
+  declared test is held to the rule only in `listed` mode: a local service reads a declared test
+  whether or not Git ignores it (#1220), so `local` mode does too, and there no declared test is
+  skipped that a local service would offer. In `listed` mode a declared test that is
+  Git-ignored, or that Git cannot answer for, is refused and disclosed as above. A listing
+  (`list_beneath`) returns names only and is not asked about; the broker filters its entries.
 - **Honest limit: what a server that breaks the protocol can still obtain.** The agent cannot tell
   an honest server's question from any other. Within the claimed worktree, such a server can
   obtain any file the adapters' fences pass and Git answers is not ignored, whether or not a task
   names it, and the names, never the bytes, of every entry the fences pass in a directory
-  listing, ignored ones and those Git cannot answer for included. In `listed` mode, beneath a
-  folder the owner listed for it, it can obtain any file that is not hidden, not credential-named
-  and in no system or protected directory, and list the names in its directories. In `local`
-  mode it can do so beneath any root of a shape an owner could admit, anywhere on this machine,
-  within the same fences (the home directory's private trees included), as a local service's
-  reads could; that is why `local` is the owner's typed choice, at `server add` or later, for a
-  server they trust as they trust FinishUP on this computer, and never a default for any kind
-  (an official FinishUP endpoint alone is `local` without the question).
-  Anywhere on this machine, it can learn the metadata (existence, type, size and times, never
-  content) of a path the local outside-input candidate rule would look at (`lstat_candidates`),
-  which the server's outside-input hint needs. The owner lists only folders they would let that
-  server see. A refused task-input read reaches the receipt as `workspace_agent_refused`, but a
-  refused reviewer read or declared test reads as absent on the server, and nothing on the client
-  tells the owner which folder was asked for; such a hint is later work.
+  listing, ignored ones and those Git cannot answer for included; in `local` mode it can also
+  obtain, as a declared test, a file the fences pass that Git ignores or cannot answer for, as a
+  local service's declared-test read could. In `listed` mode, beneath a folder the owner listed
+  for it, it can obtain any file that is not hidden, not credential-named and in no system or
+  protected directory, and list the names in its directories. In `local` mode it can do so
+  beneath any root of a shape an owner could admit, anywhere on this machine, within the same
+  fences (the home directory's private trees included), as a local service's reads could; that is
+  why `local` is the owner's typed choice, at `server add` or later, for a server they trust as
+  they trust FinishUP on this computer, and never a default for any kind (an official FinishUP
+  endpoint alone is `local` without the question). Anywhere on this machine, it can learn the
+  metadata (existence, type, size and times, never content) of a path the local outside-input
+  candidate rule would look at (`lstat_candidates`), which the server's outside-input hint needs,
+  and in `listed` mode whether such a path exists from whether a read of it is refused or left
+  unread. The owner lists only folders they would let that server see. A task input or declared
+  test that listed mode kept from the server reaches the receipt as `outside_reads_not_listed`;
+  a refused reviewer read reads as absent on the server, which in practice names the same
+  task-named path the check-time read already disclosed. Nothing on the client tells the owner
+  which folder was asked for; such a hint is later work.
 - **The hub.** `service/workspace_hub.py` keeps live agent channels keyed by workspace handle; a
   connection that declared the agent registers at handshake and unregisters on close.
   `WorkspaceAgentHub.call(handle, operation, arguments, *, timeout_seconds)` sends a
@@ -562,7 +581,15 @@ answers bounded `workspace_call`s on a connection that declared it.
   (or an operation it never offered) is named apart: the check-time change records
   `workspace_agent_refused` (`check_time_change_unavailable_workspace_agent_refused`, its own
   fixed sentence), while `workspace_agent_unavailable`'s sentence covers an agent that was not
-  connected, too slow or failed; a refused reviewer read reads as nothing.
+  connected, too slow or failed; a refused reviewer read reads as nothing. Since listed mode
+  leaves an unlisted input unread instead of refusing the read (decision 5, amended 2026-11-07),
+  a check-time refusal is now a request the agent does not answer (a handle it did not claim, an
+  unknown operation or argument, a root no owner could admit), in practice two releases that do
+  not match; its sentence says so and names `finishup server connect NAME` on the client. The
+  unavailable sentence names `finishup server status NAME` and `finishup server connect NAME`
+  on the client and that checking again can help. Files listed mode kept from review are the
+  disclosure `outside_reads_not_listed` (decision 5), never a check-time change gap: the rest of
+  the change still reaches review.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never
   falls back to the ambient one; a service refuses to run in a root whose target is remote
   (`target_root_is_remote`). The daemon refuses at composition, before anything is created, when
@@ -1080,6 +1107,25 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
 - *A sticky per-session target record for hooks.* Another store on the hook hot path, and it can
   drift from the bridge.
 - *A per-repository server file.* A repository could redirect its own ledger traffic.
+
+## Open questions for the maintainer
+
+1. **Task-input folders that exist only on the client** (recorded 2026-11-07, refusal-guide
+   review). A server's task-input roots come from its own privacy policy, set with `finishup
+   privacy input-roots add <folder>`, a `server_host` command: on a remote target it is refused
+   on the client (`requires_server_host`), and on the server host it runs for the repository in
+   the current folder there and needs the folder to exist there, at a link-free real path. So a
+   folder that exists only on the owner's computer cannot be admitted for a server on another
+   machine, in either outside-read mode, and an input there stays out of review
+   (`task_input_outside_not_admitted`), where FinishUP on one computer lets its owner admit it.
+   Nothing about this was redesigned; every message about it now says where the command runs
+   and what that means for a remote server (the receipt sentence and its MCP short form, the
+   terminal interface's privacy line, the command's help, and the `requires_server_host` line
+   for `privacy input-roots`). Ways the maintainer could close it: in `local` mode, let the
+   server ask the client's agent for task inputs beneath a root the client's own local policy
+   admits; let `privacy input-roots` record, from the client through an owner ceremony on the
+   trusted console, a root that exists only on the client for that claim; or keep the limit as
+   documented. Undecided.
 
 ## Founder questions answered by the maintainer (2026-11-05)
 
