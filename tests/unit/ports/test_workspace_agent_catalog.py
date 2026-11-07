@@ -500,6 +500,47 @@ def test_bytes_travel_as_canonical_base64() -> None:
         assert refused.value.reason == "result_invalid"
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("path", 5),
+        ("path", ["/data/inputs/spec.md"]),
+        ("redacted", 0),
+        ("size", True),
+        ("size", "4"),
+        ("origin", ["outside_workspace"]),
+        ("root", 7),
+        ("baseline", {"task_start": True}),
+        ("current_state", ["unchanged"]),
+    ],
+)
+def test_a_wrong_typed_task_input_field_is_a_refused_result(name: str, value: object) -> None:
+    """A workspace agent's reply is untrusted: a wrong-typed field is ``result_invalid``, never
+    an ``AttributeError`` or ``TypeError`` escaping from inside the value type."""
+
+    spec = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.READ_OUTSIDE_INPUTS]
+    read = OutsideInputsRead(
+        (
+            TaskInputFile(
+                "/data/inputs/spec.md",
+                b"spec",
+                4,
+                False,
+                "outside_workspace",
+                root="/data/inputs",
+                baseline="task_start",
+                current_state="same",
+            ),
+        ),
+    )
+    encoded = cast(dict[str, Any], strict_json_parse(canonical_encode(spec.encode_result(read))))
+    assert spec.decode_result(encoded) == read
+    encoded["inputs"][0][name] = value
+    with pytest.raises(WorkspaceCodecError) as refused:
+        spec.decode_result(encoded)
+    assert refused.value.reason == "result_invalid"
+
+
 def test_the_approved_check_timeout_is_the_exact_float() -> None:
     spec = WORKSPACE_OPERATION_CATALOG[WorkspaceOperation.RUN_APPROVED_CHECK]
     for timeout in (0.1, 2.5555, 30.0, 299.99999999999994, 300.0):

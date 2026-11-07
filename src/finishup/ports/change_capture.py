@@ -1251,6 +1251,15 @@ def task_input_file_from_wire(row: object) -> TaskInputFile:
         set(fields) - {"origin", "summary", "root", "baseline", "current_state", "client_listed"}
         != {"path", "redacted", "size", "text"}
         or type(fields["text"]) is not str
+        # A workspace agent's reply is untrusted: refuse a wrong-typed field here, as the codec's
+        # own error, before ``TaskInputFile`` hashes or slices it and fails as some other error.
+        or type(fields["path"]) is not str
+        or type(fields["redacted"]) is not bool
+        or type(fields["size"]) is not int
+        or any(
+            name in fields and type(fields[name]) is not str
+            for name in ("origin", "root", "baseline", "current_state")
+        )
         or fields.get("origin", "verification") == "task"
         or fields.get("summary", True) is not True
         or fields.get("baseline", "task_start") == "current"
@@ -1259,10 +1268,10 @@ def task_input_file_from_wire(row: object) -> TaskInputFile:
         # A default value is never written, so a present default is not canonical.
         raise _invalid()
     return TaskInputFile(
-        cast(str, fields["path"]),
+        fields["path"],
         fields["text"].encode("utf-8"),
-        cast(int, fields["size"]),
-        cast(bool, fields["redacted"]),
+        fields["size"],
+        fields["redacted"],
         cast(TaskInputOrigin, fields.get("origin", "task")),
         fields.get("summary", False) is True,
         cast(str | None, fields.get("root")),
