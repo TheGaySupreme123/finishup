@@ -1,9 +1,9 @@
 """The receipt result's ``workspace_provenance`` member (ADR-051, owner decision D4).
 
 receipt-result 1.5.0 admits it on every format, in fixed words and closed tokens only; the
-released 1.4.0 never does. Its ``reason`` says whether the cause can pass or lasts, and each
-reason admits only its own notice. Its leaves are structural, and a paged receipt delivers it
-first.
+released 1.4.0 never does. Its ``reason`` names the cause, and so whether it can pass or lasts,
+and each reason admits only its own notice, whose last line says only what is true of that cause.
+Its leaves are structural, and a paged receipt delivers it first.
 """
 
 # pyright: reportPrivateUsage=false
@@ -18,11 +18,17 @@ from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
 
 from finishup.application.result_delivery import page_result
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_ERASED_LINE,
+    WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
     WORKSPACE_PROVENANCE_REASONS,
+    WORKSPACE_PROVENANCE_REDACTED_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     WorkspaceProvenanceReason,
@@ -44,10 +50,14 @@ from finishup.protocol.schemas import (
     validate_schema_instance,
 )
 
-_REASONS: tuple[WorkspaceProvenanceReason, ...] = (
-    SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
-)
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = WORKSPACE_PROVENANCE_REASONS
+# The reasons no retry or restart clears, each with the one last line that is true of it alone.
+_LASTING: dict[WorkspaceProvenanceReason, str] = {
+    SESSION_OPENING_REDACTED: WORKSPACE_PROVENANCE_REDACTED_LINE,
+    SESSION_OPENING_ERASED: WORKSPACE_PROVENANCE_ERASED_LINE,
+    SESSION_OPENING_KEY_UNAVAILABLE: WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
+    SESSION_OPENING_FORMAT_UNKNOWN: WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+}
 
 
 def _wire(
@@ -65,7 +75,10 @@ def _wire(
 def test_the_member_is_fixed_words_and_a_closed_reason() -> None:
     assert WORKSPACE_PROVENANCE_REASONS == (
         "session_opening_unreadable",
-        "session_opening_unrecoverable",
+        "session_opening_redacted",
+        "session_opening_erased",
+        "session_opening_key_unavailable",
+        "session_opening_format_unknown",
     )
     for reason in _REASONS:
         assert workspace_provenance_unknown_wire(reason) == {
@@ -80,37 +93,77 @@ def test_the_member_is_fixed_words_and_a_closed_reason() -> None:
             workspace_provenance_unknown_lines(other)
 
 
-def test_a_passing_cause_says_to_retry_and_a_lasting_one_says_it_will_not_clear() -> None:
-    """Both say what happened and why it matters in the same words; only a passing cause says to
-    run receipt again or restart, and only a lasting one says the record will not become readable
-    again and the receipt will keep saying so."""
+def test_a_passing_cause_says_to_retry_and_a_lasting_one_says_why_it_lasts() -> None:
+    """Every cause says what happened and why it matters in the same words; only the passing
+    cause says to run receipt again or restart, and each lasting one says why no retry or restart
+    reads the record and how long the receipt will keep saying so."""
 
-    passing = workspace_provenance_unknown_lines(SESSION_OPENING_UNREADABLE)
-    lasting = workspace_provenance_unknown_lines(SESSION_OPENING_UNRECOVERABLE)
-    assert passing == (
+    assert workspace_provenance_unknown_lines(SESSION_OPENING_UNREADABLE) == (
         WORKSPACE_PROVENANCE_UNKNOWN_LINE,
         WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
         WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     )
-    assert lasting == (
-        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-    )
-    assert WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE == (
-        "Why it lasts: the record is redacted or erased, its key is gone, or it is in a format "
-        "this FinishUP version cannot decode, so it will not become readable again and this "
+    assert set(_LASTING) | {SESSION_OPENING_UNREADABLE} == set(WORKSPACE_PROVENANCE_REASONS)
+    for reason, last_line in _LASTING.items():
+        lines = workspace_provenance_unknown_lines(reason)
+        assert lines == (
+            WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+            WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+            last_line,
+        )
+        text = "\n".join(lines)
+        assert last_line.startswith("Why it lasts: ")
+        assert "What to do" not in text
+        assert "finishup service restart" not in text
+        assert "If this persists" not in text
+    passing = "\n".join(workspace_provenance_unknown_lines(SESSION_OPENING_UNREADABLE))
+    assert "Why it lasts" not in passing
+    assert "will not become readable again" not in passing
+    notices = {workspace_provenance_unknown_notice(reason) for reason in _REASONS}
+    assert len(notices) == len(_REASONS)
+
+
+def test_each_lasting_line_says_only_what_is_true_of_its_own_cause() -> None:
+    """A redacted or erased record never reads again; one whose key is missing reads once the
+    server has the key; one in a format this version cannot decode reads once the server runs a
+    version that knows it. No line claims more, and none names another cause."""
+
+    assert WORKSPACE_PROVENANCE_REDACTED_LINE == (
+        "Why it lasts: the record was redacted, so it will not become readable again and this "
         "task's receipts will keep saying so. Running receipt again or restarting the service "
         "will not change this."
     )
-    lasting_text = "\n".join(lasting)
-    assert "What to do" not in lasting_text
-    assert "finishup service restart" not in lasting_text
-    assert "If this persists" not in lasting_text
-    assert "will not become readable again" not in "\n".join(passing)
-    assert workspace_provenance_unknown_notice(SESSION_OPENING_UNREADABLE) != (
-        workspace_provenance_unknown_notice(SESSION_OPENING_UNRECOVERABLE)
+    assert WORKSPACE_PROVENANCE_ERASED_LINE == (
+        "Why it lasts: the record was erased, so it will not become readable again and this "
+        "task's receipts will keep saying so. Running receipt again or restarting the service "
+        "will not change this."
     )
+    assert WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE == (
+        "Why it lasts: the server does not have the key that decrypts the record, so running "
+        "receipt again or restarting the service will not read it, and this task's receipts will "
+        "keep saying so while that key is unavailable."
+    )
+    assert WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE == (
+        "Why it lasts: the record is in a format this FinishUP version cannot decode, so running "
+        "receipt again or restarting the service will not read it, and this task's receipts will "
+        "keep saying so until the server runs a FinishUP version that knows this format."
+    )
+    # Only a cause that no change can undo says the record will never read again.
+    for line in (
+        WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
+        WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+    ):
+        assert "will not become readable again" not in line
+    # Each line names its own cause only.
+    words = {
+        SESSION_OPENING_REDACTED: "redacted",
+        SESSION_OPENING_ERASED: "erased",
+        SESSION_OPENING_KEY_UNAVAILABLE: "key",
+        SESSION_OPENING_FORMAT_UNKNOWN: "format",
+    }
+    for reason, line in _LASTING.items():
+        for other, word in words.items():
+            assert (word in line) is (other == reason), (reason, word)
 
 
 @pytest.mark.parametrize("reason", _REASONS)
@@ -136,7 +189,8 @@ def test_a_receipt_without_the_member_omits_it() -> None:
 
 
 _PASSING = workspace_provenance_unknown_wire(SESSION_OPENING_UNREADABLE)
-_LASTING = workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE)
+_REDACTED = workspace_provenance_unknown_wire(SESSION_OPENING_REDACTED)
+_FORMAT = workspace_provenance_unknown_wire(SESSION_OPENING_FORMAT_UNKNOWN)
 
 
 @pytest.mark.parametrize(
@@ -149,9 +203,13 @@ _LASTING = workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE)
         {**_PASSING, "host": "example.org"},
         {"status": "unknown", "reason": "session_opening_unreadable"},
         # Each reason admits only its own notice: a lasting cause never tells the user to retry,
-        # and a passing one never says the record is gone for good.
-        {**_PASSING, "notice": _LASTING["notice"]},
-        {**_LASTING, "notice": _PASSING["notice"]},
+        # a passing one never says the record is gone for good, and one lasting cause never says
+        # what is true of another.
+        {**_PASSING, "notice": _REDACTED["notice"]},
+        {**_REDACTED, "notice": _PASSING["notice"]},
+        {**_REDACTED, "notice": _FORMAT["notice"]},
+        {**_FORMAT, "notice": _REDACTED["notice"]},
+        {**_PASSING, "reason": "session_opening_unrecoverable"},
     ],
     ids=[
         "explicit_null",
@@ -162,6 +220,9 @@ _LASTING = workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE)
         "no_notice",
         "passing_with_lasting_notice",
         "lasting_with_passing_notice",
+        "redacted_with_format_notice",
+        "format_with_redacted_notice",
+        "retired_reason",
     ],
 )
 def test_nothing_but_the_fixed_member_is_admitted(member: object) -> None:
@@ -177,14 +238,16 @@ def test_nothing_but_the_fixed_member_is_admitted(member: object) -> None:
 @pytest.mark.parametrize(
     ("reason", "notice_of"),
     [
-        (SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE),
-        (SESSION_OPENING_UNRECOVERABLE, SESSION_OPENING_UNREADABLE),
+        (reason, other)
+        for reason in WORKSPACE_PROVENANCE_REASONS
+        for other in WORKSPACE_PROVENANCE_REASONS
+        if other != reason
     ],
 )
 def test_the_member_model_pairs_each_reason_with_its_own_notice(
     reason: WorkspaceProvenanceReason, notice_of: WorkspaceProvenanceReason
 ) -> None:
-    """The member's own model, not only the result schema, refuses a notice of the other reason."""
+    """The member's own model, not only the result schema, refuses a notice of another reason."""
 
     assert ReceiptWorkspaceProvenanceModel.model_validate(
         workspace_provenance_unknown_wire(reason)

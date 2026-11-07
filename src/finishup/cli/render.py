@@ -1240,7 +1240,7 @@ def render_human_receipt(
 
     A receipt whose ``workspace_provenance`` says the provenance is unknown (decision D4) shows
     the fixed "Workspace evidence" section for its ``reason`` saying what happened, why it
-    matters, and what to do for a passing cause or why it lasts for a lasting one, unless its
+    matters, and what to do for the passing cause or why that cause lasts, unless its
     text already carries it (a JSON receipt, or one whose text was withheld, has no such text);
     the connection's "read on the client machine" line is then left out.
     """

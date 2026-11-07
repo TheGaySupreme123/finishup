@@ -20,14 +20,12 @@ from tests.unit.tui.test_workflow_contract import _SESSION, _Client
 from finishup.cli.render import render_human_status
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
     workspace_provenance_unknown_lines,
     workspace_provenance_unknown_wire,
@@ -151,20 +149,23 @@ async def test_a_claim_bound_receipt_of_unknown_provenance_names_only_its_produc
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines
 
 
-# The line only that reason's section ends with, and the line the other reason's ends with.
-_OWN_AND_OTHER: dict[str, tuple[str, str]] = {
-    SESSION_OPENING_UNREADABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-    ),
-    SESSION_OPENING_UNRECOVERABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-    ),
-}
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = WORKSPACE_PROVENANCE_REASONS
 
 
-@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
+def _own_and_others(reason: WorkspaceProvenanceReason) -> tuple[str, tuple[str, ...]]:
+    """The line only ``reason``'s section ends with, and the lines every other reason's ends with
+    (the passing cause's retry line, and each lasting cause's own "Why it lasts" line)."""
+
+    own = workspace_provenance_unknown_lines(reason)[-1]
+    others = tuple(
+        workspace_provenance_unknown_lines(other)[-1]
+        for other in WORKSPACE_PROVENANCE_REASONS
+        if other != reason
+    )
+    return own, others
+
+
+@pytest.mark.parametrize("reason", _REASONS)
 @pytest.mark.parametrize("binding", ["client_claim", "local_path"])
 async def test_a_json_receipt_of_unknown_provenance_shows_the_section_after_the_document(
     monkeypatch: pytest.MonkeyPatch,
@@ -185,10 +186,10 @@ async def test_a_json_receipt_of_unknown_provenance_shows_the_section_after_the_
         expected = (*expected, _REACHED)
     assert summary.rendered_lines == expected
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines
-    assert _OWN_AND_OTHER[reason][1] not in summary.rendered_lines
+    assert not any(line in summary.rendered_lines for line in _own_and_others(reason)[1])
 
 
-@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
+@pytest.mark.parametrize("reason", _REASONS)
 async def test_a_text_receipt_of_unknown_provenance_shows_its_section_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reason: WorkspaceProvenanceReason
 ) -> None:
@@ -199,8 +200,8 @@ async def test_a_text_receipt_of_unknown_provenance_shows_its_section_once(
     client.provenance_unknown = reason
     summary = await runtime.build_receipt(_SESSION, "text")
     assert summary.rendered_lines.count(WORKSPACE_PROVENANCE_UNKNOWN_LINE) == 1
-    own, other = _OWN_AND_OTHER[reason]
+    own, others = _own_and_others(reason)
     assert summary.rendered_lines.count(own) == 1
-    assert other not in summary.rendered_lines
+    assert not any(line in summary.rendered_lines for line in others)
     assert summary.rendered_lines[-1] == _REACHED
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in summary.rendered_lines

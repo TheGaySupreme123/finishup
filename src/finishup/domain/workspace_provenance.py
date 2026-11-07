@@ -7,18 +7,26 @@ the text and markdown "Workspace evidence" section, and the ``workspace_provenan
 receipt format carries. Fixed words and closed tokens only; no host, user, path or target name
 ever joins them. Standard library only, so the protocol models can admit exactly these values.
 
-Two causes are told apart, each with its own closed ``reason`` and its own last line:
+Each cause the server can tell apart has its own closed ``reason`` and its own last line, which
+says only what is true of that cause (decision D4b):
 
 * ``session_opening_unreadable`` (passing): the ledger read failed, or the record did not load
-  (its payload object could not be read when the ledger opened the task). A retry, or a restart
-  of the server's service that reopens the task, can clear it, so its last line says to retry.
-* ``session_opening_unrecoverable`` (lasting): the record is redacted or erased, its key is gone,
-  or it is in a format this FinishUP version cannot decode. No retry or restart reads it, so its
-  last line says it will not become readable again and the receipt will keep saying so, and gives
-  no retry or restart advice.
+  when the ledger opened the task. A retry, or a restart of the server's service that reopens the
+  task, can clear it, so its last line says to retry and then restart.
+* ``session_opening_redacted`` and ``session_opening_erased`` (lasting): the record was redacted,
+  or erased. It will not become readable again, so the last line says so and that the task's
+  receipts will keep saying so.
+* ``session_opening_key_unavailable`` (lasting while the key is missing): the server does not have
+  the key that decrypts the record. No retry or restart reads it, and the receipts keep saying so
+  while that key is unavailable.
+* ``session_opening_format_unknown`` (lasting on this version): the record is in a format this
+  FinishUP version cannot decode. No retry or restart reads it; a server running a FinishUP
+  version that knows the format does, so the last line says the receipts keep saying so until
+  then.
 
-Both share the first two lines; the first is also the marker a client reads to keep its own
-"read on the client machine" line off a receipt that carries it.
+A lasting cause's last line gives no retry or restart advice, because neither helps. Every reason
+shares the first two lines; the first is also the marker a client reads to keep its own "read on
+the client machine" line off a receipt that carries it.
 """
 
 from __future__ import annotations
@@ -28,12 +36,18 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 __all__ = [
+    "SESSION_OPENING_ERASED",
+    "SESSION_OPENING_FORMAT_UNKNOWN",
+    "SESSION_OPENING_KEY_UNAVAILABLE",
+    "SESSION_OPENING_REDACTED",
     "SESSION_OPENING_UNREADABLE",
-    "SESSION_OPENING_UNRECOVERABLE",
+    "WORKSPACE_PROVENANCE_ERASED_LINE",
+    "WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE",
+    "WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE",
     "WORKSPACE_PROVENANCE_REASONS",
+    "WORKSPACE_PROVENANCE_REDACTED_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN",
     "WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE",
-    "WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE",
     "WorkspaceProvenanceReason",
@@ -42,13 +56,13 @@ __all__ = [
     "workspace_provenance_unknown_wire",
 ]
 
-# What happened, for either cause. It is also the marker a client reads to keep its own "read on
+# What happened, for every cause. It is also the marker a client reads to keep its own "read on
 # the client machine" line off a receipt that carries it.
 WORKSPACE_PROVENANCE_UNKNOWN_LINE: Final = (
     "Provenance unknown: the record of how this task's session was opened could not be read "
     "from the server's ledger."
 )
-# Why it matters, for either cause.
+# Why it matters, for every cause.
 WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE: Final = (
     "Why it matters: FinishUP cannot confirm whether this task's workspace evidence was read on "
     "the client machine."
@@ -58,42 +72,65 @@ WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE: Final = (
     "What to do: run receipt again. If this persists, restart the server's FinishUP service "
     "(`finishup service restart` on the server host), then run receipt again."
 )
-# Why it lasts, for a lasting cause only: no retry or restart advice, because neither helps.
-WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE: Final = (
-    "Why it lasts: the record is redacted or erased, its key is gone, or it is in a format this "
-    "FinishUP version cannot decode, so it will not become readable again and this task's "
+# Why it lasts, one line per lasting cause, each true of that cause alone. None gives retry or
+# restart advice, because neither helps.
+WORKSPACE_PROVENANCE_REDACTED_LINE: Final = (
+    "Why it lasts: the record was redacted, so it will not become readable again and this task's "
     "receipts will keep saying so. Running receipt again or restarting the service will not "
     "change this."
+)
+WORKSPACE_PROVENANCE_ERASED_LINE: Final = (
+    "Why it lasts: the record was erased, so it will not become readable again and this task's "
+    "receipts will keep saying so. Running receipt again or restarting the service will not "
+    "change this."
+)
+WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE: Final = (
+    "Why it lasts: the server does not have the key that decrypts the record, so running receipt "
+    "again or restarting the service will not read it, and this task's receipts will keep saying "
+    "so while that key is unavailable."
+)
+WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE: Final = (
+    "Why it lasts: the record is in a format this FinishUP version cannot decode, so running "
+    "receipt again or restarting the service will not read it, and this task's receipts will "
+    "keep saying so until the server runs a FinishUP version that knows this format."
 )
 
 # The ``status`` member: the one provenance a receipt result names.
 WORKSPACE_PROVENANCE_UNKNOWN: Final = "unknown"
 
-# The closed ``reason`` tokens of ``workspace_provenance``.
+# The closed ``reason`` tokens of ``workspace_provenance``, one per cause.
 type WorkspaceProvenanceReason = Literal[
-    "session_opening_unreadable", "session_opening_unrecoverable"
+    "session_opening_unreadable",
+    "session_opening_redacted",
+    "session_opening_erased",
+    "session_opening_key_unavailable",
+    "session_opening_format_unknown",
 ]
 # Passing: the ledger read failed or the record did not load; a retry or a restart can clear it.
 SESSION_OPENING_UNREADABLE: Final = "session_opening_unreadable"
-# Lasting: redacted or erased, its key gone, or a format this version cannot decode.
-SESSION_OPENING_UNRECOVERABLE: Final = "session_opening_unrecoverable"
+# Lasting: the record was redacted (envelope state ``logically_redacted``).
+SESSION_OPENING_REDACTED: Final = "session_opening_redacted"
+# Lasting: the record was erased (envelope state ``erased_claimed``).
+SESSION_OPENING_ERASED: Final = "session_opening_erased"
+# Lasting while the key is missing (envelope state ``key_unavailable``).
+SESSION_OPENING_KEY_UNAVAILABLE: Final = "session_opening_key_unavailable"
+# Lasting on this version: a format this FinishUP version cannot decode.
+SESSION_OPENING_FORMAT_UNKNOWN: Final = "session_opening_format_unknown"
 WORKSPACE_PROVENANCE_REASONS: Final[tuple[WorkspaceProvenanceReason, ...]] = (
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    SESSION_OPENING_REDACTED,
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_FORMAT_UNKNOWN,
 )
 
-_LINES: Final[Mapping[str, tuple[str, str, str]]] = MappingProxyType(
+_LAST_LINES: Final[Mapping[str, str]] = MappingProxyType(
     {
-        SESSION_OPENING_UNREADABLE: (
-            WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-            WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-            WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-        ),
-        SESSION_OPENING_UNRECOVERABLE: (
-            WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-            WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-            WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-        ),
+        SESSION_OPENING_UNREADABLE: WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+        SESSION_OPENING_REDACTED: WORKSPACE_PROVENANCE_REDACTED_LINE,
+        SESSION_OPENING_ERASED: WORKSPACE_PROVENANCE_ERASED_LINE,
+        SESSION_OPENING_KEY_UNAVAILABLE: WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
+        SESSION_OPENING_FORMAT_UNKNOWN: WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
     }
 )
 
@@ -102,9 +139,13 @@ def workspace_provenance_unknown_lines(reason: object) -> tuple[str, str, str]:
     """The three fixed lines for ``reason``: what happened, why it matters, and what to do (a
     passing cause) or why it lasts (a lasting one). Any other value is ``ValueError``."""
 
-    if type(reason) is not str or reason not in _LINES:
+    if type(reason) is not str or reason not in _LAST_LINES:
         raise ValueError("workspace_provenance_reason_invalid")
-    return _LINES[reason]
+    return (
+        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+        WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+        _LAST_LINES[reason],
+    )
 
 
 def workspace_provenance_unknown_notice(reason: object) -> str:

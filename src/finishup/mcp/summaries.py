@@ -3097,8 +3097,8 @@ def _workspace_provenance_parts(source: Mapping[str, object]) -> list[Part]:
     """ADR-051 decision D4: the fixed unknown-provenance lines, required, when the receipt says so.
 
     Only a closed reason with exactly its own fixed notice is admitted; the lines rendered are
-    the domain's own constants for that reason (a passing cause says to retry, a lasting one says
-    it will not clear).
+    the domain's own constants for that reason (the passing cause says to retry, a lasting one
+    says why it lasts).
     """
 
     member = source.get("workspace_provenance")

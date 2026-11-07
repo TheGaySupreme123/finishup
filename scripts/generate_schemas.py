@@ -7909,9 +7909,9 @@ def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     The member is present, on every receipt format, exactly when the record that opened the
     task's session could not be read or could not say whether the task is claim-bound. Its
     ``status``, ``reason`` and ``notice`` admit only the fixed values of
-    ``finishup.domain.workspace_provenance``: nothing user-controlled. ``reason`` says whether the
-    cause can pass or lasts, and ``oneOf`` pairs each reason with its own notice, so a reader that
-    validates by schema alone admits no notice beside the other reason's token.
+    ``finishup.domain.workspace_provenance``: nothing user-controlled. ``reason`` names the cause,
+    and so whether it can pass or lasts, and ``oneOf`` pairs each reason with its own notice, so a
+    reader that validates by schema alone admits no notice beside another reason's token.
     """
 
     from finishup.domain.workspace_provenance import (

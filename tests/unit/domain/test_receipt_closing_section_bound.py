@@ -23,7 +23,7 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.workspace_provenance import (
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
 )
 from finishup.protocol.errors import ProtocolValueError
 
@@ -58,8 +58,14 @@ def _trailers(markdown: bool) -> dict[str, str]:
         "unknown": workspace_provenance_unknown_block(
             markdown=markdown, reason=SESSION_OPENING_UNREADABLE
         ),
-        "unknown_lasting": workspace_provenance_unknown_block(
-            markdown=markdown, reason=SESSION_OPENING_UNRECOVERABLE
+        # The longest section a lasting cause ends with: every other one fits where it does.
+        "unknown_lasting": max(
+            (
+                workspace_provenance_unknown_block(markdown=markdown, reason=reason)
+                for reason in WORKSPACE_PROVENANCE_REASONS
+                if reason != SESSION_OPENING_UNREADABLE
+            ),
+            key=len,
         ),
         "attested": client_attested_receipt_block(_SERVICE_ID, markdown=markdown),
         "attested_hook": client_attested_receipt_block(
