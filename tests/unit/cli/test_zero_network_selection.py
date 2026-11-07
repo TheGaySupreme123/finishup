@@ -1033,9 +1033,11 @@ def test_server_status_and_list_show_the_item(
 
     status = _invoke("server", "status", "--json")
     assert status.exit_code == 0, status.output
-    # The released contract keeps its shape; the item rides on stderr beside it.
+    # The item rides on stderr beside the document, which carries it too.
     document = cast(JsonValue, json.loads(status.stdout))
     validate_schema_instance("server-target-status", "1.0.0", document)
+    item = cast(dict[str, JsonValue], document)["zero_network_selection"]
+    assert cast(dict[str, JsonValue], item)["reason"] == "zero_network_remote_selected"
     assert status.stderr.startswith("zero_network_remote_selected: ")
     assert "finishup server use local" in status.stderr
 
@@ -1061,6 +1063,106 @@ def test_server_status_is_unchanged_without_the_item(
 
     assert status.exit_code == 0, status.output
     assert status.stderr == ""
+
+
+def _no_probe(_record: object, _root: Path | None) -> object:
+    from finishup.client.target_runtime import ProbeResult
+
+    return ProbeResult("unavailable", reason="remote_unreachable")
+
+
+def _status_document(*arguments: str) -> tuple[dict[str, JsonValue], str]:
+    status = _invoke("server", "status", *arguments, "--json")
+    assert status.exit_code == 0, status.output
+    document = cast(JsonValue, json.loads(status.stdout))
+    validate_schema_instance("server-target-status", "1.0.0", document)
+    return cast(dict[str, JsonValue], document), status.stderr
+
+
+def test_the_status_document_carries_a_remote_selection_under_zero_network(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _remote("https")
+    reads = _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(server_cli, "_probe", _no_probe)
+
+    document, stderr = _status_document()
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_remote_selected",
+        "target_id": record.target_id,
+        "kind": "https",
+        "detail": None,
+    }
+    # The same item the owner's lines name, from one check of this computer's policy.
+    assert stderr.startswith("zero_network_remote_selected: ")
+    assert f"{record.target_id} (https)" in stderr
+    assert reads == [1]
+    # The document of any other target says the same: the item is about the selection.
+    local, _stderr = _status_document("local")
+    assert local["zero_network_selection"] == document["zero_network_selection"]
+    assert _NAME not in json.dumps(document["zero_network_selection"])
+
+
+def test_the_status_document_carries_an_unreadable_selection_under_zero_network(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(server_cli, "_probe", _no_probe)
+    path = targets.selection_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_bytes(b"{not json\n")
+    path.chmod(0o600)
+
+    from finishup.protocol.server_target_status import ServerTargetZeroNetworkSelection
+
+    fact = server_cli._zero_network_selection()  # pyright: ignore[reportPrivateUsage]
+
+    assert fact == {
+        "reason": "zero_network_selection_unreadable",
+        "target_id": None,
+        "kind": None,
+        "detail": "selection_invalid",
+    }
+    ServerTargetZeroNetworkSelection.model_validate(fact)
+    # 'server status' itself refuses an unreadable selection, so no document is printed; the
+    # item still reaches the owner first, on stderr.
+    status = _invoke("server", "status", "local", "--json")
+    assert status.exit_code != 0
+    assert status.stdout == ""
+    first, refusal = status.stderr.splitlines()[:2]
+    assert first.startswith("zero_network_selection_unreadable: ")
+    assert refusal.startswith("selection_invalid: ")
+
+
+@pytest.mark.parametrize(
+    ("selected", "state"),
+    [
+        ("ssh", "network_permitted"),
+        ("ssh", "no_policy"),
+        ("ssh", "unreadable"),
+        (None, "zero_network"),
+        ("local", "zero_network"),
+    ],
+)
+def test_the_status_document_has_nothing_to_say_otherwise(
+    home: Path, monkeypatch: pytest.MonkeyPatch, selected: str | None, state: str
+) -> None:
+    if selected == "ssh":
+        _remote("ssh")
+    elif selected == "local":
+        with targets.registry_lock():
+            record, _root = targets.new_local_target("bench")
+            targets.write_selection(record)
+    _policy(monkeypatch, state)
+    monkeypatch.setattr(server_cli, "_probe", _no_probe)
+
+    document, stderr = _status_document("local")
+
+    assert document["zero_network_selection"] is None
+    assert stderr == ""
+    # Built for another surface (the terminal interface, 'server test'), it checks the same way.
+    assert server_cli.build_status_document("local")["zero_network_selection"] is None
 
 
 def test_setup_readiness_names_the_item_with_its_continuation(

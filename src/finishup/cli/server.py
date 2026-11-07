@@ -78,6 +78,7 @@ from finishup.protocol.canonical import JsonValue, canonical_encode
 
 if TYPE_CHECKING:
     from finishup.cli.trusted_console import TrustedForegroundConsole
+    from finishup.cli.zero_network_selection import ZeroNetworkSelection
     from finishup.client.server_folders import FolderRecord, OutsideReadMode
 
 __all__ = [
@@ -913,17 +914,21 @@ def render_target_rows(rows: tuple[TargetRow, ...], source: str) -> tuple[str, .
     return tuple(lines)
 
 
-def _show_zero_network_item(*, machine_readable: bool) -> None:
+def _show_zero_network_item(
+    *, machine_readable: bool, item: ZeroNetworkSelection | None = None
+) -> None:
     """Say so while this computer forbids network use and a remote server is selected.
 
     ADR-051 decision 8 (maintainer decision, 2026-11-06): the zero-network setting does not stop
     traffic to a server already selected, so the owner displays name it and the way out. Fixed
-    text, a generated id and closed tokens only; on standard error beside a JSON answer.
+    text, a generated id and closed tokens only; on standard error beside a JSON answer. ``item``
+    is one the caller already found; without it, this looks.
     """
 
     from finishup.cli.zero_network_selection import find_zero_network_selection
 
-    item = find_zero_network_selection()
+    if item is None:
+        item = find_zero_network_selection()
     if item is None:
         return
     if machine_readable:
@@ -1048,9 +1053,16 @@ def _probe(record: ServerTarget | None, root: Path | None) -> ProbeResult:
 
 
 def build_status_document(
-    name: str | None, *, now: Callable[[], datetime] | None = None
+    name: str | None,
+    *,
+    now: Callable[[], datetime] | None = None,
+    zero_network: Callable[[], ZeroNetworkSelection | None] | None = None,
 ) -> dict[str, JsonValue]:
-    """The ``server-target-status`` 1.0.0 document for ``name`` (or this process's root)."""
+    """The ``server-target-status`` 1.0.0 document for ``name`` (or this process's root).
+
+    ``zero_network`` answers its ``zero_network_selection``; by default the zero-network
+    selection check (``find_zero_network_selection``) runs here.
+    """
 
     source = _source()
     try:
@@ -1103,7 +1115,7 @@ def build_status_document(
         "client_version": __version__,
         "target": target,
         "probe": _probe_document(result, failure),
-        "zero_network_selection": _zero_network_selection(),
+        "zero_network_selection": _zero_network_selection(zero_network),
         "observed_at": format_rfc3339_ms(stamp),
     }
     from finishup.protocol.server_target_status import ServerTargetStatusContract
@@ -1112,18 +1124,26 @@ def build_status_document(
     return document
 
 
-def _zero_network_selection() -> JsonValue:
+def _zero_network_selection(
+    find: Callable[[], ZeroNetworkSelection | None] | None = None,
+) -> JsonValue:
     """The status document's ``zero_network_selection`` (ADR-051 decision 8): the item while this
     computer forbids all network use and a remote server is, or may be, selected.
 
-    A stable seam: this build does not yet tell the owner when the zero-network state leaves a
-    remote server selected, so it reports nothing (null). The zero-network selection check fills
-    it with its item's fact: ``reason`` (``zero_network_remote_selected`` or
+    The item the zero-network selection check finds (``find``, by default
+    ``find_zero_network_selection``), as its fact: ``reason`` (``zero_network_remote_selected`` or
     ``zero_network_selection_unreadable``), ``target_id``, ``kind`` and ``detail``, generated ids
-    and closed tokens only.
+    and closed tokens only. Null when there is nothing to say: no remote server selected, a root
+    an isolation variable or pin decides, or this computer's policy permits network use, was
+    never set up, or cannot be read.
     """
 
-    return None
+    if find is None:
+        from finishup.cli.zero_network_selection import find_zero_network_selection
+
+        find = find_zero_network_selection
+    item = find()
+    return None if item is None else cast(JsonValue, item.fact())
 
 
 def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
@@ -1230,8 +1250,13 @@ def server_status(
 ) -> None:
     """Show which source decides the server, the target, and one probe of it."""
 
-    _show_zero_network_item(machine_readable=json_output or not sys.stdout.isatty())
-    document = build_status_document(name)
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    # One check for both places it shows: the owner's lines (stderr beside JSON) and the
+    # document's ``zero_network_selection``.
+    item = find_zero_network_selection()
+    _show_zero_network_item(machine_readable=json_output or not sys.stdout.isatty(), item=item)
+    document = build_status_document(name, zero_network=lambda: item)
     if json_output or not sys.stdout.isatty():
         sys.stdout.buffer.write(canonical_encode(cast(JsonValue, document)) + b"\n")
         sys.stdout.flush()

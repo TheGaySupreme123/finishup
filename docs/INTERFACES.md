@@ -4684,9 +4684,15 @@ this and exits 0 rather than refusing, while `add`, `remove FOLDER` and `mode` r
 remove NAME --all` and say it repairs a damaged record. The document's top-level
 `zero_network_selection` is null, or the zero-network item (ADR-051 decision 8): `reason`
 (`zero_network_remote_selected|zero_network_selection_unreadable`), `target_id`, `kind`
-(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is filled
-by `cli.server._zero_network_selection`, which reports null where no zero-network selection
-check runs.
+(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`.
+`build_status_document(name, *, now=None, zero_network=None)` fills it through
+`cli.server._zero_network_selection`: the `fact()` of the item `find_zero_network_selection()`
+returns (below), and null when that returns none. `server status` runs that check once and passes
+it as `zero_network`, so its stderr lines and its document carry the same item; the terminal's
+`/server` status and `server test` build the document with the default check. A selection that
+cannot be read makes `server status` refuse (`selection_invalid` for a damaged selection file), so
+the `zero_network_selection_unreadable` item reaches its owner on stderr, before the refusal, and
+no document is printed.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds. The

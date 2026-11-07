@@ -716,10 +716,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   `local_port`, and said the client re-checks before each hop, which no code does.) The check
   runs when the owner adds or selects a remote target; client processes do not consult the local
   policy again before each connection. `server status --json` (`server-target-status` 1.0.0)
-  reserves `zero_network_selection` for telling the owner of that state: null, or the item's
-  `reason` (`zero_network_remote_selected` or `zero_network_selection_unreadable`), `target_id`,
-  `kind` and `detail`, generated ids and closed tokens only. It is null while nothing on the
-  client reports the state.
+  carries that state in `zero_network_selection`: null, or the item's `reason`
+  (`zero_network_remote_selected` or `zero_network_selection_unreadable`), `target_id`, `kind`
+  and `detail`, generated ids and closed tokens only. It is the item the check below finds, and
+  null when it finds none.
 - **Zero-network set while a remote target is selected: surfaced, and the owner decides**
   (maintainer decision, 2026-11-06). FinishUP never switches servers on its own.
   `cli/zero_network_selection.py` reads the selection file afresh (never the process memo) and,
@@ -751,11 +751,12 @@ answers bounded `workspace_call`s on a connection that declared it.
   interface or menu, or a privacy step or setup run already under way when `server use` ran
   elsewhere. Adding or selecting the target after the policy is zero-network is refused, as above.
 
-  The item stays visible while the state lasts and can be read (below): `server status` (stderr
-  beside `--json`, whose 1.0.0 contract is unchanged) and `server list`, `setup status` (stderr),
-  `setup status --next` (a `server_selection` fact with its pinned continuation), the setup wizard's
-  next steps, the menu home, and the terminal interface's header and `/server` (read at start, after
-  a privacy ceremony, and on `/server`; the header drops it once the selection file changes). A
+  The item stays visible while the state lasts and can be read (below): `server status` (stderr,
+  and with `--json` also the document's `zero_network_selection`, from the same one check) and
+  `server list`, `setup status` (stderr), `setup status --next` (a `server_selection` fact with
+  its pinned continuation), the setup wizard's next steps, the menu home, and the terminal
+  interface's header and `/server` (read at start, after a privacy ceremony, and on `/server`;
+  the header drops it once the selection file changes). A
   selection that cannot be read is reported as `zero_network_selection_unreadable` with its closed
   reason (`selection_invalid`, `target_root_unsafe`, `target_record_invalid`) and `finishup server
   use local` as the way back, never as "no server". While this computer's policy cannot be read,
