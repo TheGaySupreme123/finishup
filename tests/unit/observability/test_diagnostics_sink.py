@@ -395,6 +395,7 @@ def test_bounded_event_context_is_fenced_and_reaches_the_ring(
         "semantic_task_input_listings",
         "semantic_task_input_outside_candidates",
         "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_outside_not_listed",
         "semantic_task_inputs_read",
         "codex_event_control_count",
         "codex_event_wire_bytes",

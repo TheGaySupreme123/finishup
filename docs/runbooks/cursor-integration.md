@@ -2483,8 +2483,10 @@ admitted roots or, with none admitted, the step `finishup privacy input-roots ad
 the CLI, MCP and receipt print the sentence. `finishup service diagnostics` counts the task inputs on
 `semantic_case_built` as integers only: `semantic_task_input_candidates`,
 `semantic_task_inputs_read`, `semantic_task_input_listings`,
-`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates` and
-`semantic_task_inputs_outside_not_admitted`.
+`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates`,
+`semantic_task_inputs_outside_not_admitted` and, for a remote server in `listed` mode,
+`semantic_task_inputs_outside_not_listed` (how many task inputs and declared tests its workspace
+agent kept back).
 
 ## Possible-credential filter opt-out (issue #982)
 

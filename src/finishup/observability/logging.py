@@ -130,6 +130,7 @@ _FIELD_ORDER: Final = (
     "semantic_task_input_listings",
     "semantic_task_input_outside_candidates",
     "semantic_task_inputs_outside_not_admitted",
+    "semantic_task_inputs_outside_not_listed",
     "semantic_task_inputs_read",
     # Admits the loop-health connection count into _CALLER_FIELDS/_COUNT_FIELDS below, so a
     # bounded-counts caller can report how much work was in flight during a stall.

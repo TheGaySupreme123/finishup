@@ -406,9 +406,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   read would look for: its window of 16, less the words the spaces of a quoted spaced value cut
   out when that whole value names something beneath a named root (issue #1102), decided before
   any value is left out, so leaving a spaced value unread never lets one of its words be read
-  under the task's name. The server freezes that as the check-time change's
-  `outside_inputs_not_listed` flag and discloses the closed code `outside_reads_not_listed`,
-  whose fixed sentence names both ways out and where to run them; so a listed-mode input costs
+  under the task's name. The server freezes how many inputs were left out as the check-time
+  change's `outside_inputs_not_listed` count and discloses the closed code
+  `outside_reads_not_listed`, whose fixed sentence names both ways out and where to run them
+  (the count reaches the `semantic_case_built` diagnostic, not the receipt line: open question
+  2); so a listed-mode input costs
   only that input, never the whole check-time change, and is never passed over in silence. A
   kept copy (#1118) whose folder the owner no longer lists is not sent, as a copy whose root the
   owner no longer admits is not: the current read that compares it names it `unlisted` too.
@@ -429,7 +431,7 @@ answers bounded `workspace_call`s on a connection that declared it.
   inside the claimed worktree is read under Git's ignore rule (next item), and one outside it
   only beneath a listed folder; an existing one beyond that is `root_not_admitted`, never read on
   the server's word, the reviewer is not offered it, and the server discloses
-  `outside_reads_not_listed` for it (frozen into the job's case object as
+  `outside_reads_not_listed` for it (frozen into the job's case object as the count
   `declared_tests_not_listed`, so a recovered job builds the same case). One read outside the
   worktree in `listed` mode is an outside read, which excludes the claimed workspace by identity
   and case-folded spelling, so another spelling of the workspace beneath that folder never skips
@@ -1213,6 +1215,18 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
    admits; let `privacy input-roots` record, from the client through an owner ceremony on the
    trusted console, a root that exists only on the client for that claim; or keep the limit as
    documented. Undecided.
+2. **How many files listed mode kept back, on the receipt** (recorded 2026-11-07, refusal-guide
+   review). The refusal-guide fixes asked for a fixed receipt line with counts and no paths.
+   The count is frozen (the check change's `outside_inputs_not_listed`, the case object's
+   `declared_tests_not_listed`) and reaches the `semantic_case_built` diagnostic as
+   `semantic_task_inputs_outside_not_listed`, which `finishup service diagnostics` shows. The
+   receipt line itself, `outside_reads_not_listed`, carries no number: a receipt's disclosures
+   are closed codes, and every receipt-document schema (1.0.0 to 1.3.0) was released at
+   v0.3.0, so a number there needs a new receipt-document version, a design-gated protocol
+   change outside this review. Ways the maintainer could close it: accept the line without a
+   number; or add an optional disclosure-count field in a receipt-document 1.4.0 that every
+   rendering (text, markdown, JSON, the MCP summary, the CLI check output) prints beside the
+   sentence. Undecided.
 
 ## Founder questions answered by the maintainer (2026-11-05)
 

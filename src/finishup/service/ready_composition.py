@@ -310,6 +310,7 @@ from finishup.domain.values import (
 )
 from finishup.kernel.declared_checks import (
     DECLARED_TEST_ROOT,
+    MAX_DECLARED_TESTS,
     DeclaredTest,
     declared_test_candidates,
     declared_test_location,
@@ -2772,7 +2773,7 @@ def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tupl
 
 
 def _with_not_listed_gap(
-    gaps: Sequence[str], outcome: CheckChangeOutcome, declared_tests_not_listed: bool
+    gaps: Sequence[str], outcome: CheckChangeOutcome, declared_tests_not_listed: int
 ) -> tuple[str, ...]:
     """``gaps`` plus ``outside_reads_not_listed`` when a claim-bound task's agent kept files from
     this server under its owner's listed mode (ADR-051 decision 5).
@@ -3893,13 +3894,13 @@ def _execution_from_json(value: object) -> _SemanticExecution:
 async def _read_semantic_case(
     runtime: TaskRuntime,
     ref: ObjectRef,
-) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None, bool]:
+) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None, int]:
     """The frozen execution, case identity and check-time change pointer of one job's case.
 
     The fifth value is the case digest of the check's own first review when this job is an
     in-check follow-up round (issue #1047), else ``None``; the sixth the declared tests the job
-    pinned (issue #1220), else ``None``; the last whether a claim-bound task's agent kept a
-    declared test from the server under listed mode (ADR-051 decision 5).
+    pinned (issue #1220), else ``None``; the last how many declared tests a claim-bound task's
+    agent kept from the server under listed mode (ADR-051 decision 5), else 0.
     """
 
     from finishup.protocol.canonical import strict_json_parse
@@ -3936,8 +3937,14 @@ async def _read_semantic_case(
     # Absent on jobs created before ADR-031 or without a trusted workspace source: such a job
     # rebuilds its case without a check-time change, exactly as it was first built. The declared
     # tests (#1220) are absent on a job that pinned none, and it rebuilds without them.
-    not_listed = body.get("declared_tests_not_listed", False)
-    if type(not_listed) is not bool:
+    # ADR-051 decision 5: how many declared tests a claim-bound task's agent kept back, written
+    # only when not zero.
+    not_listed = body.get("declared_tests_not_listed", 0)
+    if type(not_listed) is not int or not (
+        1 <= not_listed <= MAX_DECLARED_TESTS
+        if "declared_tests_not_listed" in body
+        else not_listed == 0
+    ):
         raise ValueError("semantic_execution_invalid")
     return (
         execution,
@@ -4028,7 +4035,7 @@ async def _publish_semantic_case_object(
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
     declared_tests: CanonicalJsonValue | None = None,
-    declared_tests_not_listed: bool = False,
+    declared_tests_not_listed: int = 0,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
@@ -4052,8 +4059,9 @@ async def _publish_semantic_case_object(
         # without reading a file that may have changed since.
         body["declared_tests"] = declared_tests
     if declared_tests_not_listed:
-        # ADR-051 decision 5: written only when set, so every other case object keeps its bytes.
-        body["declared_tests_not_listed"] = True
+        # ADR-051 decision 5: a count, written only when not zero, so every other case object
+        # keeps its bytes.
+        body["declared_tests_not_listed"] = declared_tests_not_listed
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4725,13 +4733,16 @@ def _task_input_counts(
     semantic_case: SemanticCase,
     outside_not_admitted: bool,
     outside_candidates: int = 0,
+    declared_tests_not_listed: int = 0,
 ) -> dict[str, int]:
     """Issue #1102 pilot counters for ``semantic_case_built``; counts only, never a path.
 
     How many task inputs the statement and the recorded verification named, how many the
     check-time read kept (directory listings among them), how many the packet selected, how
     many named outside candidates could lexically be an unadmitted input (before any ``lstat``),
-    and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
+    whether a named outside input lacked an admitted root, and how many existing task inputs and
+    declared tests a claim-bound task's agent kept back under its owner's listed mode (ADR-051
+    decision 5), as frozen in the check change and the job's case object. A candidate count beside a 0 flag
     says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
     written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
     """
@@ -4749,11 +4760,13 @@ def _task_input_counts(
         ),
         "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
-        # ADR-051 decision 5: a claim-bound task's agent left task-named inputs unread under its
-        # owner's listed mode (a flag, as the frozen object records it; never which or a path).
-        "semantic_task_inputs_outside_not_listed": int(
-            check_change.change is not None
-            and check_change.change.capture.outside_inputs_not_listed
+        # ADR-051 decision 5: how many task-named inputs and declared tests a claim-bound task's
+        # agent kept back under its owner's listed mode (never which, never a path).
+        "semantic_task_inputs_outside_not_listed": declared_tests_not_listed
+        + (
+            0
+            if check_change.change is None
+            else check_change.change.capture.outside_inputs_not_listed
         ),
     }
 
@@ -5352,9 +5365,9 @@ def _pin_declared_tests(
     workspace_root: str | None,
     excluded: tuple[str, ...],
     reads: ClientWorkspaceReads | None = None,
-) -> tuple[tuple[DeclaredTest, ...], bool]:
+) -> tuple[tuple[DeclaredTest, ...], int]:
     """The declared test files that are readable now, each with the digest of its bytes (#1220),
-    and whether a claim-bound task's agent kept one from this server under listed mode.
+    and how many a claim-bound task's agent kept from this server under listed mode.
 
     The candidates are the frozen case's own (``declared_test_candidates``); a file refused by
     shape, missing, unreadable, binary or over 1 MiB is not listed. Nothing read here enters the
@@ -5367,7 +5380,7 @@ def _pin_declared_tests(
 
     statement = None if case.task_statement is None else case.task_statement.text
     tests: list[DeclaredTest] = []
-    not_listed = False
+    not_listed = 0
     for candidate in declared_test_candidates(case.projection, statement):
         location = declared_test_location(candidate.path, workspace_root)
         if location is None or scan_for_sensitive_content(candidate.path.encode()):
@@ -5380,7 +5393,7 @@ def _pin_declared_tests(
             try:
                 data = reads.declared_test(location, excluded=excluded)
             except WorkspaceAgentUnavailable as exc:
-                not_listed = not_listed or (
+                not_listed += (
                     exc.reason == "agent_refused" and exc.agent_reason == "root_not_admitted"
                 )
                 data = None
@@ -5688,7 +5701,7 @@ def _privacy_gated_semantic_evaluator(
             recovered_case_digest: str | None = None
             recovered_check_change: object | None = None
             recovered_declared_tests: object | None = None
-            recovered_declared_tests_not_listed = False
+            recovered_declared_tests_not_listed = 0
             if runtime is not None:
                 job = await runtime.ledger.load_semantic_job(
                     frozen.lease.writer_id, frozen.lease.operation_id
@@ -6185,6 +6198,7 @@ def _privacy_gated_semantic_evaluator(
                             policy.admitted_input_roots,
                             declared_output_paths(frozen.case.projection),
                         ),
+                        declared_tests_not_listed,
                     ),
                 },
             )

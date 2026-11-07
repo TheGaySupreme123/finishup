@@ -1974,15 +1974,17 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
 - `outside_reads_not_listed` — a claim-bound task's server is in `listed` mode for the client's
   owner, and the client's workspace agent left unread an existing file the task names (a
   `read_outside_inputs` or kept-copy `snapshot_outside_inputs` answer with a non-empty
-  `unlisted`, frozen as `CheckChangeCapture.outside_inputs_not_listed`) or refused a declared test
-  (`root_not_admitted`, frozen as the case object's `declared_tests_not_listed`), because its
+  `unlisted`, counted in `CheckChangeCapture.outside_inputs_not_listed`) or refused a declared
+  test (`root_not_admitted`, counted in the case object's `declared_tests_not_listed`), because its
   folder is not listed for that server (or, for a test in the project, Git ignores it or cannot
   answer for it). Only those files are missing; the rest of the check-time change reaches review
   (ADR-051 decision 5, amended 2026-11-07). Its fixed sentence names both of the owner's ways out
   with their full arguments and where to run them: `finishup server folders add NAME FOLDER`, or,
   for a server they trust, `finishup server folders mode NAME local`, on the client machine; an
-  agent cannot. A closed disclosure code with no path and no count (the `semantic_case_built`
-  diagnostic counts it as the flag `semantic_task_inputs_outside_not_listed`), classified like
+  agent cannot. A closed disclosure code with no path; the receipt line carries no number,
+  because the released receipt document has no field for one (ADR-051, open question 2), and the
+  `semantic_case_built` diagnostic carries the count as `semantic_task_inputs_outside_not_listed`
+  (task inputs and declared tests together; `finishup service diagnostics` shows it), classified like
   `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only). The MCP check
   summary shows its sentence, or its short form, in the same part as that code's.
 - `task_input_baseline_unavailable` — an outside input reached review as its current bytes and
@@ -4910,10 +4912,12 @@ confinement rules:
     nothing is not reported, as a local read finds nothing there. The rest is read: the call
     walks the named roots that are admitted or hold an admitted folder, for the values it kept,
     and each input keeps the server's own root (`TaskInputFile.root`); a named root with no
-    value beneath it is left out unopened. The server freezes a non-empty `unlisted` of the
-    check-time read, or of the current read of a kept copy (whose copy it then does not send),
-    as `CheckChangeCapture.outside_inputs_not_listed` and discloses `outside_reads_not_listed`
-    (below); a task-start snapshot simply keeps no copy of an unlisted value.
+    value beneath it is left out unopened. The server freezes how many values the check-time
+    read left unread, plus the kept copies the current read named `unlisted` (whose copies it
+    then does not send) that lie beneath none of those values, as the count
+    `CheckChangeCapture.outside_inputs_not_listed` (written only when not zero), and discloses
+    `outside_reads_not_listed` (below); a task-start snapshot simply keeps no copy of an unlisted
+    value.
   Outside reads never enter the claimed workspace through an outside root and never enter a
   protected directory, whatever the server lists as excluded; an `lstat` candidate inside either
   is reported as not found. An exclusion naming a directory this user cannot examine does not
@@ -4934,8 +4938,8 @@ confinement rules:
   mount) never reaches a file Git would report ignored. The server's declared-test pinning reads
   through `ClientWorkspaceReads.declared_test`, which lets the refusal through: a
   `root_not_admitted` refusal is not pinned, and the check discloses `outside_reads_not_listed`
-  (frozen into the job's `yoetz.semantic-case/2` object as `declared_tests_not_listed: true`,
-  written only when set).
+  (frozen into the job's `yoetz.semantic-case/2` object as the count `declared_tests_not_listed`,
+  1 to 3, written only when not zero).
 - A reviewer's workspace file read (`read_text_beneath` on the handle) first asks
   `probe_requested_paths` for that path, relative to the claimed root, as the reviewer broker
   does, and reads only when the probe answers `ignored is False`, the broker's own rule, which a
@@ -11367,7 +11371,10 @@ the ledger), and since issue #1102 `semantic_task_input_candidates`, `semantic_t
 `task_input_outside_not_admitted`, counted before any `lstat` against the connection's root the
 read uses, else the session's workspace; 0 when neither is known) and
 `semantic_task_inputs_outside_not_admitted` (0 or 1); a candidate count beside a 0 flag means
-FinishUP saw such a path but could not count it. Resolved parts have passed capture
+FinishUP saw such a path but could not count it. Since ADR-051 decision 5,
+`semantic_task_inputs_outside_not_listed` counts the existing task inputs and declared tests a
+remote server's workspace agent kept back under its owner's `listed` mode, as frozen in the check
+change and the job's case object. Resolved parts have passed capture
 authentication; selected excerpts are in the built packet. These counts precede privacy
 minimization and do not prove provider delivery or code correctness. The record contains no
 content, paths, or content hashes.
