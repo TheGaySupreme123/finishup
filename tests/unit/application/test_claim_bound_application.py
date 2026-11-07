@@ -233,7 +233,14 @@ def test_files_listed_mode_kept_from_review_name_both_ways_out_with_their_argume
         assert "/" not in text and not any(character.isdigit() for character in text)
     assert "the computer that holds the project" in sentence
     assert "listed mode" in sentence and "An agent cannot." in sentence
-    assert "checking again" in sentence
+    assert "Checking again" in sentence
+    # Listing a folder never admits a test in the project Git ignores: each way out says which
+    # files it covers, so the owner is never sent to a command that cannot help.
+    assert "For a file outside the project, list its folder" in sentence
+    assert "For a test in the project, listing a folder does not help" in sentence
+    assert "stop Git ignoring it" in sentence
+    assert "for a file outside the project" in OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE
+    assert "a test in the project that Git ignores" in OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE
 
 
 def test_remedy_sentences_name_the_computer_they_concern() -> None:
