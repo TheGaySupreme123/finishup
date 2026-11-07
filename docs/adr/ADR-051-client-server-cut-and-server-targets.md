@@ -706,62 +706,84 @@ answers bounded `workspace_call`s on a connection that declared it.
   (`privacy_get_effective` for the installation's machine scope; the question names no
   repository), and a policy that does not permit network egress refuses the hop. When that
   policy cannot be read (the service is stopped, locked or does not answer, or the installation's
-  identity cannot be read), the hop is refused with `network_policy_unreadable`, never allowed.
-  (Amended 2026-11-06 again, from the real-environment run: the check first read
-  `privacy_get_setup` on a connection that names no repository, which the service refuses, so
-  every remote hop from a set-up computer was refused.) A
-  computer whose everyday FinishUP was never set up has no policy of its own, so this check
+  identity cannot be read), what this computer last reported decides (below): last reported
+  zero-network refuses as `zero_network_in_force`, saying when; anything else refuses with
+  `network_policy_unreadable`, never allows the hop. (Amended 2026-11-06 again, from the
+  real-environment run: the check first read `privacy_get_setup` on a connection that names no
+  repository, which the service refuses, so every remote hop from a set-up computer was refused.)
+  A computer whose everyday FinishUP was never set up has no policy of its own, so this check
   does not refuse it: the selected server's own policy governs the work sent to it. (Amended
   2026-11-06: the earlier text also read a never-written `[privacy]` table and exempted
-  `local_port`, and said the client re-checks before each hop, which no code does.) The check
-  runs when the owner adds or selects a remote target; client processes do not consult the local
-  policy again before each connection. `server status --json` (`server-target-status` 1.0.0)
-  carries that state as `zero_network_selection`: the item the zero-network check below reports
-  (its `reason`, `zero_network_remote_selected` or `zero_network_selection_unreadable`,
-  `target_id`, `kind` and `detail`, generated ids and closed tokens only), or null when the check
-  reports nothing.
-- **Zero-network set while a remote target is selected: surfaced, and the owner decides**
-  (maintainer decision, 2026-11-06). FinishUP never switches servers on its own.
-  `cli/zero_network_selection.py` reads the selection file afresh (never the process memo) and,
-  only when it names a remote kind, the everyday installation's effective machine-scope policy;
-  a process whose root an isolation variable or pin decides is left alone. After every committed
-  policy change (a tightening applied on propose or tighten, or a policy decision that commits:
-  the privacy setup ceremony and its credential-heuristic, conversation and input-root changes,
-  `privacy propose|tighten|decide-policy`, `finishup setup`, `finishup ai`, the menu's wizard, the
-  terminal interface's privacy flows, and the relayed elevated grant), in that state:
-  - on the trusted foreground console it names the target by id and kind, says the setting does
-    not stop traffic to it, and offers `1` switch to this computer's everyday FinishUP now
-    (`finishup server use local`) or `2` keep using the target. Enter, end of input, an interrupt
-    or any other answer keeps it: switching is never chosen for the owner, and under zero-network
-    it cannot be undone without relaxing the policy. The choice is read on the calling event
-    loop's thread, never in a worker, with Python's default SIGINT handler in place of the loop
-    runner's for the read, so Ctrl-C answers it at once;
-  - without that console, for a machine-readable answer (`--json`, including the setting
-    commands, which set `machine_readable_answer()` around the change), or for a grant relayed
-    from an agent chat, nothing switches: the facts, the command and the reminder to restart open
-    agent sessions go to stderr as `zero_network_remote_selected: …`.
+  `local_port`.) `server status --json` (`server-target-status` 1.0.0) carries the state below as
+  `zero_network_selection`: the item the zero-network check reports (its `reason`,
+  `zero_network_remote_selected` or `zero_network_selection_unreadable`, `target_id`, `kind`,
+  `detail`, and `policy_read` with `last_reported_at`; generated ids, closed tokens and a
+  fixed-shape time only), or null when the check reports nothing.
+- **Zero-network and a remote target are never in force together** (maintainer decision,
+  2026-11-07: "Remember but also make it so if user uses remote server it can't be zero
+  network", replacing the 2026-11-06 decision that surfaced the state and let the owner keep the
+  target). FinishUP never switches servers on its own. `cli/zero_network_selection.py` reads the
+  selection file afresh (never the process memo); a process whose root an isolation variable or
+  pin decides keeps its own policy and is left alone throughout.
+  - *Remember.* Whenever this computer's everyday service reports its machine-scope policy to a
+    client command on this computer (the zero-network check, `privacy show` and the menu's
+    privacy view, setup's update-policy read, and the read after every privacy change made here),
+    the client records an owner-only marker, `client/everyday_policy.py`:
+    `<ambient state dir>/servers/everyday-policy.json` (`yoetz.everyday-network-policy/1`, exactly
+    `zero_network` and `reported_at`), beside the server registry and outside the vault, written
+    atomically and never through a link. A marker that cannot be read (damaged, not owner-only, a
+    link, oversized) counts as no record: nothing claims the state from it, no connection is
+    refused on it, and the next report replaces it. Deleting FinishUP's folders removes it, and the
+    zero-network check removes it once the everyday installation no longer exists (`no_policy`).
+  - *A change that would make this computer zero-network while a remote target is selected*
+    (a machine-scope candidate that does not permit network egress, while the selection on disk
+    names, or may name, a remote target) is decided before anything is sent
+    (`guard_policy_change`; every path that proposes or tightens this computer's policy: the
+    privacy setup ceremony and its credential-heuristic, conversation and input-root changes,
+    `privacy propose|tighten`, `finishup setup`, `finishup ai`, the menu's wizard, the terminal
+    interface's privacy flows, and the relayed elevated grant). On the trusted foreground
+    console it names the target by id and kind and offers exactly two choices: `1` switch to this
+    computer's everyday FinishUP (`finishup server use local`) and make the change, or `2` cancel
+    the change and keep the target. Enter, end of input, Ctrl-C and any other answer cancel. The
+    choice is read on the calling event loop's thread, never in a worker, with Python's default
+    SIGINT handler in place of the loop runner's for the read, so Ctrl-C answers it at once.
+    Without that console, for a machine-readable answer (`--json`, including the setting
+    commands, which set `machine_readable_answer()` around the change), or for a decision relayed
+    from an agent chat, the change is refused before it is applied: stderr carries
+    `zero_network_remote_selected: …` (or `zero_network_selection_unreadable: …`), why, and the
+    one remedy, `finishup server use local`, then the same change again; nothing is sent. After
+    every committed change the policy is read again and remembered; if a remote target was
+    selected meanwhile, stderr says so with the same token.
+  - *The last line of defence.* `targets.require_current_authorization`, which every hop
+    decision already calls (the connect seams in `service/client.py`, `binding_for_active_root`,
+    `server connect`), refuses any remote target while the marker says zero-network, before the
+    disclosure check, with the closed reason `zero_network_remote_selected`. It is a remote
+    connection phase (`REMOTE_CONNECTION_PHASES`) with the continuation
+    `zero_network_local_server_required`, so the CLI, MCP, hooks and the terminal interface say
+    why and the remedy for a process whose selection predates the change, and no connector or
+    agent is started for it. The check reads the marker only, never the service, so hooks keep
+    their budgets. `server login` refuses its key check the same way.
 
-  **Where it can arise.** While a remote target is selected, a fresh process does not set this
-  computer's policy: every `server_host` privacy command (the privacy ceremonies, `decide-policy`,
-  the credential-heuristic, conversation and input-root commands, `ai`, `elevated-bootstrap`, the
-  terminal interface's `/privacy`) is refused with `requires_server_host`, and the `any`-scoped
-  `privacy tighten|propose` and `setup run` act on the selected target. The paths above
-  therefore surface the choice when the process committing the change resolved this computer's
-  server before the selection changed (the selection memo is per process): an open terminal
-  interface or menu, or a privacy step or setup run already under way when `server use` ran
-  elsewhere. Adding or selecting the target after the policy is zero-network is refused, as above.
+  **Where the choice can arise.** While a remote target is selected, a fresh process does not
+  set this computer's policy: every `server_host` privacy command (the privacy ceremonies,
+  `decide-policy`, the credential-heuristic, conversation and input-root commands, `ai`,
+  `elevated-bootstrap`, the terminal interface's `/privacy`) is refused with
+  `requires_server_host`, and the `any`-scoped `privacy tighten|propose` and `setup run` act on
+  the selected target's own policy (below), which this rule leaves alone. The choice therefore
+  arises when the process making the change resolved this computer's server before the selection
+  changed (the selection memo is per process): an open terminal interface or menu, or a privacy
+  step or setup run already under way when `server use` ran elsewhere.
 
-  The item stays visible while the state lasts and can be read (below): `server status` (stderr, and
-  with `--json` also the document's `zero_network_selection`, from the same policy read) and `server
-  list`, `setup status` (stderr), `setup status --next` (a `server_selection` fact with its pinned
+  The item stays visible while the state lasts: `server status` (stderr, and with `--json` also
+  the document's `zero_network_selection`, from the same policy read) and `server list`, `setup
+  status` (stderr), `setup status --next` (a `server_selection` fact with its pinned
   continuation), the setup wizard's next steps, the menu home, and the terminal interface's header
-  and `/server` (read at start, after a privacy ceremony, and on `/server`; the header drops it once
-  the selection file changes). A selection that cannot be read is reported as
-  `zero_network_selection_unreadable` with its closed reason (`selection_invalid`,
+  and `/server` (read at start, after a privacy ceremony, and on `/server`; the header drops it
+  once the selection file changes). They read the live policy first and, while it cannot be read,
+  the marker, worded "this computer last reported", with when. A selection that cannot be read is
+  reported as `zero_network_selection_unreadable` with its closed reason (`selection_invalid`,
   `target_root_unsafe`, `target_record_invalid`) and `finishup server use local` as the way back,
-  never as "no server". While this computer's policy cannot be read,
-  nothing claims the zero-network state either way, so the displays show the item only while this
-  computer's service is running and unlocked, the one source of that policy.
+  never as "no server".
 
   **Switching stops the traffic it names.** The choice's `1`, `finishup server use local` and the
   terminal interface's `/server` "Use local" all run `cli.server.use_target`, which clears the
@@ -774,14 +796,17 @@ answers bounded `workspace_call`s on a connection that declared it.
   longer read files here, and exits before the command returns. Every surface that switches says
   so by generated id and kind. When the stop does not finish within its wait the selection is
   still cleared, and the command says so on stderr with `finishup server disconnect` as the way to
-  finish it. **Honest limits:** while the owner keeps the target, and after switching until open
-  agent sessions restart (a running MCP bridge keeps the target it started with, and its next call
-  starts that target's connector again), traffic to it continues; a selection that cannot be read
-  names no target, so switching away from it stops nothing (`finishup server disconnect NAME`
-  stops a target's connection); and usually nothing on this computer uses its own service while a
-  remote target is selected, so once that service relocks or stops when idle the displays can no
-  longer tell the state and say nothing, although work still goes to the target. Agents cannot
-  change the policy or the selection, so no MCP tool surfaces or answers the choice.
+  finish it. Until open agent sessions restart, a running MCP bridge keeps the target it started
+  with: under zero-network its connections are refused, otherwise its next call starts that
+  target's connector again. A selection that cannot be read names no target, so switching away
+  from it stops nothing (`finishup server disconnect NAME` stops a target's connection).
+
+  **Honest limits:** a connection already open when the policy changes is
+  not cut (its next connection is refused); after switching, open agent sessions keep the
+  target they started with until they restart, and their connections are refused; after an
+  upgrade from a release without the marker, nothing is remembered until this computer's policy
+  is next reported. Agents cannot change the policy or the selection, so no MCP tool surfaces or
+  answers the choice.
 - **Which server's policy a command changes is said before and after** (maintainer principle "be
   clear on what happened", 2026-11-06). While a remote target is selected, `privacy tighten`,
   `privacy propose` and the privacy step of `setup run` (the trusted questionnaire, which the
@@ -825,9 +850,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   is that decide-policy continuation for a waiting proposal, otherwise "rerun `finishup setup
   run` here", and the API-key step says both run only on that server's host. Every caller that
   prints a result after the questionnaire (setup run, the provider step `setup run --host` runs,
-  the terminal interface's four hand-overs) reads the server once before it and keeps that value:
-  the zero-network choice inside the questionnaire may switch the selection to this computer, and
-  the change stays the remote server's.
+  the terminal interface's four hand-overs) reads the server once before it and keeps that value,
+  so the result names the server the change was made on even if the selection changes during the
+  questionnaire (the zero-network choice above can switch it, in a process on this computer's own
+  server).
 - **Honest limit.** This is a trusted-console decision, not a vault-reauthenticated ceremony,
   because a client machine may have no vault.
 
@@ -1091,6 +1117,7 @@ through the same relay; human-control and secret channels never leave the server
 | `server folders mode NAME local` (trusted console and typed name whenever it records `local`, an official endpoint's included; without the console an official endpoint's `local` is left unrecorded) | `server folders mode NAME listed` (applies from the workspace agent's next read; a read already in progress may finish) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; applies from the workspace agent's next read, and a read already in progress may still return files) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
+| This computer's everyday service reports its machine-scope policy (the zero-network check, `privacy show`, a privacy change here): the owner-only marker of what it last reported (decision 8) | the next report replaces it; deleting FinishUP's folders removes it; the zero-network check removes it once the everyday installation no longer exists | `server status [--json]` (`policy_read`, `last_reported_at`), `server list`, `setup status --next`, the menu home, `/server` and the header |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |
 
 Deleting a target's root removes every client-side artifact of that target. The ambient
@@ -1105,16 +1132,15 @@ installation is never touched by a target operation.
 - Remote round trips cost hook budget. No budget is relaxed; `server test` measures the round trip
   against the hook budgets and warns when a required startup gate would likely deny.
 - Upgrades are lockstep: every refusal names both releases.
-- The zero-network refusal (decision 8) is checked when the owner adds or selects a remote
-  target, not before each connection. When this computer's policy is set to zero-network while
-  a remote target is selected, FinishUP surfaces it and the owner decides, on the trusted console
-  or from the printed command, whether to switch to the everyday FinishUP; it never switches on
-  its own (maintainer decision, 2026-11-06, replacing the earlier choice to only disclose the
-  limit). That change can only come from a process that resolved this computer's server before
-  the selection changed, because fresh server-host commands are refused while a remote target is
-  selected. While the owner keeps the target, and after switching until open agent sessions
-  restart, traffic to it continues, and the displays show the state only while this computer's
-  service is running and unlocked.
+- This computer's zero-network policy and a remote target are never in force together
+  (decision 8, maintainer decision of 2026-11-07, replacing the 2026-11-06 choice to surface the
+  state and let the owner keep the target). Adding or selecting a remote target is refused in that
+  state; a change into it while a remote target is selected asks the owner on the trusted console
+  to switch to this computer's everyday FinishUP or cancel, and is refused without that console;
+  and every connection to a remote target is refused while this computer last reported the state.
+  To know it while this computer's service is stopped or locked, the client remembers each report
+  of this computer's policy in an owner-only marker outside the vault. The connection check costs
+  a file read, not a round trip.
 - Every path on this computer that changes a remote target's privacy policy names the target
   (id and kind) before and after (decision 8). A widening proposed there waits on the server host
   for its decision; setup's privacy step reports it as waiting instead of failing on a local

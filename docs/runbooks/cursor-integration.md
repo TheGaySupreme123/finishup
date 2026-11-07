@@ -692,24 +692,31 @@ default service.
   in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
   first page. A long receipt has its other sections shortened to fit and still ends with the
   whole section.
-- **Zero-network with a remote target selected** (maintainer decision, 2026-11-06; ADR-051 decision
-  8). Setting this computer's privacy policy to zero-network does not stop Cursor's traffic to a
-  selected remote target. FinishUP surfaces it after the policy change (on the owner's terminal:
-  switch to this computer's everyday FinishUP or keep the target, Enter or Ctrl-C keeps it;
-  otherwise, or for `--json`, the facts and `finishup server use local` on stderr) and keeps showing
-  it in `setup status --next`, `server status` and the terminal interface while this computer's
-  FinishUP service is running and unlocked (only it can report this computer's policy; it relocks or
-  stops when idle); it never switches on its own. Switching (the choice, `finishup server use local`
-  or the terminal interface's "Use local") also stops this computer's connection to the target as
-  `finishup server disconnect` does: the target's connector closes its background workspace agents,
-  so server work already under way can no longer read files here. After switching, restart open
-  Cursor windows and Agent CLI sessions: the running MCP bridge keeps the remote target until then,
-  while hooks follow at once. While a remote target is selected, fresh server-host privacy commands
-  are refused (`requires_server_host`) and `privacy tighten|propose` reach the target, so the choice
-  comes from a FinishUP process already on this computer's server (an open terminal interface or
-  menu, or a privacy step or setup under way). Host decision: supported, same code path; no MCP
-  tool, hook or SessionStart context carries or answers the choice, because agents cannot change the
-  policy or the selection.
+- **Zero-network and a remote target are never in force together** (maintainer decision, 2026-11-07,
+  replacing 2026-11-06; ADR-051 decision 8). Adding or selecting a remote target is refused while
+  this computer's privacy policy is zero-network, live or as this computer last reported it. A
+  change that would make it zero-network while a remote target is selected asks on the owner's
+  terminal first (switch to this computer's everyday FinishUP and make the change, or cancel it and
+  keep the target; Enter, end of input or Ctrl-C cancels) and is refused without that terminal, for
+  `--json`, or for a decision relayed from an agent (`zero_network_remote_selected`, remedy
+  `finishup server use local`, then the change again); it never switches on its own. As the last
+  line of defence, every Cursor hook, MCP bridge connection and CLI call to a remote target is
+  refused before anything is sent while this computer last reported zero-network: the session's
+  hooks and SessionStart context and the MCP tool error name `zero_network_remote_selected` with its
+  continuation (`zero_network_local_server_required`: ask the owner to run `finishup server use
+  local`, then restart the session). The check reads the owner-only marker of this computer's last
+  reported policy, never the service, so it costs no round trip within the hook budgets. Switching
+  (the choice, `finishup server use local` or the terminal interface's "Use local") also stops this
+  computer's connection to the target as `finishup server disconnect` does: the target's connector
+  closes its background workspace agents, so server work already under way can no longer read files
+  here. After switching, restart open Cursor windows and Agent CLI sessions: the running MCP bridge
+  keeps the remote target until then (and is refused), while hooks follow at once. `setup status
+  --next`, `server status` and the terminal interface show the state, live or "last reported". While
+  a remote target is selected, fresh server-host privacy commands are refused
+  (`requires_server_host`) and `privacy tighten|propose` reach the target, so the choice comes only
+  from a FinishUP process already on this computer's server (an open terminal interface or menu, or
+  a privacy step or setup under way). Host decision: supported, same code path; no MCP tool or hook
+  carries or answers the choice, because agents cannot change the policy or the selection.
 - **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
   `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
   interface's first run) change the target's policy and name it, by id and kind, before anything

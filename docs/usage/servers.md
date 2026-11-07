@@ -75,17 +75,15 @@ release, FinishUP asks you to confirm again before using the server. Once the se
 it has and the one command that changes it. After that, nothing asks again: your agents' hooks
 and FinishUP tools, the `finishup` command and the terminal interface all follow your choice.
 
-If your privacy policy forbids all network use (the zero-network setting), FinishUP refuses to add
-or choose a server on another machine, a port or the web. It also refuses while the FinishUP set up
-on this computer cannot tell it its policy, because its service is stopped or locked: start it
-with `finishup service start`, unlock it if needed, and try again. A computer whose own FinishUP
-was never set up has no privacy policy of its own and can use a server; the server's policy then
-governs your work.
+If your privacy policy forbids all network use (the zero-network setting), FinishUP never uses a
+server on another machine, a port or the web: it refuses to add or choose one. It also refuses
+while the FinishUP set up on this computer cannot tell it its policy, because its service is
+stopped or locked: start it with `finishup service start`, unlock it if needed, and try again. If
+this computer last told FinishUP that the setting is on, the refusal says so, with when. A
+computer whose own FinishUP was never set up has no privacy policy of its own and can use a
+server; the server's policy then governs your work.
 
-### When you turn on zero-network with a server already chosen
-
-Turning the zero-network setting on does not by itself stop a server you already chose: your work
-keeps going to it.
+### Zero-network and a server elsewhere are never on together
 
 While a server on another machine, a port or the web is chosen, a new FinishUP command does not
 change this computer's privacy policy. `finishup privacy setup`, the other privacy settings,
@@ -97,43 +95,67 @@ changes](#whose-privacy-policy-a-command-changes)). To change this computer's po
 
 FinishUP that was already working with this computer's own FinishUP when you chose the server can
 still change this computer's policy: a terminal interface or menu that was open then, or a privacy
-step or setup that was under way. Whenever such a change turns the zero-network setting on, FinishUP
-tells you which server is chosen and lets you decide. It never switches for you.
+step or setup that was under way. If such a change would turn the zero-network setting on, FinishUP
+asks you before it changes anything. It never switches for you.
 
 In your own terminal it asks:
 
 ```text
-  1  Switch to this computer's everyday FinishUP now
-  2  Keep using the server t_1a2b3c4d (ssh)
-Choose 1 or 2 (Enter keeps the server):
+This change makes this computer's FinishUP make no network connections, but the selected FinishUP server t_1a2b3c4d (ssh) is on another machine, reached over SSH.
+FinishUP never uses a server elsewhere while this computer makes no network connections, so both cannot stay.
+  1  Switch to this computer's everyday FinishUP and make this change
+  2  Cancel this change and keep using the server t_1a2b3c4d (ssh)
+Choose 1 or 2 (Enter cancels the change):
 ```
 
-Pressing Enter or Ctrl-C, or any answer but 1, keeps the server. Choosing 1 is `finishup server
-use local`. Without a terminal to ask in (a script, or a command asked for JSON), FinishUP
-switches nothing and prints the same facts with that command.
+Choosing 1 is `finishup server use local`, then the change. Pressing Enter or Ctrl-C, or any
+answer but 1, cancels the change: your privacy policy stays as it was and the server stays chosen.
+Without your terminal to ask in (a script, a command asked for JSON, or a change your agent
+relays), FinishUP refuses the change before making it and says why, with
+`zero_network_remote_selected`: run `finishup server use local`, then make the change again.
 
 Switching, whichever way you do it, also closes this computer's connection to that server, as
 `finishup server disconnect` does. Work the server had already started for you, such as a review
 still running, can then no longer read your files. As the connection closes it sends that server,
 for at most 2 seconds, what your agents' hooks had already recorded for it; anything left stays on
 this computer. If the connection does not close in time, FinishUP still switches and tells you to
-run `finishup server disconnect` with that server's name.
+run `finishup server disconnect` with that server's name. After switching, restart open agent
+sessions: they keep the server they started with until then. Choosing the server again needs the
+setting turned off first.
 
-Either way, restart open agent sessions after switching: they keep the server they started with
-until then, and their next request opens the connection to it again. Choosing the server again
-needs the setting turned off first.
+Anything still pointed at a server elsewhere while this computer forbids all network use (an
+agent session or hook started before the change, or a server you kept with an earlier release) is
+refused before anything is sent to it, on every surface, with `zero_network_remote_selected` and
+the same fix: `finishup server use local`, then restart open agent sessions. This check uses what
+this computer last reported (below), so after an upgrade it starts once this computer's FinishUP
+has reported its policy again. A connection that was already open when the setting changed is not
+cut; the next one is refused.
 
-Until you switch, `finishup setup status --next`, `finishup server status` and `finishup server
-list`, the setup summary and the terminal interface's header and `/server` keep saying so, as
-long as this computer's FinishUP service is running and unlocked: only that service can tell them
-this computer's policy. Usually nothing on this computer uses it while another server is chosen,
-so it stops or locks itself after a while; from then on these views cannot tell whether the
-setting is on and say nothing about it, even though your work still goes to the chosen server.
-`finishup server status` always shows which server is chosen; `finishup server status --json`
-gives the same notice as its `zero_network_selection` member (null when there is nothing to say).
-If the saved server choice cannot be read, FinishUP says that instead of guessing, and `finishup
-server use local` clears it. It cannot tell then which server's connection to close: run
-`finishup server disconnect NAME` for a server on another machine you were using.
+### What this computer last reported
+
+Only this computer's own FinishUP service can tell its privacy policy, and it is usually stopped or
+locked while you use a server elsewhere. So FinishUP remembers what it last reported: whether the
+zero-network setting was on, and when. It keeps this in a small file only you can read, beside
+its list of servers and outside the vault, with no path, name or policy content in it. It is
+updated whenever this computer's FinishUP reports its policy: when it checks a server you add or
+choose, when you run `finishup privacy show` or the menu's privacy view, and after every privacy
+change made here.
+
+`finishup setup status --next`, `finishup server status` and `finishup server list`, the setup
+summary, the menu and the terminal interface's header and `/server` say so while a server
+elsewhere is chosen and the setting is on. They ask this computer's FinishUP first; when it
+cannot answer, they say "This computer last reported, at <time>, that its privacy policy forbids
+all network use" instead. `finishup server status --json` gives the same notice as its
+`zero_network_selection` member: `policy_read` is `live` or `last_reported`, with
+`last_reported_at` for the latter (null when there is nothing to say). If the saved server choice
+cannot be read, FinishUP says that instead of guessing, and `finishup server use local` clears it.
+It cannot tell then which server's connection to close: run `finishup server disconnect NAME` for
+a server on another machine you were using.
+
+If that file cannot be read (it was damaged, or its permissions changed), FinishUP treats it as no
+record: nothing claims the setting from it, and the next report replaces it. Deleting FinishUP's
+folders (see [Where your data lives](upgrading.md#where-your-data-lives)) removes it, and FinishUP
+removes it itself once this computer's own FinishUP no longer exists.
 
 ## Sign in to a web server
 
@@ -601,8 +623,8 @@ repeated safely.
 | `method_forbidden` | The API key's scope does not allow that call. | Use an `operator` key for management commands. |
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
-| `zero_network_remote_selected` | Your privacy policy forbids all network use, but a server on another machine, a port or the web is still chosen, so your work still goes there. | Run `finishup server use local`, then restart open agent sessions; or keep the server, knowing your work goes to it. |
-| `zero_network_selection_unreadable` | Your privacy policy forbids all network use, and the saved server choice cannot be read, so FinishUP cannot tell whether a server elsewhere is still chosen. | Run `finishup server use local`; it clears the choice even when it cannot be read. Then restart open agent sessions. |
+| `zero_network_remote_selected` | This computer forbids all network use, or last said so, and a server on another machine, a port or the web is chosen: nothing is sent to it, and a privacy change that would leave both on is refused when FinishUP cannot ask you. | Run `finishup server use local`, then restart open agent sessions, and make the change again if one was refused. |
+| `zero_network_selection_unreadable` | This computer forbids all network use, or last said so, and the saved server choice cannot be read, so FinishUP cannot tell whether a server elsewhere is still chosen. | Run `finishup server use local`; it clears the choice even when it cannot be read. Then restart open agent sessions. |
 | `selection_invalid` | The saved server choice is damaged, or names a server whose folder on this computer is missing or unsafe. `finishup server` commands say this instead of `isolation_root_invalid`. | Run `finishup server use local`; it clears the choice even when it cannot be read. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |
 | `workspace_agent_unavailable` | The server needed something from your project, and nothing on this computer gave a usable answer: not connected, too slow, or failed. A receipt says so where it could not see your change. | On this computer: `finishup server status NAME` shows the connection, and `finishup server connect NAME` makes it again (or keep the agent session open); then check again. |

@@ -63,24 +63,35 @@ policy until a replacement is committed. True FinishUP zero-network mode is the
 composite of `local_only`, the global ceiling off, and all five network channels disabled (including
 turning update checks off). That mode still permits only exact release-profiled local IPC required
 for the FinishUP service, confidential helper, approved local model, OS credential/user-presence
-service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations. A
-FinishUP server on another machine, on a local port, or on the web cannot be added or selected in
-that mode. While such a server is selected, a new FinishUP command does not change this computer's
-policy: the privacy commands either refuse to run (`requires_server_host`) or, like `finishup
-privacy tighten` and `finishup privacy propose`, change the selected server's policy and say which
-server, by its id and kind, before and after the change. FinishUP that was already working with
-this computer's own FinishUP when the server was selected (an open terminal interface or menu, or
-a privacy step or setup already under way) can still turn the mode on here. When it does,
-FinishUP tells you which server is selected and that the mode does not stop traffic to it, and
-lets you choose: switch to this computer's own FinishUP now, or keep using the server. Enter,
-Ctrl-C or any answer but the switch keeps it; FinishUP never switches on its own. Without a
-terminal to ask in, or for a command that answers in JSON, it prints the same facts and
-the command that switches, `finishup server use local`. `finishup setup status --next`, `finishup
-server status` and the terminal interface keep showing it while this computer's FinishUP service
-is running and unlocked, because only that service can report this computer's policy; usually
-nothing here uses it while the other server is selected, so it stops or locks itself after a
-while, and then those views say nothing about the mode. If you keep the server, your work keeps
-going to it; after you switch, open agent sessions keep using it until you restart them.
+service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations.
+
+That mode and a FinishUP server on another machine, on a local port, or on the web are never in
+force together (decided on 2026-11-07). Such a server cannot be added or selected in that mode.
+While one is selected, a new FinishUP command does not change this computer's policy: the privacy
+commands either refuse to run (`requires_server_host`) or, like `finishup privacy tighten` and
+`finishup privacy propose`, change the selected server's own policy and say which server, by its
+id and kind, before and after the change. FinishUP that was already working with this computer's
+own FinishUP when the server was selected (an open terminal interface or menu, or a privacy step
+or setup already under way) could still turn the mode on here. Before it does, FinishUP asks on
+your own terminal: switch to this computer's own FinishUP and make the change, or cancel the
+change and keep the server. Enter, end of input, Ctrl-C or any answer but the switch cancels;
+FinishUP never switches on its own. Without your terminal to ask in, for a command that answers
+in JSON, or for a decision relayed from an agent, the change is refused before it is applied,
+with `zero_network_remote_selected`, and nothing changes; `finishup server use local`, then the
+same change again, is the fix. Anything still pointed at such a server while this computer is in
+that mode (an agent session or a hook started earlier) is refused at its next connection, before
+anything is sent, with the same reason and fix. Two limits: a connection already open when the
+mode is turned on is not cut, and this check relies on what this computer last reported (below),
+so after an upgrade from a release without that record it applies once this computer's FinishUP
+has reported its policy again.
+
+To tell the mode when this computer's own FinishUP service is stopped or locked (as it usually is
+while another server is used), FinishUP remembers, in a small file only you can read beside its
+server list (outside the vault), whether this computer's policy last reported the mode and when;
+it holds no path, name or policy content. `finishup setup status --next`, `finishup server
+status` and `list`, the menu and the terminal interface then say "this computer last reported"
+it. A file that cannot be read counts as no record and is replaced by the next report. Deleting
+FinishUP's folders removes it.
 
 An independent review-context profile controls which potentially useful material is selected before
 those disclosure rules run: `structural`, `goal_aware`, `assisted`, `expanded`, or `custom`. The
@@ -331,17 +342,17 @@ the LLM profiles and the four non-LLM channels above, and enabling it enables no
   only you can read where none is usable; it never appears in a command line, an environment
   variable, a settings file, a log, or anything an agent can read. Software running as your own
   account can read it, as it can read other owner-only files.
-- **Zero-network mode refuses it, and asks you about one already chosen.** While your policy
-  forbids all network use, no such server can be added or chosen. While one is chosen, new
-  FinishUP commands do not change this computer's policy (they refuse, or change the chosen
-  server's policy instead); if FinishUP that was already running here turns the mode on anyway,
-  FinishUP says which server is chosen and that the mode does not stop traffic to it, and asks
-  whether to switch to this computer's own FinishUP now or keep the server; it never switches on
-  its own. Without a terminal to ask in, it prints the facts and `finishup server use local`, and
-  the setup, server status and terminal views keep showing it while this computer's FinishUP
-  service is running and unlocked (only it can report this computer's policy). If you keep the
-  server, your work keeps going there; after you switch, restart open agent sessions, which keep
-  the server they started with.
+- **Zero-network mode and such a server are never in force together.** While your policy forbids
+  all network use, no such server can be added or chosen, and anything still pointed at one is
+  refused at its next connection, before anything is sent (a connection already open is not cut). While one is chosen, new FinishUP commands do not change this
+  computer's policy (they refuse, or change the chosen server's policy instead); if FinishUP that
+  was already running here would turn the mode on anyway, it asks first: switch to this
+  computer's own FinishUP and make the change, or cancel it and keep the server (Enter or Ctrl-C
+  cancels). It never switches on its own; without your terminal to ask in, the change is refused.
+  The fix is always `finishup server use local`; after it, restart open agent sessions, which keep
+  the server they started with. FinishUP remembers what this computer last reported, so the
+  setup, server status and terminal views can say so even while this computer's FinishUP service
+  is stopped or locked.
 - **Receipts say so.** A receipt from such a server states that workspace evidence was read on your
   machine by the FinishUP workspace agent and attested over the connection.
 

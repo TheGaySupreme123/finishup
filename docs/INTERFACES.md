@@ -4685,12 +4685,15 @@ this and exits 0 rather than refusing, while `add`, `remove FOLDER` and `mode` r
 remove NAME --all` and say it repairs a damaged record. The document's top-level
 `zero_network_selection` is null, or the zero-network item (ADR-051 decision 8): `reason`
 (`zero_network_remote_selected|zero_network_selection_unreadable`), `target_id`, `kind`
-(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is the fact
+(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`, and
+`policy_read` (`live|last_reported`) with `last_reported_at` (a `YYYY-MM-DDTHH:MM:SS.mmmZ` time,
+set exactly when `policy_read` is `last_reported`; the schema's `if`/`then`/`else` and the model's
+validator both enforce it; amended in place, 2026-11-07, as 1.0.0 is unreleased). It is the fact
 (`ZeroNetworkSelection.fact()`) of the item
 `cli.zero_network_selection.find_zero_network_selection()` reports, filled by
 `cli.server._zero_network_selection`; null when that check reports nothing (no selection or a server
 on this computer, an isolation variable or pin, or this computer's policy permits network use, was
-never set up or cannot be read). `build_status_document(name, *, now=None, zero_network=None)` asks
+never set up, or cannot be read and was not last reported zero-network). `build_status_document(name, *, now=None, zero_network=None)` asks
 the check itself unless the caller passes the item it already found: `server status` passes the one
 it printed on stderr, so the stderr line and the field are the same item from one policy read; the
 terminal interface's `/server` status passes the item `/server` read just before while
@@ -4709,42 +4712,87 @@ resolves but whose `target.json` cannot be read fails closed with `ServerTargetU
 `ServerHostRequired` whose `reason` is the record's `target_root_unsafe` or
 `target_record_invalid`); `targets.active_target_record()` raises `TargetRecordUnreadable` for it.
 
-**Zero-network with a remote selection** (ADR-051 decision 8, maintainer decision 2026-11-06).
-`cli/zero_network_selection.py` owns it. `everyday_network_state()` answers
-`zero_network|network_permitted|no_policy|unreadable` from the everyday installation's effective
-machine-scope policy (`server add|use` refuse `zero_network_in_force` and
-`network_policy_unreadable` from it, as before). `find_zero_network_selection()` reads the
+**Zero-network and a remote selection are never in force together** (ADR-051 decision 8,
+maintainer decision 2026-11-07, replacing 2026-11-06). `cli/zero_network_selection.py` and
+`client/everyday_policy.py` own it.
+
+*The marker.* `client.everyday_policy`: `record_reported_policy(*, zero_network, now=None) -> bool`,
+`read_marker() -> ReportedPolicy | "absent" | "unreadable"`, `last_reported_zero_network() ->
+ReportedPolicy | None` (`ReportedPolicy(zero_network: bool, reported_at: str)`), `remove_marker() ->
+bool`, `marker_path()`. The file is `<ambient state dir>/servers/everyday-policy.json` (constant
+`MARKER_NAME`), owner-only (0600 in a 0700 folder), canonical JSON with exactly `schema`
+(`yoetz.everyday-network-policy/1`), `zero_network` and `reported_at`, at most 512 bytes; written
+atomically (temporary file, fsync, rename, which replaces a damaged file or a link without
+following it); read with `O_NOFOLLOW` after an `lstat` that requires a regular file of this user
+with no group or other bits. Under an isolation variable or runtime pin nothing records and the
+read is `absent`. Nothing raises. Writers: `everyday_network_state()` on every answer (and
+`no_policy` removes it), `remember_reported_policy(response)` for a `privacy_get_effective` answer
+of this computer's machine scope on the everyday root (`privacy show`, the menu's privacy view,
+setup's update-policy read), and `after_policy_change[_async]()` after every committed change.
+The test suite points `_location` at a per-test folder (`tests/conftest.py`).
+
+*Reads.* `everyday_network_state()` answers `zero_network|network_permitted|no_policy|unreadable`
+from the everyday installation's effective machine-scope policy, in a fresh `contextvars.Context`
+(`asyncio.to_thread` copies a context naming the running async library under `anyio.run`).
+`server add|use` refuse `zero_network_in_force` from it; when it is `unreadable` a marker that says
+zero-network refuses `zero_network_in_force` with the fixed sentence naming `reported_at`, and
+anything else refuses `network_policy_unreadable`. `find_zero_network_selection()` reads the
 selection file afresh (`read_selection_on_disk()`, never the memo) and returns a
-`ZeroNetworkSelection` only under `zero_network`, never under an isolation variable or pin, with
-the closed `reason` `zero_network_remote_selected` (`target_id`, `kind`) or
-`zero_network_selection_unreadable` (`detail`: `selection_invalid`, `target_root_unsafe`,
-`target_record_invalid`, or a path-safety reason). `everyday_network_state()` runs its own event
-loop in a fresh `contextvars.Context`, because `asyncio.to_thread` copies a context that names the
-running async library under `anyio.run`. `surface_after_policy_change_async(interactive=)` runs
-after every committed policy change and returns `clear|switched|kept|warned`: only the read above
-runs in a worker thread; on the trusted console, read on the loop's thread with
-`signal.default_int_handler` installed for the read, `1` runs `use_target("local")` and anything
-else (Enter, end of input, Ctrl-C) keeps the target. `cli.server.use_target(name, *, authorize=None)
--> TargetSwitch` (`record`, the target now selected or `None`; `left`, the remote target the
-selection named before when the switch moved away from it; `left_open`; `left_lines()`) stops
-`left` through `runtime_for(left.kind).stop(target_root(left.target_id))` after the selection
-changed, as `server disconnect` does; `server use`, the choice and the terminal interface's
-`use_server` (`tui.models.ServerSwitch`: `indicator`, `left_lines`, `left_open`) print its lines,
-and a stop that did not finish goes to stderr (UNPROVEN in the terminal interface) with `finishup
-server disconnect` while the switch stands; otherwise one stderr line `<reason>: <facts>
-… finishup server use local …`. `machine_readable_answer(enabled)` (a context variable;
-`machine_readable_requested()` reads it) suppresses the choice for a `--json` command whose
-policy change happens further down (`privacy credential-heuristic|conversations|input-roots`).
-While a remote target is selected only a process that resolved the everyday root before the
-selection changed can commit such a change, since `server_host` privacy commands are refused with
-`requires_server_host` and `privacy tighten|propose` reach the target. Owner displays carry the
-same item while the everyday service answers its policy (running and unlocked):
-`server status` (stderr, and beside `--json` also the document's `zero_network_selection` above),
-`server list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's
-`next_steps`, the menu home, the terminal interface's header indicator and `/server`, and `setup
-status --next`, whose `yoetz.setup-readiness/1` `facts` gain `server_selection`: `{reason,
-target_id, kind, detail, next_command}` (`next_command` is the pinned continuation of `server use
-local`). Every field is a generated id or a closed token; no owner-typed name.
+`ZeroNetworkSelection(reason, target_id, kind, detail, policy_read, last_reported_at)` under
+`zero_network` (`policy_read="live"`), or under `unreadable` when the marker says zero-network
+(`last_reported`), never under an isolation variable or pin, with the closed `reason`
+`zero_network_remote_selected` (`target_id`, `kind`) or `zero_network_selection_unreadable`
+(`detail`: `selection_invalid`, `target_root_unsafe`, `target_record_invalid`, or a path-safety
+reason). Its `lines()`, `line()`, `next_step()`, `indicator()`, `heading()` and `fact()` say
+"refused" and `finishup server use local`.
+
+*Before a change.* `guard_policy_change(*, forbids_network, interactive) -> "clear" | "switched"`
+raises `ZeroNetworkChangeStopped(reason, cancelled=)` (a `ValueError`). It applies when
+`candidate_forbids_network(candidate)` (a `PrivacyPolicy` or its wire JSON whose
+`effective_scope.kind` is `machine` and `network_egress_permitted` is false), the process is on the
+everyday root (no isolation variable or pin, `active_root()` is `None`) and the selection on disk
+names a remote kind or cannot be read. On the trusted console (only with `interactive` and not
+`machine_readable_requested()`), read on the calling thread with `signal.default_int_handler`
+installed for the read, `1` runs `use_target("local")` and returns `switched`; anything else
+(Enter, end of input, Ctrl-C) cancels (`cancelled=True`, "Cancelled: nothing was changed." on
+stdout). Otherwise one stderr line `<reason>: this change would … nothing was changed. Run
+'finishup server use local' in your own terminal, then make the change again.` and
+`cancelled=False`. Callers: `cli.app._call_support` for `privacy propose|tighten` (exit code of
+`INVALID_REQUEST`, stdout empty, nothing sent), and `privacy_setup._propose_pending`,
+`_tighten_machine` and `_propose_machine` (`interactive=prompt and _interactive_terminal()`; the
+relayed `propose_privacy_candidate` passes `prompt=False`); the questionnaire reports
+`PrivacySetupReport("cancelled", reason=<token>)`. `machine_readable_answer(enabled)` (a context
+variable) marks a `--json` command whose change happens further down (`privacy
+credential-heuristic|conversations|input-roots`). While a remote target is selected only a process
+that resolved the everyday root before the selection changed can make such a change, since
+`server_host` privacy commands are refused with `requires_server_host` and `privacy
+tighten|propose` reach the target.
+
+*Switching.* `cli.server.use_target(name, *, authorize=None) -> TargetSwitch` (`record`, the
+target now selected or `None`; `left`, the remote target the selection named before when the
+switch moved away from it; `left_open`; `left_lines()`) stops `left` through
+`runtime_for(left.kind).stop(target_root(left.target_id))` after the selection changed, as `server
+disconnect` does. `server use`, the choice `1` and the terminal interface's `use_server`
+(`tui.models.ServerSwitch`: `indicator`, `left_lines`, `left_open`) print its lines, and a stop
+that did not finish goes to stderr (UNPROVEN in the terminal interface) with `finishup server
+disconnect` while the switch stands.
+
+*The connection check.* `targets.require_current_authorization(record)` refuses a remote record
+with `TargetError("zero_network_remote_selected")` while `last_reported_zero_network()` answers,
+before `target_reauthorization_required`. `zero_network_remote_selected` is a protocol reason code
+and a member of `REMOTE_CONNECTION_PHASES`, continuation `zero_network_local_server_required`
+(directive: this computer makes no network connections, nothing was sent, ask the owner to run
+`finishup server use local`, then restart the session; nudge: never select a server or change the
+policy for the owner). `server login` refuses its key check with the same reason.
+
+*Displays.* Owner displays carry the item, live or last reported: `server status` (stderr, and
+beside `--json` also the document's `zero_network_selection` above), `server list`, `setup status`
+(stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's `next_steps`, the menu home, the
+terminal interface's header indicator and `/server` (`FinishUpRuntime.zero_network_heading()`), and
+`setup status --next`, whose `yoetz.setup-readiness/1` `facts` gain `server_selection`: `{reason,
+target_id, kind, detail, policy_read, last_reported_at, next_command}` (`next_command` is the
+pinned continuation of `server use local`). Every field is a generated id, a closed token or a
+fixed-shape time; no owner-typed name.
 
 **Which server's policy a command changes** (ADR-051 decision 8). `cli/policy_server.py` owns it.
 `selected_policy_server() -> PolicyServer | None` reads `targets.active_target_record()` (the
@@ -5352,12 +5400,13 @@ wait `unavailable`.
 | `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
 | `target_reauthorization_required` | a connection would be opened to a remote target the owner confirmed under an older disclosure version (`targets.require_current_authorization`, called by `is_remote_active_root`, `binding_for_active_root` and `server connect`) | the owner runs `finishup server use NAME` on the trusted console |
+| `zero_network_remote_selected` | a connection would be opened to a remote target while this computer last reported a zero-network policy (`targets.require_current_authorization`, before the disclosure check; ADR-051 decision 8, 2026-11-07); also the CLI's refusal of a privacy change that would leave both in force | the owner runs `finishup server use local`, then restarts open sessions (and makes the refused change again) |
 
 The remote connection phases ride as `phase` on a retryable `service_unavailable`
 (`REMOTE_CONNECTION_PHASES`) and are protocol reason codes too: `remote_unreachable`,
 `remote_auth_failed`, `remote_identity_changed`, `remote_service_not_running`,
 `remote_incompatible` (whose text names both releases), and the client's own refusals
-`target_reauthorization_required` and `target_root_is_remote`. A client that catches that `TargetError` from the binding
+`target_reauthorization_required`, `target_root_is_remote` and `zero_network_remote_selected`. A client that catches that `TargetError` from the binding
 helpers raises it as this phase, so every surface renders its directive. The check-time change gains the
 unavailable reasons `workspace_agent_unavailable` and `workspace_agent_refused`, so
 `check_time_change_unavailable_workspace_agent_unavailable` and

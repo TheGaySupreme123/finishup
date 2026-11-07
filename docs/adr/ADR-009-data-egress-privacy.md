@@ -1920,27 +1920,32 @@ record changes as follows.
   new disclosure version requires a fresh confirmation. Agents cannot add or select a remote
   target. This is a trusted-console decision, not a vault-reauthenticated ceremony, because a
   client machine may have no vault; ADR-051 records that limit.
-- **Refused in the zero-network state, when a target is added or selected.** Decision 10 holds
-  at that point: adding or selecting a remote target is refused while this computer's set-up
-  installation reports an effective policy that does not permit network egress, and also while
-  that policy cannot be read (`network_policy_unreadable`); a computer whose own FinishUP was
-  never set up has no policy of its own, and the server's policy governs the work sent to it
-  (ADR-051 decision 8). Clients do not consult the local policy again before each connection, so
-  setting this computer's policy to zero-network does not by itself stop an already selected
-  remote target. The maintainer decided (2026-11-06) that FinishUP surfaces it and the owner
-  decides: after every committed policy change in that state, the trusted console names the
-  target and offers switching to this computer's everyday FinishUP or keeping the target (the
-  default; FinishUP never switches on its own); without that console the facts and `finishup
-  server use local` are printed; and setup readiness, `server status` and the terminal interface
-  show the item while this computer's service is running and unlocked, the only source of its
-  policy. While a remote target is selected a fresh command does not set this computer's policy
-  (server-host privacy commands are refused; `privacy tighten|propose` reach the target), so the
-  choice arises from a process that resolved this computer's server before the selection changed.
-  **Honest limits:** while the owner keeps the target, and after switching until open agent
-  sessions restart, traffic to it continues; once this computer's idle service stops or locks,
-  the displays can no longer tell the state and say nothing. Apart from such a target,
-  the FinishUP-owned process set in the zero-network state still permits only the exact endpoints
-  decision 10 lists.
+- **Never in force together with the zero-network state.** Decision 10 holds for the hop:
+  this computer's zero-network policy and a selected remote target are never in force together
+  (maintainer decision of 2026-11-07, replacing the 2026-11-06 choice to let the owner keep the
+  target, ADR-051 decision 8). Adding or selecting a remote target is refused while this
+  computer's set-up installation reports an effective policy that does not permit network egress,
+  or, when that policy cannot be read, last reported one; any other unreadable policy refuses too
+  (`network_policy_unreadable`). A computer whose own FinishUP was never set up has no policy of
+  its own, and the server's policy governs the work sent to it. A change that would make this
+  computer's machine-scope policy zero-network while a remote target is selected is decided
+  before it is applied: on the trusted console the owner switches to this computer's everyday
+  FinishUP and makes the change, or cancels it and keeps the target (Enter, end of input and
+  Ctrl-C cancel; FinishUP never switches on its own); without that console, for a
+  machine-readable answer or for a relayed decision, the change is refused with
+  `zero_network_remote_selected` and `finishup server use local` as the one remedy. As the last
+  line of defence, every client connection to a remote target is refused before anything is sent
+  while this computer last reported the zero-network state, so a process whose selection predates
+  the change sends nothing. The client remembers each report of this computer's machine-scope
+  policy (the zero-network check, `privacy show`, every privacy change made here) in an
+  owner-only marker beside the server registry, outside the vault, holding only whether it was
+  zero-network and when; the connection check reads that marker, never the service, and the
+  displays read the live policy first and fall back to it. **Honest limits:** a connection already
+  open when the policy changes is not cut by this check (it is refused at its next connection);
+  a marker that cannot be read counts as no record until the next report replaces it; and after
+  an upgrade from a release without the marker, nothing is remembered until this computer's
+  policy is next reported. Apart from such a target, the FinishUP-owned process set in the
+  zero-network state still permits only the exact endpoints decision 10 lists.
 - **Policy authority sits on the server.** The server's own effective policy, repository grants
   and never-send fence decide every AI-powered review disclosure from there, exactly as they do
   locally; the client's profile does not widen or narrow them. Workspace evidence reaches the
