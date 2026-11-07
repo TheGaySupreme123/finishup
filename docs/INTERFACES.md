@@ -1984,8 +1984,9 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   agent cannot. It says which fits which file: listing a folder covers a file outside the
   project, while a declared test in the project that Git ignores is read only in `local` mode (or
   once Git no longer ignores it), whatever folder is listed, the project's own included. A closed disclosure code with no path; the receipt line carries no number,
-  because the released receipt document has no field for one (ADR-051, open question 2), and the
-  `semantic_case_built` diagnostic carries the count as `semantic_task_inputs_outside_not_listed`
+  because the released receipt document has no field for one (ADR-051, open question 2), and a
+  `semantic_outside_reads_not_listed` diagnostic record (same request id as `semantic_case_built`,
+  written only when not zero) carries the count as `semantic_task_inputs_outside_not_listed`
   (task inputs and declared tests together; `finishup service diagnostics` shows it), classified like
   `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only). The MCP check
   summary shows its sentence, or its short form, in the same part as that code's.
@@ -11490,10 +11491,13 @@ the ledger), and since issue #1102 `semantic_task_input_candidates`, `semantic_t
 `task_input_outside_not_admitted`, counted before any `lstat` against the connection's root the
 read uses, else the session's workspace; 0 when neither is known) and
 `semantic_task_inputs_outside_not_admitted` (0 or 1); a candidate count beside a 0 flag means
-FinishUP saw such a path but could not count it. Since ADR-051 decision 5,
-`semantic_task_inputs_outside_not_listed` counts the existing task inputs and declared tests a
-remote server's workspace agent kept back under its owner's `listed` mode, as frozen in the check
-change and the job's case object. Resolved parts have passed capture
+FinishUP saw such a path but could not count it. Since ADR-051 decision 5, a separate
+`semantic_outside_reads_not_listed` record (component `semantic_composition`, reason `not_listed`,
+same request id, written only when not zero) carries `semantic_task_inputs_outside_not_listed`:
+the existing task inputs and declared tests a remote server's workspace agent kept back under its
+owner's `listed` mode, as frozen in the check change and the job's case object. It is its own
+record because a diagnostic line is at most 1,024 bytes and `semantic_case_built` is at that
+bound. Resolved parts have passed capture
 authentication; selected excerpts are in the built packet. These counts precede privacy
 minimization and do not prove provider delivery or code correctness. The record contains no
 content, paths, or content hashes.

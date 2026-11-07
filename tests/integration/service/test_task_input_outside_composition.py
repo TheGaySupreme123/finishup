@@ -224,6 +224,9 @@ async def _composition(
     def record(**kwargs: Any) -> str:
         if kwargs.get("operation") == "semantic_case_built":
             counts.append(cast(Mapping[str, object], kwargs["counts"]))
+        elif kwargs.get("operation") == "semantic_outside_reads_not_listed":
+            # ADR-051 decision 5: what listed mode kept back, in its own record.
+            counts.append({"not_listed_record": 1, **cast(Mapping[str, object], kwargs["counts"])})
         return recorded(**kwargs)
 
     async def resolve(**kwargs: object) -> CapturedContentResolution:
@@ -353,7 +356,13 @@ async def test_inputs_a_remote_servers_listed_mode_left_unread_record_the_owner_
     assert _CODE not in first.case_content_gaps
     ((packet),) = privacy.packets
     assert (OUTSIDE_READS_NOT_LISTED_GAP.encode() in packet) is bool(not_listed)
-    assert counts[0]["semantic_task_inputs_outside_not_listed"] == not_listed
+    # The case's own record never carries the count (it is at the diagnostic line bound); a
+    # record of its own does, and only when listed mode kept something back.
+    assert "semantic_task_inputs_outside_not_listed" not in counts[0]
+    kept = [row for row in counts if row.get("not_listed_record") == 1]
+    assert [row["semantic_task_inputs_outside_not_listed"] for row in kept] == (
+        [not_listed] if not_listed else []
+    )
     assert first.operation_lease is not None
     again = await evaluator(FrozenCase(frozen.case, first.operation_lease), (), runtime)
     assert again is not None and again.case_content_gaps == first.case_content_gaps
