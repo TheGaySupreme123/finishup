@@ -1065,6 +1065,104 @@ def test_server_status_is_unchanged_without_the_item(
 
     assert status.exit_code == 0, status.output
     assert status.stderr == ""
+    assert json.loads(status.stdout)["zero_network_selection"] is None
+
+
+def _status_document(*arguments: str) -> tuple[dict[str, JsonValue], str]:
+    status = _invoke("server", "status", *arguments, "--json")
+    assert status.exit_code == 0, status.output
+    document = cast(dict[str, JsonValue], json.loads(status.stdout))
+    validate_schema_instance("server-target-status", "1.0.0", cast(JsonValue, document))
+    return document, status.stderr
+
+
+def test_server_status_json_carries_the_remote_selected_item(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The document's ``zero_network_selection`` is the item the owner sees on stderr beside it,
+    by generated id and closed kind, and this computer's policy is asked once for both."""
+
+    record = _remote("https")
+    reads = _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
+    )
+
+    document, stderr = _status_document()
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_remote_selected",
+        "target_id": record.target_id,
+        "kind": "https",
+        "detail": None,
+    }
+    assert stderr.startswith("zero_network_remote_selected: ")
+    assert reads == [1]
+    assert _NAME not in json.dumps(document["zero_network_selection"])
+
+
+def test_server_status_json_carries_an_unreadable_selection_with_its_reason(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selected target whose record cannot be read is the unreadable item, with its closed
+    reason and no server named; ``server status local`` still answers its document."""
+
+    record = _remote()
+    marker = targets.target_root(record.target_id) / "target.json"
+    marker.write_bytes(b"{not json\n")
+    _policy(monkeypatch, "zero_network")
+
+    document, stderr = _status_document("local")
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_selection_unreadable",
+        "target_id": None,
+        "kind": None,
+        "detail": "target_record_invalid",
+    }
+    assert stderr.startswith("zero_network_selection_unreadable: ")
+
+
+@pytest.mark.parametrize("state", ["network_permitted", "no_policy", "unreadable"])
+def test_server_status_json_says_nothing_when_there_is_nothing_to_say(
+    home: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    """Null, never a guess: no selection asks no service; a remote selection under a policy that
+    permits network use, was never set up, or cannot be read is not the item."""
+
+    reads = _policy(monkeypatch, state)
+    document, stderr = _status_document()
+    assert (document["zero_network_selection"], stderr, reads) == (None, "", [])
+
+    _remote()
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
+    )
+    document, stderr = _status_document()
+    assert (document["zero_network_selection"], stderr, reads) == (None, "", [1])
+
+
+def test_the_status_document_reads_the_item_itself_for_the_terminal_interface(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The terminal interface's ``/server`` status builds the document without the CLI's stderr
+    item; the document then asks the check itself."""
+
+    record = _remote("local_port")
+    _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
+    )
+    reset_selection_memo()
+
+    document = server_cli.build_status_document(None)
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_remote_selected",
+        "target_id": record.target_id,
+        "kind": "local_port",
+        "detail": None,
+    }
 
 
 def test_setup_readiness_names_the_item_with_its_continuation(

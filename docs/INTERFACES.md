@@ -4684,9 +4684,15 @@ this and exits 0 rather than refusing, while `add`, `remove FOLDER` and `mode` r
 remove NAME --all` and say it repairs a damaged record. The document's top-level
 `zero_network_selection` is null, or the zero-network item (ADR-051 decision 8): `reason`
 (`zero_network_remote_selected|zero_network_selection_unreadable`), `target_id`, `kind`
-(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is filled
-by `cli.server._zero_network_selection`, which reports null where no zero-network selection
-check runs.
+(`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is the fact
+(`ZeroNetworkSelection.fact()`) of the item
+`cli.zero_network_selection.find_zero_network_selection()` reports, filled by
+`cli.server._zero_network_selection`; null when that check reports nothing (no selection or a server
+on this computer, an isolation variable or pin, or this computer's policy permits network use, was
+never set up or cannot be read). `build_status_document(name, *, now=None, zero_network=None)` asks
+the check itself unless the caller passes the item it already found: `server status` passes the one
+it printed on stderr, so the stderr line and the field are the same item from one policy read; the
+terminal interface's `/server` status lets the document ask.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds (the edge
@@ -4723,12 +4729,12 @@ While a remote target is selected only a process that resolved the everyday root
 selection changed can commit such a change, since `server_host` privacy commands are refused with
 `requires_server_host` and `privacy tighten|propose` reach the target. Owner displays carry the
 same item while the everyday service answers its policy (running and unlocked):
-`server status` (stderr beside `--json`; `server-target-status-1.0.0` is unchanged), `server
-list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's
-`next_steps`, the menu home, the terminal interface's header indicator and `/server`, and
-`setup status --next`, whose `yoetz.setup-readiness/1` `facts` gain `server_selection`:
-`{reason, target_id, kind, detail, next_command}` (`next_command` is the pinned continuation of
-`server use local`). Every field is a generated id or a closed token; no owner-typed name.
+`server status` (stderr, and beside `--json` also the document's `zero_network_selection` above),
+`server list`, `setup status` (stderr; `yoetz.setup-status/2` is unchanged), the setup wizard's
+`next_steps`, the menu home, the terminal interface's header indicator and `/server`, and `setup
+status --next`, whose `yoetz.setup-readiness/1` `facts` gain `server_selection`: `{reason,
+target_id, kind, detail, next_command}` (`next_command` is the pinned continuation of `server use
+local`). Every field is a generated id or a closed token; no owner-typed name.
 
 **Which server's policy a command changes** (ADR-051 decision 8). `cli/policy_server.py` owns it.
 `selected_policy_server() -> PolicyServer | None` reads `targets.active_target_record()` (the

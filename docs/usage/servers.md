@@ -120,8 +120,10 @@ long as this computer's FinishUP service is running and unlocked: only that serv
 this computer's policy. Usually nothing on this computer uses it while another server is chosen,
 so it stops or locks itself after a while; from then on these views cannot tell whether the
 setting is on and say nothing about it, even though your work still goes to the chosen server.
-`finishup server status` always shows which server is chosen. If the saved server choice cannot be
-read, FinishUP says that instead of guessing, and `finishup server use local` clears it.
+`finishup server status` always shows which server is chosen; `finishup server status --json`
+gives the same notice as its `zero_network_selection` member (null when there is nothing to say).
+If the saved server choice cannot be read, FinishUP says that instead of guessing, and `finishup
+server use local` clears it.
 
 ## Sign in to a web server
 

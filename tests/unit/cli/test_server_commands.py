@@ -716,18 +716,20 @@ def test_the_golden_status_vector_carries_a_remote_targets_outside_reads() -> No
 def test_server_status_json_carries_the_zero_network_item_the_check_reports(
     home: Path, quiet_probe: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The stable seam the zero-network selection check fills: null when it reports nothing,
-    its item's fact otherwise, validated against the contract."""
+    """``zero_network_selection`` is the item the zero-network selection check reports: null when
+    it reports nothing, its item's fact otherwise, validated against the contract."""
+
+    import finishup.cli.zero_network_selection as zero_network
 
     assert _status_json()["zero_network_selection"] is None
-    item: dict[str, JsonValue] = {
+    item = zero_network.ZeroNetworkSelection(zero_network.REMOTE_SELECTED, "t_1a2b3c4d", "https")
+    monkeypatch.setattr(zero_network, "find_zero_network_selection", lambda: item)
+    assert _status_json()["zero_network_selection"] == {
         "reason": "zero_network_remote_selected",
         "target_id": "t_1a2b3c4d",
         "kind": "https",
         "detail": None,
     }
-    monkeypatch.setattr(server_cli, "_zero_network_selection", lambda: item)
-    assert _status_json()["zero_network_selection"] == item
 
 
 def test_the_status_document_carries_the_zero_network_item_by_id_and_token_only() -> None:
