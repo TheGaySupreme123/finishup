@@ -4762,43 +4762,35 @@ def _task_input_counts(
 
 
 def _outside_not_listed_count(
-    check_change: CheckChangeOutcome, declared_tests_not_listed: int = 0
+    check_change: CheckChangeOutcome, declared_tests_not_listed: int
 ) -> int:
     """How many task-named inputs and declared tests a claim-bound task's agent kept back under
     its owner's listed mode (ADR-051 decision 5), as frozen in the check change and the job's
-    case object; never which, never a path."""
+    case object: a count, never which, never a path."""
 
-    frozen = (
+    kept = (
         0 if check_change.change is None else check_change.change.capture.outside_inputs_not_listed
     )
-    return declared_tests_not_listed + frozen
+    return declared_tests_not_listed + kept
 
 
-def _record_case_built(request_id: str, not_listed: int, counts: Mapping[str, int]) -> None:
-    """Record ``semantic_case_built`` and, beside it, what listed mode kept back.
+def _record_outside_not_listed(request_id: str, count: int) -> None:
+    """Record ``semantic_task_inputs_outside_not_listed`` in its own diagnostic record.
 
-    How many files listed mode kept from this case's review (ADR-051 decision 5) is its own
-    ``semantic_case_outside_not_listed`` record, written only when not zero, for the reason
-    ``_record_case_narrowing`` has one: ``semantic_case_built`` is already at the diagnostic line
-    bound (1,024 bytes), and a line over it is dropped whole, so one more field there would lose
-    every case-built record. One integer under the same request id; never which, never a path.
+    ``semantic_outside_reads_not_listed`` (same request id as ``semantic_case_built``), written
+    only when listed mode kept something back. It is its own record because a diagnostic line is
+    at most 1,024 bytes and ``semantic_case_built`` is already at that bound: carried there, the
+    count pushed every case's record over it, and the sink dropped the whole record.
     """
 
-    record_bounded_counts_without_raising(
-        component="semantic_composition",
-        operation="semantic_case_built",
-        outcome="built",
-        request_id=request_id,
-        counts=counts,
-    )
-    if not_listed <= 0:
+    if not count:
         return
     record_bounded_counts_without_raising(
         component="semantic_composition",
-        operation="semantic_case_outside_not_listed",
-        outcome="kept_back",
+        operation="semantic_outside_reads_not_listed",
+        outcome="not_listed",
         request_id=request_id,
-        counts={"semantic_task_inputs_outside_not_listed": not_listed},
+        counts={"semantic_task_inputs_outside_not_listed": count},
     )
 
 
@@ -5482,6 +5474,21 @@ def _record_case_narrowing(
             "semantic_claim_rows_selected": len(case.packet.claim_item_ids),
         },
     )
+
+
+def _record_case_side_counts(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    case: SemanticCase,
+    outside_not_listed: int,
+) -> None:
+    """The records beside ``semantic_case_built`` that its line bound leaves no room for: the
+    case's narrowing (#1245) and what listed mode kept back (ADR-051 decision 5), each written
+    only when there is something to say."""
+
+    _record_case_narrowing(request_id, ceiling_rounds, approved, case)
+    _record_outside_not_listed(request_id, outside_not_listed)
 
 
 def _privacy_gated_semantic_evaluator(
@@ -6174,10 +6181,12 @@ def _privacy_gated_semantic_evaluator(
             input_manifest = semantic_case.packet.input_manifest
             # Structural composition diagnostics only: never persist content, paths or hashes.
             # These counters precede privacy minimization and do not certify provider delivery.
-            _record_case_built(
-                frozen.lease.operation_id,
-                _outside_not_listed_count(check_change, declared_tests_not_listed),
-                {
+            record_bounded_counts_without_raising(
+                component="semantic_composition",
+                operation="semantic_case_built",
+                outcome="built",
+                request_id=frozen.lease.operation_id,
+                counts={
                     "semantic_capture_parts_resolved": len(captured_content),
                     "semantic_diff_parts_resolved": sum(
                         part.manifest.content_kind.value in {"workspace_diff", "changed_file"}
@@ -6230,11 +6239,12 @@ def _privacy_gated_semantic_evaluator(
                     ),
                 },
             )
-            _record_case_narrowing(
+            _record_case_side_counts(
                 frozen.lease.operation_id,
                 ceiling_rounds,
                 review_selection,
                 semantic_case,
+                _outside_not_listed_count(check_change, declared_tests_not_listed),
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then
