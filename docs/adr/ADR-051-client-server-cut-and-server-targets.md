@@ -387,7 +387,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   progress finishes under the record it started with). A record that cannot be read fails closed
   to `listed` with no folder, whatever mode it held; `remove NAME --all` replaces it with an
   empty record in `listed` mode, the state it already stood for, so clearing it never widens
-  what the server reads. In both modes a read root the server names must have the shape an
+  what the server reads. `server status`, `server folders list` and the terminal's `/server`
+  status say that the record is damaged or not private, what the server reads meanwhile, and
+  that one repair with the target's own name and where to run it (this computer); `list` shows
+  that state rather than refusing, and a change (`add`, `remove FOLDER`, `mode`) refuses with
+  the same repair and says to run the command again (amended 2026-11-07). In both modes a read root the server names must have the shape an
   owner may admit, and nothing in FinishUP's own directories is ever read: every outside read
   excludes them. In `local` mode that exclusion is all, as for a local service, so a read rooted
   there answers nothing and is not refused. In `listed` mode a reviewer read or listing rooted
