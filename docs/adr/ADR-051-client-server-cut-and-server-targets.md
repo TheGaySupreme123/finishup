@@ -569,13 +569,13 @@ answers bounded `workspace_call`s on a connection that declared it.
     what holds only for another. A passing cause ends "What to do: run receipt again. If this
     persists, restart the server's FinishUP service (`finishup service restart` on the server
     host), then run receipt again." It is a failed read, or a decodable opening event whose
-    payload object the ledger could not read when it recovered the task (the recovered ledger
-    keeps the event as present with no payload, keeps that gap for as long as it holds the task,
-    and reads the object again when the service opens the task afresh). A failed read is always
-    passing: nothing tells a passing fault from a lasting one there, and calling it lasting would
-    claim more than is known. Each lasting cause ends with its own "Why it lasts:" line and gives
-    no retry or restart advice. The envelope state decides first, because it holds whatever the
-    event's version: a logically redacted opening says "the record was redacted, so it will not
+    payload object the ledger could not read for a reason that can pass (an environmental fault)
+    when it recovered the task (the recovered ledger keeps the event as present with no payload,
+    keeps that gap for as long as it holds the task, and reads the object again when the service
+    opens the task afresh). A failed read is always passing: nothing tells a passing fault from a
+    lasting one there, and calling it lasting would claim more than is known. Each lasting cause
+    ends with its own "Why it lasts:" line and gives no retry or restart advice. The envelope state
+    decides first, because it holds whatever the event's version: a logically redacted opening says "the record was redacted, so it will not
     become readable again and this task's receipts will keep saying so. Running receipt again or
     restarting the service will not change this.", an erased one the same with "erased", and one
     whose key is unavailable says "the server does not have the key that decrypts the record, so
@@ -585,7 +585,14 @@ answers bounded `workspace_call`s on a connection that declared it.
     FinishUP version cannot decode, so running receipt again or restarting the service will not
     read it, and this task's receipts will keep saying so until the server runs a FinishUP
     version that knows this format.": an upgrade to such a version is the one change that makes
-    it read, so its line never says the record will not become readable again.
+    it read, so its line never says the record will not become readable again. Last, a payload
+    object the object store refused as missing or failing verification is not the passing case:
+    the store reports that as its deterministic `object_verification_failed`, apart from an
+    environmental fault, the ledger keeps that structural fact, and opening the task again reads
+    the same bytes. Such an opening says "the server's stored copy of the record is missing or
+    fails its integrity check, so running receipt again or restarting the service will not read
+    it, and this task's receipts will keep saying so for as long as that copy is missing or fails
+    the check."
     The section is never dropped and never says the evidence was read on the client. Either
     section is rendered inside the receipt text's 32,768-character
     bound, its room reserved before the other sections are placed, so a long receipt has those
@@ -594,8 +601,9 @@ answers bounded `workspace_call`s on a connection that declared it.
     Every receipt format, JSON included, also carries the result member
     `workspace_provenance` (receipt-result 1.5.0; 1.4.0 shipped in v0.3.0 and is never amended):
     `status` `unknown`, the closed `reason` naming the cause (`session_opening_unreadable` for the
-    passing one; `session_opening_redacted`, `session_opening_erased`,
-    `session_opening_key_unavailable` and `session_opening_format_unknown` for the lasting ones),
+    passing one; `session_opening_copy_unverifiable`, `session_opening_redacted`,
+    `session_opening_erased`, `session_opening_key_unavailable` and
+    `session_opening_format_unknown` for the lasting ones),
     and `notice`, that reason's same three lines; each reason admits only its own notice, and the
     member is absent whenever the binding was read. The `reason` token is carried only by 1.5.0,
     which is not released, so telling the causes apart by token changed no released schema: 1.5.0

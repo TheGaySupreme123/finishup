@@ -3745,9 +3745,10 @@ def workspace_provenance_unknown_block(*, markdown: bool, reason: WorkspaceProve
     restart advice (``session_opening_redacted`` and ``session_opening_erased``: it will not become
     readable again; ``session_opening_key_unavailable``: while the server lacks its key;
     ``session_opening_format_unknown``: until the server runs a FinishUP version that knows the
-    format). The receipt is still built, and this section says what happened, why it matters and
-    whether a retry can help, rather than leave the section out. Fixed words; nothing
-    user-controlled. Any other ``reason`` is ``invalid_receipt_document``.
+    format; ``session_opening_copy_unverifiable``: for as long as its stored copy is missing or
+    fails its integrity check). The receipt is still built, and this section says what happened,
+    why it matters and whether a retry can help, rather than leave the section out. Fixed words;
+    nothing user-controlled. Any other ``reason`` is ``invalid_receipt_document``.
     """
 
     if type(markdown) is not bool:

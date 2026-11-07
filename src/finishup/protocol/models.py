@@ -7969,9 +7969,10 @@ class ReceiptWorkspaceProvenanceModel(_ClosedModel):
     ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``) naming the cause: the one that
     can pass (``session_opening_unreadable``) or one that lasts (``session_opening_redacted``,
     ``session_opening_erased``, ``session_opening_key_unavailable``,
-    ``session_opening_format_unknown``). ``notice`` is exactly that reason's fixed text: what
-    happened, why it matters, and what to do for the passing cause or why that cause lasts; nothing
-    in it is user-controlled, and a notice of another reason is refused.
+    ``session_opening_format_unknown``, ``session_opening_copy_unverifiable``). ``notice`` is
+    exactly that reason's fixed text: what happened, why it matters, and what to do for the
+    passing cause or why that cause lasts; nothing in it is user-controlled, and a notice of
+    another reason is refused.
     """
 
     status: Literal["unknown"]
