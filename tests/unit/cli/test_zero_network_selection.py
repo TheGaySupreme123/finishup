@@ -1024,14 +1024,20 @@ def _unreachable(_self: object, _root: Path | None) -> object:
     return ProbeResult("unavailable", reason="remote_unreachable")
 
 
+def _offline_remote_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``server status`` from dialling a remote target: the direct-dial SSH and HTTPS
+    runtimes (approach B; the HTTPS one also serves a port) answer their probe as unreachable."""
+
+    for runtime in ("SshTargetRuntime", "HttpsTargetRuntime"):
+        monkeypatch.setattr(f"finishup.client.direct_runtime.{runtime}.probe", _unreachable)
+
+
 def test_server_status_and_list_show_the_item(
     home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     record = _remote()
     _policy(monkeypatch, "zero_network")
-    monkeypatch.setattr(
-        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
-    )
+    _offline_remote_probes(monkeypatch)
 
     status = _invoke("server", "status", "--json")
     assert status.exit_code == 0, status.output
@@ -1057,9 +1063,7 @@ def test_server_status_is_unchanged_without_the_item(
 ) -> None:
     _remote()
     _policy(monkeypatch, "network_permitted")
-    monkeypatch.setattr(
-        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
-    )
+    _offline_remote_probes(monkeypatch)
 
     status = _invoke("server", "status", "--json")
 
