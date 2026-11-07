@@ -16,7 +16,7 @@ import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 import pytest
 
@@ -50,16 +50,23 @@ def home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 @pytest.fixture
 def no_console(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Fail on any trusted-console prompt, and record it even where a caller swallows the error."""
+    """Fail on any trusted-console prompt, and record it even where a caller swallows the error.
+
+    The guard sits beneath the class, so it holds whatever name a caller bound the class to when
+    it was imported (``cli.elevated``, ``cli.unlock``'s subclass, the Linux presence adapter):
+    ``TrustedForegroundConsole`` builds its terminal adapter through the module's
+    ``_new_adapter`` when it is constructed, and each adapter opens the terminal in ``open``.
+    """
 
     asked: list[str] = []
 
-    class _NoConsole:
-        def __init__(self, *_arguments: object, **_options: object) -> None:
-            asked.append("trusted_console")
-            raise AssertionError("asked on the trusted console after setup")
+    def _refuse(*_arguments: object, **_options: object) -> NoReturn:
+        asked.append("trusted_console")
+        raise AssertionError("asked on the trusted console after setup")
 
-    monkeypatch.setattr(trusted_console, "TrustedForegroundConsole", _NoConsole)
+    monkeypatch.setattr(trusted_console, "_new_adapter", _refuse)
+    for adapter in ("_PosixConsoleAdapter", "_WindowsConsoleAdapter"):
+        monkeypatch.setattr(f"{trusted_console.__name__}.{adapter}.open", _refuse)
     return asked
 
 
