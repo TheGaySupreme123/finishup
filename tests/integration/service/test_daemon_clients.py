@@ -109,7 +109,7 @@ from finishup.service.control_protocol import (
     write_control_frame,
 )
 from finishup.service.daemon import ServiceComposition, ServiceDaemon
-from finishup.service.human_control import HumanControlError
+from finishup.service.human_control import HumanControlError, HumanControlService
 from finishup.service.lifecycle import LifecycleError, ServiceLifecycle, SessionSecurityEvent
 from finishup.service.session_routes import SessionRouteMemory
 from finishup.service.vault import VaultMode, VaultService
@@ -4871,7 +4871,9 @@ async def test_production_composition_shares_the_staged_reconcile_with_the_human
     daemon = ServiceDaemon(_composition=composition)
     await daemon.start()
     try:
-        effects = composition.human_control_service._effects  # pyright: ignore[reportPrivateUsage]
+        human = composition.human_control_service
+        assert isinstance(human, HumanControlService)
+        effects = human._effects  # pyright: ignore[reportPrivateUsage]
         assert type(effects) is daemon_module._LockedHumanEffects  # pyright: ignore[reportPrivateUsage]
         assert effects._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
         assert daemon._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
