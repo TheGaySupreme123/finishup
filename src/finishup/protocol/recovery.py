@@ -752,29 +752,6 @@ _DIRECTIVES: Final = (
         nudge="The FinishUP MCP bridge and CLI send the handle in place of that path.",
     ),
     RecoveryDirective(
-        token="workspace_agent_reconnect",
-        directive=(
-            "The server needed to read your workspace, but no FinishUP workspace agent on your "
-            "machine answered, so that evidence is a recorded gap. Reconnect FinishUP to this "
-            "server from the machine that holds the workspace, then check again."
-        ),
-        guidance_uri=_SEMANTIC_COVERAGE,
-        nudge="Do not describe the missing workspace evidence as verified.",
-    ),
-    RecoveryDirective(
-        token="workspace_agent_refusal_review",
-        directive=(
-            "Your FinishUP workspace agent refused a read this server needed, often a task input "
-            "in a folder not allowed for it. Tell the user only they can allow it: 'finishup "
-            "server folders add', or 'finishup server folders mode NAME local'."
-        ),
-        guidance_uri=_SEMANTIC_COVERAGE,
-        nudge=(
-            "Do not run either command yourself, move files, or widen admitted roots; mode local "
-            "is only for a server the user trusts."
-        ),
-    ),
-    RecoveryDirective(
         token="server_host_command_required",
         directive=(
             "This command changes the FinishUP server's own state, so it runs only on the machine "
@@ -1017,6 +994,11 @@ LOCAL_REASON_CONTINUATION_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
 # reason code cannot land with nothing to say.
 REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
     {
+        # ADR-051: why a claim-bound check could not see the change. Recorded as check-time
+        # change gaps, never raised as an error, so no directive could reach an agent; each gap's
+        # fixed receipt sentence names the computer and the command that help.
+        "workspace_agent_refused",
+        "workspace_agent_unavailable",
         # #1244 (D12): a refused delivery continuation. The message names the one read to make
         # instead (the original status read, or current status); a directive adds nothing.
         "delivery_cursor_expired",
