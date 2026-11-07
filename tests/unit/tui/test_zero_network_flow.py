@@ -169,3 +169,60 @@ async def test_a_privacy_ceremony_refreshes_the_item(
     assert runtime.server_indicator() == (
         f"ssh {record.target_id} · zero-network here does not stop it"
     )
+
+
+async def test_server_status_reuses_the_item_server_read_and_asks_no_service_again(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/server`` reads the item (one policy read) before its status view; the status lines
+    never show it, so building them does not ask this computer's service for its policy again.
+    A selection switched meanwhile drops the cached item rather than reusing a stale one."""
+
+    from finishup.client.target_runtime import ProbeResult
+    from finishup.tui.runtime import FinishUpRuntime
+
+    def unreachable(_self: object, _root: Path | None) -> ProbeResult:
+        return ProbeResult("unavailable", reason="remote_unreachable")
+
+    monkeypatch.setattr("finishup.client.rest_runtime.RestTargetRuntime.probe", unreachable)
+    record = _remote_selected()
+    reads: list[int] = []
+
+    def zero_network_state() -> str:
+        reads.append(1)
+        return "zero_network"
+
+    monkeypatch.setattr(zero_network, "everyday_network_state", zero_network_state)
+    built: list[object] = []
+    from finishup.cli import server as server_cli
+
+    real_build = server_cli.build_status_document
+
+    def build(name: str | None, **kwargs: Any) -> dict[str, Any]:
+        document = real_build(name, **kwargs)
+        built.append(document["zero_network_selection"])
+        return document
+
+    monkeypatch.setattr(server_cli, "build_status_document", build)
+    runtime = FinishUpRuntime(cwd=home)
+
+    assert await runtime.refresh_zero_network_item()
+    lines = await runtime.server_status_lines()
+
+    assert any(record.target_id in line for line in lines)
+    assert reads == [1]
+    assert built == [
+        {
+            "reason": "zero_network_remote_selected",
+            "target_id": record.target_id,
+            "kind": "ssh",
+            "detail": None,
+        }
+    ]
+
+    with targets.registry_lock():
+        targets.clear_selection()
+    reset_selection_memo()
+    await runtime.server_status_lines("lab")
+    assert reads == [1]
+    assert built[-1] is None

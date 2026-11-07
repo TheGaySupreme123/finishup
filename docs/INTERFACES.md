@@ -4689,8 +4689,10 @@ remove NAME --all` and say it repairs a damaged record. The document's top-level
 `build_status_document(name, *, now=None, zero_network=None)` fills it through
 `cli.server._zero_network_selection`: the `fact()` of the item `find_zero_network_selection()`
 returns (below), and null when that returns none. `server status` runs that check once and passes
-it as `zero_network`, so its stderr lines and its document carry the same item; the terminal's
-`/server` status and `server test` build the document with the default check. Whether the
+it as `zero_network`, so its stderr lines and its document carry the same item; the terminal
+interface's `/server` status passes the item `/server` read just before while `still_selected`
+holds (else none), and `server test`, which never shows it, passes none, so neither asks this
+computer's service a second time. Whether the
 `zero_network_selection_unreadable` item is printed in a document depends on what cannot be read:
 a damaged selection file makes `server status` refuse (`selection_invalid`), and so does `server
 status` with no name when the selected target's record is damaged (`target_record_invalid`); the

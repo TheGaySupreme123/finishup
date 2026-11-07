@@ -1215,8 +1215,23 @@ def test_the_status_document_has_nothing_to_say_otherwise(
 
     assert document["zero_network_selection"] is None
     assert stderr == ""
-    # Built for another surface (the terminal interface, 'server test'), it checks the same way.
+    # Built by a caller that read no item itself, the document checks the same way.
     assert server_cli.build_status_document("local")["zero_network_selection"] is None
+
+
+def test_server_test_never_asks_this_computers_policy(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``server test`` shows the probe only, never the item, so it asks no service for it."""
+
+    _remote()
+    reads = _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(server_cli, "_probe", _no_probe)
+
+    result = _invoke("server", "test")
+
+    assert "State: unavailable (remote_unreachable)" in result.stdout
+    assert reads == []
 
 
 def test_setup_readiness_names_the_item_with_its_continuation(
