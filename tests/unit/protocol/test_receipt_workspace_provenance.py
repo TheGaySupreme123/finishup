@@ -18,11 +18,13 @@ from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
 
 from finishup.application.result_delivery import page_result
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_COPY_UNVERIFIABLE,
     SESSION_OPENING_ERASED,
     SESSION_OPENING_FORMAT_UNKNOWN,
     SESSION_OPENING_KEY_UNAVAILABLE,
     SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
+    WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE,
     WORKSPACE_PROVENANCE_ERASED_LINE,
     WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
     WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
@@ -57,6 +59,7 @@ _LASTING: dict[WorkspaceProvenanceReason, str] = {
     SESSION_OPENING_ERASED: WORKSPACE_PROVENANCE_ERASED_LINE,
     SESSION_OPENING_KEY_UNAVAILABLE: WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
     SESSION_OPENING_FORMAT_UNKNOWN: WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+    SESSION_OPENING_COPY_UNVERIFIABLE: WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE,
 }
 
 
@@ -79,6 +82,7 @@ def test_the_member_is_fixed_words_and_a_closed_reason() -> None:
         "session_opening_erased",
         "session_opening_key_unavailable",
         "session_opening_format_unknown",
+        "session_opening_copy_unverifiable",
     )
     for reason in _REASONS:
         assert workspace_provenance_unknown_wire(reason) == {
@@ -126,7 +130,8 @@ def test_a_passing_cause_says_to_retry_and_a_lasting_one_says_why_it_lasts() -> 
 def test_each_lasting_line_says_only_what_is_true_of_its_own_cause() -> None:
     """A redacted or erased record never reads again; one whose key is missing reads once the
     server has the key; one in a format this version cannot decode reads once the server runs a
-    version that knows it. No line claims more, and none names another cause."""
+    version that knows it; one whose stored copy is missing or fails its integrity check reads
+    only once that copy is intact. No line claims more, and none names another cause."""
 
     assert WORKSPACE_PROVENANCE_REDACTED_LINE == (
         "Why it lasts: the record was redacted, so it will not become readable again and this "
@@ -148,10 +153,17 @@ def test_each_lasting_line_says_only_what_is_true_of_its_own_cause() -> None:
         "receipt again or restarting the service will not read it, and this task's receipts will "
         "keep saying so until the server runs a FinishUP version that knows this format."
     )
+    assert WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE == (
+        "Why it lasts: the server's stored copy of the record is missing or fails its integrity "
+        "check, so running receipt again or restarting the service will not read it, and this "
+        "task's receipts will keep saying so for as long as that copy is missing or fails the "
+        "check."
+    )
     # Only a cause that no change can undo says the record will never read again.
     for line in (
         WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
         WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+        WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE,
     ):
         assert "will not become readable again" not in line
     # Each line names its own cause only.
@@ -160,6 +172,7 @@ def test_each_lasting_line_says_only_what_is_true_of_its_own_cause() -> None:
         SESSION_OPENING_ERASED: "erased",
         SESSION_OPENING_KEY_UNAVAILABLE: "key",
         SESSION_OPENING_FORMAT_UNKNOWN: "format",
+        SESSION_OPENING_COPY_UNVERIFIABLE: "copy",
     }
     for reason, line in _LASTING.items():
         for other, word in words.items():

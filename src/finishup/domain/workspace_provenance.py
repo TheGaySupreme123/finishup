@@ -10,9 +10,14 @@ ever joins them. Standard library only, so the protocol models can admit exactly
 Each cause the server can tell apart has its own closed ``reason`` and its own last line, which
 says only what is true of that cause (decision D4b):
 
-* ``session_opening_unreadable`` (passing): the ledger read failed, or the record did not load
-  when the ledger opened the task. A retry, or a restart of the server's service that reopens the
-  task, can clear it, so its last line says to retry and then restart.
+* ``session_opening_unreadable`` (passing): the ledger read failed, or the record's stored copy
+  could not be read for a reason that can pass (a storage fault) when the ledger opened the task.
+  A retry, or a restart of the server's service that reopens the task, can clear it, so its last
+  line says to retry and then restart.
+* ``session_opening_copy_unverifiable`` (lasting while the copy is bad): the server's stored copy
+  of the record is missing or fails its integrity check. Opening the task again reads the same
+  bytes, so no retry or restart reads it, and the receipts keep saying so for as long as that
+  copy is missing or fails the check.
 * ``session_opening_redacted`` and ``session_opening_erased`` (lasting): the record was redacted,
   or erased. It will not become readable again, so the last line says so and that the task's
   receipts will keep saying so.
@@ -36,11 +41,13 @@ from types import MappingProxyType
 from typing import Final, Literal
 
 __all__ = [
+    "SESSION_OPENING_COPY_UNVERIFIABLE",
     "SESSION_OPENING_ERASED",
     "SESSION_OPENING_FORMAT_UNKNOWN",
     "SESSION_OPENING_KEY_UNAVAILABLE",
     "SESSION_OPENING_REDACTED",
     "SESSION_OPENING_UNREADABLE",
+    "WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE",
     "WORKSPACE_PROVENANCE_ERASED_LINE",
     "WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE",
     "WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE",
@@ -94,6 +101,11 @@ WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE: Final = (
     "receipt again or restarting the service will not read it, and this task's receipts will "
     "keep saying so until the server runs a FinishUP version that knows this format."
 )
+WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE: Final = (
+    "Why it lasts: the server's stored copy of the record is missing or fails its integrity "
+    "check, so running receipt again or restarting the service will not read it, and this task's "
+    "receipts will keep saying so for as long as that copy is missing or fails the check."
+)
 
 # The ``status`` member: the one provenance a receipt result names.
 WORKSPACE_PROVENANCE_UNKNOWN: Final = "unknown"
@@ -105,6 +117,7 @@ type WorkspaceProvenanceReason = Literal[
     "session_opening_erased",
     "session_opening_key_unavailable",
     "session_opening_format_unknown",
+    "session_opening_copy_unverifiable",
 ]
 # Passing: the ledger read failed or the record did not load; a retry or a restart can clear it.
 SESSION_OPENING_UNREADABLE: Final = "session_opening_unreadable"
@@ -116,12 +129,15 @@ SESSION_OPENING_ERASED: Final = "session_opening_erased"
 SESSION_OPENING_KEY_UNAVAILABLE: Final = "session_opening_key_unavailable"
 # Lasting on this version: a format this FinishUP version cannot decode.
 SESSION_OPENING_FORMAT_UNKNOWN: Final = "session_opening_format_unknown"
+# Lasting while the copy is bad: the stored copy is missing or fails its integrity check.
+SESSION_OPENING_COPY_UNVERIFIABLE: Final = "session_opening_copy_unverifiable"
 WORKSPACE_PROVENANCE_REASONS: Final[tuple[WorkspaceProvenanceReason, ...]] = (
     SESSION_OPENING_UNREADABLE,
     SESSION_OPENING_REDACTED,
     SESSION_OPENING_ERASED,
     SESSION_OPENING_KEY_UNAVAILABLE,
     SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_COPY_UNVERIFIABLE,
 )
 
 _LAST_LINES: Final[Mapping[str, str]] = MappingProxyType(
@@ -131,6 +147,7 @@ _LAST_LINES: Final[Mapping[str, str]] = MappingProxyType(
         SESSION_OPENING_ERASED: WORKSPACE_PROVENANCE_ERASED_LINE,
         SESSION_OPENING_KEY_UNAVAILABLE: WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE,
         SESSION_OPENING_FORMAT_UNKNOWN: WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE,
+        SESSION_OPENING_COPY_UNVERIFIABLE: WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE,
     }
 )
 

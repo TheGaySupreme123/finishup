@@ -45,11 +45,13 @@ from finishup.domain.receipts import (
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_COPY_UNVERIFIABLE,
     SESSION_OPENING_ERASED,
     SESSION_OPENING_FORMAT_UNKNOWN,
     SESSION_OPENING_KEY_UNAVAILABLE,
     SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
+    WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE,
     WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
     workspace_provenance_unknown_lines,
@@ -79,9 +81,10 @@ _CLAIM = RepositoryPrivacyContext(
 class _OpeningObjectFails:
     """The task's real object store, except that opening one object raises ``failure``.
 
-    It stands in for storage under a SQLite ledger's recovery: the session opening's payload
-    object is missing (``KeyError``), fails verification (``ValueError``) or hits an
-    environmental fault (``OSError``) while ``failure`` is set.
+    It stands in for storage under a SQLite ledger's recovery. A real store refuses an object that
+    is missing or whose bytes fail verification as ``ValueError("object_verification_failed")``
+    (the object-store port, both real stores) and re-raises an environmental fault as its
+    ``OSError``; ``KeyError`` stands for a store outside that port.
     """
 
     def __init__(self, objects: MemoryObjects, object_id: str, failure: Exception) -> None:
@@ -105,23 +108,27 @@ class _OpeningObjectFails:
 
 
 @pytest.mark.parametrize(
-    "failure",
+    ("failure", "reason"),
     [
-        OSError(5, "input/output error"),
-        KeyError("object_missing"),
-        ValueError("object_verification_failed"),
+        (OSError(5, "input/output error"), SESSION_OPENING_UNREADABLE),
+        (KeyError("object_missing"), SESSION_OPENING_UNREADABLE),
+        (ValueError("object_verification_failed"), SESSION_OPENING_COPY_UNVERIFIABLE),
     ],
-    ids=["environmental", "missing", "unverifiable"],
+    ids=["environmental", "outside_port", "unverifiable"],
 )
-async def test_an_opening_recovery_could_not_read_leaves_the_receipt_unknown_until_reopened(
-    failure: Exception,
+async def test_an_opening_recovery_could_not_read_says_whether_reopening_can_help(
+    failure: Exception, reason: WorkspaceProvenanceReason
 ) -> None:
-    """The real SQLite recovery keeps an opening payload it could not read as None (finding A6).
+    """The real SQLite recovery keeps an opening payload it could not read as None (finding A6),
+    and keeps whether the store refused it as missing or unverifiable (decision D4b).
 
     The ledger holds that gap for as long as the task stays open, so no retry against it reads
-    the object: the receipt is built and says the binding is unknown, never refused under a
-    retryable flag, never with the section silently left out. Once the task is reopened and the
-    object reads, a replay of the same request renders the binding the opening event records.
+    the object: the receipt is built and says the binding is unknown, never refused, never with
+    the section left out. A fault that can pass says to run it again and then restart; an object
+    the store refused as missing or unverifiable says why it lasts, because opening the task
+    again with the same bytes says the same. Once the task is reopened and the object reads (the
+    fault cleared, or the stored copy is intact again), a replay renders the binding the opening
+    event records.
     """
 
     app, runtime, _ = _build_app(seed_offset=47, ledger_backend="sqlite")
@@ -169,20 +176,30 @@ async def test_an_opening_recovery_could_not_read_leaves_the_receipt_unknown_unt
         frontier=checked.result_frontier,
     )
     request = ReceiptRequest.model_validate({**wire, "format": "text"})
-    unknown_block = "\n\n" + workspace_provenance_unknown_block(
-        markdown=False, reason=SESSION_OPENING_UNREADABLE
-    )
+    unknown_block = "\n\n" + workspace_provenance_unknown_block(markdown=False, reason=reason)
 
     recorded = await app.receipt(request)
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
     assert recorded.human_text is not None
     assert recorded.human_text.endswith(unknown_block)
     assert recorded.human_text.count("Workspace evidence") == 1
-    # A record that did not load can pass: the receipt says to run it again, then restart.
-    assert recorded.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire(
-        SESSION_OPENING_UNREADABLE
-    )
-    assert "Why it lasts" not in recorded.human_text
+    assert recorded.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire(reason)
+    if reason == SESSION_OPENING_UNREADABLE:
+        # It can pass: the receipt says to run it again, then restart.
+        assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE)
+        assert "Why it lasts" not in recorded.human_text
+    else:
+        # Opening the task again reads the same bytes: no retry or restart advice.
+        assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE)
+        assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in recorded.human_text
+        assert "finishup service restart" not in recorded.human_text
+
+    # Reopened while storage still fails the same way (a restart that changes nothing), the
+    # replay says exactly the same.
+    runtime.resources[started.task_id] = (cast(Any, reopened(storage)), objects)
+    restarted = await app.receipt(request)
+    assert restarted.receipt_id == recorded.receipt_id
+    assert restarted.human_text == recorded.human_text
 
     # Storage reads normally again, but this ledger keeps the gap: a replay still cannot say.
     storage.failure = None
@@ -198,6 +215,7 @@ async def test_an_opening_recovery_could_not_read_leaves_the_receipt_unknown_unt
     assert healed.human_text is not None
     assert healed.human_text == recorded.human_text.removesuffix(unknown_block)
     assert "Workspace evidence" not in healed.human_text
+    assert "workspace_provenance" not in healed.as_json()
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
 
 

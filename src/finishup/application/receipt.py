@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
@@ -54,6 +54,7 @@ from finishup.domain.values import (
     timestamp_from_datetime,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_COPY_UNVERIFIABLE,
     SESSION_OPENING_ERASED,
     SESSION_OPENING_FORMAT_UNKNOWN,
     SESSION_OPENING_KEY_UNAVAILABLE,
@@ -141,8 +142,9 @@ class _Provenance(Enum):
     true of that cause (decision D4b): ``UNREADABLE`` can pass (the read failed or the record did
     not load), so the section says to retry; every other value lasts, so the section says why no
     retry or restart reads the record and how long the receipt will keep saying so: for good when
-    it was ``REDACTED`` or ``ERASED``, while the server lacks its key (``KEY_UNAVAILABLE``), or
-    until the server runs a version that knows its format (``FORMAT_UNKNOWN``).
+    it was ``REDACTED`` or ``ERASED``, while the server lacks its key (``KEY_UNAVAILABLE``),
+    until the server runs a version that knows its format (``FORMAT_UNKNOWN``), or for as long as
+    its stored copy is missing or fails its integrity check (``COPY_UNVERIFIABLE``).
     """
 
     UNREADABLE = SESSION_OPENING_UNREADABLE
@@ -150,6 +152,7 @@ class _Provenance(Enum):
     ERASED = SESSION_OPENING_ERASED
     KEY_UNAVAILABLE = SESSION_OPENING_KEY_UNAVAILABLE
     FORMAT_UNKNOWN = SESSION_OPENING_FORMAT_UNKNOWN
+    COPY_UNVERIFIABLE = SESSION_OPENING_COPY_UNVERIFIABLE
 
 
 # The envelope states that hold whatever the record's version, each its own lasting cause.
@@ -712,10 +715,12 @@ async def _attested_by(
         bounded diagnostic under operation ``receipt_attestation_read``, so an operator can find
         it, and never reaches the caller as a refusal;
       - a decodable (``AcceptedEvent``) opening whose envelope says ``present`` but whose payload
-        is None: the payload object a SQLite ledger could not read (missing, failed
-        verification, or an environmental fault) while it recovered the task. The ledger keeps
-        that gap for as long as it holds the task open, and reads the object again when the
-        service opens the task afresh (after it drops an idle task or restarts).
+        is None, and which the ledger does not report as ``payload_object_unverifiable``: the
+        payload object a SQLite ledger could not read for a reason that can pass (an
+        environmental fault such as EIO) while it recovered the task. The ledger keeps that gap
+        for as long as it holds the task open, and reads the object again when the service opens
+        the task afresh (after it drops an idle task or restarts). A ledger without that fact (one
+        that holds every payload in memory), or whose answer itself fails, leaves it passing.
 
     * a lasting cause, one value per cause, so the section says only what is true of it (no retry
       or restart reads any of them). The envelope state decides first, because it holds whatever
@@ -725,7 +730,10 @@ async def _attested_by(
       key). Then ``_Provenance.FORMAT_UNKNOWN`` for an ``UnknownEvent`` (a ``session_opened``
       version this service cannot decode, whether or not its payload object read), and for any
       other record whose payload is not a ``SessionOpenedPayload``: only a server running a
-      version that knows the format reads it.
+      version that knows the format reads it. Last, ``_Provenance.COPY_UNVERIFIABLE`` for a
+      decodable ``present`` opening with no payload whose ledger reports
+      ``payload_object_unverifiable``: the object store refused its payload object as missing or
+      failing verification, a deterministic outcome that opening the task again repeats.
 
     Every receipt and every replay reads the event again, so once the read succeeds (a transient
     fault clears, or the service reopens the task after a restart and the object reads) the same
@@ -758,9 +766,38 @@ async def _attested_by(
         return lasting
     if type(opening) is UnknownEvent or payload is not None:
         return _Provenance.FORMAT_UNKNOWN
-    # A decodable opening whose envelope says ``present`` and whose payload object did not load;
-    # opening the task afresh reads it again.
+    # A decodable opening whose envelope says ``present`` and whose payload object did not load.
+    if await _payload_object_unverifiable(runtime, opening, request_id=request_id):
+        return _Provenance.COPY_UNVERIFIABLE
+    # Anything else that kept it from loading can pass; opening the task afresh reads it again.
     return _Provenance.UNREADABLE
+
+
+async def _payload_object_unverifiable(
+    runtime: TaskRuntime, opening: LedgerRecord, *, request_id: str | None
+) -> bool:
+    """Whether the task's ledger found ``opening``'s payload object missing or unverifiable.
+
+    A structural fact the SQLite ledger records while it recovers the task (decision D4b). A ledger
+    without it keeps every payload in memory and never loses one. Its failure is recorded as one
+    bounded diagnostic and answers False, so the cause stays passing: never a refusal, never a
+    lasting claim the server did not establish. Cancellation is never caught.
+    """
+
+    probe = getattr(runtime.ledger, "payload_object_unverifiable", None)
+    if not callable(probe):
+        return False
+    try:
+        answer = await cast(Callable[[str], Awaitable[object]], probe)(opening.event_id)
+    except Exception as exc:  # noqa: BLE001 - D4: a lookup failure is shown, never a refusal
+        record_classified_exception_without_raising(
+            exc,
+            component="application.receipt",
+            operation="receipt_attestation_read",
+            request_id=request_id,
+        )
+        return False
+    return answer is True
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.

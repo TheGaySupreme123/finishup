@@ -1542,12 +1542,14 @@ later process to the default service.
   whether a retry can help), and every receipt format, JSON included, carries the same words as
   its `workspace_provenance` member, whose `reason` names the cause and whose last line says only
   what is true of it (decision D4b). The passing cause (`session_opening_unreadable`: a failed
-  read, or a record the server could not load) says to run `receipt` again and, if it persists,
+  read, or a storage fault while the server loaded the record) says to run `receipt` again and, if it persists,
   restart the server's service. Each lasting cause gives no retry or restart advice and says how
-  long the receipts will keep saying so: `session_opening_redacted` and `session_opening_erased`
-  (the record will not become readable again), `session_opening_key_unavailable` (while the
-  server does not have the record's key) and `session_opening_format_unknown` (until the server
-  runs a FinishUP version that knows the record's format). The agent sees the same words
+  long the receipts will keep saying so: `session_opening_copy_unverifiable` (the server's stored
+  copy is missing or fails its integrity check, which reopening the task repeats: for as long as
+  that lasts), `session_opening_redacted` and `session_opening_erased` (the record will not become
+  readable again), `session_opening_key_unavailable` (while the server does not have the record's
+  key) and `session_opening_format_unknown` (until the server runs a FinishUP version that knows
+  the record's format). The agent sees the same words
   in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
   first page. A long receipt has its other sections shortened to fit and still ends with the
   whole section.
