@@ -1313,9 +1313,14 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
    one fixed line, "N task inputs and M declared tests outside the folders this server may read
    were kept back.", then the owner's two ways out, so the JSON, markdown and text receipts, the
    CLI receipt (which also prints the line for a JSON receipt), the terminal interface (which
-   shows either) and the MCP receipt summary (a required part, so a bounded or paged receipt
-   never drops it) all say the number. A check result (the CLI's check output and the MCP check
-   summary) still names the code without a number: its schema is unchanged.
+   shows either) and the MCP receipt all say the number. An MCP receipt, paged or not, reaches
+   the agent as the receipt itself on both channels (its canonical JSON on the text channel; a
+   delivery page's with the handle first), so the number travels in the gap's `detail` and
+   `kept_back` for a JSON receipt and in `human_text` for markdown or text, and a paged receipt
+   reassembles to it; the compact MCP receipt summary, which also carries the line as a required
+   part, is only the fallback when that canonical copy cannot be encoded. A check result (the
+   CLI's check output and the MCP check summary) still names the code without a number: its
+   schema is unchanged.
 
 ## Founder questions answered by the maintainer (2026-11-05)
 

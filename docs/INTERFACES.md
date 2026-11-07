@@ -1996,8 +1996,12 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   ("N task inputs and M declared tests outside the folders this server may read were kept back.")
   before the sentence above, so the JSON, markdown and text receipts, the CLI receipt (which
   prints the line for a JSON receipt too, `kept_back_from_wire`), the terminal interface and the
-  MCP receipt summary (a required part) say the number; a check result names the code without
-  one. A `semantic_outside_reads_not_listed` diagnostic record (same request id as `semantic_case_built`,
+  MCP receipt say the number. An MCP receipt, paged or not, is the receipt itself on both
+  channels (`mcp.server._result_text`: its canonical JSON; a delivery page's via
+  `delivery_page_text`), so the number reaches the agent in the gap's `detail` and `kept_back`
+  for a JSON receipt and in `human_text` for markdown or text; `summary_for_receipt`, which
+  carries the line as a required part, is only the fallback when that canonical copy cannot be
+  encoded. A check result names the code without one. A `semantic_outside_reads_not_listed` diagnostic record (same request id as `semantic_case_built`,
   written only when not zero) carries the count as `semantic_task_inputs_outside_not_listed`
   (task inputs and declared tests together; `finishup service diagnostics` shows it), classified like
   `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only). The MCP check

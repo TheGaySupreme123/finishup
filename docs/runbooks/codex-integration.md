@@ -3536,7 +3536,9 @@ the CLI, MCP and receipt print the sentence. `finishup service diagnostics` coun
 `semantic_task_inputs_outside_not_listed` (how many task inputs and declared tests its workspace
 agent kept back). The receipt says the same numbers, each kind apart, in the
 `outside_reads_not_listed` gap's opening line and its `kept_back` counts (check-recorded 1.7.0,
-receipt-document 1.4.0; ADR-051 decision 5), the same on every host.
+receipt-document 1.4.0; ADR-051 decision 5), the same on every host: the MCP receipt, paged or
+not, carries them inside the receipt itself on both channels (the gap's `detail` and `kept_back`,
+or a markdown or text receipt's `human_text`); the compact receipt summary is only a fallback.
 
 ## Possible-credential filter opt-out (issue #982)
 

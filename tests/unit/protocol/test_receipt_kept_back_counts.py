@@ -5,8 +5,10 @@ inputs and declared tests its client's listed mode kept from review on check-rec
 released 1.6.0 never carries it), and the receipt's live ``outside_reads_not_listed`` gap carries
 the same bounded counts on receipt-document 1.4.0 (the released 1.3.0 never does). Every format
 says the number in one fixed line, then the owner's two ways out: the gap's detail (JSON), the
-markdown and text receipts, the CLI's JSON receipt, and the MCP receipt summary. Counts only,
-never which file.
+markdown and text receipts, the CLI's JSON receipt, and the compact MCP receipt summary (only the
+fallback when the canonical copy cannot be encoded). Counts only, never which file. The MCP
+receipt itself, paged or not, is in ``tests/unit/mcp/test_receipt_kept_back_delivery.py``; the
+terminal interface's in ``tests/unit/tui/test_receipt_kept_back.py``.
 """
 
 # pyright: reportPrivateUsage=false
@@ -121,6 +123,39 @@ def _receipt(artifact: str = "1.4.0", *, counts: OutsideReadsKeptBack | None = _
         receipt_test.ReceiptRedactionProfile.FULL_LOCAL,
         receipt_test.ReceiptInclude.FULL,
     )
+
+
+def kept_back_receipt_result(output_format: str) -> dict[str, Any]:
+    """A valid receipt result whose live ``outside_reads_not_listed`` gap carries ``_KEPT``: the
+    receipt-document 1.4.0 itself for ``json``, else its rendered ``human_text`` and no document,
+    as the service returns each format. Shared by the MCP and terminal-interface tests."""
+
+    from tests.unit.protocol.test_models_and_schemas import _receipt_result_wire
+
+    from finishup.protocol.models import ReceiptResultModel
+
+    receipt = _receipt()
+    document = cast(dict[str, Any], json.loads(json.dumps(receipt_document_to_json(receipt))))
+    wire = cast(dict[str, Any], _receipt_result_wire())
+    for key in (
+        "receipt_id",
+        "task_id",
+        "session_id",
+        "subject_frontier",
+        "conclusion",
+        "coverage",
+        "suppressed_finding_count",
+        "versions",
+    ):
+        wire[key] = document[key]
+    if output_format == "json":
+        wire["document"] = document
+    else:
+        wire["format"] = output_format
+        wire["document"] = None
+        wire["human_text"] = render_receipt_human(receipt, markdown=output_format == "markdown")
+    ReceiptResultModel.model_validate(wire)
+    return wire
 
 
 def test_the_receipt_says_how_many_in_every_format() -> None:

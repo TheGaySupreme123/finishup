@@ -3143,7 +3143,9 @@ def summary_for_receipt(envelope: object) -> str:
         _req(f"Receipt conclusion: {conclusion};"),
         *_workspace_provenance_parts(source),
         # ADR-051 decision 5: how many files listed mode kept back, then the owner's two ways
-        # out; required, so a paged or bounded receipt never drops the number.
+        # out. An MCP receipt, paged or not, reaches the agent as its canonical JSON, which
+        # carries the number in the gap itself; this summary stands in only when that copy cannot
+        # be encoded, and keeps the number as a required part then.
         *(
             ()
             if kept_back is None
