@@ -37,6 +37,30 @@ pytestmark = pytest.mark.anyio
 _TEST_TEXT = "def test_stop_rule():\n    assert True\n"
 
 
+def _with_statement(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    """The reviewed case carries a claim and this task statement, so its task inputs are
+    offered (the check-time change suite's case)."""
+
+    from dataclasses import replace
+
+    from builders.policy_cases import evt
+    from finishup.domain.task_statement import RecordedTaskStatement
+    from integration.service import test_check_time_change as check_time
+    from integration.service import test_semantic_non_dispatch as non_dispatch
+
+    durable = non_dispatch._durable_semantic_case  # pyright: ignore[reportPrivateUsage]
+
+    async def with_statement(adapter: object) -> tuple[object, object]:
+        frozen, runtime = await durable(adapter)  # pyright: ignore[reportArgumentType]
+        frozen = check_time._with_claim(frozen)  # pyright: ignore[reportPrivateUsage]
+        statement = RecordedTaskStatement(
+            text=text, source_event_id=evt(1), source_family="session_opened", ingestion_sequence=1
+        )
+        return type(frozen)(replace(frozen.case, task_statement=statement), frozen.lease), runtime
+
+    monkeypatch.setattr(non_dispatch, "_durable_semantic_case", with_statement)
+
+
 def _outside_test(tmp_path: Path) -> Path:
     folder = (tmp_path / "scratch").resolve()
     folder.mkdir(mode=0o700)
@@ -120,7 +144,7 @@ async def test_a_task_input_the_owner_did_not_list_costs_only_that_input(
     tmp_path: Path, admitted: bool
 ) -> None:
     from finishup.application.check_change import (
-        _with_outside_inputs,  # pyright: ignore[reportPrivateUsage]
+        _outside_inputs_read,  # pyright: ignore[reportPrivateUsage]
     )
     from finishup.ports.change_capture import CheckChangeCapture
     from finishup.service.workspace_routing import WorkspaceRouting
@@ -152,8 +176,8 @@ async def test_a_task_input_the_owner_did_not_list_costs_only_that_input(
         omitted_files=0,
         truncated=False,
     )
-    capture = await asyncio.to_thread(
-        _with_outside_inputs,
+    capture, covered = await asyncio.to_thread(
+        _outside_inputs_read,
         change,
         values,
         reader,
@@ -167,8 +191,11 @@ async def test_a_task_input_the_owner_did_not_list_costs_only_that_input(
     if admitted:
         assert read == [(values[0], os.fspath(specs)), (values[1], os.fspath(notes))]
         assert capture.outside_inputs_not_listed == 0
+        # Every value lies beneath a listed folder, so none is this server's to call unadmitted.
+        assert covered == values
         return
     assert read == [(values[1], os.fspath(notes))]
+    assert covered == (values[1],)
     # Recorded as a count, never which file: the receipt's fixed line comes from it. The missing
     # file is not counted as left out, as a local read finds nothing there either.
     assert capture.outside_inputs_not_listed == 1
@@ -201,5 +228,56 @@ async def test_a_kept_copys_current_read_names_a_folder_the_owner_no_longer_list
     )
     paths = (f"{specs}/spec.md", f"{notes}/n.md")
     found = await asyncio.to_thread(current, paths)
-    assert found == CurrentInputsRead({paths[1]: b"NOTE\n"}, frozenset({paths[0]}))
+    assert found == CurrentInputsRead(
+        {paths[1]: b"NOTE\n"}, frozenset({paths[0]}), frozenset({paths[1]})
+    )
     assert "snapshot_outside_inputs" in agent.operations
+
+
+@pytest.mark.parametrize("mode", ["listed", "local"])
+@pytest.mark.parametrize("listed", [True, False], ids=["folder-listed", "not-listed"])
+async def test_a_task_input_beneath_a_client_listed_folder_reaches_review_with_no_server_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, listed: bool
+) -> None:
+    """Maintainer decision 2026-11-07 (ADR-051 decision 5): 'finishup server folders add NAME
+    FOLDER' on the client also admits FOLDER's task inputs for that server's claim-bound
+    sessions, in both modes. The server's own policy admits no root at all here; the server asks
+    the agent anyway, the agent reads the file beneath the listed folder, and the reviewer gets
+    it through the server's own egress gate, every other privacy rule applying. Not listed, the
+    file never leaves the client."""
+
+    import builders.privacy_policies as policies
+    from integration.service import test_reviewer_conversation_composition as reviewer
+
+    # A review channel roomy enough for the statement and the input (the reviewer suite's own).
+    monkeypatch.setattr(policies, "minimal_external_policy", lambda: reviewer._ROOMY)  # pyright: ignore[reportPrivateUsage]
+    specs = (tmp_path / "client-specs").resolve()
+    specs.mkdir(mode=0o700)
+    spec = specs / "spec.md"
+    spec.write_text("CLIENT_SPEC_MARKER\n")
+    spec.chmod(0o600)
+
+    def review_inputs(_case: object, _selection: object) -> tuple[tuple[str, ...], frozenset[str]]:
+        return (os.fspath(spec),), frozenset()
+
+    monkeypatch.setattr(ready_composition_module, "_review_inputs", review_inputs)
+    _with_statement(monkeypatch, f"Port the rules in {spec} to the calculator.")
+    hub = WorkspaceAgentHub(inline_wait_seconds=0.5, background_wait_seconds=0.5)
+    agent = FakeWorkspaceAgent(claim_bound._reviewed_repository(tmp_path), mode=mode)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    if listed:
+        agent.admitted_folders.append(os.fspath(specs))
+    await claim_bound._attach(hub, agent)  # pyright: ignore[reportPrivateUsage]
+    result, gateway = await claim_bound._review(  # pyright: ignore[reportPrivateUsage]
+        tmp_path,
+        monkeypatch,
+        hub,
+        reviewer._FINAL,  # pyright: ignore[reportPrivateUsage]
+    )
+    assert result.status.value == "succeeded", (result.status, result.reason)
+    # The server's policy admits no root, yet it asked the agent: only the client decides.
+    assert "read_outside_inputs" in agent.operations, agent.operations
+    sent = "".join(text for _, history in gateway.exchanges for _, text in history)
+    assert ("CLIENT_SPEC_MARKER" in sent) is listed
+    # Not listed in mode listed is not "kept back from a listed folder": no server root covers
+    # it either, so the owner's step is the not-admitted one, which names the client's command.
+    assert OUTSIDE_READS_NOT_LISTED_GAP not in result.case_content_gaps

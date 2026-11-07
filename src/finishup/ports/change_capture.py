@@ -400,9 +400,20 @@ class TaskInputFile:
     # then says whether the file read at check time still matched it.
     baseline: TaskInputBaseline = "current"
     current_state: TaskInputCurrentState | None = None
+    # ADR-051 decision 5 (amended 2026-11-07): a claim-bound task's input read beneath a folder
+    # its client's owner listed for this server (``finishup server folders add``), not beneath a
+    # root this server's own policy admits. Set by the server from its own policy, never taken
+    # from the agent. Its ``root`` is that folder, which this server's policy cannot revoke: the
+    # owner removes it on the client, from the agent's next read. Such an input is never bound to
+    # a policy root for egress, and every other privacy control still applies to it.
+    client_listed: bool = False
 
     def __post_init__(self) -> None:
         if self.origin not in TASK_INPUT_ORIGINS or type(self.summary) is not bool:
+            raise _invalid()
+        if type(self.client_listed) is not bool or (
+            self.client_listed and (self.origin != "outside_workspace" or self.root is None)
+        ):
             raise _invalid()
         if self.baseline not in TASK_INPUT_BASELINES or (
             (self.baseline == "current") != (self.current_state is None)
@@ -1225,6 +1236,8 @@ def task_input_file_wire(item: TaskInputFile) -> dict[str, JsonValue]:
         **({"root": item.root} if item.root is not None else {}),
         **({"baseline": item.baseline} if item.baseline != "current" else {}),
         **({"current_state": item.current_state} if item.current_state else {}),
+        # ADR-051 decision 5: written only when set, so every other input keeps its bytes.
+        **({"client_listed": True} if item.client_listed else {}),
     }
 
 
@@ -1235,12 +1248,13 @@ def task_input_file_from_wire(row: object) -> TaskInputFile:
         raise _invalid()
     fields = cast(dict[str, object], row)
     if (
-        set(fields) - {"origin", "summary", "root", "baseline", "current_state"}
+        set(fields) - {"origin", "summary", "root", "baseline", "current_state", "client_listed"}
         != {"path", "redacted", "size", "text"}
         or type(fields["text"]) is not str
         or fields.get("origin", "verification") == "task"
         or fields.get("summary", True) is not True
         or fields.get("baseline", "task_start") == "current"
+        or fields.get("client_listed", True) is not True
     ):
         # A default value is never written, so a present default is not canonical.
         raise _invalid()
@@ -1254,6 +1268,7 @@ def task_input_file_from_wire(row: object) -> TaskInputFile:
         cast(str | None, fields.get("root")),
         cast(TaskInputBaseline, fields.get("baseline", "current")),
         cast(TaskInputCurrentState | None, fields.get("current_state")),
+        fields.get("client_listed", False) is True,
     )
 
 

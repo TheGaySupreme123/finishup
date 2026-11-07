@@ -396,8 +396,8 @@ def test_an_admitted_directory_that_contains_the_workspace_never_lists_it(tmp_pa
         omitted_files=0,
         truncated=False,
     )
-    with_outside = getattr(check_change, "_with_outside_inputs")
-    result = with_outside(
+    with_outside = getattr(check_change, "_outside_inputs_read")
+    result, _client_listed = with_outside(
         capture, (f"{root}/",), reader, os.fspath(workspace), verification_paths=frozenset()
     )
 
@@ -491,8 +491,8 @@ def test_a_case_alias_of_the_workspace_is_refused_on_a_case_insensitive_file_sys
         omitted_files=0,
         truncated=False,
     )
-    with_outside = getattr(check_change, "_with_outside_inputs")
-    result = with_outside(
+    with_outside = getattr(check_change, "_outside_inputs_read")
+    result, _client_listed = with_outside(
         capture, (os.fspath(alias),), reader, os.fspath(workspace), verification_paths=frozenset()
     )
     assert result.inputs == ()

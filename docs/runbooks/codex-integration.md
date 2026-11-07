@@ -3516,9 +3516,10 @@ only from rows FinishUP recorded for the run or edit it names. When the task nam
 outside the workspace that no admitted root covers, the check records
 `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
 (`finishup privacy input-roots add <folder>` on a trusted terminal of the computer the FinishUP
-service runs on: for a remote server its server host, where the folder must exist; a folder only
-on the client cannot be admitted for a remote server yet, ADR-051 open question 1); it is a
-disclosure only, never
+service runs on, or, for a remote server, `finishup server folders add NAME FOLDER` on the client
+machine, which admits the folder for that server's claim-bound sessions in either outside-read
+mode, ADR-051 decision 5 as decided 2026-11-07; host-independent, the same on every host); it is
+a disclosure only, never
 a Stop-gate item or a continuation on Codex. Codex still has no write path to admitted roots,
 and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
 owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,

@@ -13,6 +13,11 @@ never sent to the server, and nothing the server sends changes it. Every remote 
 * ``listed``: the agent reads outside the worktree only beneath a folder this computer's owner
   listed for that target with ``finishup server folders add``; anything else is refused.
 
+In both modes a listed folder also admits the task inputs beneath it for that target's
+claim-bound sessions, even where the server's own input-root policy names no root there
+(maintainer decision, 2026-11-07): in ``local`` mode beside the server's own roots, in ``listed``
+mode alone.
+
 The owner chooses the mode when adding the target (``finishup server add``, on the trusted
 console, or ``--outside-reads``), and ``finishup server folders mode NAME local|listed`` changes
 it. There is no default per kind. An HTTPS target at an official FinishUP endpoint
@@ -159,7 +164,8 @@ class FolderRecord:
 class OutsideReads:
     """What the server of one target may read outside the claimed worktree, read now.
 
-    In ``local`` mode ``folders`` are those listed for ``listed`` mode and are not consulted.
+    In both modes ``folders`` admit the task inputs beneath them, whatever the server's own policy
+    admits (ADR-051 decision 5, amended 2026-11-07); in ``listed`` mode they are all it reads.
     """
 
     mode: OutsideReadMode

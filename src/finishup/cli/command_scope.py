@@ -244,8 +244,8 @@ _SERVER_HOST_MEANING: Final[Mapping[str, str]] = MappingProxyType(
     {
         "privacy input-roots": (
             "; it admits a folder for the repository in the current folder on the server host, "
-            "and the folder must exist there: a folder that exists only on this computer cannot "
-            "be admitted for a remote server yet"
+            "and the folder must exist there: for a folder on this computer, list it for that "
+            "server here with 'finishup server folders add NAME FOLDER'"
         ),
     }
 )

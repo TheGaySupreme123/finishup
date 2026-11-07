@@ -73,7 +73,11 @@ from finishup.ports.change_capture import (
 from finishup.ports.clock import ClockPort
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
 from finishup.ports.runtime import TaskRuntime
-from finishup.ports.workspace_agent import OutsideInputsRead, WorkspaceAgentUnavailable
+from finishup.ports.workspace_agent import (
+    OutsideInputsRead,
+    WorkspaceAgentUnavailable,
+    workspace_handle_valid,
+)
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
@@ -529,6 +533,8 @@ def _snapshot_inputs(
     current_reader: CurrentInputReader | None,
     present: set[str],
     room: int,
+    *,
+    client_bound: bool = False,
 ) -> tuple[list[TaskInputFile], tuple[str, ...]]:
     """The kept snapshot copies of outside files the task names, each beside its current state,
     and the paths of those left out because the owner no longer lets the server read them.
@@ -537,29 +543,42 @@ def _snapshot_inputs(
     no longer text within the snapshot bound); a path it did not reach is ``unavailable``. A
     claim-bound task's reader also names the paths its client's owner no longer lists for the
     server (``CurrentInputsRead.unlisted``, ADR-051 decision 5): their copies are not sent, as a
-    copy whose root the owner no longer admits is not, and the read is flagged instead.
+    copy whose root the owner no longer admits is not, and the read is flagged instead. For a
+    ``client_bound`` task a copy kept beneath a folder its client's owner listed for this server
+    rather than beneath a policy root is asked about too, and sent only while the agent says a
+    listed folder still covers it (``CurrentInputsRead.listed``, ADR-051 decision 5, amended
+    2026-11-07); it is marked ``client_listed``, as its check-time read would be.
     """
 
     wanted = tuple(os.path.normpath(value) for value in outside)
-    kept = [
+    candidates = [
         (snapshot.boundary, item)
         for snapshot in snapshots
         for item in snapshot.files
-        if item.root in admitted_roots
+        if (client_bound or item.root in admitted_roots)
         and item.path not in present
         and any(item.path == path or item.path.startswith(path + "/") for path in wanted)
-    ][:room]
-    if not kept:
+    ]
+    # A local task's copies are all beneath a policy root, so the room is taken before reading;
+    # a claim-bound task's are asked about first (at most the task's few kept files).
+    asked = candidates if client_bound else candidates[:room]
+    if not asked:
         return [], ()
     found: Mapping[str, bytes | None] | CurrentInputsRead = (
-        {} if current_reader is None else current_reader(tuple(i.path for _, i in kept))
+        {} if current_reader is None else current_reader(tuple(i.path for _, i in asked))
     )
     current: Mapping[str, bytes | None]
     unlisted: frozenset[str] = frozenset()
+    listed: frozenset[str] = frozenset()
     if type(found) is CurrentInputsRead:
-        current, unlisted = found.current, found.unlisted
+        current, unlisted, listed = found.current, found.unlisted, found.listed
     else:
         current = cast(Mapping[str, bytes | None], found)
+    kept = [
+        (boundary, item)
+        for boundary, item in asked
+        if item.root in admitted_roots or (client_bound and item.path in listed)
+    ][:room]
     added: list[TaskInputFile] = []
     for boundary, item in kept:
         if item.path in unlisted:
@@ -587,6 +606,7 @@ def _snapshot_inputs(
                 root=item.root,
                 baseline=boundary,
                 current_state=state,
+                client_listed=item.root not in admitted_roots,
             )
         )
     return added, tuple(item.path for _boundary, item in kept if item.path in unlisted)
@@ -595,11 +615,14 @@ def _snapshot_inputs(
 @dataclass(frozen=True, slots=True)
 class CurrentInputsRead:
     """A claim-bound task's current bytes of kept-copy paths (ADR-051): ``current`` as a local
-    reader returns it, and ``unlisted``, the paths the client's owner no longer lists for the
-    server, whose kept copies are therefore not sent."""
+    reader returns it, ``unlisted``, the paths the client's owner no longer lists for the server,
+    whose kept copies are therefore not sent, and ``listed``, those a listed folder covers."""
 
     current: Mapping[str, bytes | None]
     unlisted: frozenset[str] = frozenset()
+    # The paths a folder the client's owner listed for the server still covers (ADR-051 decision
+    # 5, amended 2026-11-07): a copy kept beneath such a folder is sent only while it does.
+    listed: frozenset[str] = frozenset()
 
 
 # Reads the whole current bytes of outside paths beneath the admitted roots, for comparing a
@@ -611,7 +634,7 @@ type CurrentInputReader = Callable[
 ]
 
 
-def _with_outside_inputs(
+def _outside_inputs_read(
     capture: CheckChangeCapture,
     input_paths: tuple[str, ...],
     reader: OutsideInputReader | None,
@@ -622,8 +645,9 @@ def _with_outside_inputs(
     snapshots: tuple[TaskInputSnapshotSet, ...] = (),
     admitted_roots: tuple[str, ...] = (),
     current_reader: CurrentInputReader | None = None,
-) -> CheckChangeCapture:
-    """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
+) -> tuple[CheckChangeCapture, tuple[str, ...]]:
+    """Add inputs the task names beneath an admitted outside root, in the room left (#1082), and
+    say which named values a claim-bound task's client admitted on its own.
 
     Only paths the task itself names (its statement or a ``role: input`` item) may be read
     outside the workspace (ADR-009): ``verification_paths``, the candidates only an agent-recorded
@@ -645,12 +669,18 @@ def _with_outside_inputs(
     has not listed for the server and says so; only those inputs are left out, and the capture
     records how many (``outside_inputs_not_listed``: the task-named values left unread, and any
     kept copy left out beneath none of them), never which, so the receipt can say so and name the
-    owner's two ways out while the rest of the change still reaches review.
+    owner's two ways out while the rest of the change still reaches review. Amended 2026-11-07:
+    the client's own folders admit task inputs too, in both modes, where this server's policy
+    names no root, so a claim-bound task's reader is asked whenever the recipe carries task
+    inputs, even with no room left (it then reads nothing, and only says which values its folders
+    cover). An input it read beneath a root this server's policy does not admit is marked
+    ``client_listed``; the normalized values its folders cover are returned beside the capture,
+    so the not-admitted decision leaves them to the client (``outside_inputs_not_admitted``).
     """
 
     named = tuple(item for item in capture.inputs if not _directory_material(item))
     chosen = tuple(item for item in capture.inputs if _directory_material(item))
-    room = MAX_TASK_INPUT_FILES - len(named)
+    room = max(0, MAX_TASK_INPUT_FILES - len(named))
     outside = tuple(
         value
         for value in input_paths
@@ -658,21 +688,42 @@ def _with_outside_inputs(
         and value not in verification_paths
         and not _within(value, workspace)
     )
-    if reader is None or room < 1 or not outside:
-        return capture
+    client_bound = workspace_handle_valid(workspace)
+    if reader is None or not outside or (room < 1 and not client_bound):
+        return capture, ()
     present = {item.path for item in capture.inputs}
     # #1118 unit 1 (AIP-1): a kept snapshot of a file the task names is sent in place of its
     # current bytes, so a later rewrite cannot pose as the original; only while its root is
     # still admitted (E2E-2), and, on a remote server, while its folder is still listed.
-    added, copies_not_listed = _snapshot_inputs(
-        snapshots, outside, admitted_roots, current_reader, present, room
+    added, copies_not_listed = (
+        _snapshot_inputs(
+            snapshots,
+            outside,
+            admitted_roots,
+            current_reader,
+            present,
+            room,
+            client_bound=client_bound,
+        )
+        if room
+        else ([], ())
     )
     present.update(item.path for item in added)
     found = reader(outside, room, workspace, space_cut_paths & frozenset(outside))
     values_not_listed: tuple[str, ...] = ()
+    covered: tuple[str, ...] = ()
+    agent_read = type(found) is OutsideInputsRead
     if type(found) is OutsideInputsRead:
-        values_not_listed = tuple(
-            os.path.normpath(outside[index]) for index in found.unlisted if index < len(outside)
+        covered = tuple(
+            os.path.normpath(outside[index]) for index in found.listed if index < len(outside)
+        )
+        # With no room left nothing could be read either way, so nothing was kept back.
+        values_not_listed = (
+            tuple(
+                os.path.normpath(outside[index]) for index in found.unlisted if index < len(outside)
+            )
+            if room
+            else ()
         )
         found = found.inputs
     # A kept copy beneath a value left unread is that same input, counted once.
@@ -690,12 +741,20 @@ def _with_outside_inputs(
         ):
             continue
         present.add(item.path)
-        added.append(item)
+        # Decided here from this server's own policy, never taken from the agent's answer.
+        added.append(
+            replace(
+                item,
+                client_listed=agent_read
+                and item.root is not None
+                and item.root not in admitted_roots,
+            )
+        )
     if not_listed:
         capture = replace(capture, outside_inputs_not_listed=not_listed)
     if not added:
-        return capture
-    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])
+        return capture, covered
+    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES]), covered
 
 
 def _directory_material(item: TaskInputFile) -> bool:
@@ -742,20 +801,19 @@ def _capture_redacted(
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     capture = _with_input_origins(capture, verification_paths, workspace)
-    # Every input, inside the repository or beneath an admitted root, takes the same redaction.
-    capture = _redacted(
-        _with_outside_inputs(
-            capture,
-            input_paths,
-            outside_reader,
-            workspace,
-            verification_paths=verification_paths,
-            space_cut_paths=space_cut_paths,
-            snapshots=snapshots,
-            admitted_roots=admitted_roots,
-            current_reader=current_reader,
-        )
+    capture, client_listed = _outside_inputs_read(
+        capture,
+        input_paths,
+        outside_reader,
+        workspace,
+        verification_paths=verification_paths,
+        space_cut_paths=space_cut_paths,
+        snapshots=snapshots,
+        admitted_roots=admitted_roots,
+        current_reader=current_reader,
     )
+    # Every input, inside the repository or beneath an admitted root, takes the same redaction.
+    capture = _redacted(capture)
     # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
     # the stored object, so a recovered job replays the decision instead of re-reading the disk.
     # A claim-bound workspace's candidates are looked up on the client's machine (ADR-051).
@@ -765,11 +823,14 @@ def _capture_redacted(
         if callable(lstat_probe)
         else None
     )
+    # ADR-051 decision 5 (amended 2026-11-07): a claim-bound task's client admits, on its own,
+    # what lies beneath a folder its owner listed for this server; this server's policy does not
+    # decide those, so a value the agent said such a folder covers counts as admitted.
     if outside_inputs_not_admitted(
         input_paths,
         verification_paths,
         workspace,
-        admitted_roots,
+        (*admitted_roots, *client_listed),
         priority_paths,
         task_started_at=task_started_at,
         space_cut=space_cut_paths,

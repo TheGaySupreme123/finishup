@@ -1224,7 +1224,7 @@ def test_inputs_a_listed_mode_agent_left_unread_are_counted_never_named() -> Non
 
     from finishup.application.check_change import (
         CurrentInputsRead,
-        _with_outside_inputs,  # pyright: ignore[reportPrivateUsage]
+        _outside_inputs_read,  # pyright: ignore[reportPrivateUsage]
     )
     from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
     from finishup.ports.workspace_agent import OutsideInputsRead
@@ -1256,7 +1256,7 @@ def test_inputs_a_listed_mode_agent_left_unread_are_counted_never_named() -> Non
             for path in ("/shared/b/old.md", "/shared/d/kept.md")
         ),
     )
-    capture = _with_outside_inputs(
+    capture = _outside_inputs_read(
         change,
         values,
         reader,
@@ -1265,7 +1265,7 @@ def test_inputs_a_listed_mode_agent_left_unread_are_counted_never_named() -> Non
         snapshots=(snapshot,),
         admitted_roots=("/shared",),
         current_reader=current,
-    )
+    )[0]
     assert capture.inputs == ()
     assert capture.outside_inputs_not_listed == 3
     encoded = encode_check_change(capture)
@@ -1282,6 +1282,142 @@ def test_inputs_a_listed_mode_agent_left_unread_are_counted_never_named() -> Non
     for wrong_value in (True, -1):
         with pytest.raises(ValueError):
             replace(change, outside_inputs_not_listed=wrong_value)
+
+
+@pytest.mark.parametrize("covered", [True, False], ids=["client-listed", "not-listed"])
+def test_a_claim_bound_client_admits_what_its_listed_folders_cover(covered: bool) -> None:
+    """Maintainer decision 2026-11-07 (ADR-051 decision 5): for a claim-bound task the server's
+    own policy does not decide an input beneath a folder the client's owner listed. The agent
+    reads it with no root of the server's, the server marks it ``client_listed`` from its own
+    policy, and the not-admitted decision leaves the values the agent said its folders cover to
+    the client; any other value is decided by this server's policy as before."""
+
+    from finishup.ports.change_capture import TaskInputFile
+    from finishup.ports.workspace_agent import OutsideInputsRead
+
+    _capture_redacted = getattr(check_change_module, "_capture_redacted")
+    handle = "client:" + "a" * 16
+    spec = "/client/specs/spec.md"
+    seen: list[int] = []
+
+    class Port:
+        def capture(
+            self, workspace: str, base: object, *, input_paths: tuple[str, ...] = ()
+        ) -> CheckChangeCapture:
+            assert workspace == handle and input_paths == (spec,)
+            return CheckChangeCapture("task_start", b"diff --git a/a b/a\n", 1, 0, 0, False)
+
+        def lstat_probe(self, _workspace: str) -> object:
+            def probe(path: str) -> os.stat_result | None:
+                # An existing file that predates the task: an input, if nothing admits it.
+                if path != spec:
+                    return None
+                return os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 5, 1, 1, 1))
+
+            return probe
+
+    def reader(
+        values: tuple[str, ...], room: int, workspace: str, _cut: frozenset[str]
+    ) -> OutsideInputsRead:
+        assert (values, workspace) == ((spec,), handle)
+        seen.append(room)
+        if not covered:
+            return OutsideInputsRead(())
+        item = TaskInputFile(spec, b"SPEC\n", 5, origin="outside_workspace", root="/client/specs")
+        return OutsideInputsRead((item,), (), (0,))
+
+    capture = _capture_redacted(
+        Port(), handle, None, (), (spec,), frozenset(), reader, task_started_at=100.0
+    )
+    assert seen == [4]
+    if covered:
+        (item,) = capture.inputs
+        assert (item.path, item.root, item.client_listed) == (spec, "/client/specs", True)
+        assert capture.outside_inputs_not_admitted is False
+    else:
+        assert capture.inputs == ()
+        assert capture.outside_inputs_not_admitted is True
+    # A policy root the server admits binds its input to that root, as before.
+    policy_bound = _capture_redacted(
+        Port(),
+        handle,
+        None,
+        (),
+        (spec,),
+        frozenset(),
+        reader,
+        admitted_roots=("/client/specs",),
+        task_started_at=100.0,
+    )
+    assert all(not item.client_listed for item in policy_bound.inputs)
+    assert policy_bound.outside_inputs_not_admitted is False
+
+
+def test_a_client_listed_input_keeps_its_mark_through_the_stored_check_change() -> None:
+    """The mark is stored only when set, so every other input keeps its bytes; it needs an
+    outside input bound to a root, and a stored ``false`` is not canonical."""
+
+    from finishup.ports.change_capture import TaskInputFile
+
+    item = TaskInputFile(
+        "/client/specs/spec.md",
+        b"SPEC\n",
+        5,
+        origin="outside_workspace",
+        root="/client/specs",
+        client_listed=True,
+    )
+    capture = CheckChangeCapture(
+        "task_start", b"diff --git a/a b/a\n", 1, 0, 0, False, inputs=(item,)
+    )
+    encoded = encode_check_change(capture)
+    assert b'"client_listed":true' in encoded
+    assert decode_check_change(encoded) == capture
+    plain = replace(capture, inputs=(replace(item, client_listed=False),))
+    assert b"client_listed" not in encode_check_change(plain)
+    with pytest.raises(ValueError):
+        decode_check_change(encoded.replace(b'"client_listed":true', b'"client_listed":false'))
+    for wrong in ({"root": None}, {"origin": "task", "path": "spec.md", "root": None}):
+        with pytest.raises(ValueError):
+            replace(item, **wrong)
+
+
+def test_a_claim_bound_agent_is_asked_even_with_no_room_left() -> None:
+    """With the room already taken by named workspace inputs, a local task's reader is not
+    asked; a claim-bound task's agent is, with no room, so a value its listed folders cover is
+    not called unadmitted; and with no room nothing it left unread counts as kept back."""
+
+    from finishup.ports.change_capture import TaskInputFile
+    from finishup.ports.workspace_agent import OutsideInputsRead
+
+    _outside_inputs_read = getattr(check_change_module, "_outside_inputs_read")
+    full = CheckChangeCapture(
+        "task_start",
+        b"diff --git a/a b/a\n",
+        1,
+        0,
+        0,
+        False,
+        inputs=tuple(TaskInputFile(f"doc{index}.md", b"DOC\n", 4) for index in range(4)),
+    )
+    rooms: list[int] = []
+
+    def reader(
+        values: tuple[str, ...], room: int, _workspace: str, _cut: frozenset[str]
+    ) -> OutsideInputsRead:
+        rooms.append(room)
+        return OutsideInputsRead((), (1,), (0,))
+
+    values = ("/client/specs/spec.md", "/shared/other.md")
+    capture, covered = _outside_inputs_read(
+        full, values, reader, "client:" + "b" * 16, verification_paths=frozenset()
+    )
+    assert rooms == [0] and covered == ("/client/specs/spec.md",)
+    assert capture == full and capture.outside_inputs_not_listed == 0
+    capture, covered = _outside_inputs_read(
+        full, values, reader, "/repo", verification_paths=frozenset()
+    )
+    assert rooms == [0] and covered == () and capture == full
 
 
 def test_an_outside_path_only_a_verification_command_names_is_never_read() -> None:

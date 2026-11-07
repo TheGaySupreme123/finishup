@@ -461,8 +461,10 @@ def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         ReadOutsideInputsArguments(roots, values, limit=4, excluded=(_HANDLE,)),
     )
+    # Every value lies beneath the listed folder, the missing one included: the answer says so,
+    # never which folder (ADR-051 decision 5, amended 2026-11-07).
     assert answer == OutsideInputsRead(
-        read_outside_inputs(roots, values, limit=4, excluded=excluded)
+        read_outside_inputs(roots, values, limit=4, excluded=excluded), (), (0, 1, 2)
     )
     assert [item.path for item in answer.inputs] == [
         f"{shared}/spec.md",
@@ -479,7 +481,9 @@ def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
     assert snapshot == OutsideSnapshotsRead(
         snapshot_outside_inputs(
             roots, values, limit=4, max_bytes=65_536, seconds=10.0, excluded=excluded
-        )
+        ),
+        (),
+        (0, 1, 2),
     )
     assert snapshot.reads[0].text == b"SPEC_MARKER\n"
 
@@ -792,6 +796,84 @@ def test_a_folder_narrower_than_the_servers_root_admits_only_what_lies_beneath_i
     ) == OutsideInputsRead((), (0,))
 
 
+@pytest.mark.parametrize("mode", ["listed", "local"])
+def test_a_listed_folder_admits_task_inputs_where_the_server_names_no_root(
+    repository: Path, protected: Path, shared: Path, tmp_path: Path, mode: OutsideReadMode
+) -> None:
+    """Maintainer decision 2026-11-07 (ADR-051 decision 5): a folder the owner listed for the
+    server admits the task inputs beneath it in both modes, even where the server's own policy
+    names no root. The input is read beneath that folder, its root is the folder, and the answer
+    says which of the server's values a listed folder covers, never which folder; the record
+    never travels."""
+
+    elsewhere = (tmp_path / "elsewhere").resolve()
+    elsewhere.mkdir()
+    (elsewhere / "notes.md").write_text("ELSEWHERE_MARKER\n", encoding="utf-8")
+    handler = _handler(repository, protected, folders=(shared,), mode=mode)
+    values = (f"{shared}/spec.md", f"{elsewhere}/notes.md", f"{shared}/data/")
+    answer = _ok(
+        handler,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((), values, limit=4),
+    )
+    assert [(item.path, item.root) for item in answer.inputs] == [
+        (f"{shared}/spec.md", os.fspath(shared)),
+        (f"{shared}/data/rows.csv", os.fspath(shared)),
+    ]
+    assert answer.listed == (0, 2)
+    # A value beneath no listed folder and no root of the server's is neither read nor reported
+    # unlisted: whether it was admitted is this server's own decision.
+    assert answer.unlisted == ()
+    assert b"ELSEWHERE_MARKER" not in repr(answer).encode()
+    rows = _ok(
+        handler,
+        WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+        SnapshotOutsideInputsArguments((), values[:1], limit=4, max_bytes=65_536, budget_ms=5_000),
+    )
+    assert [(row.path, row.root, row.text) for row in rows.reads] == [
+        (f"{shared}/spec.md", os.fspath(shared), b"SPEC_MARKER\n")
+    ]
+    assert rows.listed == (0,)
+    # With no folder listed, nothing outside the server's own roots is read, in either mode.
+    bare = _ok(
+        _handler(repository, protected, mode=mode),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((), values, limit=4),
+    )
+    assert bare == OutsideInputsRead(())
+
+
+def test_in_mode_local_the_servers_roots_and_the_listed_folders_both_admit(
+    repository: Path, protected: Path, shared: Path, tmp_path: Path
+) -> None:
+    """In ``local`` mode the server's own roots still apply, as for a local service, beside the
+    listed folders; an input beneath one of the server's roots keeps that root."""
+
+    server = (tmp_path / "server-root").resolve()
+    server.mkdir()
+    (server / "rules.md").write_text("RULES_MARKER\n", encoding="utf-8")
+    values = (f"{server}/rules.md", f"{shared}/spec.md")
+    arguments = ReadOutsideInputsArguments((os.fspath(server),), values, limit=4)
+    local = _ok(
+        _handler(repository, protected, folders=(shared,), mode="local"),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    )
+    assert [(item.path, item.root) for item in local.inputs] == [
+        (values[0], os.fspath(server)),
+        (values[1], os.fspath(shared)),
+    ]
+    assert (local.unlisted, local.listed) == ((), (1,))
+    # In listed mode only the record admits: the server's root alone reads nothing.
+    listed = _ok(
+        _handler(repository, protected, folders=(shared,)),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    )
+    assert [(item.path, item.root) for item in listed.inputs] == [(values[1], os.fspath(shared))]
+    assert (listed.unlisted, listed.listed) == ((0,), (1,))
+
+
 def test_a_task_input_the_owner_did_not_list_is_left_unread_and_named(
     repository: Path, protected: Path, shared: Path, tmp_path: Path
 ) -> None:
@@ -841,7 +923,7 @@ def test_a_task_input_the_owner_did_not_list_is_left_unread_and_named(
     )
     read, snapshot = both(values)
     assert _ok(handler, *read) == OutsideInputsRead(
-        read_outside_inputs((os.fspath(shared),), values, limit=4)
+        read_outside_inputs((os.fspath(shared),), values, limit=4), (), (0,)
     )
     assert [(row.path, row.text) for row in _ok(handler, *snapshot).reads] == [
         (f"{shared}/spec.md", b"SPEC_MARKER\n")
@@ -886,7 +968,8 @@ def test_leaving_a_spaced_input_unread_never_reads_its_words_in_its_place(
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         arguments,
     )
-    assert listed == OutsideInputsRead((), (0,))
+    # The word lies beneath the listed folder, so the answer says that folder covers it.
+    assert listed == OutsideInputsRead((), (0,), (1,))
     assert b"UNRELATED_MARKER" not in repr(listed).encode()
     # Listing a folder that holds the whole value reads what the local read reads; the word
     # stays out.
@@ -894,7 +977,7 @@ def test_leaving_a_spaced_input_unread_never_reads_its_words_in_its_place(
         _handler(repository, protected, folders=(data,)),
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         arguments,
-    ) == OutsideInputsRead(local)
+    ) == OutsideInputsRead(local, (), (0, 1))
     # Where the whole value names nothing, the word is the task's own, read as locally.
     shutil.rmtree(data / "test data")
     word = _ok(
@@ -903,7 +986,7 @@ def test_leaving_a_spaced_input_unread_never_reads_its_words_in_its_place(
         arguments,
     )
     assert word == OutsideInputsRead(
-        read_outside_inputs(roots, values, limit=4, space_cut=arguments.space_cut)
+        read_outside_inputs(roots, values, limit=4, space_cut=arguments.space_cut), (), (1,)
     )
     assert [item.path for item in word.inputs] == [f"{data}/test/unrelated.md"]
 
@@ -927,7 +1010,8 @@ def test_listed_mode_never_reads_past_the_local_reads_window(
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         ReadOutsideInputsArguments(roots, values, limit=4),
     )
-    assert answer == OutsideInputsRead((), tuple(range(16)))
+    # The late value lies beneath the listed folder, though past the window it is not read.
+    assert answer == OutsideInputsRead((), tuple(range(16)), (16,))
 
 
 def test_listed_mode_refuses_a_reviewer_read_only_where_something_exists(

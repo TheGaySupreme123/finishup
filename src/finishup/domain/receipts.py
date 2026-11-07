@@ -549,7 +549,8 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
 )
 # Issue #1102 (RC6f): the task names a file or folder outside the workspace that no root the owner
 # admitted covers, so AI-powered review judged the work without it. Only the owner can admit a root
-# (``finishup privacy input-roots add`` on a trusted terminal); an agent cannot. A closed code with
+# (``finishup privacy input-roots add`` on a trusted terminal, or, for a remote server, ``finishup
+# server folders add`` on the client machine, ADR-051 decision 5); an agent cannot. A closed code with
 # no path, disclosed and never agent work: it is not a member of ``CHECK_TIME_CHANGE_GAPS``, never
 # bounds the receipt's conclusion and never becomes a Stop-gate item or a continuation.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP: Final = "task_input_outside_not_admitted"
@@ -573,8 +574,9 @@ OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
-    " it, on the computer the FinishUP service runs on (for a remote server, its server host):"
-    " `finishup privacy input-roots add <folder>`."
+    " it: `finishup privacy input-roots add <folder>` on the computer the FinishUP service runs"
+    " on, or, for a remote server, `finishup server folders add NAME FOLDER` on the client"
+    " machine."
 )
 OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
     "Review lacked files outside the folders the owner listed for this server; only the owner can"
@@ -612,10 +614,10 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             "The task names a file or folder outside the workspace that AI-powered review may not"
             " read, so the reviewer judged the work without it. Only the owner can let review"
             " read it, with `finishup privacy input-roots add <folder>` in a trusted terminal on"
-            " the computer the FinishUP service runs on. For a remote server that is its server"
-            " host, and the folder must exist there: a folder only on the client machine cannot"
-            " be admitted for a remote server yet. An agent cannot admit it, and copying it into"
-            " the workspace does not help."
+            " the computer the FinishUP service runs on. For a remote server, they list its"
+            " folder for that server with `finishup server folders add NAME FOLDER` on the client"
+            " machine, the computer that holds the project. An agent cannot admit it, and copying"
+            " it into the workspace does not help."
         )
     if code == OUTSIDE_READS_NOT_LISTED_GAP:
         return (

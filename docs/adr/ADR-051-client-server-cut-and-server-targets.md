@@ -316,6 +316,34 @@ answers bounded `workspace_call`s on a connection that declared it.
   - **`listed`**: the server reads outside the worktree only beneath folders the owner listed
     for that target, as described below; anything else is refused.
 
+  **The client's list admits task inputs, in both modes** (maintainer decision, 2026-11-07,
+  closing open question 1 below). `finishup server folders add NAME FOLDER`, run on the client at
+  the trusted console, also admits FOLDER as a task-input root for that server's claim-bound
+  sessions, whatever the server's own input-root policy names. The record is never sent to the
+  server. For a claim-bound session the server asks the agent for the task's outside inputs
+  whenever the recipe carries task inputs, even when its own policy admits no root
+  (`ready_composition._outside_inputs`, and at task start `input_snapshot_scope` with
+  `client_record`), and the agent reads an input beneath a folder of its record under that
+  folder: in `local` mode beside the server's own admitted roots, which still apply as for a
+  local service; in `listed` mode alone, since only the record admits there. The answer of
+  `read_outside_inputs` and `snapshot_outside_inputs` says which of the server's values a listed
+  folder covers (`listed`, indices only, for a value the outside-input candidate rule would look
+  at, never which folder), and the server leaves the decision on such an input to the agent: a
+  covered value is never counted as `outside_inputs_not_admitted`, and every other value is
+  decided by the server's own policy exactly as before. An input the agent read beneath a root
+  the server's policy does not admit is marked `client_listed` by the server, from its own
+  policy and never from the agent's word, and is bound to no policy root for egress, because the
+  server's policy cannot revoke a folder it never admitted: the owner removes it on the client,
+  and that applies from the agent's next read (a review the server already prepared may still
+  send what it read). A kept copy (#1118) beneath such a folder is sent only while the agent says
+  a listed folder still covers it. The server's other privacy controls still apply on the server:
+  whether the recipe carries task inputs at all, which categories and data classes may reach
+  AI-powered review and through which channel, ceilings, preview and redaction. The server learns
+  of the record only the folder beneath which a file it was let read lies (that file's `root`)
+  and whether a path it named lies beneath one. The reviewer's own follow-up reads outside the
+  worktree are still offered only beneath the server's own roots; a client-admitted input reaches
+  review through the check-time read. Every local or unclaimed session is unchanged.
+
   There is no default per kind. `finishup server add` asks the owner which mode a new remote
   target gets, on the trusted foreground console as part of its typed confirmation: after the
   disclosure it asks what the server may read outside the owner's projects, with one plain line
@@ -362,14 +390,17 @@ answers bounded `workspace_call`s on a connection that declared it.
   so that service's `local` stays unrecorded and follows the reviewed list instead of becoming
   the owner's own recorded choice.
 
-  In `listed` mode the folders are the owner's: `finishup server folders add NAME FOLDER` needs the
-  trusted foreground console and the owner typing the target name; it records FOLDER canonicalized
+  The folders are the owner's: `finishup server folders add NAME FOLDER` needs the
+  trusted foreground console and the owner typing the target name, after a notice that the folder
+  also admits a task's files in `local` mode, even where the server's own policy admits no folder;
+  it records FOLDER canonicalized
   by the local service's own input-root rule (an existing directory named by its absolute,
   normalized, link-free path; never hidden or a system tree), and never the home directory, a
   folder that holds it, or one in its private trees. `server folders remove NAME FOLDER|--all` is
   the way out; like a change of mode, it applies from the workspace agent's next read, and a read
   already in progress may still return files from that folder. Listing or removing a folder
-  keeps the mode; a folder listed in `local` mode is kept for `listed` mode and said to be so.
+  keeps the mode; a folder listed in `local` mode admits a task's files there too, and is all the
+  server reads outside in `listed` mode, and `add`, `list` and `status` say so.
   `add` checks the home
   rules before it asks, so the owner never consents to a folder that is then refused. The record
   is owner-only (`<target root>/config/folders.json`, `yoetz.server-folders/1`, with an optional
@@ -420,10 +451,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   outside-input candidate rule would look at (no hidden component, not credential-named, in no
   system or protected directory), so the server learns no more than `lstat_candidates` already
   tells it. A named root beneath which the task names nothing is left unopened, and one that
-  holds a listed folder is walked only to the values beneath that folder. The server's own
-  privacy policy still decides which roots it asks for: in `listed` mode the client's record
-  narrows it, never widens it, and a folder narrower than the server's root admits what lies
-  beneath that folder alone. Both ways out are the owner's, on the client: list the folder, or,
+  holds a listed folder is walked only to the values beneath that folder. Beneath the server's own
+  roots the client's record narrows them in `listed` mode, and a folder narrower than the server's
+  root admits what lies beneath that folder alone; a listed folder beneath none of the server's
+  roots admits its task inputs on its own (the client's list, above). Both ways out are the owner's, on the client: list the folder, or,
   for a server they trust, switch it to `local` mode. Listing covers files outside the worktree
   only: a declared test inside it that Git ignores or cannot answer for is read in `listed` mode
   under no listing, the worktree's own folder included, so the fixed sentence names `local` mode,
@@ -473,7 +504,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   metadata (existence, type, size and times, never content) of a path the local outside-input
   candidate rule would look at (`lstat_candidates`), which the server's outside-input hint needs,
   and in `listed` mode whether such a path exists from whether a read of it is refused or left
-  unread. The owner lists only folders they would let that server see. A task input or declared
+  unread; in either mode, whether a path it names lies beneath a folder the owner listed, and
+  the folder itself as the root of a file it was let read there. The owner lists only folders
+  they would let that server see. A task input or declared
   test that listed mode kept from the server reaches the receipt as `outside_reads_not_listed`;
   a refused reviewer read reads as absent on the server, which in practice names the same
   task-named path the check-time read already disclosed. Nothing on the client tells the owner
@@ -1246,21 +1279,20 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
 ## Open questions for the maintainer
 
 1. **Task-input folders that exist only on the client** (recorded 2026-11-07, refusal-guide
-   review). A server's task-input roots come from its own privacy policy, set with `finishup
-   privacy input-roots add <folder>`, a `server_host` command: on a remote target it is refused
-   on the client (`requires_server_host`), and on the server host it runs for the repository in
-   the current folder there and needs the folder to exist there, at a link-free real path. So a
-   folder that exists only on the owner's computer cannot be admitted for a server on another
-   machine, in either outside-read mode, and an input there stays out of review
-   (`task_input_outside_not_admitted`), where FinishUP on one computer lets its owner admit it.
-   Nothing about this was redesigned; every message about it now says where the command runs
-   and what that means for a remote server (the receipt sentence and its MCP short form, the
-   terminal interface's privacy line, the command's help, and the `requires_server_host` line
-   for `privacy input-roots`). Ways the maintainer could close it: in `local` mode, let the
-   server ask the client's agent for task inputs beneath a root the client's own local policy
-   admits; let `privacy input-roots` record, from the client through an owner ceremony on the
-   trusted console, a root that exists only on the client for that claim; or keep the limit as
-   documented. Undecided.
+   review; **closed 2026-11-07 by maintainer decision, "client list admits them"**). A server's
+   task-input roots came only from its own privacy policy, set with `finishup privacy input-roots
+   add <folder>`, a `server_host` command, so a folder that exists only on the owner's computer
+   could not be admitted for a server on another machine, in either outside-read mode. Decision:
+   `finishup server folders add NAME FOLDER`, run on the client at the trusted console, also
+   admits FOLDER as a task-input root for that server's claim-bound sessions, in both modes; the
+   record is never sent to the server; in `local` mode the server's own admitted roots still
+   apply as for a local service, and in `listed` mode only the record admits outside reads; the
+   server's other privacy controls still apply on the server; and a claim-bound session defers
+   to the agent the decision on inputs the server's policy does not cover, every other session
+   unchanged. Implemented as decision 5's "The client's list admits task inputs" paragraph. The
+   `task_input_outside_not_admitted` sentence and its MCP short form, the terminal interface's
+   privacy line, `privacy input-roots`' help and its `requires_server_host` line now name
+   `finishup server folders add NAME FOLDER` on the client machine as a remote server's way in.
 2. **How many files listed mode kept back, on the receipt** (recorded 2026-11-07, refusal-guide
    review). The refusal-guide fixes asked for a fixed receipt line with counts and no paths.
    The count is frozen (the check change's `outside_inputs_not_listed`, the case object's

@@ -2623,8 +2623,8 @@ privacy_input_roots_app = typer.Typer(
         "removing applies at once. Nothing is sent unless this repository's privacy policy "
         "already sends repository excerpts. Run it on the computer the FinishUP service runs "
         "on, in the repository's folder there: for a remote server that is its server host, and "
-        "the directory must exist there, so a folder that exists only on the client machine "
-        "cannot be admitted for a remote server yet."
+        "the directory must exist there. For a folder on the client machine, list it for that "
+        "server there instead with 'finishup server folders add NAME FOLDER'."
     ),
     no_args_is_help=True,
 )

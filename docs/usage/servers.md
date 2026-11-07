@@ -259,8 +259,9 @@ agent (below). What it may read outside your project folder on this computer is 
 such server has one of two modes, the same two for every kind:
 
 - **local**: it reads outside your project exactly as FinishUP on this computer would. The
-  server's own privacy settings decide which folders it reads task inputs from, and FinishUP's
-  usual safety checks still apply.
+  server's own privacy settings decide which folders it reads task inputs from, it also reads the
+  files a task names beneath folders you list for it, and FinishUP's usual safety checks still
+  apply.
 - **listed**: it reads outside your project only beneath folders you list for it, one at a time.
   Inside your project it reads a test your agent declared only when Git does not ignore it.
 
@@ -286,10 +287,11 @@ choice applies from the server's next read on this computer; a read already unde
 finish. `list`, `server status` and `/server` show the mode and why the server has it: set by you,
 an official FinishUP service, or not chosen yet.
 
-### List the folders a server may read
+### Let a server read a folder outside your project
 
-In listed mode, a server reads nothing outside your project folder unless you let it, one folder at
-a time:
+To let a server read the files a task names in a folder outside your project on this computer,
+list that folder for it, one folder at a time. In listed mode, the folders you list are all it
+reads outside your project folder:
 
 ```text
 finishup server folders add devbox /srv/team-specs
@@ -307,17 +309,24 @@ server may read up to 32 such folders.
 
 Once a folder is added, that server's checks and reviews may read files beneath it: input files a
 task names there, files its reviewer asks to read there, and test files your agent declared
-there. Hidden and credential-named files are never read and links are never followed. Input files
-are read only where both sides allow it: beneath a folder you added here and beneath a folder the
-server's own privacy policy lets it read task inputs from. Adding a folder inside one the server's
-policy names lets it read that folder alone.
+there. Hidden and credential-named files are never read and links are never followed. The input
+files a task names there are read in either mode, even when the server's own privacy policy lets
+it read task inputs from no folder at all: the folder you listed on this computer is enough, and
+the list is never sent to the server. The server's privacy policy still decides whether a task's
+files are read for review at all, and whether and how they may be sent for AI-powered review. In
+local mode the server also reads task inputs beneath the folders its own privacy policy names, as
+FinishUP on this computer would; in listed mode, adding a folder inside one the server's policy
+names lets it read that folder alone. A file the reviewer asks to read later is offered only in
+folders the server's own policy names; a task's files from a folder you listed reach the review
+with the check.
 
 `remove` applies from the server's next read on this computer; a read already under way may still
-return files from that folder. `remove NAME --all` removes every folder for that server, and also
+return files from that folder, and a review the server already prepared may still send what it
+read there. `remove NAME --all` removes every folder for that server, and also
 clears a list FinishUP can no longer read: FinishUP then lets the server read no folder at all,
 in listed mode, until you choose local again. `list` and `server status` show the folders. You can
-list folders while a server is in local mode too: they are kept for listed mode, and FinishUP says
-so. The list and the mode stay on this computer and are never sent to the server, and they belong
+list folders while a server is in local mode too: the files a task names there are read then as
+well, and in listed mode the folders are all it reads, as FinishUP says. The list and the mode stay on this computer and are never sent to the server, and they belong
 to that server alone: switching to another server does not change what a connection already open
 to this one may read. If FinishUP cannot read them (the file is damaged or not private to you),
 the server reads no folder outside your projects, whatever mode you chose; `server status`,
@@ -343,13 +352,11 @@ finishup server folders mode NAME local
 The first lists a folder outside your project, for the files there. The second, for a server you
 trust as you trust FinishUP on this computer, switches it to local mode, which reads all of them.
 For a declared test in your project that Git ignores, listing a folder does not help, not even
-your project's own: switch the server to local mode, or stop Git ignoring the test. Both commands
-apply to folders the server's own privacy policy already
-lets it read task inputs from: that policy is set on the server's machine, with `finishup privacy
-input-roots add <folder>` run there, in the project's folder there, and the folder must exist on
-that machine. A folder that exists only on this computer cannot be admitted for a server on
-another machine yet; the receipt then says `task_input_outside_not_admitted` and where to run
-that command. A path a task mentions that does not exist costs nothing:
+your project's own: switch the server to local mode, or stop Git ignoring the test. When a task
+names a file in a folder that neither your list nor the server's privacy policy covers, the
+receipt says `task_input_outside_not_admitted` instead: list its folder for that server with
+`finishup server folders add NAME FOLDER` on this computer, in either mode, then check again. A
+path a task mentions that does not exist costs nothing:
 FinishUP reads nothing there, as FinishUP on this computer would. A file the reviewer asks to read
 in a folder you have not listed reads as absent; it is almost always one the task named, so the
 receipt line above already covers it, and `finishup server folders list NAME` shows what that
@@ -646,6 +653,7 @@ repeated safely.
 | `outside_reads_not_listed` | In listed mode, the workspace agent left unread some files a task names, or tests your agent declared, outside the folders you listed for that server, or declared tests in your project that Git ignores. The rest of the work was checked. | On this computer, in your own terminal: `finishup server folders add NAME FOLDER` for a file outside your project, or, for a server you trust as you trust FinishUP on this computer, `finishup server folders mode NAME local`, the only command that helps for an ignored test in your project (or stop Git ignoring it). Then check again. |
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
+| `task_input_outside_not_admitted` | A task names a file or folder outside your project that review may not read: no folder you listed for that server covers it, nor does the server's own privacy policy. The rest of the work was checked. | On this computer, in your own terminal: `finishup server folders add NAME FOLDER` with that file's folder, in either mode. Then check again. |
 | `folder_invalid` | `server folders add` was given a folder it cannot admit: not a full path, missing, reached through a link, hidden, a system folder, or your home folder, a folder that holds it or one of its private folders. | Give the full path of the existing folder you mean, inside your home folder if it is there. |
 | `folders_record_invalid`, `folders_record_unsafe` | The record of what a server may read outside your projects on this computer is damaged or not private to you, so that server reads no folder outside them, in listed mode, whatever mode you chose. `server status`, `server folders list` and `/server` say so too. | On this computer, run `finishup server folders remove NAME --all`; then add the folders again (`finishup server folders add NAME FOLDER`), or choose local mode again (`finishup server folders mode NAME local`). |
 | `outside_read_mode_invalid` | `server folders mode` or `server add --outside-reads` was given something other than `local` or `listed`. | Give `local` or `listed`. |

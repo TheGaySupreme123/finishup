@@ -279,9 +279,9 @@ def test_remedy_sentences_name_the_computer_they_concern() -> None:
     for text in (admitted, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE):
         assert "`finishup privacy input-roots add <folder>`" in text
         assert "the computer the FinishUP service runs on" in text
-        assert "server host" in text
-    assert "the folder must exist there" in admitted
-    assert "cannot be admitted for a remote server yet" in admitted
+        # A remote server's owner lists the folder on the client (ADR-051, 2026-11-07).
+        assert "`finishup server folders add NAME FOLDER` on the client machine" in text
+    assert "cannot be admitted" not in admitted
     baseline = check_time_change_gap_sentence(TASK_INPUT_BASELINE_UNAVAILABLE_GAP)
     assert baseline is not None and "before the task starts keeps one" in baseline
 

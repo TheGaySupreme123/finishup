@@ -337,6 +337,15 @@ the LLM profiles and the four non-LLM channels above, and enabling it enables no
   approved — read on your machine by FinishUP's workspace agent within the usual limits.
 - **What does not:** the project folder's path, your vault passphrase, the server's API key, and
   the unlock, consent, and owner-view prompts, which run only on the server's own machine.
+- **Outside your project, you choose what it may read.** Each such server reads outside your
+  project folder either as FinishUP on this computer would (local mode) or only beneath folders
+  you list for it (listed mode), chosen when you add it. A folder you list for a server with
+  `finishup server folders add`, after typing its name in a terminal you are typing in, lets it
+  read the files a task names there in either mode, even where the server's own privacy policy
+  admits no folder for task inputs; that policy still decides what may be sent on for AI-powered
+  review. The list stays on this computer and is never sent to the
+  server; removing a folder applies from the server's next read, though a review the server has
+  already prepared may still send what it read there.
 - **The server's policy governs AI-powered review.** Whether anything is sent on to an AI-powered
   review provider is decided by the server's own privacy policy, repository permissions, and
   never-send fence, which apply minimization, redaction, and scanning there before any external

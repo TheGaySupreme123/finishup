@@ -16,10 +16,14 @@ These confinements hold on top of the adapters':
   must have the shape an owner may admit (``admitted_input_root_valid``). Beyond that, the
   outside-read mode of the server target the connection was made for decides
   (``client.server_folders``; ``finishup server folders mode``), a record this client keeps,
-  reads on every call and never sends to the server. In ``local`` mode every read is answered as
-  a local FinishUP service answers it: the server's own policy chose the roots, and only the
-  adapters' fences and the exclusions below apply; a declared test is read as a local service
-  reads the test its own agent declared. In ``listed`` mode what the read reaches must lie inside
+  reads on every call and never sends to the server. In both modes a folder the owner listed
+  for that target admits the task inputs beneath it, whether or not the server's own policy
+  names a root there, and the answer says which of the server's values such a folder covers
+  (``listed``, indices only), so the server leaves that decision to this agent. In ``local`` mode
+  every read is answered as a local FinishUP service answers it: the server's own policy chose
+  the roots, the listed folders are added to them for task inputs, and only the adapters' fences
+  and the exclusions below apply; a declared test is read as a local service reads the test its
+  own agent declared. In ``listed`` mode what the read reaches must lie inside
   the claimed worktree or at or beneath a folder this computer's owner listed for that target
   (``finishup server folders add``). An existing file or folder beyond that is never read: a
   reviewer read or listing, or a declared test, is refused (``root_not_admitted``); a task-input
@@ -490,12 +494,10 @@ class WorkspaceAgentHandler:
             found = self._outside_reads()
         except Exception:  # noqa: BLE001 - an unreadable record admits nothing (fail closed)
             return _LISTED_NOTHING
-        if type(found) is not OutsideReads:
+        if type(found) is not OutsideReads or found.mode not in ("local", "listed"):
             return _LISTED_NOTHING
-        if found.mode == "local":
-            return found
-        if found.mode != "listed":
-            return _LISTED_NOTHING
+        # In both modes the listed folders admit task inputs (ADR-051 decision 5, amended
+        # 2026-11-07), so only folders an owner could list count, whatever the mode.
         folders = tuple(
             folder
             for folder in found.folders
@@ -503,7 +505,7 @@ class WorkspaceAgentHandler:
             and admitted_input_root_valid(folder)
             and not folder_holds_home(folder)
         )
-        return OutsideReads("listed", folders, found.source)
+        return OutsideReads(found.mode, folders, found.source)
 
     def _inside_claimed(self, path: str) -> bool:
         return path == self._root or path.startswith(self._root.rstrip("/") + "/")
@@ -515,38 +517,51 @@ class WorkspaceAgentHandler:
         *,
         excluded: tuple[str, ...],
         space_cut: frozenset[str] = frozenset(),
-    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[int, ...]]:
-        """The roots a task-input read walks, the values it reads, and the indices it left unread.
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[int, ...], tuple[int, ...]]:
+        """The roots a task-input read walks, the values it reads, the indices it left unread,
+        and the indices of the values a listed folder covers.
 
         Each named root must have the shape an owner may admit, or the whole call is
-        ``root_not_admitted``. In ``local`` mode every named root is walked for every value, as a
-        local service walks the roots its own policy admitted. In ``listed`` mode the values are
-        first narrowed to those the local read would look for (``outside_read_window``: its
-        window, less the words the spaces of a spaced value that names something there cut out,
-        decided over every named root before any is left out), so leaving a spaced value unread
-        never lets its words be read in its place. Of those, a value the task names at or beneath
-        a named root (a path the read could open, as ``read_outside_inputs`` locates it) is read
-        only when it lies inside the claimed worktree, which the read never enters, or at or
-        beneath a folder the owner listed; any other is left unread, and its index is reported
-        (``unlisted``) when it names something that exists (``_exists_visibly``), so the server
-        can say so and keep the rest of what it asked for. A value that names nothing is not
-        reported: a local read would find nothing there either. A named root beneath which the
-        task names nothing is never opened and is left out; one that holds a listed folder is
-        walked only to the values beneath that folder, so the record narrows the server's roots
-        and never widens them.
+        ``root_not_admitted``. In both modes a folder the owner listed for this server admits the
+        task inputs beneath it, whether or not the server's own policy names a root there
+        (ADR-051 decision 5, amended 2026-11-07): it is walked after the server's roots, so an
+        input beneath both keeps the server's root. Which values a listed folder covers is
+        reported (``listed``) so the server leaves to this agent the decision on whether such an
+        input was admitted, never naming the folder; only for a value the local outside-input
+        candidate rule would look at, outside the claimed worktree.
+
+        In ``local`` mode every named root is walked for every value too, as a local service
+        walks the roots its own policy admitted. In ``listed`` mode only the listed folders
+        admit: the values are first narrowed to those the local read would look for
+        (``outside_read_window``: its window, less the words the spaces of a spaced value that
+        names something there cut out, decided over every named root and listed folder before
+        any is left out), so leaving a spaced value unread never lets its words be read in its
+        place. Of those, a value the task names at or beneath a named root (a path the read
+        could open, as ``read_outside_inputs`` locates it) is read only when it lies inside the
+        claimed worktree, which the read never enters, or at or beneath a listed folder; any
+        other is left unread, and its index is reported (``unlisted``) when it names something
+        that exists (``_exists_visibly``), so the server can say so and keep the rest of what it
+        asked for. A value that names nothing is not reported: a local read would find nothing
+        there either. A named root beneath which the task names nothing is never opened and is
+        left out; one that holds a listed folder is walked only to the values beneath that
+        folder, so beneath the server's own roots the record narrows them and never widens them.
         """
 
         if any(not admitted_input_root_valid(root) for root in roots):
             raise _Outcome("root_not_admitted")
         outside = self._outside()
-        if outside.mode == "local":
-            return tuple(roots), tuple(values), ()
         folders = outside.folders
+        listed = tuple(
+            index for index, value in enumerate(values) if self._listed_input(value, folders)
+        )
+        # The server's roots first: an input beneath one of them keeps that root (its policy's
+        # own binding), and only one beneath a listed folder alone is bound to that folder.
+        every = tuple(dict.fromkeys((*roots, *folders)))
+        if outside.mode == "local":
+            return every, tuple(values), (), listed
         kept: list[str] = []
         unlisted: list[int] = []
-        looked = outside_read_window(
-            tuple(roots), tuple(values), excluded=excluded, space_cut=space_cut
-        )
+        looked = outside_read_window(every, tuple(values), excluded=excluded, space_cut=space_cut)
         for index in looked:
             value = values[index]
             if not value.startswith("/") or "\x00" in value:
@@ -563,12 +578,32 @@ class WorkspaceAgentHandler:
                 unlisted.append(index)
         walked = tuple(
             root
-            for root in roots
+            for root in every
             if self._inside_claimed(root)
             or folder_covers(root, folders)
             or any(folder_covers(folder, (root,)) for folder in folders)
         )
-        return walked, tuple(kept), tuple(unlisted)
+        return walked, tuple(kept), tuple(unlisted), listed
+
+    def _listed_input(self, value: str, folders: Sequence[str]) -> bool:
+        """Whether a server-named task-input ``value`` lies at or beneath a listed folder.
+
+        Only a value the local outside-input candidate rule would look at (no hidden component,
+        not credential-named, in no system directory) outside the claimed worktree and
+        FinishUP's own directories, so the server learns nothing of any other path. Whether it
+        exists is not asked: the server learns no more of this machine than that a path it named
+        itself lies beneath some folder the owner let it read.
+        """
+
+        if not value.startswith("/") or "\x00" in value:
+            return False
+        path = posixpath.normpath(value)
+        return (
+            folder_covers(path, folders)
+            and not self._inside_claimed(path)
+            and not _folded_within(path, self._protected)
+            and _outside_candidate(path)
+        )
 
     def _exists_visibly(self, path: str) -> bool:
         """Whether normalized absolute ``path`` exists and is one a local read could look at.
@@ -752,23 +787,24 @@ class WorkspaceAgentHandler:
     # --- reads ------------------------------------------------------------------------------
 
     def _read_outside_inputs(self, arguments: ReadOutsideInputsArguments, call: _Call) -> object:
-        """Task inputs beneath the named roots that are admitted here (``_input_scope``), and the
-        indices of the values left unread because the owner did not list them."""
+        """Task inputs beneath the named roots and the listed folders that are admitted here
+        (``_input_scope``), the indices of the values left unread because the owner did not list
+        them, and those of the values a listed folder covers."""
 
         excluded = self._excluded(arguments.excluded, call, outside=True)
-        roots, values, unlisted = self._input_scope(
+        roots, values, unlisted, listed = self._input_scope(
             arguments.roots, arguments.values, excluded=excluded, space_cut=arguments.space_cut
         )
         inputs = read_outside_inputs(
             roots, values, limit=arguments.limit, excluded=excluded, space_cut=arguments.space_cut
         )
-        return OutsideInputsRead(inputs, unlisted)
+        return OutsideInputsRead(inputs, unlisted, listed)
 
     def _snapshot_outside_inputs(
         self, arguments: SnapshotOutsideInputsArguments, call: _Call
     ) -> object:
         excluded = self._excluded(arguments.excluded, call, outside=True)
-        roots, values, unlisted = self._input_scope(
+        roots, values, unlisted, listed = self._input_scope(
             arguments.roots, arguments.values, excluded=excluded
         )
         reads = snapshot_outside_inputs(
@@ -780,7 +816,7 @@ class WorkspaceAgentHandler:
             seconds=min(arguments.budget_ms / 1_000, call.remaining()),
             excluded=excluded,
         )
-        return OutsideSnapshotsRead(reads, unlisted)
+        return OutsideSnapshotsRead(reads, unlisted, listed)
 
     def _read_declared_test(self, arguments: ReadDeclaredTestArguments, call: _Call) -> object:
         """One declared test file, read as a local service reads it in ``local`` mode, or within

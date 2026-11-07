@@ -461,13 +461,15 @@ class PrivacyPosture:
             return (
                 "Outside-workspace task inputs: none admitted"
                 " (add one with `finishup privacy input-roots add <folder>` on the computer the"
-                " FinishUP service runs on; for a remote server, its server host)"
+                " FinishUP service runs on; for a remote server, list a folder on this computer"
+                " with `finishup server folders add NAME FOLDER`)"
             )
         return (
             "Outside-workspace task inputs: "
             + ", ".join(self.admitted_input_roots)
             + " (change with `finishup privacy input-roots` on the computer the FinishUP service"
-            " runs on; for a remote server, its server host)"
+            " runs on; for a remote server, folders listed on this computer with `finishup server"
+            " folders add NAME FOLDER` are read too)"
         )
 
     @property

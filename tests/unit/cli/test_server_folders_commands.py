@@ -173,7 +173,9 @@ def test_declining_on_the_console_changes_nothing(
     assert folder not in result.output
     # And, before consenting, what a server that breaks FinishUP's rules could still do there.
     notice = " ".join(line.strip() for line in shown)
-    assert "does not bind a server that breaks FinishUP's rules" in notice
+    assert "A server that breaks FinishUP's rules could read any other such file" in notice
+    # And that the folder admits a task's files whatever the server's own policy admits.
+    assert "even where the server's own privacy policy admits no folder" in notice
     assert "could read any other such file beneath this folder" in notice
     assert "list the names in its folders" in notice
 
@@ -632,7 +634,7 @@ def test_mode_applies_only_to_a_remote_target_and_refuses_a_damaged_record(
     assert read_record(root, record.target_id) == FolderRecord((), "local")
 
 
-def test_in_mode_local_list_add_and_remove_say_the_folders_wait_for_mode_listed(
+def test_in_mode_local_list_add_and_remove_say_the_folders_admit_task_files(
     home: Path, folder: str, confirmed: list[tuple[str, str]]
 ) -> None:
     record, root = _ssh(home, mode="local")
@@ -640,8 +642,10 @@ def test_in_mode_local_list_add_and_remove_say_the_folders_wait_for_mode_listed(
     assert added.exit_code == 0, added.output
     assert confirmed == [(record.target_id, folder)]
     assert "It is in mode local" in added.stdout
+    assert "the files a task names beneath this folder are read either way" in added.stdout
     listed = _invoke("list", "devbox").stdout.splitlines()
-    assert "Folders listed for it, read only in mode listed:" in listed
+    # A task's files beneath a listed folder are read in mode local too (ADR-051, 2026-11-07).
+    assert "Folders listed for it, whose files a task names it also reads:" in listed
     assert f"  {folder}" in listed
     removed = _invoke("remove", "devbox", folder)
     assert removed.exit_code == 0, removed.output
@@ -674,7 +678,7 @@ def test_status_text_and_json_show_the_mode_and_its_origin(
         "Outside your projects: reads what FinishUP on this computer would read (mode local, "
         "set by you)"
     ) in lines
-    at = lines.index("Folders listed for it, read only in mode listed:")
+    at = lines.index("Folders listed for it, whose files a task names it also reads:")
     assert lines[at + 1] == f"  {folder}"
     with targets.registry_lock():
         set_mode(root, record.target_id, "listed")

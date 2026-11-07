@@ -120,7 +120,7 @@ from finishup.application.egress import (
 from finishup.application.input_snapshot import (
     InputSnapshotScope,
     load_input_snapshots,
-    snapshot_roots,
+    snapshot_possible,
 )
 from finishup.application.lineage import (
     LineageConfig,
@@ -2743,14 +2743,20 @@ async def _outside_inputs(
     routing: WorkspaceRouting | None = None,
 ) -> tuple[OutsideInputReader | None, tuple[TaskInputSnapshotSet, ...], CurrentInputReader | None]:
     """The check-time outside reader (#1082), the task's kept copies and the current-bytes reader
-    (#1118 unit 1); none unless the owner admitted a root and the recipe carries task inputs.
+    (#1118 unit 1); none unless the recipe carries task inputs and the owner admitted a root.
 
     ``excluded`` is the workspace first, then the service's protected directories; neither is
-    ever read. Kept out of the evaluator for its type checker's complexity bound.
+    ever read. A claim-bound task's client admits task inputs beneath the folders its owner
+    listed for this server, which this server never learns (ADR-051 decision 5, amended
+    2026-11-07), so its agent is asked whenever the recipe carries task inputs, even where this
+    server's policy admits no root; every other task is unchanged. Kept out of the evaluator for
+    its type checker's complexity bound.
     """
 
-    roots = policy.admitted_input_roots if carries_task_inputs(selection) else ()
-    if not roots:
+    carried = carries_task_inputs(selection)
+    roots = policy.admitted_input_roots if carried else ()
+    claim_bound = routing is not None and bool(excluded) and client_bound(excluded[0])
+    if not roots and not (carried and claim_bound):
         return None, (), None
     return (
         _outside_input_reader(roots, excluded[1:], routing),
@@ -2843,6 +2849,8 @@ def _current_input_reader(
         return CurrentInputsRead(
             {row.path: row.text for row in answer.reads if row.reason != "unreadable"},
             frozenset(paths[index] for index in answer.unlisted if index < len(paths)),
+            # The kept paths a folder its owner listed still covers (ADR-051 decision 5).
+            frozenset(paths[index] for index in answer.listed if index < len(paths)),
         )
 
     return read
@@ -8755,15 +8763,24 @@ async def provide_service_ready_context(
             AuthorizationScopeKind.TASK, installation_id, context.commitment, task_id
         )
         policy = (await privacy_application.policy_store.effective_policy(scope)).policy
-        roots = snapshot_roots(policy, carries_task_inputs(review_selection_for_delivery(policy)))
-        if not roots:
-            return None
-        if handle is not None:
+        possible = snapshot_possible(
+            policy, carries_task_inputs(review_selection_for_delivery(policy))
+        )
+        roots = policy.admitted_input_roots if possible else ()
+        if handle is not None and possible:
+            # The agent also keeps copies beneath the folders its owner listed for this server,
+            # which this server never learns, so it is asked even with no root of the policy's
+            # own (ADR-051 decision 5, amended 2026-11-07).
             client = workspace_routing.reads_for(handle)
             assert client is not None  # a handle always routes to its agent
             return InputSnapshotScope(
-                roots, (handle, str(paths.bundle), str(paths.state)), client.snapshot_outside_inputs
+                roots,
+                (handle, str(paths.bundle), str(paths.state)),
+                client.snapshot_outside_inputs,
+                client_record=True,
             )
+        if not roots:
+            return None
         assert locator is not None
         return InputSnapshotScope(
             roots, (locator.path, str(paths.bundle), str(paths.state)), snapshot_outside_inputs

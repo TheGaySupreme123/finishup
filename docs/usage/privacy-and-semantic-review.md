@@ -324,9 +324,9 @@ The note never names the path, never stops your agent or asks it to change the w
 lowers the receipt's conclusion; your agent tells you which folder the task named. Only you can let
 review read it, with `finishup privacy input-roots add <folder>` in a terminal on the computer
 FinishUP's service runs on. With FinishUP on this computer, that is here. With a server on another
-machine, it is that server's machine, in the project's folder there, and the folder must exist
-there too: a folder that exists only on this computer cannot be admitted for such a server yet
-(see [Servers](servers.md)). Copying the file into the workspace does not help: a file that
+machine, list the folder for that server on this computer with `finishup server folders add NAME
+FOLDER`, in a terminal you are typing in; that lets it read the files a task names there whatever
+its own privacy policy admits (see [Servers](servers.md)). Copying the file into the workspace does not help: a file that
 appears during the task is your agent's work, not a task input.
 
 On a server on another machine, a file review could not read for another reason, because you have

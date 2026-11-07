@@ -16,7 +16,7 @@ from builders.start_application import protocol_id
 from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from finishup.adapters.task_input_read import snapshot_outside_inputs
 from finishup.application.check_change import (
-    _with_outside_inputs,  # pyright: ignore[reportPrivateUsage]
+    _outside_inputs_read,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.application.egress import PrivacyCoordinator
 from finishup.application.input_snapshot import (
@@ -114,7 +114,7 @@ async def test_a_spec_rewritten_after_start_reaches_review_as_the_start_copy(
     (shared / "spec.md").write_bytes(_REWRITTEN)
 
     snapshots = await load_input_snapshots(runtime, None)
-    capture = _with_outside_inputs(
+    capture = _outside_inputs_read(
         _empty_capture(),
         (spec,),
         _no_current_reads,
@@ -123,7 +123,7 @@ async def test_a_spec_rewritten_after_start_reaches_review_as_the_start_copy(
         snapshots=snapshots,
         admitted_roots=(os.fspath(shared),),
         current_reader=_current(os.fspath(shared)),
-    )
+    )[0]
 
     (item,) = capture.inputs
     assert item.text == _ORIGINAL and item.root == os.fspath(shared)
@@ -220,7 +220,7 @@ def test_a_removed_root_withdraws_its_snapshot_and_unbound_bytes_are_labelled_cu
     def current(*_: object) -> tuple[TaskInputFile, ...]:
         return (TaskInputFile(spec, _REWRITTEN, len(_REWRITTEN), origin="outside_workspace"),)
 
-    capture = _with_outside_inputs(
+    capture = _outside_inputs_read(
         _empty_capture(),
         (spec,),
         current,
@@ -228,7 +228,7 @@ def test_a_removed_root_withdraws_its_snapshot_and_unbound_bytes_are_labelled_cu
         verification_paths=frozenset(),
         snapshots=(snapshot,),
         admitted_roots=(),
-    )
+    )[0]
 
     (item,) = capture.inputs
     assert item.baseline == "current" and item.text == _REWRITTEN
@@ -663,6 +663,80 @@ def test_a_kept_copy_whose_folder_is_no_longer_listed_is_not_sent() -> None:
     assert [(item.path, item.current_state) for item in added] == [(kept, "same")]
     # The paths whose copies were left out, so the check counts them once (never stored).
     assert not_listed == (gone,)
+
+
+def test_a_kept_copy_beneath_a_client_listed_folder_is_sent_while_it_stays_listed() -> None:
+    """Maintainer decision 2026-11-07 (ADR-051 decision 5): a claim-bound task's agent keeps
+    copies beneath a folder its client's owner listed for the server, a root this server's
+    policy never names. The check sends such a copy only while the agent says a listed folder
+    still covers it, marked ``client_listed``; a local task never sends a copy beneath a root its
+    policy does not admit."""
+
+    from finishup.application.check_change import (  # noqa: PLC0415
+        CurrentInputsRead,
+        _snapshot_inputs,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    kept, dropped = "/client/specs/spec.md", "/client/old/notes.md"
+    snapshot = TaskInputSnapshotSet(
+        "task_start",
+        (
+            SnapshotFile(kept, "/client/specs", _ORIGINAL, len(_ORIGINAL)),
+            SnapshotFile(dropped, "/client/old", _ORIGINAL, len(_ORIGINAL)),
+        ),
+    )
+    asked: list[tuple[str, ...]] = []
+
+    def current(paths: tuple[str, ...]) -> CurrentInputsRead:
+        asked.append(paths)
+        return CurrentInputsRead({kept: _ORIGINAL}, frozenset(), frozenset({kept}))
+
+    added, not_listed = _snapshot_inputs(
+        (snapshot,), (kept, dropped), (), current, set(), 4, client_bound=True
+    )
+    assert asked == [(kept, dropped)]
+    assert [(item.path, item.root, item.current_state, item.client_listed) for item in added] == [
+        (kept, "/client/specs", "same", True)
+    ]
+    # The folder the owner no longer lists is simply not sent, as an un-admitted root's copy.
+    assert not_listed == ()
+    # A local task: no root of its policy covers either copy, so neither is read or sent.
+    assert _snapshot_inputs((snapshot,), (kept, dropped), (), current, set(), 4) == ([], ())
+    assert len(asked) == 1
+
+
+@pytest.mark.anyio
+async def test_a_claim_bound_agent_keeps_copies_with_no_root_of_the_policys(
+    shared: Path, tmp_path: Path
+) -> None:
+    """At task start a claim-bound task's agent is asked even when the policy admits no root,
+    since a folder its owner listed may cover the input (``client_record``); without that
+    marker an empty scope still reads nothing."""
+
+    runtime = _runtime("memory")
+    calls: list[tuple[str, ...]] = []
+
+    def agent(roots: tuple[str, ...], values: tuple[str, ...], **options: Any) -> Any:
+        calls.append(roots)
+        return snapshot_outside_inputs((os.fspath(shared),), values, **options)
+
+    scope = InputSnapshotScope((), (os.fspath(tmp_path / "repo"),), agent, client_record=True)
+    assert await record_input_snapshot(
+        runtime=runtime,
+        key=protocol_id("evt_", 9101),
+        values=(os.fspath(shared / "spec.md"),),
+        scope=scope,
+        boundary="task_start",
+        clock=FixedClock(),
+        request_id=None,
+    )
+    assert calls == [()]
+    ((only,),) = [kept.files for kept in await load_input_snapshots(runtime, None)]
+    assert (only.path, only.root, only.text) == (
+        os.fspath(shared / "spec.md"),
+        os.fspath(shared),
+        _ORIGINAL,
+    )
 
 
 @pytest.mark.anyio

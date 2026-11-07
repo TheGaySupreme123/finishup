@@ -732,26 +732,37 @@ class SnapshotOutsideInputsArguments:
 
 @dataclass(frozen=True, slots=True)
 class OutsideInputsRead:
-    """``read_outside_inputs``'s answer: the task inputs the agent read, and ``unlisted``.
+    """``read_outside_inputs``'s answer: the task inputs the agent read, ``unlisted`` and
+    ``listed``.
 
     ``unlisted`` are the indices, ascending, of the call's ``values`` the agent left unread
     because they name an existing file or folder beneath a named root that this client's owner
     has not listed for the server (``listed`` mode, ADR-051 decision 5). Every other value is
     read as a local service reads it; a value that names nothing is not reported, as a local read
     finds nothing there. Indices only: the answer never names a path the server did not send.
+
+    ``listed`` are the indices, ascending, of the call's ``values`` that lie at or beneath a
+    folder this client's owner listed for the server (``finishup server folders add``), in either
+    mode: the agent reads beneath those folders even where the server's own policy names no root
+    (ADR-051 decision 5, amended 2026-11-07), so the server leaves the decision on whether such an
+    input was admitted to the agent. Reported only for a value the local outside-input candidate
+    rule would look at, outside the claimed workspace and FinishUP's own directories; never which
+    folder, never a path the server did not send.
     """
 
     inputs: tuple[TaskInputFile, ...] = field(repr=False)
     unlisted: tuple[int, ...] = ()
+    listed: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class OutsideSnapshotsRead:
-    """``snapshot_outside_inputs``'s answer: the rows read, and ``unlisted`` as for
-    ``OutsideInputsRead``."""
+    """``snapshot_outside_inputs``'s answer: the rows read, and ``unlisted`` and ``listed`` as
+    for ``OutsideInputsRead``."""
 
     reads: tuple[OutsideSnapshotRead, ...] = field(repr=False)
     unlisted: tuple[int, ...] = ()
+    listed: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1505,14 +1516,17 @@ def _encode_outside_read(value: OutsideInputsRead) -> JsonValue:
         raise _fail()
     return {
         "inputs": _encode_task_inputs(value.inputs),
+        "listed": list(_unlisted_valid(value.listed)),
         "unlisted": list(_unlisted_valid(value.unlisted)),
     }
 
 
 def _decode_outside_read(value: object) -> OutsideInputsRead:
-    fields_ = _object(value, frozenset({"inputs", "unlisted"}))
+    fields_ = _object(value, frozenset({"inputs", "listed", "unlisted"}))
     return OutsideInputsRead(
-        _decode_task_inputs(fields_["inputs"]), _decode_unlisted(fields_["unlisted"])
+        _decode_task_inputs(fields_["inputs"]),
+        _decode_unlisted(fields_["unlisted"]),
+        _decode_unlisted(fields_["listed"]),
     )
 
 
@@ -1572,15 +1586,18 @@ def _encode_snapshots_read(value: OutsideSnapshotsRead) -> JsonValue:
     if type(value) is not OutsideSnapshotsRead:
         raise _fail()
     return {
+        "listed": list(_unlisted_valid(value.listed)),
         "reads": _encode_snapshot_reads(value.reads),
         "unlisted": list(_unlisted_valid(value.unlisted)),
     }
 
 
 def _decode_snapshots_read(value: object) -> OutsideSnapshotsRead:
-    fields_ = _object(value, frozenset({"reads", "unlisted"}))
+    fields_ = _object(value, frozenset({"listed", "reads", "unlisted"}))
     return OutsideSnapshotsRead(
-        _decode_snapshot_reads(fields_["reads"]), _decode_unlisted(fields_["unlisted"])
+        _decode_snapshot_reads(fields_["reads"]),
+        _decode_unlisted(fields_["unlisted"]),
+        _decode_unlisted(fields_["listed"]),
     )
 
 

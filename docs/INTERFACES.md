@@ -2018,12 +2018,15 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   `CheckChangeCapture.outside_inputs_not_admitted` (stored key written only when true), which the
   composition reads for new and recovered jobs alike; it carries no path. Its fixed sentence
   (`check_time_change_gap_sentence`) names the owner's step, `finishup privacy input-roots add
-  <folder>` in a trusted terminal on the computer the FinishUP service runs on, and says that for
-  a remote server that is its server host, where the folder must exist (a folder only on the
-  client cannot be admitted for a remote server yet, ADR-051 open question 1); its MCP short form
-  (`TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE`) names the same place. On a remote target the
-  command's `requires_server_host` line adds that meaning in fixed words
-  (`command_scope.server_host_refusal_line(error, command)`). Readiness `S`, disclosed on both routes (gap rule G4c): never
+  <folder>` in a trusted terminal on the computer the FinishUP service runs on, and, for a remote
+  server, `finishup server folders add NAME FOLDER` on the client machine, which admits the folder
+  for that server's claim-bound sessions in either mode (ADR-051 decision 5, maintainer decision
+  2026-11-07); its MCP short form (`TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE`) names the
+  same two. On a remote target `privacy input-roots`' `requires_server_host` line says it runs on
+  the server host for a folder that exists there, and names `server folders add` for a folder on
+  the client (`command_scope.server_host_refusal_line(error, command)`). For a claim-bound task
+  the decision is the server's only for a value its policy covers: a value the agent's answer says
+  a listed folder covers (`listed`) is admitted by the client and never counted here. Readiness `S`, disclosed on both routes (gap rule G4c): never
   agent work, a Stop-gate item or a closure blocker. A capture baseline for AI-powered absence
   proof (`SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS`), never a veto of local proof.
 
@@ -4606,7 +4609,7 @@ never inside a repository, with exact field sets.
 |---|---|---|
 | `yoetz.server-target/1` | `<ambient state dir>/servers/t_<8 hex>/target.json` | `schema`, `target_id` (`t_` + 8 lowercase hex), `name`, `kind`, `created_at`. `ssh` adds `user`, `host`, `port`, `remote_root`, `remote_launcher`. `https` and `local_port` add `base_url`, one of `ca_file` or `tls_pin` (`sha256:<64 hex>`), and `credential` (`keyring\|file`). Every remote kind adds `claim_salt` (32 random bytes), `authorized_at` and `disclosure_version`. |
 | `yoetz.server-selection/1` | `<ambient config dir>/server-selection.json` | `schema`, `target_id`. Absent means the ambient service. |
-| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory), and `mode` (`local\|listed`) once the owner chose one (at `server add`, or with `server folders mode`). Every remote kind has the same two modes and no default: no `mode` means `listed` (`not_chosen`), except an HTTPS target whose exact hostname is in `client.server_folders.OFFICIAL_ENDPOINT_HOSTS` and that trusts the system certificate store, which is `local` (`official_endpoint`). An absent record means no folder and no mode; one that cannot be read means `listed` with no folder. Written only by `server add` and `server folders add`/`remove`/`mode`, never sent to a server. |
+| `yoetz.server-folders/1` | `<target root>/config/folders.json` (remote kinds only) | `schema`, `target_id` (the root's own), `folders` (sorted, unique, at most 32 absolute paths that pass `admitted_input_root_valid` and neither are nor hold the home directory), and `mode` (`local\|listed`) once the owner chose one (at `server add`, or with `server folders mode`). Every remote kind has the same two modes and no default: no `mode` means `listed` (`not_chosen`), except an HTTPS target whose exact hostname is in `client.server_folders.OFFICIAL_ENDPOINT_HOSTS` and that trusts the system certificate store, which is `local` (`official_endpoint`). An absent record means no folder and no mode; one that cannot be read means `listed` with no folder. In both modes the folders also admit task inputs for that target's claim-bound sessions, whatever the server's own input-root policy names (maintainer decision 2026-11-07). Written only by `server add` and `server folders add`/`remove`/`mode`, never sent to a server. |
 
 A target name matches `[a-z0-9][a-z0-9-]{0,15}` and `local` is reserved. The name appears only in
 `target.json` and in owner displays (`server list`, `server status`, `server test`); errors, logs,
@@ -4921,8 +4924,8 @@ Bytes travel as base64 strings inside canonical JSON, and every codec round-trip
 | `probe_requested_paths` | git | `probe_requested_paths` | `RequestedPathProbe` tuple |
 | `count_change_lines` | git | `count_change_lines` | `ChangeLineCounts` |
 | `classify_undeclared_references` | git | `classify_undeclared_references` | reference triples |
-| `read_outside_inputs` | reads | `task_input_read.read_outside_inputs` | `OutsideInputsRead` (`inputs`: `TaskInputFile` tuple; `unlisted`: ascending indices into the call's `values`) |
-| `snapshot_outside_inputs` | reads | `task_input_read.snapshot_outside_inputs` | `OutsideSnapshotsRead` (`reads`: `OutsideSnapshotRead` tuple; `unlisted` as above) |
+| `read_outside_inputs` | reads | `task_input_read.read_outside_inputs` | `OutsideInputsRead` (`inputs`: `TaskInputFile` tuple; `unlisted` and `listed`: ascending indices into the call's `values`) |
+| `snapshot_outside_inputs` | reads | `task_input_read.snapshot_outside_inputs` | `OutsideSnapshotsRead` (`reads`: `OutsideSnapshotRead` tuple; `unlisted` and `listed` as above) |
 | `read_declared_test` | reads | `task_input_read.read_declared_test` | bytes or absent |
 | `read_text_beneath` | reads | `task_input_read.read_text_beneath` | `(bytes, size)` or absent |
 | `list_beneath` | reads | `task_input_read.list_beneath` | bounded listing |
@@ -4976,9 +4979,25 @@ confinement rules:
   the local adapters answer them, with the protected directories excluded as a local service
   excludes them, so a read rooted in one answers nothing (`None`, or no input) and is not
   refused; task-input reads walk every named root, and a declared test outside the claimed root
-  is read as a local service reads it. In mode `listed` what a read reaches must lie inside the
-  claimed worktree or at or beneath a listed folder (`folder_covers`, exact spelling); the record
-  narrows the server's roots, never widens them:
+  is read as a local service reads it. In both modes a listed folder admits the task inputs
+  beneath it for that target's claim-bound sessions, whatever the server's own policy names
+  (maintainer decision 2026-11-07): `read_outside_inputs` and `snapshot_outside_inputs` walk the
+  server's named roots first and then the listed folders, so an input beneath both keeps the
+  server's root and one beneath a listed folder alone has that folder as its root, and their
+  answer carries `listed`, the ascending indices of the server's values a listed folder covers
+  (only for a value the outside-input candidate rule would look at, outside the claimed worktree
+  and the protected directories; never the folder). The server marks an input whose root its own
+  policy does not admit `TaskInputFile.client_listed` (stored as `"client_listed": true`, only
+  when set), binds it to no policy root for egress (`semantic_case` leaves it out of
+  `input_roots`, so the gateway's E2E-2 root check does not apply; the client revokes it), sends a
+  kept copy beneath such a folder only while the current read names its path `listed`
+  (`CurrentInputsRead.listed`), and treats the covered values as admitted in
+  `outside_inputs_not_admitted`. A claim-bound task's agent is asked whenever the recipe carries
+  task inputs, even with no root of the policy's (`_outside_inputs`; `InputSnapshotScope.
+  client_record` at task start) and with no room left (it then reads nothing and only reports
+  coverage, and nothing it left unread is counted). In mode `listed` what a read reaches must lie
+  inside the claimed worktree or at or beneath a listed folder (`folder_covers`, exact spelling);
+  beneath the server's own roots the record narrows them, never widens them:
   - `read_text_beneath` and `list_beneath` on an absolute root in a protected directory are
     `root_not_admitted` even beneath a listed folder: a deliberate stricter-than-local rule for
     reviewer reads in mode `listed` alone, invisible to the server, where a refused reviewer read
@@ -4999,9 +5018,10 @@ confinement rules:
     when it names something that exists and passes the outside-input candidate rule (no hidden
     component, not credential-named, in no system or protected directory); one that names
     nothing is not reported, as a local read finds nothing there. The rest is read: the call
-    walks the named roots that are admitted or hold an admitted folder, for the values it kept,
-    and each input keeps the server's own root (`TaskInputFile.root`); a named root with no
-    value beneath it is left out unopened. The server freezes how many values the check-time
+    walks the named roots that are admitted or hold an admitted folder, and the listed folders,
+    for the values it kept, and each input keeps the root it was read beneath
+    (`TaskInputFile.root`); a named root with no value beneath it is left out unopened. The
+    window is decided over the named roots and the listed folders together. The server freezes how many values the check-time
     read left unread, plus the kept copies the current read named `unlisted` (whose copies it
     then does not send) that lie beneath none of those values, as the count
     `CheckChangeCapture.outside_inputs_not_listed` (written only when not zero), and discloses

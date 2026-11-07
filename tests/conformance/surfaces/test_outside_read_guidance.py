@@ -37,7 +37,11 @@ def test_final_prose_names_each_owner_step_and_where_it_runs() -> None:
 
     assert "never take it yourself" in final
     assert "`finishup privacy input-roots add <folder>`" in final
-    assert "for a remote server, its server host, where the folder must exist" in final
+    # A remote server's own folders are listed on the client (ADR-051 decision 5, 2026-11-07).
+    assert (
+        "for a remote server, `finishup server folders add NAME FOLDER`, run on the computer that"
+        " holds the project" in final
+    )
     assert "`finishup server folders add NAME FOLDER` for a file outside the project" in final
     assert "`finishup server folders mode NAME local`" in final
     assert "the only step for a test in the project that Git ignores" in final

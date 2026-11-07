@@ -296,11 +296,13 @@ def test_the_privacy_screen_names_admitted_outside_workspace_roots() -> None:
 
     none = PrivacyPosture(profile="assisted_review", llm_inference_enabled=True, readable=True)
     # Issue #1102 (review surfaces-r2-3): with none admitted the screen still names the way in.
-    # It says where that command runs: for a remote server, on its server host (ADR-051).
+    # It says where that command runs, and a remote server's own way in: a folder listed on
+    # this computer (ADR-051 decision 5, 2026-11-07).
     assert none.admitted_input_roots_summary == (
         "Outside-workspace task inputs: none admitted"
         " (add one with `finishup privacy input-roots add <folder>` on the computer the"
-        " FinishUP service runs on; for a remote server, its server host)"
+        " FinishUP service runs on; for a remote server, list a folder on this computer"
+        " with `finishup server folders add NAME FOLDER`)"
     )
     unreadable = PrivacyPosture(
         profile="assisted_review", llm_inference_enabled=True, readable=False
@@ -316,4 +318,4 @@ def test_the_privacy_screen_names_admitted_outside_workspace_roots() -> None:
     assert summary is not None
     assert "/data, /shared/legacy_app" in summary
     assert "finishup privacy input-roots" in summary
-    assert "for a remote server, its server host" in summary
+    assert "`finishup server folders add NAME FOLDER` are read too" in summary

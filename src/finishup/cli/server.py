@@ -21,9 +21,10 @@ that would change or use the selection is refused with ``selection_overridden``.
 Every remote kind has an outside-read mode (ADR-051 decision 5), the same two for each: what
 the target's server may read outside the claimed workspace on this computer, in ``local`` mode
 as a FinishUP service on this computer would, in ``listed`` mode only beneath the folders listed
-for it. ``add`` asks the owner which, on the trusted console as part of its typed confirmation
-(``--outside-reads local|listed`` answers it up front), except for an official FinishUP endpoint,
-which is ``local``. ``folders mode NAME local|listed`` changes it later: ``local`` needs the
+for it; in both modes a task's files beneath a listed folder are read, whatever the server's own
+policy admits (amended 2026-11-07). ``add`` asks the owner which, on the trusted console as part
+of its typed confirmation (``--outside-reads local|listed`` answers it up front), except for an
+official FinishUP endpoint, which is ``local``. ``folders mode NAME local|listed`` changes it later: ``local`` needs the
 owner to type the target name on the trusted console; ``listed`` is the way back. ``folders add
 NAME FOLDER`` lists one folder, with the same typed confirmation; ``folders remove`` is the
 reverse. ``folders list``, ``status`` and ``add`` show the mode. Once chosen, nothing asks again:
@@ -1491,6 +1492,11 @@ def _unreadable_record_lines(name: str) -> tuple[str, ...]:
     )
 
 
+# In mode local the listed folders still admit the files a task names (ADR-051 decision 5, amended
+# 2026-11-07); everything else beneath them is read as FinishUP on this computer would read it.
+_LOCAL_FOLDERS_LINE: Final = "Folders listed for it, whose files a task names it also reads:"
+
+
 def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Owner-display lines of a status document's remote target: its outside-read mode, the
     folders listed for it, and how to choose a mode when none was chosen. Empty for a target that
@@ -1509,7 +1515,7 @@ def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
             f"{origin})"
         ]
         if folders:
-            lines.append("Folders listed for it, read only in mode listed:")
+            lines.append(_LOCAL_FOLDERS_LINE)
             lines.extend(f"  {folder}" for folder in folders)
         return tuple(lines)
     lines = [f"Outside your projects: reads only folders you list (mode listed, {origin})"]
@@ -1796,11 +1802,12 @@ _FOLDER_NOTICE: Final = (
     "",
     "When that server checks or reviews your work, the FinishUP workspace agent here may send it",
     "the text of files beneath this folder that a task names, that its reviewer asks to read, or",
-    "that your agent declared as a test, within FinishUP's usual size limits. Hidden and",
-    "credential-named files are never read and links are never followed. The server's own",
-    "privacy policy decides whether a task's input files are read at all, but it does not bind a",
-    "server that breaks FinishUP's rules: such a server could read any other such file beneath",
-    "this folder and list the names in its folders. Allow only a folder you would let it see.",
+    "that your agent declared as a test, within FinishUP's usual size limits. The files a task",
+    "names beneath it are read in mode local too, even where the server's own privacy policy",
+    "admits no folder; that policy still decides whether they may be sent for AI-powered review.",
+    "Hidden and credential-named files are never read and links are never followed. A server",
+    "that breaks FinishUP's rules could read any other such file beneath this folder and list",
+    "the names in its folders. Allow only a folder you would let it see.",
     "Undo it with 'finishup server folders remove {name} FOLDER'.",
     "",
 )
@@ -1900,7 +1907,8 @@ def server_folders_add(
     name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
     folder: Annotated[str, typer.Argument(help="An existing folder, by its full path.")],
 ) -> None:
-    """List a folder a server may read in mode listed (you confirm it here)."""
+    """List a folder a server may read: a task's files beneath it in either mode, and in mode
+    listed all it reads outside your projects (you confirm it here)."""
 
     from finishup.cli.privacy_setup import admitted_root_from_path
     from finishup.client.server_folders import (
@@ -1934,8 +1942,8 @@ def server_folders_add(
     typer.echo(f"{record.name} ({record.target_id}) may now read files beneath {canonical}.")
     if _mode_and_origin(record, current)[0] == "local":
         typer.echo(
-            "It is in mode local, so outside your projects it already reads what FinishUP on "
-            "this computer would read; this folder is what it reads in mode listed."
+            "It is in mode local, so outside your projects it also reads what FinishUP on this "
+            "computer would read; the files a task names beneath this folder are read either way."
         )
 
 
@@ -1968,7 +1976,7 @@ def server_folders_list(
             f"local, {origin})."
         )
         if current.folders:
-            typer.echo("Folders listed for it, read only in mode listed:")
+            typer.echo(_LOCAL_FOLDERS_LINE)
             _emit(tuple(f"  {item}" for item in current.folders))
         typer.echo(
             f"To let it read only folders you list: 'finishup server folders mode {record.name} "

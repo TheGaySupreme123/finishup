@@ -210,8 +210,9 @@ def test_a_refused_input_root_says_where_it_runs_and_what_that_means_for_a_remot
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``privacy input-roots`` admits a folder on the server host, which must exist there: the
-    refusal says so in fixed words, so the owner learns a client-only folder cannot be admitted
-    for a remote server yet (ADR-051 open question 1). Other commands keep their line."""
+    refusal says so in fixed words, and names the client's own way in for a folder on this
+    computer, 'server folders add' (ADR-051 decision 5, 2026-11-07). Other commands keep their
+    line."""
 
     record = _remote_record()
     monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
@@ -220,7 +221,9 @@ def test_a_refused_input_root_says_where_it_runs_and_what_that_means_for_a_remot
     assert "requires_server_host" in result.stderr
     assert "run it on the server host" in result.stderr
     assert "the folder must exist there" in result.stderr
-    assert "cannot be admitted for a remote server yet" in result.stderr
+    assert "list it for that server here with 'finishup server folders add NAME FOLDER'" in (
+        result.stderr
+    )
     assert "/srv/specs" not in result.output + result.stderr
     other = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
     assert "must exist there" not in other.stderr
