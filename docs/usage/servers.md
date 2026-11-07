@@ -134,6 +134,14 @@ what your hooks captured, are closed within about a second of this computer repo
 setting, and nothing more is sent over them; a request already under way in that second may
 still finish.
 
+A command that acts on one server says what stands in the way of that server. For the chosen
+server it is `zero_network_remote_selected`, fixed by `finishup server use local`. For a server
+you added earlier but have not chosen, choosing this computer's FinishUP would change nothing:
+`finishup server login`, `connect`, `test` and `status` for it say `zero_network_in_force`, with
+when this computer last reported the setting, and the fix is to change this computer's privacy
+policy with `finishup privacy setup` first. `finishup server status` and `test` then show "not
+probed, nothing was sent" instead of probing it, and `test` never says the server did not answer.
+
 ### What this computer last reported
 
 Only this computer's own FinishUP service can tell its privacy policy, and it is usually stopped or
@@ -627,6 +635,7 @@ repeated safely.
 | `selection_overridden` | An isolation setting or a pinned test copy decides which FinishUP is used, so `server use` cannot. | Unset `FINISHUP_ISOLATED_ROOT`, or run the command from your everyday installation. |
 | `isolation_root_invalid` | The server in use has a missing or unsafe folder on this computer. | Run `finishup server use local`, then remove the server and add it again. |
 | `zero_network_remote_selected` | This computer forbids all network use, or last said so, and a server on another machine, a port or the web is chosen: nothing is sent to it, and a privacy change that would leave both on is refused when FinishUP cannot ask you. | Run `finishup server use local`, then restart open agent sessions, and make the change again if one was refused. |
+| `zero_network_in_force` | This computer forbids all network use, or last said so (with when), so FinishUP adds, chooses, logs in to, connects to and probes no server on another machine, a port or the web. Nothing was sent. | Change this computer's privacy policy with `finishup privacy setup`, then run the command again. |
 | `zero_network_selection_unreadable` | This computer forbids all network use, or last said so, and the saved server choice cannot be read, so FinishUP cannot tell whether a server elsewhere is still chosen. | Run `finishup server use local`; it clears the choice even when it cannot be read. Then restart open agent sessions. |
 | `selection_invalid` | The saved server choice is damaged, or names a server whose folder on this computer is missing or unsafe. `finishup server` commands say this instead of `isolation_root_invalid`. | Run `finishup server use local`; it clears the choice even when it cannot be read. |
 | `target_root_is_remote` | Something tried to start a FinishUP service on this computer for a server that runs elsewhere. FinishUP refuses and starts nothing. | Start it on the server instead, or run `finishup server use local` to use this computer's FinishUP. |

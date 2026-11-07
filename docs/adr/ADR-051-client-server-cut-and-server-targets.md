@@ -762,7 +762,14 @@ answers bounded `workspace_call`s on a connection that declared it.
     `zero_network_local_server_required`, so the CLI, MCP, hooks and the terminal interface say
     why and the remedy for a process whose selection predates the change, and no connector or
     agent is started for it. The check reads the marker only, never the service, so hooks keep
-    their budgets. `server login` refuses its key check the same way. A client-owned process
+    their budgets. A command that acts on one remote target names the refusal for that target
+    (`cli.server.zero_network_connection_refusal`): the selected target, or any target while the
+    selection cannot be read, is `zero_network_remote_selected` with `finishup server use local`;
+    any other remote target is `zero_network_in_force`, saying when this computer last reported
+    the state and that its privacy policy must change first (`finishup privacy setup`), since
+    switching would change nothing. `server login` refuses its key check, `server connect` its
+    connection, and `server status` and `server test` probe nothing (probe outcome `not_probed`
+    with that reason, "nothing was sent", never "did not answer"). A client-owned process
     that holds connections to a remote target open, or connects again on its own, enforces the
     same marker itself, because it would otherwise keep sending after the change: it checks
     before every connection it opens or relays and at least once a second while it runs, and on

@@ -283,3 +283,41 @@ async def test_server_status_reuses_the_item_server_read_and_asks_no_service_aga
     await runtime.server_status_lines("lab")
     assert reads == [1]
     assert built[-1] is None
+
+
+@pytest.mark.parametrize("selected", [True, False])
+async def test_server_status_of_a_named_server_probes_nothing_and_names_its_fix(
+    home: Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    """``/server`` status of one server while this computer last reported zero-network: nothing
+    is sent to probe it, and the fix is the one for that server ('finishup server use local' for
+    the selected one; this computer's privacy policy for one nothing uses)."""
+
+    from finishup.cli import server as server_cli
+    from finishup.tui.runtime import FinishUpRuntime
+
+    def never(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("nothing is probed or sent")
+
+    monkeypatch.setattr(server_cli, "_probe", never)
+    monkeypatch.setattr(zero_network, "everyday_network_state", lambda: "unreadable")
+    with targets.registry_lock():
+        record, _root = targets.new_remote_target("lab", "ssh", host="lab.example", port=22)
+        if selected:
+            targets.write_selection(record)
+    reset_selection_memo()
+    everyday_policy.record_reported_policy(
+        zero_network=True, now=datetime(2026, 11, 7, 9, 30, tzinfo=UTC)
+    )
+
+    lines = await FinishUpRuntime(cwd=home).server_status_lines("lab")
+
+    token = "zero_network_remote_selected" if selected else "zero_network_in_force"
+    assert f"State: not probed, nothing was sent ({token})" in lines
+    text = "\n".join(lines)
+    assert "did not answer" not in text
+    if selected:
+        assert "'finishup server use local'" in text
+    else:
+        assert "'finishup privacy setup'" in text
+        assert "server use local" not in text

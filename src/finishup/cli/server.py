@@ -94,6 +94,7 @@ __all__ = [
     "status_lines",
     "target_rows",
     "use_target",
+    "zero_network_connection_refusal",
 ]
 
 server_app = typer.Typer(
@@ -213,7 +214,8 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     ),
     "zero_network_in_force": (
         "this computer's FinishUP is set to make no network connections, so it cannot use a "
-        "server on another machine; change the privacy policy on this computer first",
+        "server on another machine; change the privacy policy on this computer first, with "
+        "'finishup privacy setup'",
         _USAGE,
     ),
     # ADR-051 decision 8 (2026-11-07): a connection's own refusal, e.g. at 'server connect'.
@@ -469,11 +471,58 @@ def _zero_network_in_force() -> bool:
                     f"this computer's FinishUP last reported, at {reported.reported_at}, that it "
                     "makes no network connections, and it cannot be asked now (its service is "
                     "stopped or locked), so it cannot use a server on another machine; change "
-                    "the privacy policy on this computer first"
+                    "the privacy policy on this computer first, with 'finishup privacy setup'"
                 ),
             )
         raise ServerCommandRefused("network_policy_unreadable")
     return state == "zero_network"
+
+
+def _selected_or_unknown(record: ServerTarget) -> bool:
+    """Whether the selection on disk names ``record``, or cannot be read (so it may)."""
+
+    try:
+        return read_selected_target_id() == record.target_id
+    except (TargetError, PathSafetyError):
+        return True
+
+
+def zero_network_connection_refusal(record: ServerTarget | None) -> ServerCommandRefused | None:
+    """Why nothing is sent to remote ``record`` now, when this computer last reported zero-network.
+
+    The connection check (``targets.require_current_authorization``) refuses every remote target
+    while this computer last reported a zero-network policy (ADR-051 decision 8). A command that
+    acts on one target names that refusal with the one command that fixes it for that target:
+
+    * the selected target, or any target while the selection cannot be read:
+      ``zero_network_remote_selected``, fixed by ``finishup server use local``;
+    * any other remote target: nothing uses it, so switching would change nothing. This
+      computer's own policy is what stands in the way: ``zero_network_in_force``, saying when it
+      was reported and that the privacy policy on this computer must change first.
+
+    ``None`` for a record that is not remote, or while the marker does not say zero-network (it is
+    never read under an isolation variable or runtime pin). Only generated ids and a fixed-shape
+    time are in the text.
+    """
+
+    if record is None or not record.is_remote:
+        return None
+    from finishup.client.everyday_policy import last_reported_zero_network
+
+    reported = last_reported_zero_network()
+    if reported is None:
+        return None
+    if _selected_or_unknown(record):
+        return ServerCommandRefused("zero_network_remote_selected")
+    return ServerCommandRefused(
+        "zero_network_in_force",
+        message=(
+            f"this computer's FinishUP last reported, at {reported.reported_at}, that it makes no "
+            f"network connections, so nothing was sent to server target {record.target_id}; to "
+            "use a server on another machine, change the privacy policy on this computer first, "
+            "with 'finishup privacy setup'"
+        ),
+    )
 
 
 # The add-time question may be answered wrongly a few times before nothing is added.
@@ -1213,6 +1262,22 @@ def _probe_document(result: ProbeResult | None, error: TargetRuntimeError | None
     }
 
 
+def _not_probed(reason: str) -> JsonValue:
+    """The probe of a target nothing was sent to, with the closed reason why."""
+
+    return {
+        "outcome": "not_probed",
+        "reason": reason,
+        "phase": None,
+        "service_version": None,
+        "service_instance_id": None,
+        "service_state": None,
+        "vault_mode": None,
+        "round_trip_p95_ms": None,
+        "samples": 0,
+    }
+
+
 def _resolve(name: str | None) -> tuple[ServerTarget | None, Path | None, bool]:
     """``(record, root, everyday)`` for ``name``, or for this process's own root when omitted."""
 
@@ -1264,10 +1329,12 @@ def build_status_document(
     record, root, everyday = _resolve(name)
     result: ProbeResult | None = None
     failure: TargetRuntimeError | None = None
-    try:
-        result = _probe(record, root)
-    except TargetRuntimeError as error:
-        failure = error
+    refused = zero_network_connection_refusal(record)
+    if refused is None:
+        try:
+            result = _probe(record, root)
+        except TargetRuntimeError as error:
+            failure = error
     authorization: JsonValue = None
     if record is not None and record.is_remote:
         authorization = {
@@ -1306,7 +1373,10 @@ def build_status_document(
         "selection_overridden": source in _EXPLICIT_SOURCES and selected is not None,
         "client_version": __version__,
         "target": target,
-        "probe": _probe_document(result, failure),
+        # Nothing is sent to probe it while this computer is zero-network (ADR-051 decision 8).
+        "probe": (
+            _probe_document(result, failure) if refused is None else _not_probed(refused.reason)
+        ),
         "zero_network_selection": _zero_network_selection(zero_network),
         "observed_at": format_rfc3339_ms(stamp),
     }
@@ -1339,6 +1409,21 @@ def _zero_network_selection(
     return None if item is None else cast(JsonValue, item.fact())
 
 
+# Why a status document's target was not probed (ADR-051 decision 8), and the one way out.
+_NOT_PROBED_LINES: Final[Mapping[str, str]] = {
+    "zero_network_remote_selected": (
+        "This computer's FinishUP makes no network connections (as it last reported), so it never "
+        "uses the selected server elsewhere; run 'finishup server use local', then restart open "
+        "agent sessions."
+    ),
+    "zero_network_in_force": (
+        "This computer's FinishUP makes no network connections (as it last reported), so it uses "
+        "no server on another machine; to use one, change the privacy policy on this computer "
+        "first, with 'finishup privacy setup'."
+    ),
+}
+
+
 def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
     """The owner display of a status document, a remote target's outside reads included."""
 
@@ -1359,7 +1444,12 @@ def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
     if probe["phase"] is not None:
         reason += f", phase {probe['phase']}"
     reason += ")" if reason else ""
-    lines.append(f"State: {state}{reason}")
+    not_sent = _NOT_PROBED_LINES.get(str(probe["reason"])) if state == "not_probed" else None
+    if not_sent is not None:
+        lines.append(f"State: not probed, nothing was sent ({probe['reason']})")
+        lines.append(not_sent)
+    else:
+        lines.append(f"State: {state}{reason}")
     lines.append(
         f"Release: client {document['client_version']}, server "
         f"{probe['service_version'] or 'unknown'}"
@@ -1459,11 +1549,16 @@ def server_test(
 ) -> None:
     """Probe a target and compare its round trip with the hook and startup-gate budgets."""
 
+    record, _root, _everyday = _resolve(name)
     # These lines never show the zero-network item (``status`` and ``list`` do), so this
     # computer's service is not asked for its policy.
     document = build_status_document(name, zero_network=lambda: None)
     _emit(status_lines(document))
     probe = cast(dict[str, JsonValue], document["probe"])
+    if probe["outcome"] == "not_probed":
+        # Nothing was sent (ADR-051 decision 8): say why and the one command that fixes it.
+        refusal = zero_network_connection_refusal(record)
+        raise refusal if refusal is not None else ServerCommandRefused(str(probe["reason"]))
     if probe["outcome"] not in {"ready", "reachable"}:
         typer.echo("The target did not answer a status call.", err=True)
         raise typer.Exit(_UNAVAILABLE)
@@ -1589,12 +1684,11 @@ def server_login(
     record = _target_or_fail(name)
     if record.kind not in {"https", "local_port"}:
         raise ServerCommandRefused("credential_not_applicable")
-    from finishup.client.everyday_policy import last_reported_zero_network
-
-    if last_reported_zero_network() is not None:
+    refusal = zero_network_connection_refusal(record)
+    if refusal is not None:
         # The key is checked against the server before it is stored: a connection, and nothing
         # is sent to a server elsewhere while this computer is zero-network (ADR-051 decision 8).
-        raise ServerCommandRefused("zero_network_remote_selected")
+        raise refusal
     try:
         secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
         _check_https_key(record, secret)
@@ -1645,7 +1739,11 @@ def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> 
     record, root, everyday = _resolve(name)
     kind: TargetKind = "local" if record is None else record.kind
     if action == "ensure_ready":
-        # Nothing is sent to a target confirmed under an older disclosure; 'stop' stays usable.
+        # Nothing is sent while this computer is zero-network, named for this target (ADR-051
+        # decision 8), or to a target confirmed under an older disclosure; 'stop' stays usable.
+        refusal = zero_network_connection_refusal(record)
+        if refusal is not None:
+            raise refusal
         require_current_authorization(record)
     # The everyday server starts here even while another is selected: a spawned service is told
     # its spawner's root (``service run --ambient-root``) and never reads the selection itself.

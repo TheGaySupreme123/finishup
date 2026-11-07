@@ -636,23 +636,141 @@ def test_an_unreadable_policy_without_a_zero_network_report_stays_refused_as_unr
     assert console.instances == []
 
 
-def test_server_login_sends_no_key_check_while_this_computer_last_reported_zero_network(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+# --- a command acting on one remote server: the refusal and the fix for that server -------------
+#
+# Every connection to a server elsewhere is refused while this computer last reported zero-network.
+# The fix depends on the server: for the selected one (or a selection that cannot be read) it is
+# 'finishup server use local'; for any other, nothing uses it, so switching changes nothing, and the
+# fix is this computer's privacy policy ('finishup privacy setup').
+
+
+def _never(*_args: object, **_kwargs: object) -> object:
+    raise AssertionError("nothing is read, probed or sent")
+
+
+def _in_force_named(stderr: str, record: targets.ServerTarget) -> None:
+    assert stderr.startswith("zero_network_in_force: ")
+    assert f"last reported, at {_STAMP}, that it makes no network connections" in stderr
+    assert f"nothing was sent to server target {record.target_id}" in stderr
+    assert "'finishup privacy setup'" in stderr
+    assert "server use local" not in stderr
+
+
+@pytest.mark.parametrize("kind", ["https", "local_port"])
+def test_server_login_of_a_server_not_in_use_names_this_computers_policy_as_the_fix(
+    home: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    _remote("https", select=False)
+    record = _remote(kind, select=False)
     record_reported_policy(zero_network=True, now=_AT)
-
-    def never(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("nothing is read or sent")
-
-    monkeypatch.setattr(server_cli, "_check_https_key", never)
-    monkeypatch.setattr(server_cli, "_read_secret_on_console", never)
+    monkeypatch.setattr(server_cli, "_check_https_key", _never)
+    monkeypatch.setattr(server_cli, "_read_secret_on_console", _never)
 
     result = _invoke("server", "login", _NAME)
 
     assert result.exit_code == 2
-    assert result.stderr.startswith("zero_network_remote_selected: ")
-    assert "'finishup server use local'" in result.stderr
+    _in_force_named(result.stderr, record)
+
+
+def test_server_login_of_the_selected_server_names_server_use_local_and_that_fix_takes(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _remote("https", select=True)
+    record_reported_policy(zero_network=True, now=_AT)
+    monkeypatch.setattr(server_cli, "_check_https_key", _never)
+    monkeypatch.setattr(server_cli, "_read_secret_on_console", _never)
+
+    first = _invoke("server", "login", _NAME)
+
+    assert first.exit_code == 2
+    assert first.stderr.startswith("zero_network_remote_selected: ")
+    assert "'finishup server use local'" in first.stderr
+    # The remedy changes what stands in the way: the server is no longer chosen, so the next
+    # refusal names this computer's policy, never the same switch again.
+    assert _invoke("server", "use", "local").exit_code == 0
+    assert targets.read_selected_target_id() is None
+    second = _invoke("server", "login", _NAME)
+    assert second.exit_code == 2
+    _in_force_named(second.stderr, record)
+
+
+@pytest.mark.parametrize("selected", [True, False])
+def test_server_connect_names_the_fix_for_the_server_it_acts_on(
+    home: Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    record = _remote("ssh", select=selected)
+    record_reported_policy(zero_network=True, now=_AT)
+    monkeypatch.setattr(server_cli, "runtime_for", _never)
+
+    result = _invoke("server", "connect", _NAME)
+
+    assert result.exit_code == 2
+    if selected:
+        assert result.stderr.startswith("zero_network_remote_selected: ")
+        assert "'finishup server use local'" in result.stderr
+    else:
+        _in_force_named(result.stderr, record)
+
+
+@pytest.mark.parametrize("selected", [True, False])
+def test_server_test_and_status_probe_nothing_and_say_why_and_the_fix(
+    home: Path, monkeypatch: pytest.MonkeyPatch, selected: bool
+) -> None:
+    record = _remote("ssh", select=selected)
+    record_reported_policy(zero_network=True, now=_AT)
+    _policy(monkeypatch, "unreadable")
+    monkeypatch.setattr(server_cli, "_probe", _never)
+    token = "zero_network_remote_selected" if selected else "zero_network_in_force"
+
+    tested = _invoke("server", "test", _NAME)
+
+    assert tested.exit_code == 2, tested.output
+    # Nothing was sent, so nothing "did not answer".
+    assert "did not answer" not in tested.stdout + tested.stderr
+    assert f"State: not probed, nothing was sent ({token})" in tested.stdout
+    if selected:
+        assert tested.stderr.startswith("zero_network_remote_selected: ")
+        assert "'finishup server use local'" in tested.stdout + tested.stderr
+    else:
+        _in_force_named(tested.stderr, record)
+        assert "'finishup privacy setup'" in tested.stdout
+
+    status = _invoke("server", "status", _NAME, "--json")
+    assert status.exit_code == 0, status.output
+    document = json.loads(status.stdout)
+    validate_schema_instance("server-target-status", "1.0.0", document)
+    assert document["probe"]["outcome"] == "not_probed"
+    assert document["probe"]["reason"] == token
+
+
+def test_a_selection_that_cannot_be_read_keeps_server_use_local_as_the_fix(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _remote("ssh", select=False)
+    record_reported_policy(zero_network=True, now=_AT)
+
+    def unreadable() -> str | None:
+        raise targets.TargetError("selection_invalid")
+
+    monkeypatch.setattr(server_cli, "read_selected_target_id", unreadable)
+
+    refusal = server_cli.zero_network_connection_refusal(record)
+
+    # It may be the chosen server: 'finishup server use local' rewrites the selection either way.
+    assert refusal is not None and refusal.reason == "zero_network_remote_selected"
+
+
+def test_no_refusal_is_named_without_a_zero_network_report_or_for_a_local_server(
+    home: Path,
+) -> None:
+    record = _remote("ssh", select=False)
+    assert server_cli.zero_network_connection_refusal(record) is None
+    record_reported_policy(zero_network=False, now=_AT)
+    assert server_cli.zero_network_connection_refusal(record) is None
+    record_reported_policy(zero_network=True, now=_AT)
+    assert server_cli.zero_network_connection_refusal(None) is None
+    with targets.registry_lock():
+        local, _root = targets.new_local_target("work")
+    assert server_cli.zero_network_connection_refusal(local) is None
 
 
 # --- a change that would make this computer zero-network: two choices, or refused --------------

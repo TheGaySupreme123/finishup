@@ -4783,7 +4783,15 @@ before `target_reauthorization_required`. `zero_network_remote_selected` is a pr
 and a member of `REMOTE_CONNECTION_PHASES`, continuation `zero_network_local_server_required`
 (directive: this computer makes no network connections, nothing was sent, ask the owner to run
 `finishup server use local`, then restart the session; nudge: never select a server or change the
-policy for the owner). `server login` refuses its key check with the same reason. A client-owned
+policy for the owner). `cli.server.zero_network_connection_refusal(record)` (a
+`ServerCommandRefused` or `None`) names it for one target while the marker says zero-network: the
+selected target (or any, while `read_selected_target_id()` raises) is
+`zero_network_remote_selected`; any other remote target is `zero_network_in_force` with the fixed
+sentence naming `reported_at`, the target id and `finishup privacy setup`. `server login` refuses
+its key check and `server connect` its `ensure_ready` with it, and `build_status_document` sends no
+probe: its `probe` is `{"outcome": "not_probed", "reason": <that token>, ...}` (all other fields
+null, `samples` 0), `status_lines` says "State: not probed, nothing was sent (<token>)" and the
+fix, and `server test` exits with the refusal (exit 2) instead of "did not answer". A client-owned
 process that keeps connections to a remote target open or reconnects on its own reads
 `last_reported_zero_network()` itself before each connection and at least once a second, closes
 what it holds and sends nothing more once it answers; each approach's own section names such
