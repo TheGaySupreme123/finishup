@@ -24,7 +24,9 @@ These confinements hold on top of the adapters':
   (``finishup server folders add``). An existing file or folder beyond that is never read: a
   reviewer read or listing, or a declared test, is refused (``root_not_admitted``); a task-input
   read leaves just those inputs unread and reports their indices (``unlisted``), so the server
-  says so in a fixed receipt line and keeps the rest of its read. A path that does not exist
+  says so in a fixed receipt line and keeps the rest of its read, which never takes in a value
+  the local read would not look for (a word the spaces of a spaced value cut out, a value past
+  its window) in place of one left unread. A path that does not exist
   reads as nothing, as it does locally. A record that cannot be read, and an agent bound to
   none, are ``listed`` with no folder. In both modes outside reads never enter the claimed
   workspace through an outside root, or this client's own FinishUP directories at all, whatever
@@ -73,6 +75,7 @@ from finishup.adapters.task_input_read import (
     ReadDeadline,
     declared_test_top,
     list_beneath,
+    outside_read_window,
     read_declared_test,
     read_outside_inputs,
     read_text_beneath,
@@ -506,22 +509,31 @@ class WorkspaceAgentHandler:
         return path == self._root or path.startswith(self._root.rstrip("/") + "/")
 
     def _input_scope(
-        self, roots: Sequence[str], values: Sequence[str]
+        self,
+        roots: Sequence[str],
+        values: Sequence[str],
+        *,
+        excluded: tuple[str, ...],
+        space_cut: frozenset[str] = frozenset(),
     ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[int, ...]]:
         """The roots a task-input read walks, the values it reads, and the indices it left unread.
 
         Each named root must have the shape an owner may admit, or the whole call is
         ``root_not_admitted``. In ``local`` mode every named root is walked for every value, as a
-        local service walks the roots its own policy admitted. In ``listed`` mode a value the task
-        names at or beneath a named root (a path the read could open, as ``read_outside_inputs``
-        locates it) is read only when it lies inside the claimed worktree, which the read never
-        enters, or at or beneath a folder the owner listed; any other is left unread, and its
-        index is reported (``unlisted``) when it names something that exists
-        (``_exists_visibly``), so the server can say so and keep the rest of what it asked for.
-        A value that names nothing is not reported: a local read would find nothing there
-        either. A named root beneath which the task names nothing is never opened and is left
-        out; one that holds a listed folder is walked only to the values beneath that folder, so
-        the record narrows the server's roots and never widens them.
+        local service walks the roots its own policy admitted. In ``listed`` mode the values are
+        first narrowed to those the local read would look for (``outside_read_window``: its
+        window, less the words the spaces of a spaced value that names something there cut out,
+        decided over every named root before any is left out), so leaving a spaced value unread
+        never lets its words be read in its place. Of those, a value the task names at or beneath
+        a named root (a path the read could open, as ``read_outside_inputs`` locates it) is read
+        only when it lies inside the claimed worktree, which the read never enters, or at or
+        beneath a folder the owner listed; any other is left unread, and its index is reported
+        (``unlisted``) when it names something that exists (``_exists_visibly``), so the server
+        can say so and keep the rest of what it asked for. A value that names nothing is not
+        reported: a local read would find nothing there either. A named root beneath which the
+        task names nothing is never opened and is left out; one that holds a listed folder is
+        walked only to the values beneath that folder, so the record narrows the server's roots
+        and never widens them.
         """
 
         if any(not admitted_input_root_valid(root) for root in roots):
@@ -532,7 +544,11 @@ class WorkspaceAgentHandler:
         folders = outside.folders
         kept: list[str] = []
         unlisted: list[int] = []
-        for index, value in enumerate(values):
+        looked = outside_read_window(
+            tuple(roots), tuple(values), excluded=excluded, space_cut=space_cut
+        )
+        for index in looked:
+            value = values[index]
             if not value.startswith("/") or "\x00" in value:
                 kept.append(value)  # never located beneath a root, so never read
                 continue
@@ -739,20 +755,22 @@ class WorkspaceAgentHandler:
         """Task inputs beneath the named roots that are admitted here (``_input_scope``), and the
         indices of the values left unread because the owner did not list them."""
 
-        roots, values, unlisted = self._input_scope(arguments.roots, arguments.values)
+        excluded = self._excluded(arguments.excluded, call, outside=True)
+        roots, values, unlisted = self._input_scope(
+            arguments.roots, arguments.values, excluded=excluded, space_cut=arguments.space_cut
+        )
         inputs = read_outside_inputs(
-            roots,
-            values,
-            limit=arguments.limit,
-            excluded=self._excluded(arguments.excluded, call, outside=True),
-            space_cut=arguments.space_cut,
+            roots, values, limit=arguments.limit, excluded=excluded, space_cut=arguments.space_cut
         )
         return OutsideInputsRead(inputs, unlisted)
 
     def _snapshot_outside_inputs(
         self, arguments: SnapshotOutsideInputsArguments, call: _Call
     ) -> object:
-        roots, values, unlisted = self._input_scope(arguments.roots, arguments.values)
+        excluded = self._excluded(arguments.excluded, call, outside=True)
+        roots, values, unlisted = self._input_scope(
+            arguments.roots, arguments.values, excluded=excluded
+        )
         reads = snapshot_outside_inputs(
             roots,
             values,
@@ -760,7 +778,7 @@ class WorkspaceAgentHandler:
             max_bytes=arguments.max_bytes,
             # The read's own budget, never past the call's deadline.
             seconds=min(arguments.budget_ms / 1_000, call.remaining()),
-            excluded=self._excluded(arguments.excluded, call, outside=True),
+            excluded=excluded,
         )
         return OutsideSnapshotsRead(reads, unlisted)
 

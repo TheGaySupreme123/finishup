@@ -406,7 +406,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   named root, judged one at a time (amended 2026-11-07, refusal-guide review): a path the owner
   did not list is left unread and the rest of the read goes on, and the answer carries, beside
   the files, the indices of the server's own values it left unread (`unlisted`; indices only,
-  never a path the server did not send). The server freezes that as the check-time change's
+  never a path the server did not send). The values judged are first narrowed to those the local
+  read would look for: its window of 16, less the words the spaces of a quoted spaced value cut
+  out when that whole value names something beneath a named root (issue #1102), decided before
+  any value is left out, so leaving a spaced value unread never lets one of its words be read
+  under the task's name. The server freezes that as the check-time change's
   `outside_inputs_not_listed` flag and discloses the closed code `outside_reads_not_listed`,
   whose fixed sentence names both ways out and where to run them; so a listed-mode input costs
   only that input, never the whole check-time change, and is never passed over in silence. A

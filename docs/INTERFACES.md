@@ -4974,8 +4974,14 @@ confinement rules:
     inside the claimed worktree or at or beneath an admitted folder, or when the root joined with
     `relative`, normalized, does; otherwise `root_not_admitted` (a listing of a root above a
     narrower folder included).
-  - `read_outside_inputs` and `snapshot_outside_inputs` judge each value at or beneath a named
-    root on its own (amended 2026-11-07): one that lies neither inside the claimed worktree nor at
+  - `read_outside_inputs` and `snapshot_outside_inputs` first narrow the values to those the
+    local read would look for (`task_input_read.outside_read_window`: its first 16, less the
+    space-cut words of a quoted spaced value that names something beneath a named root, issue
+    #1102's `drop_space_cut_words`, decided over every named root), so leaving a spaced value
+    unread never lets one of its words, a folder the owner may have listed for another reason, be
+    read in its place, and a value past the local window is never read. They then judge each
+    value at or beneath a named root on its own (amended 2026-11-07): one that lies neither inside
+    the claimed worktree nor at
     or beneath an admitted folder is left unread, and its index joins the answer's `unlisted`
     when it names something that exists and passes the outside-input candidate rule (no hidden
     component, not credential-named, in no system or protected directory); one that names
