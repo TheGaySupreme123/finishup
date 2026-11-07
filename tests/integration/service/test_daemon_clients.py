@@ -4871,7 +4871,9 @@ async def test_production_composition_shares_the_staged_reconcile_with_the_human
     daemon = ServiceDaemon(_composition=composition)
     await daemon.start()
     try:
-        effects = composition.human_control_service._effects  # pyright: ignore[reportPrivateUsage]
+        # The composition holds it as a closable; the daemon's own service is what it shares.
+        human: Any = composition.human_control_service
+        effects = human._effects  # pyright: ignore[reportPrivateUsage]
         assert type(effects) is daemon_module._LockedHumanEffects  # pyright: ignore[reportPrivateUsage]
         assert effects._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
         assert daemon._staged_reconcile is composition.staged_reconcile  # pyright: ignore[reportPrivateUsage]
