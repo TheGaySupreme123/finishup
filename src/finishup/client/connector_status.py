@@ -67,7 +67,9 @@ CONNECTOR_LOCK_NAME: Final = "connector.lock"
 CONNECTOR_IDLE_SECONDS: Final = 900.0
 CONNECTOR_PHASES: Final = frozenset({"starting", "ready", "unavailable", "stopped"})
 # ``unavailable`` names one of the remote connection phases (``protocol.errors``); ``stopped``
-# names why the process ended.
+# names why the process ended. ``zero_network_remote_selected`` is both: the connector refuses
+# to relay while this computer last reported a zero-network policy, then stops for it (ADR-051
+# decision 8).
 _UNAVAILABLE_REASONS: Final = frozenset(
     {
         "remote_auth_failed",
@@ -75,9 +77,12 @@ _UNAVAILABLE_REASONS: Final = frozenset(
         "remote_incompatible",
         "remote_service_not_running",
         "remote_unreachable",
+        "zero_network_remote_selected",
     }
 )
-_STOPPED_REASONS: Final = frozenset({"idle_timeout", "stop_requested", "connector_failed"})
+_STOPPED_REASONS: Final = frozenset(
+    {"idle_timeout", "stop_requested", "connector_failed", "zero_network_remote_selected"}
+)
 CONNECTOR_REASONS: Final = _UNAVAILABLE_REASONS | _STOPPED_REASONS
 
 type ConnectorPhase = Literal["starting", "ready", "unavailable", "stopped"]

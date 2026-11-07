@@ -14,6 +14,12 @@ connection it delivers what this client's hooks captured for that workspace
 (``ClientObservationDrain``), each row attested by the client's own observation store. The
 connection is served by the connector itself (``dial``), never through its endpoint, so it never
 counts as client activity and never renews its own lease. Nothing here logs or raises a path.
+
+Before every connection attempt the agent asks the shared connection check
+(``targets.require_current_authorization`` for its target's record): while this computer last
+reported a zero-network policy (ADR-051 decision 8, maintainer decision of 2026-11-07), or once
+the target needs a fresh confirmation, it stops for good instead of connecting again, and it
+delivers nothing while that record says zero-network.
 """
 
 from __future__ import annotations
@@ -27,9 +33,10 @@ from typing import Final
 from finishup.adapters.control.unix_socket import AuthenticatedUnixStream
 from finishup.adapters.workspace_root import RepositoryIdentityError
 from finishup.client.claimed_workspaces import claimed_workspace
+from finishup.client.everyday_policy import last_reported_zero_network
 from finishup.client.observation_outbox import ClientObservationDrain
 from finishup.client.remote_binding import binding_for_active_root
-from finishup.client.targets import TargetError
+from finishup.client.targets import TargetError, read_target, require_current_authorization
 from finishup.ports.control import ControlClientKind, WorkspaceClaim
 from finishup.service.client import ClientWorkspaceBinding, ServiceClient, connect_service_stream
 
@@ -54,11 +61,17 @@ class ConnectorAgent:
         "_dial",
         "_drain",
         "_drain_lock",
+        "_root",
         "_supervisor",
     )
 
     def __init__(
-        self, binding: ClientWorkspaceBinding, drain: ClientObservationDrain, dial: Dial
+        self,
+        binding: ClientWorkspaceBinding,
+        drain: ClientObservationDrain,
+        dial: Dial,
+        *,
+        root: Path,
     ) -> None:
         if type(binding) is not ClientWorkspaceBinding or binding.agent is None:
             raise TypeError("workspace_binding_invalid")
@@ -67,6 +80,7 @@ class ConnectorAgent:
         self._binding = binding
         self._drain = drain
         self._dial = dial
+        self._root = root
         self._client: ServiceClient | None = None
         self._closing = False
         self._connected = asyncio.Event()
@@ -101,9 +115,26 @@ class ConnectorAgent:
             return False
         return self.connected
 
+    def _may_connect(self) -> bool:
+        """Whether anything may be sent to this agent's target now (the shared check).
+
+        A file read only. While this computer last reported a zero-network policy, or once the
+        target's record needs a fresh confirmation or can no longer be read, nothing is.
+        """
+
+        try:
+            require_current_authorization(read_target(self._root))
+        except TargetError:
+            return False
+        return True
+
     async def _supervise(self) -> None:
         delay = _RECONNECT_MIN_SECONDS
         while not self._closing:
+            if not await asyncio.to_thread(self._may_connect):
+                # Never connect again: the connector's own check stops it, and a client that
+                # may connect again later opens a new agent through the same check.
+                return
             try:
                 stream = await self._dial()
                 client = await connect_service_stream(
@@ -139,6 +170,10 @@ class ConnectorAgent:
 
         client = self._client
         if client is None or client.closed:
+            return
+        if last_reported_zero_network() is not None:
+            # Nothing leaves this computer while it last reported zero-network (ADR-051
+            # decision 8); the rows wait in the outbox.
             return
         async with self._drain_lock:
             with contextlib.suppress(Exception):
@@ -178,6 +213,6 @@ async def open_connector_agent(
         return None
     if binding is None or binding.claim != claim or binding.agent is None:
         return None
-    agent = ConnectorAgent(binding, ClientObservationDrain(workspace), dial)
+    agent = ConnectorAgent(binding, ClientObservationDrain(workspace), dial, root=root)
     agent.start()
     return agent

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
 import socket
 from collections.abc import Iterator
@@ -514,3 +515,212 @@ def test_a_background_agent_reads_the_folders_of_its_own_target(home: Path, tmp_
 
     with selection_override(root):
         asyncio.run(exercise())
+
+
+# -- zero-network (ADR-051 decision 8, maintainer decision of 2026-11-07) ----------------------
+#
+# This computer's zero-network policy and a server elsewhere are never in force together. The
+# connector is the last line of defence for everything already running: it reads the same record
+# as every connection check and refuses, stops, and delivers nothing once it says zero-network.
+
+_ZERO_NETWORK = "zero_network_remote_selected"
+
+
+async def _refused(stream: AuthenticatedUnixStream) -> bool:
+    """Closed with no byte answered: an end of stream, or a reset (the hello went unread)."""
+
+    from finishup.adapters.control.unix_socket import LocalControlTransportError
+
+    try:
+        return await _closed_unanswered(stream)
+    except LocalControlTransportError:
+        return True
+
+
+async def _until_ready(root: Path) -> None:
+    async with asyncio.timeout(5):
+        while (status := read_connector_status(root)) is None or status.phase != "ready":
+            await asyncio.sleep(0.01)
+
+
+def test_a_running_connector_stops_within_a_tick_once_this_computer_reports_zero_network(
+    home: Path,
+) -> None:
+    from finishup.client import everyday_policy
+
+    record, root = _ssh_target(home)
+    agent = _Agent()
+
+    async def opener(_root: Path, _claim: WorkspaceClaim, _dial: object) -> _Agent:
+        return agent
+
+    async def exercise() -> str:
+        listener = await bind_control_listener()
+        # No delivery is due while it runs: any delivery seen is the last one, made as it stops.
+        connector = Connector(root, record, agent_opener=opener, drain_interval=3_600)
+        await connector._observe_claim(  # pyright: ignore[reportPrivateUsage]
+            WorkspaceClaim(identity_kind="directory", digest=CLAIM_DIGEST, worktree=WORKTREE_DIGEST)
+        )
+        connector._ssh = _StubMaster(root, restarts=[])  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        serving = asyncio.create_task(connector.serve(listener))
+        await _until_ready(root)
+        assert everyday_policy.record_reported_policy(zero_network=True) is True
+        # It stops on its own (the idle stop is 15 minutes away): within a tick, not a lease.
+        async with asyncio.timeout(5):
+            return await serving
+
+    with selection_override(root):
+        reason = asyncio.run(exercise())
+    assert reason == _ZERO_NETWORK
+    status = read_connector_status(root)
+    assert status is not None and (status.phase, status.reason) == ("stopped", _ZERO_NETWORK)
+    # Its background agent is closed, and nothing was delivered on the way out.
+    assert agent.alive is False and agent.drains == 0
+    assert not (root / "run" / "control.sock").exists()
+
+
+def test_nothing_is_relayed_for_a_client_or_an_agent_while_zero_network(home: Path) -> None:
+    from finishup.adapters.control.unix_socket import LocalControlTransportError
+    from finishup.client import everyday_policy
+    from finishup.service import client as service_client
+
+    record, root = _ssh_target(home)
+    assert everyday_policy.record_reported_policy(zero_network=True) is True
+
+    async def exercise() -> ScriptedDaemon:
+        daemon = ScriptedDaemon()
+        master = _StubMaster(root, restarts=[])
+        upstream = await _serve_upstream(master.upstream_path, daemon, [True])
+        connector = Connector(root, record)
+        connector._ssh = master  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        try:
+            # A background agent's own connection (it bypasses the endpoint)...
+            agent = await connector._dial_own()  # pyright: ignore[reportPrivateUsage]
+            with contextlib.suppress(LocalControlTransportError):
+                await agent.send_all(_hello())
+            assert await _refused(agent)
+            await agent.aclose()
+            # ...and a client's connection through the endpoint, as an older process would dial.
+            local, theirs = _pair()
+            serving = asyncio.create_task(
+                connector._serve_local(theirs)  # pyright: ignore[reportPrivateUsage]
+            )
+            with contextlib.suppress(LocalControlTransportError):
+                await local.send_all(_hello())
+            assert await _refused(local)
+            await serving
+            await local.aclose()
+            # The connector asked itself to stop for it.
+            assert connector._stop.is_set()  # pyright: ignore[reportPrivateUsage]
+            assert connector._stop_reason == _ZERO_NETWORK  # pyright: ignore[reportPrivateUsage]
+        finally:
+            upstream.cancel()
+            await asyncio.gather(upstream, return_exceptions=True)
+        return daemon
+
+    with selection_override(root):
+        daemon = asyncio.run(exercise())
+        # The client whose connection closed unanswered names why, and the one remedy follows.
+        failure = service_client._remote_failure(root)  # pyright: ignore[reportPrivateUsage]
+    assert daemon.connections == 0
+    assert (failure.reason, failure.phase, failure.retryable) == (
+        "service_unavailable",
+        _ZERO_NETWORK,
+        True,
+    )
+    status = read_connector_status(root)
+    assert status is not None and (status.phase, status.reason) == ("unavailable", _ZERO_NETWORK)
+
+
+def test_a_stopped_connectors_zero_network_status_still_names_the_phase(home: Path) -> None:
+    from finishup.client.connector_status import new_status, now_stamp, write_connector_status
+    from finishup.service import client as service_client
+
+    _record, root = _ssh_target(home)
+    write_connector_status(root, new_status(None, "stopped", _ZERO_NETWORK, started_at=now_stamp()))
+    with selection_override(root):
+        failure = service_client._remote_failure(root)  # pyright: ignore[reportPrivateUsage]
+    assert failure.phase == _ZERO_NETWORK
+    # Any other stop names no phase: the client says the server could not be reached.
+    write_connector_status(
+        root, new_status(None, "stopped", "idle_timeout", started_at=now_stamp())
+    )
+    with selection_override(root):
+        failure = service_client._remote_failure(root)  # pyright: ignore[reportPrivateUsage]
+    assert failure.phase is None
+
+
+def test_a_background_agent_opened_before_zero_network_never_reconnects_or_delivers(
+    home: Path, tmp_path: Path
+) -> None:
+    """The agent asks the shared connection check before every dial: once this computer last
+    reported zero-network it never connects again, even through a dial that bypasses the
+    connector's own check, and it delivers nothing over a connection it still holds."""
+
+    from finishup.adapters.control.unix_socket import connect_owner_only_endpoint
+    from finishup.client import everyday_policy
+    from finishup.client.claimed_workspaces import record_claimed_workspace
+    from finishup.client.connector import open_background_agent
+    from finishup.client.connector_agent import ConnectorAgent
+    from finishup.client.workspace_claim import workspace_claim
+
+    record, root = _ssh_target(home)
+    (tmp_path / "workspace").mkdir()
+    workspace = WorkspaceLocator(os.fspath((tmp_path / "workspace").resolve(strict=True)))
+
+    class _Drain:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def drain(self, _client: object) -> None:
+            self.calls += 1
+
+        def close(self) -> None:
+            return None
+
+    async def exercise() -> tuple[int, int, int, int]:
+        daemon = ScriptedDaemon()
+        master = _StubMaster(root, restarts=[])
+        upstream = await _serve_upstream(master.upstream_path, daemon, [True])
+
+        async def dial() -> AuthenticatedUnixStream:
+            # Straight to the server's endpoint: only the agent's own check can refuse.
+            return await connect_owner_only_endpoint(master.upstream_path)
+
+        salt = base64.b64decode(record.claim_salt or "", validate=True)
+        claim = await workspace_claim(workspace, salt)
+        assert record_claimed_workspace(root, claim, workspace) is True
+        assert everyday_policy.record_reported_policy(zero_network=False) is True
+        agent = await open_background_agent(root, claim, dial)
+        assert isinstance(agent, ConnectorAgent)
+        drain = _Drain()
+        agent._drain = drain  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+        try:
+            assert await agent.wait_connected(5.0)
+            await agent.drain()
+            delivered_before = drain.calls
+            before = daemon.connections
+            assert everyday_policy.record_reported_policy(zero_network=True) is True
+            # Over the connection it still holds, nothing more is delivered.
+            await agent.drain()
+            delivered_after = drain.calls
+            # The server ends the session (idle, restart, lost upstream): no new connection.
+            client = agent._client  # pyright: ignore[reportPrivateUsage]
+            assert client is not None
+            await client.close()
+            async with asyncio.timeout(5):
+                while agent.alive:
+                    await asyncio.sleep(0.01)
+            assert not agent.connected
+            return before, daemon.connections, delivered_before, delivered_after
+        finally:
+            await agent.aclose()
+            upstream.cancel()
+            await asyncio.gather(upstream, return_exceptions=True)
+
+    with selection_override(root):
+        before, after, delivered_before, delivered_after = asyncio.run(exercise())
+    # One connection, made while network use was permitted; none after.
+    assert (before, after) == (1, 1)
+    # One delivery while permitted; none once zero-network was reported.
+    assert (delivered_before, delivered_after) == (1, 1)

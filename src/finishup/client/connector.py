@@ -15,7 +15,11 @@ local service. For a remote target that endpoint is served by this process, one 
   failed can name the remote phase, and it exits after 15 idle minutes;
 * for every workspace whose claim it relayed it keeps a background workspace agent for 15 minutes
   after that workspace's last hello, and delivers that workspace's hook-captured observations
-  over it every 30 seconds and once more as it stops (``finishup.client.connector_agent``).
+  over it every 30 seconds and once more as it stops (``finishup.client.connector_agent``);
+* it never relays anything while this computer last reported a zero-network policy (ADR-051
+  decision 8, maintainer decision of 2026-11-07): it checks that record every second and before
+  each connection, and on finding it records ``zero_network_remote_selected`` and stops at once,
+  closing every connection it relays and every background agent, with no last delivery.
 
 A hello that names a ``workspace_locator`` is refused here for every kind: a path on this machine
 never travels to a server on another one. Server-to-client frames (``workspace_call``) and the
@@ -98,6 +102,9 @@ _RESTART_WINDOW_SECONDS: Final = 30.0
 # ``server remove``, a newer client) finishes within the stopper's wait on a slow network; what
 # is left stays in this client's outbox for the next delivery.
 _SHUTDOWN_DRAIN_SECONDS: Final = 2.0
+# Why the connector refuses and stops while this computer is zero-network (ADR-051 decision 8):
+# the remote phase every surface names, with 'finishup server use local' as its remedy.
+_ZERO_NETWORK: Final = "zero_network_remote_selected"
 
 
 type Dial = Callable[[], Awaitable[AuthenticatedUnixStream]]
@@ -246,6 +253,29 @@ class Connector:
     async def _ready(self) -> None:
         self._write_status("ready", None)
 
+    # -- zero-network (ADR-051 decision 8) -------------------------------------------------
+
+    def _refuse_zero_network(self) -> bool:
+        """Stop when this computer last reported a zero-network policy; whether it did.
+
+        This computer's zero-network policy and a server elsewhere are never in force together
+        (maintainer decision, 2026-11-07). The connector reads the same record as every other
+        connection check (``client.everyday_policy``, a file read only), so a connector started
+        before the policy changed, or one whose clients' selection predates it, stops relaying
+        within a tick of the record: the status names ``zero_network_remote_selected`` before any
+        connection it refuses is closed, so the client whose connection closed can say why, and
+        the process then stops, closing its relays and background agents.
+        """
+
+        from finishup.client.everyday_policy import last_reported_zero_network
+
+        if last_reported_zero_network() is None:
+            return False
+        if not (self._stop.is_set() and self._stop_reason == _ZERO_NETWORK):
+            self._write_status("unavailable", _ZERO_NETWORK)
+            self.request_stop(_ZERO_NETWORK)
+        return True
+
     # -- upstream ---------------------------------------------------------------------------
 
     def _stored_credential(self) -> str:
@@ -269,6 +299,8 @@ class Connector:
     async def warm(self) -> None:
         """Bring the upstream up once (master or server-info check); record the outcome."""
 
+        if self._refuse_zero_network():
+            return
         try:
             if self._ssh is not None:
                 await self._ssh.ensure()
@@ -341,6 +373,10 @@ class Connector:
             self._active += 1
             self._last_activity = time.monotonic()
         try:
+            if self._refuse_zero_network():
+                # Nothing is relayed, for a client or a background agent, while this computer
+                # last reported a zero-network policy; the connection closes unanswered.
+                return
             try:
                 async with asyncio.timeout(_HELLO_SECONDS):
                     hello = await read_control_frame(local)
@@ -461,9 +497,15 @@ class Connector:
             task.add_done_callback(self._connections.discard)
 
     async def _drain(self) -> None:
-        """Deliver what this client captured, over each leased workspace's agent connection."""
+        """Deliver what this client captured, over each leased workspace's agent connection.
+
+        Nothing is delivered while this computer last reported a zero-network policy, the last
+        delivery as the connector stops included; the rows stay in this client's outbox.
+        """
 
         self._last_drain = time.monotonic()
+        if self._refuse_zero_network():
+            return
         for lease in tuple(self._claims.values()):
             agent = lease.agent
             if agent is not None and agent.alive:
@@ -473,6 +515,8 @@ class Connector:
     async def _watch(self) -> None:
         while not self._stop.is_set():
             await asyncio.sleep(min(_TICK_SECONDS, self._drain_interval))
+            if self._refuse_zero_network():
+                return
             await self._expire_claims()
             if time.monotonic() - self._last_drain >= self._drain_interval:
                 await self._drain()
@@ -493,10 +537,12 @@ class Connector:
             for task in (accept, warm, watch):
                 task.cancel()
             await asyncio.gather(accept, warm, watch, return_exceptions=True)
-            # A last delivery of what was captured, while the upstream is still open.
-            with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(_SHUTDOWN_DRAIN_SECONDS):
-                    await self._drain()
+            # A last delivery of what was captured, while the upstream is still open; never for
+            # a stop because this computer is zero-network.
+            if self._stop_reason != _ZERO_NETWORK:
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(_SHUTDOWN_DRAIN_SECONDS):
+                        await self._drain()
             with contextlib.suppress(Exception):
                 await listener.aclose()
             # Background agents first, so none dials again while the relays are torn down. A snapshot:

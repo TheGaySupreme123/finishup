@@ -1070,8 +1070,17 @@ through the same relay; human-control and secret channels never leave the server
   `target_reauthorization_required` (a record that can no longer be read: `target_root_is_remote`);
   no connector is started and nothing is sent until `finishup server use NAME` renews it. While
   this computer last reported a zero-network policy (decision 8) every remote target is refused
-  the same way, with phase `zero_network_remote_selected`, before the disclosure check; the
-  connector's background agents open through `binding_for_active_root`, so none is opened then.
+  the same way, with phase `zero_network_remote_selected`, before the disclosure check, and no
+  background agent is opened (they open through `binding_for_active_root`). A connector that is
+  already running enforces the same marker itself: it reads it before every connection it relays,
+  a client's or its own background agent's, before it first brings the upstream up, and every
+  second while it runs. On finding it, it writes `unavailable`/`zero_network_remote_selected` to
+  its status before it closes the refused connection, so the client that dialled names the phase,
+  and stops at once: every relayed connection and background agent is closed, no last delivery
+  is made, and its status ends `stopped`/`zero_network_remote_selected`. Each background agent
+  also runs `require_current_authorization` on its target's record before every reconnect, and
+  stops for good on a refusal, and its `drain()` sends nothing while the marker says
+  zero-network.
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
   connection per workspace whose claim it relayed, for 15 minutes after that workspace's last hello

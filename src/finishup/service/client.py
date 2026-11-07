@@ -2008,13 +2008,22 @@ def _remote_failure(root: Path) -> ControlError:
     Called only after the connector accepted the connection and closed it unanswered: it writes
     the closed remote phase before it closes a connection it could not relay, so the status read
     here describes this failure. No host, path or remote text is in it; the correlation id
-    resolves the connector's own diagnostic record.
+    resolves the connector's own diagnostic record. A connector that refused because this
+    computer last reported a zero-network policy stops at once for it (ADR-051 decision 8), so
+    its ``stopped`` status names that phase too.
     """
 
     from finishup.client.connector_status import read_connector_status
 
     status = read_connector_status(root)
-    if status is None or status.phase != "unavailable" or status.reason is None:
+    if (
+        status is None
+        or status.reason is None
+        or (
+            status.phase != "unavailable"
+            and (status.phase, status.reason) != ("stopped", "zero_network_remote_selected")
+        )
+    ):
         return ControlError("service_unavailable", retryable=True)
     # Every remote phase is retryable (INTERFACES, ADR-051): the same request succeeds once the
     # phase's own repair (a key, a host identity, a release, the remote service) is made.

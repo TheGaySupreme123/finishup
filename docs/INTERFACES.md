@@ -5497,13 +5497,19 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   until the connector stops (`server disconnect`, a `server use` that leaves the target, the idle
   exit). Every
   `DRAIN_INTERVAL_SECONDS` (30), and once more as it stops before closing the agents, it calls
-  each live agent's `drain()`.
-- `finishup.client.connector_agent`: `ConnectorAgent(binding, drain, dial)` holds one claim-bound
-  connection offering the real `WorkspaceAgentHandler` and reconnects (0.5 s, doubling to 30 s)
-  whenever the service ends it; `drain()` runs `ClientObservationDrain.drain` over it and never
-  raises. `open_connector_agent(root, claim, dial)` reads the claimed-workspace index, derives
-  the claim again from the recorded workspace with `binding_for_active_root(...,
-  serve_workspace=True)` and returns None unless it matches.
+  each live agent's `drain()`. While `last_reported_zero_network()` answers (read before warming
+  the upstream, before every relayed connection, and every second) it relays nothing: it writes
+  status `unavailable`/`zero_network_remote_selected` before closing the refused connection,
+  stops at once with that reason (closing every relay and agent, with no last `drain()`), and
+  `service.client` names the phase from either status.
+- `finishup.client.connector_agent`: `ConnectorAgent(binding, drain, dial, *, root)` holds one
+  claim-bound connection offering the real `WorkspaceAgentHandler` and reconnects (0.5 s,
+  doubling to 30 s) whenever the service ends it, after `require_current_authorization(
+  read_target(root))` passes (a refusal ends it for good); `drain()` runs
+  `ClientObservationDrain.drain` over it, sends nothing while `last_reported_zero_network()`
+  answers, and never raises. `open_connector_agent(root, claim, dial)` reads the
+  claimed-workspace index, derives the claim again from the recorded workspace with
+  `binding_for_active_root(..., serve_workspace=True)` and returns None unless it matches.
 - `<troot>/state/claimed-workspaces/<64 hex of the claim digest>-<64 hex of its worktree
   digest>.json` (`yoetz.claimed-workspace/1`; owner-only, `finishup.client.claimed_workspaces`;
   one record per claimed worktree, since linked worktrees share the claim digest):
@@ -5515,10 +5521,10 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   and `schema_manifest_digest`; `<troot>/state/connector-status.json`
   (`yoetz.connector-status/1`): `schema`, `generation` (moves on every change of phase or reason
   and across processes), `phase` (`starting|ready|unavailable|stopped`), `reason` (a remote
-  connection phase when `unavailable`; `idle_timeout|stop_requested|connector_failed` when
-  `stopped`), `correlation_id`, `pid`, `started_at`. Both are owner-only and hold no host, name or
-  path. `finishup.client.connector_status` reads and writes them and owns `spawn_connector(root)`
-  and `stop_connector(root)` (the stamped pid only).
+  connection phase when `unavailable`; `idle_timeout|stop_requested|connector_failed|
+  zero_network_remote_selected` when `stopped`), `correlation_id`, `pid`, `started_at`. Both are
+  owner-only and hold no host, name or path. `finishup.client.connector_status` reads and writes
+  them and owns `spawn_connector(root)` and `stop_connector(root)` (the stamped pid only).
 - `<troot>/run/m` and `<troot>/run/upstream.sock`: the OpenSSH master's control socket and its
   stream-local forward (`finishup.client.ssh_upstream`; argv fixed by `master_argv`).
 - `finishup.client.connector_runtime.ConnectorTargetRuntime`: the `TargetRuntime` registered for
@@ -5535,11 +5541,12 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   `target_reauthorization_required`; an unreadable record: `target_root_is_remote`), and so is any
   target while this computer last reported a zero-network policy (phase
   `zero_network_remote_selected`, from the same `require_current_authorization`); no connector is
-  started. Every `service_unavailable` raised for a
-  remote root, including on a connection lost mid-session, names a remote phase: the connector
-  status's, or `remote_unreachable` when it recorded none. A release mismatch is
-  `remote_incompatible`, and `service_holder_identity()` reports the live connector with
-  `instance_id` `connector-<generation>`. `connect_service_stream(stream, client_kind, *,
+  started. A running connector that refused for it leaves status `unavailable` or `stopped` with
+  that reason; either names the phase. Every `service_unavailable` raised for a remote root,
+  including on a connection lost mid-session, names a remote phase: the connector status's, or
+  `remote_unreachable` when it recorded none. A release mismatch is `remote_incompatible`, and
+  `service_holder_identity()` reports the live connector with `instance_id`
+  `connector-<generation>`. `connect_service_stream(stream, client_kind, *,
   workspace_binding, transport, timeout_seconds=5.0)` handshakes a claim-bound connection over a
   stream a relay already holds; `ServiceClient.closed` and `ServiceClient.wait_closed()` let a
   holder reconnect. `ensure_service_running()` returns a raw control stream to this root's
