@@ -270,7 +270,9 @@ list folders while a server is in local mode too: they are kept for listed mode,
 so. The list and the mode stay on this computer and are never sent to the server, and they belong
 to that server alone: switching to another server does not change what a connection already open
 to this one may read. If FinishUP cannot read them (the file is damaged or not private to you),
-the server reads no folder outside your projects, whatever mode you chose. Removing the server
+the server reads no folder outside your projects, whatever mode you chose; `server status`,
+`server folders list` and `/server` then say so, with the one repair, `finishup server folders
+remove NAME --all` on this computer. Removing the server
 removes them too. A server on this computer does not use them: there, the privacy settings decide
 which folders a review may read (`finishup privacy input-roots`).
 
@@ -560,7 +562,7 @@ repeated safely.
 | `workspace_ref_not_portable` | A task on a server elsewhere was started with a full folder path or another value the server cannot use. | FinishUP's own tools send the right value; a hand-written client must send the workspace handle the server gave it, or name no project. |
 | `workspace_binding_conflict` | A request named the project in a form its connection cannot use: a server-elsewhere `client:` handle sent to this computer's FinishUP, or a folder path and a server-elsewhere claim together. | Name the project by its folder path through FinishUP's own tools; a hand-written client must not send a `client:` handle to a local server. |
 | `folder_invalid` | `server folders add` was given a folder it cannot admit: not a full path, missing, reached through a link, hidden, a system folder, or your home folder, a folder that holds it or one of its private folders. | Give the full path of the existing folder you mean, inside your home folder if it is there. |
-| `folders_record_invalid`, `folders_record_unsafe` | The record of what a server may read outside your projects on this computer is damaged or not private to you, so that server reads no folder outside them, in listed mode, whatever mode you chose. | Run `finishup server folders remove NAME --all`, then add the folders again, or choose local mode again. |
+| `folders_record_invalid`, `folders_record_unsafe` | The record of what a server may read outside your projects on this computer is damaged or not private to you, so that server reads no folder outside them, in listed mode, whatever mode you chose. `server status`, `server folders list` and `/server` say so too. | On this computer, run `finishup server folders remove NAME --all`; then add the folders again (`finishup server folders add NAME FOLDER`), or choose local mode again (`finishup server folders mode NAME local`). |
 | `outside_read_mode_invalid` | `server folders mode` or `server add --outside-reads` was given something other than `local` or `listed`. | Give `local` or `listed`. |
 | `outside_reads_not_chosen` | `server add` asked what the server may read outside your projects, and no answer chose: Enter alone or another word three times, end of input, or Ctrl-C. Nothing was added. | Run the command again and type `local` or `listed` when asked, or add `--outside-reads local` or `--outside-reads listed`. |
 

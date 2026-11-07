@@ -4670,7 +4670,14 @@ target its `target.outside_reads` carries `mode` (`local|listed`), `mode_source`
 (`owner|official_endpoint|not_chosen|unreadable`) and the listed `folders`, and is null for any
 other target (the golden vector is `fixtures/service/server-target-status.case.json`). The text
 form, `server folders list` and the terminal's `/server` status show the same, and for
-`not_chosen` the two `server folders mode` commands that choose. The document's top-level
+`not_chosen` the two `server folders mode` commands that choose. For `unreadable` they say the
+record is damaged or not private, and name the one repair with the target's name and where to run
+it, `finishup server folders remove NAME --all` on this computer, then `server folders mode NAME
+local` to choose local again (`cli.server._unreadable_record_lines`); `server folders list` shows
+this and exits 0 rather than refusing, while `add`, `remove FOLDER` and `mode` refuse
+`folders_record_invalid` or `folders_record_unsafe` with the same repair (fixed text, `NAME`) and
+"run this command again". The terminal's `/server` folders commands include `server folders
+remove NAME --all` and say it repairs a damaged record. The document's top-level
 `zero_network_selection` is null, or the zero-network item (ADR-051 decision 8): `reason`
 (`zero_network_remote_selected|zero_network_selection_unreadable`), `target_id`, `kind`
 (`local_port|ssh|https`) and `detail` (a closed token), all nullable but `reason`. It is filled
