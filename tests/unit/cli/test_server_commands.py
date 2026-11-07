@@ -768,7 +768,7 @@ def test_the_status_document_carries_the_zero_network_item_by_id_and_token_only(
         {**rights[0], "reason": "zero_network_in_force"},
         {**rights[0], "kind": "local"},
         {**rights[0], "target_id": "devbox"},
-        {**rights[1], "detail": "/home/me/.config"},
+        {**rights[1], "detail": "/srv/shared/.config"},
         {k: v for k, v in rights[0].items() if k != "detail"},
     )
     for wrong in wrongs:
