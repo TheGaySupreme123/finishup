@@ -2007,15 +2007,20 @@ class FinishUpRuntime:
         posture = await self.vault_posture()
         try:
             if posture.vault_mode == "os_keyring":
-                await retry_keyring()
+                result = await retry_keyring()
             elif posture.vault_mode == "passphrase":
-                await unlock_vault()
+                result = await unlock_vault()
             else:
                 raise RuntimeError_(
                     "vault_uninitialized", "the vault has not been set up on this machine yet"
                 )
         except HumanCeremonyCliError as error:
             raise RuntimeError_(error.reason, "the vault could not be unlocked")
+        if result.state != "ready":
+            # A wrong passphrase or a refused keyring returns a locked result rather than raising
+            # (#1323), and the screen used to say nothing at all. The reason is a protocol token
+            # the result already checked against its closed set.
+            raise RuntimeError_(result.reason, "the vault is still locked")
 
     # -- readiness ------------------------------------------------------
 

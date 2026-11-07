@@ -4039,14 +4039,69 @@ async def _service_unlock(json_output: bool) -> int:
     except ControlError as error:
         return _control_failure(error)
     if status.vault_mode == "os_keyring":
-        return await _trusted_call(_unlock_operation("retry_keyring"), json_output)
+        return await _unlock_call(_unlock_operation("retry_keyring"), json_output)
     if status.vault_mode == "passphrase":
-        return await _trusted_call(_unlock_operation("unlock_vault"), json_output)
+        return await _unlock_call(_unlock_operation("unlock_vault"), json_output)
     _stderr(
         "vault_locked: the vault is uninitialized; run "
         "'finishup service initialize-passphrase' from a local terminal"
     )
     return exit_code_for(PublicErrorCode.VAULT_LOCKED)
+
+
+# The locked-outcome reasons a refused unlock repeats on stderr (#1323). Each is a fixed protocol
+# token; any other reason gets the generic line, so the line never carries text from elsewhere.
+_UNLOCK_REFUSAL_REASONS: Final = frozenset(
+    {
+        "keyring_locked",
+        "keyring_unavailable",
+        "reauthentication_unavailable",
+        "throttle_repair_required",
+        "unlock_failed",
+        "unlock_rate_limited",
+        "unlock_wrong",
+        "vault_tampered",
+        "vault_uninitialized",
+    }
+)
+
+
+async def _unlock_call(operation: Callable[[], Awaitable[object]], json_output: bool) -> int:
+    """Run one unlock ceremony and exit ``VAULT_LOCKED`` when the vault stays locked.
+
+    A wrong passphrase or a refused keyring is not an error to the ceremony: it returns a locked
+    vault-state or keyring-retry document (#1323). That document is still rendered exactly as
+    ``_trusted_call`` renders it; only the exit status and one fixed stderr line change, so a
+    script or agent cannot read a refusal as an unlock.
+    """
+
+    returned: list[object] = []
+
+    async def recorded() -> object:
+        result = await operation()
+        returned.append(result)
+        return result
+
+    code = await _trusted_call(recorded, json_output)
+    if code != 0 or not returned:
+        return code
+    line = _unlock_refusal_line(returned[0])
+    if line is None:
+        return code
+    _stderr(line)
+    return exit_code_for(PublicErrorCode.VAULT_LOCKED)
+
+
+def _unlock_refusal_line(result: object) -> str | None:
+    """Return the fixed stderr line for an unlock that left the vault locked, else None."""
+
+    from finishup.service.confidential_protocol import KeyringRetryResult, VaultStateResult
+
+    if not isinstance(result, (VaultStateResult, KeyringRetryResult)) or result.state == "ready":
+        return None
+    if result.reason in _UNLOCK_REFUSAL_REASONS:
+        return f"vault_locked: the vault is still locked ({result.reason})"
+    return "vault_locked: the vault is still locked"
 
 
 def _auto_unlock_store() -> Any:
