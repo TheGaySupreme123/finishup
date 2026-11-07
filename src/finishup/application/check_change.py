@@ -529,9 +529,9 @@ def _snapshot_inputs(
     current_reader: CurrentInputReader | None,
     present: set[str],
     room: int,
-) -> tuple[list[TaskInputFile], bool]:
+) -> tuple[list[TaskInputFile], tuple[str, ...]]:
     """The kept snapshot copies of outside files the task names, each beside its current state,
-    and whether a kept copy was left out because the owner no longer lets the server read it.
+    and the paths of those left out because the owner no longer lets the server read them.
 
     ``current_reader`` returns, per path it reached, the whole current file (``None`` when it is
     no longer text within the snapshot bound); a path it did not reach is ``unavailable``. A
@@ -550,7 +550,7 @@ def _snapshot_inputs(
         and any(item.path == path or item.path.startswith(path + "/") for path in wanted)
     ][:room]
     if not kept:
-        return [], False
+        return [], ()
     found: Mapping[str, bytes | None] | CurrentInputsRead = (
         {} if current_reader is None else current_reader(tuple(i.path for _, i in kept))
     )
@@ -589,7 +589,7 @@ def _snapshot_inputs(
                 current_state=state,
             )
         )
-    return added, any(item.path in unlisted for _boundary, item in kept)
+    return added, tuple(item.path for _boundary, item in kept if item.path in unlisted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -643,8 +643,9 @@ def _with_outside_inputs(
 
     ADR-051 decision 5: a claim-bound task's reader leaves unread the inputs its client's owner
     has not listed for the server and says so; only those inputs are left out, and the capture
-    records that it happened (``outside_inputs_not_listed``), never which, so the receipt can say
-    so and name the owner's two ways out while the rest of the change still reaches review.
+    records how many (``outside_inputs_not_listed``: the task-named values left unread, and any
+    kept copy left out beneath none of them), never which, so the receipt can say so and name the
+    owner's two ways out while the rest of the change still reaches review.
     """
 
     named = tuple(item for item in capture.inputs if not _directory_material(item))
@@ -663,14 +664,22 @@ def _with_outside_inputs(
     # #1118 unit 1 (AIP-1): a kept snapshot of a file the task names is sent in place of its
     # current bytes, so a later rewrite cannot pose as the original; only while its root is
     # still admitted (E2E-2), and, on a remote server, while its folder is still listed.
-    added, not_listed = _snapshot_inputs(
+    added, copies_not_listed = _snapshot_inputs(
         snapshots, outside, admitted_roots, current_reader, present, room
     )
     present.update(item.path for item in added)
     found = reader(outside, room, workspace, space_cut_paths & frozenset(outside))
+    values_not_listed: tuple[str, ...] = ()
     if type(found) is OutsideInputsRead:
-        not_listed = not_listed or bool(found.unlisted)
+        values_not_listed = tuple(
+            os.path.normpath(outside[index]) for index in found.unlisted if index < len(outside)
+        )
         found = found.inputs
+    # A kept copy beneath a value left unread is that same input, counted once.
+    not_listed = len(values_not_listed) + sum(
+        not any(path == value or path.startswith(value + "/") for value in values_not_listed)
+        for path in copies_not_listed
+    )
     for item in cast(tuple[TaskInputFile, ...], found):
         if (
             item.origin != "outside_workspace"
@@ -683,7 +692,7 @@ def _with_outside_inputs(
         present.add(item.path)
         added.append(item)
     if not_listed:
-        capture = replace(capture, outside_inputs_not_listed=True)
+        capture = replace(capture, outside_inputs_not_listed=not_listed)
     if not added:
         return capture
     return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])

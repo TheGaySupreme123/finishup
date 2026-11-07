@@ -60,6 +60,12 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
     # The file is readable here, exactly as a local service would read it.
     assert read_declared_test(os.fspath(test), excluded=()) == _TEST_TEXT.encode()
     candidates = (DeclaredTestCandidate(os.fspath(test), "res_criterion"),)
+    if not admitted:
+        # A second test in the same unlisted folder: the case object counts both.
+        second = test.with_name("test_second_rule.py")
+        second.write_text(_TEST_TEXT)
+        second.chmod(0o600)
+        candidates += (DeclaredTestCandidate(os.fspath(second), "res_criterion"),)
 
     def declared(_projection: object, _statement: str | None) -> tuple[DeclaredTestCandidate, ...]:
         return candidates
@@ -106,7 +112,7 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
     # job's case object freezes it, so a recovered job builds the same case.
     assert (OUTSIDE_READS_NOT_LISTED_GAP in result.case_content_gaps) is not admitted
     ((stored),) = frozen
-    assert stored[6] is (not admitted)
+    assert stored[6] == (0 if admitted else 2)
 
 
 @pytest.mark.parametrize("admitted", [False, True], ids=["not-admitted", "admitted"])
@@ -160,12 +166,12 @@ async def test_a_task_input_the_owner_did_not_list_costs_only_that_input(
     read = [(item.path, item.root) for item in capture.inputs]
     if admitted:
         assert read == [(values[0], os.fspath(specs)), (values[1], os.fspath(notes))]
-        assert capture.outside_inputs_not_listed is False
+        assert capture.outside_inputs_not_listed == 0
         return
     assert read == [(values[1], os.fspath(notes))]
-    # Recorded as a closed flag, never which file: the receipt's fixed line comes from it. The
-    # missing file is not counted as left out, as a local read finds nothing there either.
-    assert capture.outside_inputs_not_listed is True
+    # Recorded as a count, never which file: the receipt's fixed line comes from it. The missing
+    # file is not counted as left out, as a local read finds nothing there either.
+    assert capture.outside_inputs_not_listed == 1
 
 
 async def test_a_kept_copys_current_read_names_a_folder_the_owner_no_longer_lists(

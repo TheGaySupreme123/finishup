@@ -1218,6 +1218,72 @@ def test_the_outside_decision_is_taken_against_the_read_root_and_frozen_into_the
         )
 
 
+def test_inputs_a_listed_mode_agent_left_unread_are_counted_never_named() -> None:
+    """ADR-051 decision 5: the check change freezes how many task-named inputs a claim-bound
+    task's agent left unread, written only when not zero, never which."""
+
+    from finishup.application.check_change import (
+        CurrentInputsRead,
+        _with_outside_inputs,  # pyright: ignore[reportPrivateUsage]
+    )
+    from finishup.ports.change_capture import SnapshotFile, TaskInputSnapshotSet
+    from finishup.ports.workspace_agent import OutsideInputsRead
+
+    change = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/a.py b/a.py\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
+    )
+    values = ("/shared/a/spec.md", "/shared/b/", "/shared/c/notes.md", "/shared/d/kept.md")
+
+    def reader(
+        named: tuple[str, ...], _room: int, _workspace: str, _cut: frozenset[str]
+    ) -> OutsideInputsRead:
+        assert named == values
+        return OutsideInputsRead((), (0, 1))
+
+    def current(paths: tuple[str, ...]) -> CurrentInputsRead:
+        # One kept copy beneath an input left unread (the same input), one on its own.
+        return CurrentInputsRead({}, frozenset(paths))
+
+    snapshot = TaskInputSnapshotSet(
+        "task_start",
+        tuple(
+            SnapshotFile(path, "/shared", b"KEPT\n", 5)
+            for path in ("/shared/b/old.md", "/shared/d/kept.md")
+        ),
+    )
+    capture = _with_outside_inputs(
+        change,
+        values,
+        reader,
+        "/app",
+        verification_paths=frozenset(),
+        snapshots=(snapshot,),
+        admitted_roots=("/shared",),
+        current_reader=current,
+    )
+    assert capture.inputs == ()
+    assert capture.outside_inputs_not_listed == 3
+    encoded = encode_check_change(capture)
+    assert b'"outside_inputs_not_listed":3' in encoded and b"/shared" not in encoded
+    assert decode_check_change(encoded) == capture
+    assert b"outside_inputs_not_listed" not in encode_check_change(change)
+    for wrong in (b"true", b"0", b"-1", b"1000001"):
+        with pytest.raises(ValueError):
+            decode_check_change(
+                encoded.replace(
+                    b'"outside_inputs_not_listed":3', b'"outside_inputs_not_listed":' + wrong
+                )
+            )
+    for wrong_value in (True, -1):
+        with pytest.raises(ValueError):
+            replace(change, outside_inputs_not_listed=wrong_value)
+
+
 def test_an_outside_path_only_a_verification_command_names_is_never_read() -> None:
     """PR #1086 review R1-05 probe: with ``/shared`` admitted, a task naming only ``form.py``
     and ``DESIGN.md`` and an agent-recorded ``pytest /shared/unrelated_test.py`` run must not
