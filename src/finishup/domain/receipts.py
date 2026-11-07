@@ -572,8 +572,9 @@ TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
 )
 OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
     "Review lacked files outside the folders the owner listed for this server; only the owner can"
-    " allow them, on the client machine: `finishup server folders add NAME FOLDER`, or `finishup"
-    " server folders mode NAME local` for a server they trust."
+    " allow them, on the client machine: `finishup server folders add NAME FOLDER` for a file"
+    " outside the project, or `finishup server folders mode NAME local` for a server they trust,"
+    " the only way for a test in the project that Git ignores."
 )
 
 
@@ -617,10 +618,12 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             " read some files the task names or tests the agent declared that lie outside them"
             " (or, for a test in the project, that Git ignores or cannot answer for); the reviewer"
             " judged the work without just those files. Only the owner can change that, on the"
-            " client machine, the computer that holds the project: list the folder with"
-            " `finishup server folders add NAME FOLDER`, or, for a server they trust as they"
-            " trust FinishUP on that computer, switch it to local mode with `finishup server"
-            " folders mode NAME local`; checking again then reads them. An agent cannot."
+            " client machine, the computer that holds the project. For a file outside the"
+            " project, list its folder with `finishup server folders add NAME FOLDER`. For a test"
+            " in the project, listing a folder does not help: stop Git ignoring it, or switch the"
+            " server to local mode, which also reads every file above, with `finishup server"
+            " folders mode NAME local`, only for a server they trust as they trust FinishUP on"
+            " that computer. Checking again then reads them. An agent cannot."
         )
     if code == TASK_INPUT_BASELINE_UNAVAILABLE_GAP:
         return (

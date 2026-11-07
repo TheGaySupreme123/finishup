@@ -428,7 +428,10 @@ answers bounded `workspace_call`s on a connection that declared it.
   privacy policy still decides which roots it asks for: in `listed` mode the client's record
   narrows it, never widens it, and a folder narrower than the server's root admits what lies
   beneath that folder alone. Both ways out are the owner's, on the client: list the folder, or,
-  for a server they trust, switch it to `local` mode. A declared test is read in `local` mode
+  for a server they trust, switch it to `local` mode. Listing covers files outside the worktree
+  only: a declared test inside it that Git ignores or cannot answer for is read in `listed` mode
+  under no listing, the worktree's own folder included, so the fixed sentence names `local` mode,
+  or no longer ignoring the test, as the only ways to have it read. A declared test is read in `local` mode
   exactly as a local service reads the test its own agent declared (#1220): inside the claimed
   worktree or outside it, whether or not Git ignores it or can answer for it, with FinishUP's
   own directories excluded and no other rule (same amendment). In `listed` mode a declared test

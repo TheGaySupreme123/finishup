@@ -1981,7 +1981,9 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   (ADR-051 decision 5, amended 2026-11-07). Its fixed sentence names both of the owner's ways out
   with their full arguments and where to run them: `finishup server folders add NAME FOLDER`, or,
   for a server they trust, `finishup server folders mode NAME local`, on the client machine; an
-  agent cannot. A closed disclosure code with no path; the receipt line carries no number,
+  agent cannot. It says which fits which file: listing a folder covers a file outside the
+  project, while a declared test in the project that Git ignores is read only in `local` mode (or
+  once Git no longer ignores it), whatever folder is listed, the project's own included. A closed disclosure code with no path; the receipt line carries no number,
   because the released receipt document has no field for one (ADR-051, open question 2), and the
   `semantic_case_built` diagnostic carries the count as `semantic_task_inputs_outside_not_listed`
   (task inputs and declared tests together; `finishup service diagnostics` shows it), classified like
