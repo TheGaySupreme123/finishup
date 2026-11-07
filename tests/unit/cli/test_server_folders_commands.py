@@ -255,11 +255,24 @@ def test_a_damaged_record_is_reported_and_remove_all_clears_it(
     record, root = remote
     add_folder(root, record.target_id, folder)
     folders_path(root).write_text("{damaged\n")
-    for arguments in (("list", "lab"), ("remove", "lab", folder)):
-        result = _invoke(*arguments)
-        assert result.exit_code == 20
-        assert result.stderr.startswith("folders_record_invalid:")
-        assert "--all" in result.stderr
+    # 'list' says what the server may read now and the one repair, where to run it and with the
+    # target's own name, rather than refuse to show anything (refusal-guide review).
+    listed = _invoke("list", "lab")
+    assert listed.exit_code == 0, listed.output
+    assert "may read no folder outside your projects on this computer" in listed.stdout
+    assert "because its record cannot be read" in listed.stdout
+    assert "damaged or not private to you" in listed.stdout
+    assert "Repair it on this computer with 'finishup server folders remove lab --all'" in (
+        listed.stdout
+    )
+    assert "'finishup server folders mode lab local' chooses local again" in listed.stdout
+    assert folder not in listed.stdout
+    # A change refuses, names the repair and where, and says to run the command again.
+    result = _invoke("remove", "lab", folder)
+    assert result.exit_code == 20
+    assert result.stderr.startswith("folders_record_invalid:")
+    assert "on this computer with 'finishup server folders remove NAME --all'" in result.stderr
+    assert "run this command again" in result.stderr
     usage = _invoke("remove", "lab")
     assert usage.exit_code == 2 and usage.stderr.startswith("usage:")
     cleared = _invoke("remove", "lab", "--all")
@@ -309,7 +322,13 @@ def test_status_shows_the_folders_a_remote_target_may_read(
         "mode_source": "unreadable",
         "folders": [],
     }
-    assert any("cannot be read" in line for line in server_cli.status_lines(unreadable))
+    lines = server_cli.status_lines(unreadable)
+    assert any("cannot be read" in line for line in lines)
+    # The one repair, where to run it and with the target's own name (also on '/server').
+    assert any(
+        "Repair it on this computer with 'finishup server folders remove lab --all'" in line
+        for line in lines
+    )
     # The everyday server has no folder record.
     local = server_cli.build_status_document("local")
     assert cast(dict[str, JsonValue], local["target"])["outside_reads"] is None

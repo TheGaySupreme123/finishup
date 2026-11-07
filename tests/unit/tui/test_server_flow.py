@@ -121,6 +121,8 @@ async def test_declining_the_remote_switch_changes_nothing() -> None:
         ("folders", "finishup server folders add NAME"),
         ("folders", "finishup server folders mode NAME local"),
         ("folders", "finishup server folders mode NAME listed"),
+        # The repair of a damaged record, which '/server' status names (refusal-guide review).
+        ("folders", "finishup server folders remove NAME --all"),
     ],
 )
 async def test_registry_changes_print_the_cli_command(choice: str, command: str) -> None:
@@ -405,3 +407,16 @@ async def test_the_real_runtime_status_shows_what_a_remote_server_may_read_outsi
         )
         at = lines.index("Folders it may read outside your projects:")
         assert lines[at + 1] == f"  {shared}"
+        # A damaged record: say so, with the one repair, where to run it, and its full name.
+        from finishup.client.server_folders import folders_path
+
+        folders_path(root).write_text("{damaged\n")
+        lines = await runtime.server_status_lines("devbox")
+        assert (
+            "Outside your projects: reads only folders you list (mode listed, because its record "
+            "cannot be read)"
+        ) in lines
+        assert any(
+            "Repair it on this computer with 'finishup server folders remove devbox --all'" in line
+            for line in lines
+        )

@@ -3418,10 +3418,13 @@ _SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
         "    finishup server folders mode NAME listed",
         "    finishup server folders add NAME /full/path/to/folder",
         "    finishup server folders remove NAME /full/path/to/folder",
+        "    finishup server folders remove NAME --all",
         "",
         "Mode local reads outside your projects what FinishUP on this computer would read;",
         "mode listed reads only the folders you list. Choosing local, and adding a folder, ask",
         "you to confirm in your terminal. A change applies from the server's next read.",
+        "If the server's status says its record is damaged or not private to you, 'remove NAME",
+        "--all' repairs it: the server then reads only folders you list, none yet (mode listed).",
     ),
 }
 

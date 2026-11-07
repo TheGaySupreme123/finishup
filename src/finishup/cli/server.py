@@ -188,13 +188,14 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
     ),
     "folders_record_invalid": (
         "the record of what that server may read outside your projects is damaged, so it reads "
-        "no folder there (mode listed); 'finishup server folders remove NAME --all' clears it",
+        "no folder there (mode listed); repair it on this computer with 'finishup server folders "
+        "remove NAME --all', then run this command again",
         _UNSAFE,
     ),
     "folders_record_unsafe": (
         "the record of what that server may read outside your projects is not owner-only or is "
-        "a link, so it reads no folder there (mode listed); 'finishup server folders remove NAME "
-        "--all' clears it",
+        "a link, so it reads no folder there (mode listed); repair it on this computer with "
+        "'finishup server folders remove NAME --all', then run this command again",
         _UNSAFE,
     ),
     "outside_read_mode_invalid": (
@@ -1174,6 +1175,19 @@ def _mode_origin(source: str) -> str:
     return "not chosen yet"
 
 
+def _unreadable_record_lines(name: str) -> tuple[str, ...]:
+    """What a target whose folders record cannot be read may read, and the one repair, in the
+    owner's words: ``server status``, ``server folders list`` and the terminal's ``/server``."""
+
+    return (
+        "Folders it may read outside your projects: none, because its record of them on this "
+        "computer is damaged or not private to you",
+        f"Repair it on this computer with 'finishup server folders remove {name} --all'; it then "
+        f"reads only folders you list, none yet (mode listed), and 'finishup server folders mode "
+        f"{name} local' chooses local again.",
+    )
+
+
 def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
     """Owner-display lines of a status document's remote target: its outside-read mode, the
     folders listed for it, and how to choose a mode when none was chosen. Empty for a target that
@@ -1197,10 +1211,7 @@ def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
         return tuple(lines)
     lines = [f"Outside your projects: reads only folders you list (mode listed, {origin})"]
     if source == "unreadable":
-        lines.append(
-            "Folders it may read outside your projects: none, its record cannot be read "
-            "('finishup server folders remove NAME --all' clears it)"
-        )
+        lines.extend(_unreadable_record_lines(str(target.get("name") or "NAME")))
     elif not folders:
         lines.append("Folders it may read outside your projects: none")
     else:
@@ -1612,11 +1623,22 @@ def server_folders_list(
 ) -> None:
     """Show what a server may read outside your projects: its mode and listed folders."""
 
+    from finishup.client.server_folders import FolderError, read_record
+
     _require_no_explicit_source()
     record = _remote_target_or_fail(name)
-    current = _record_of(record)
-    mode, origin = _mode_and_origin(record, current)
     who = f"{record.name} ({record.target_id})"
+    try:
+        current = read_record(target_root(record.target_id), record.target_id)
+    except FolderError:
+        # Say what the server may read now, and the one repair, rather than refuse to show it.
+        typer.echo(
+            f"{who} may read no folder outside your projects on this computer (mode listed, "
+            f"{_mode_origin('unreadable')})."
+        )
+        _emit(_unreadable_record_lines(record.name))
+        return
+    mode, origin = _mode_and_origin(record, current)
     if mode == "local":
         typer.echo(
             f"{who} reads outside your projects what FinishUP on this computer would read (mode "
