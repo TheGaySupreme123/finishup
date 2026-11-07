@@ -145,3 +145,27 @@ async def test_structural_ledger_strips_payloads_a_warm_entry_decoded() -> None:
     # A record that already carries no payload passes through unchanged.
     assert seen[1] is records[1]
     assert await facade.load_frontier() == "frontier"
+
+
+class _VerifyingLedger(_Ledger):
+    def __init__(self, unverifiable: frozenset[str]) -> None:
+        super().__init__(())
+        self._unverifiable = unverifiable
+
+    async def payload_object_unverifiable(self, event_id: str) -> bool:
+        return event_id in self._unverifiable
+
+
+@pytest.mark.anyio
+async def test_read_ledger_forwards_the_unverifiable_payload_fact() -> None:
+    """A replayed receipt reads through the payload-read facade (ADR-051, decision D4b), so the
+    ledger's stored-copy fact must reach it; a ledger without that fact never lost a payload."""
+
+    facade = runtime_module._ReadLedger  # pyright: ignore[reportPrivateUsage]
+    event = "evt_00000000-0000-4000-8000-000000000071"
+    other = "evt_00000000-0000-4000-8000-000000000072"
+    forwarding = facade(cast(LedgerPort, _VerifyingLedger(frozenset({event}))))
+    assert await forwarding.payload_object_unverifiable(event) is True
+    assert await forwarding.payload_object_unverifiable(other) is False
+    in_memory = facade(cast(LedgerPort, _Ledger(())))
+    assert await in_memory.payload_object_unverifiable(event) is False

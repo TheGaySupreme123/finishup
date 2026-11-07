@@ -5177,15 +5177,27 @@ user-controlled is ever rendered beside it.
   `_Provenance.UNREADABLE` (`session_opening_unreadable`, the passing cause) for a failed read and
   for an `AcceptedEvent` opening whose envelope is `present` but whose payload is None, which is
   what `SqliteLedger` recovery keeps when it cannot read a payload object (`KeyError`, `OSError`
-  or `ValueError` from `open_verified`) and keeps for as long as that ledger holds the task. The
-  lasting causes are decided by envelope state first, whatever the version
+  or `ValueError` from `open_verified`) and keeps for as long as that ledger holds the task,
+  unless the ledger reports it unverifiable (below). The lasting causes are decided by envelope
+  state first, whatever the version
   (`_LASTING_ENVELOPE_STATES`): `_Provenance.REDACTED` (`session_opening_redacted`) for
   `logically_redacted`, `_Provenance.ERASED` (`session_opening_erased`) for `erased_claimed`,
   `_Provenance.KEY_UNAVAILABLE` (`session_opening_key_unavailable`) for `key_unavailable`; then
   `_Provenance.FORMAT_UNKNOWN` (`session_opening_format_unknown`) for any `UnknownEvent` (a
   `session_opened` version this service cannot decode, its payload read or not) and any other
-  non-`SessionOpenedPayload` payload. A failed read is never called lasting: nothing there tells a
-  passing fault from a lasting one. The receipt is built and its text and markdown renderings end
+  non-`SessionOpenedPayload` payload; last, `_Provenance.COPY_UNVERIFIABLE`
+  (`session_opening_copy_unverifiable`) for a decodable `present` opening with no payload whose
+  ledger answers `payload_object_unverifiable(event_id)` with exactly `True`.
+  `SqliteLedger.payload_object_unverifiable` is a structural availability fact, never payload
+  content: recovery records an event id only when `open_verified` raised the object-store port's
+  deterministic `ValueError("object_verification_failed")` (missing object, or bytes that fail
+  the envelope digest, header, decryption, size or commitment check), which opening the task
+  again repeats; an environmental `OSError` (re-raised as it is by the store), a `KeyError` or any
+  other `ValueError` is not recorded and stays passing. The fact belongs to one recovery and is
+  rebuilt when the task is opened afresh. `_ReadLedger` forwards it; a ledger without it (the
+  memory ledger, which holds every payload) answers False, and a failing lookup is recorded under
+  `receipt_attestation_read` and stays passing. A failed read is never called lasting: nothing
+  there tells a passing fault from a lasting one. The receipt is built and its text and markdown renderings end
   with `workspace_provenance_unknown_block(markdown=..., reason=...)`: the "Workspace evidence"
   heading and `workspace_provenance_unknown_lines(reason)`, never with no section. Every reason
   shares `WORKSPACE_PROVENANCE_UNKNOWN_LINE` (what happened: "Provenance unknown: the record of
@@ -5202,8 +5214,11 @@ user-controlled is ever rendered beside it.
   that key is unavailable.") and `WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE` ("the record is in a
   format this FinishUP version cannot decode, so running receipt again or restarting the service
   will not read it, and this task's receipts will keep saying so until the server runs a FinishUP
-  version that knows this format."). Only the redacted and erased lines say the record will not
-  become readable again. Any other reason is `invalid_receipt_document`. The words live in
+  version that knows this format."), and `WORKSPACE_PROVENANCE_COPY_UNVERIFIABLE_LINE` ("the
+  server's stored copy of the record is missing or fails its integrity check, so running receipt
+  again or restarting the service will not read it, and this task's receipts will keep saying so
+  for as long as that copy is missing or fails the check."). Only the redacted and erased lines
+  say the record will not become readable again. Any other reason is `invalid_receipt_document`. The words live in
   `domain.workspace_provenance` (standard library only, so the protocol models admit exactly
   them; `SESSION_OPENING_*` name the tokens) and `domain.receipts` re-exports the shared lines.
   Either "Workspace evidence" section is rendered with the receipt, never appended to it:
@@ -5223,7 +5238,8 @@ user-controlled is ever rendered beside it.
   `unknown`; `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS` naming the cause
   (`session_opening_unreadable`: the read failed or the record did not load, which can pass;
   `session_opening_redacted`, `session_opening_erased`, `session_opening_key_unavailable`,
-  `session_opening_format_unknown`: the lasting causes above); and `notice`, exactly
+  `session_opening_format_unknown`, `session_opening_copy_unverifiable`: the lasting causes
+  above); and `notice`, exactly
   `workspace_provenance_unknown_notice(reason)` (that reason's three lines joined by newlines).
   Each reason admits only its own notice: `ReceiptWorkspaceProvenanceModel` refuses another as
   `workspace_provenance_notice_invalid`, and the 1.5.0 schema pairs them with a `oneOf` beside
@@ -5236,9 +5252,9 @@ user-controlled is ever rendered beside it.
   fault clears, or the task's ledger is opened afresh after the runtime evicts the idle entry or
   the service restarts, and the object reads) the same request renders the binding the record
   holds. A lasting cause keeps its section, and says it will, through every retry and restart:
-  for good when the opening was redacted or erased, while the key is unavailable, and until the
-  service runs a version that knows the format of an `UnknownEvent` opening
-  (`docs/usage/servers.md` says so).
+  for good when the opening was redacted or erased, while the key is unavailable, until the
+  service runs a version that knows the format of an `UnknownEvent` opening, and for as long as
+  its stored copy is missing or fails verification (`docs/usage/servers.md` says so).
 - Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
   ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with

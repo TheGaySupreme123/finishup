@@ -32,6 +32,7 @@ from finishup.domain.receipts import (
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_COPY_UNVERIFIABLE,
     SESSION_OPENING_ERASED,
     SESSION_OPENING_FORMAT_UNKNOWN,
     SESSION_OPENING_KEY_UNAVAILABLE,
@@ -349,9 +350,15 @@ def _runtime(ledger: _Ledger) -> Any:  # noqa: ANN401
     )
 
 
+_OPENING_ID = "evt_00000000-0000-4000-8000-000000051004"
+
+
 def _record(payload: object, *, name: str = "session_opened", redaction: str = "present") -> object:
     return SimpleNamespace(
-        schema=SimpleNamespace(name=name), redaction=RedactionState(redaction), payload=payload
+        event_id=_OPENING_ID,
+        schema=SimpleNamespace(name=name),
+        redaction=RedactionState(redaction),
+        payload=payload,
     )
 
 
@@ -471,6 +478,115 @@ def test_an_opening_whose_payload_did_not_load_is_a_passing_cause() -> None:
     attested_by: Any = getattr(receipt, "_attested_by")
     passing = getattr(receipt, "_Provenance").UNREADABLE
     assert asyncio.run(attested_by(_runtime(_Ledger((_record(None),))))) is passing
+
+
+class _CheckedLedger(_Ledger):
+    """A task ledger that also reports which payload objects failed verification at recovery."""
+
+    def __init__(self, records: tuple[object, ...], answer: object) -> None:
+        super().__init__(records)
+        self._answer = answer
+        self.asked: list[str] = []
+
+    async def payload_object_unverifiable(self, event_id: str) -> object:
+        self.asked.append(event_id)
+        if isinstance(self._answer, BaseException):
+            raise self._answer
+        return self._answer
+
+
+def test_an_opening_whose_stored_copy_failed_verification_is_its_own_lasting_cause() -> None:
+    """Decision D4b: the object store refuses a missing or corrupt payload object as its
+    deterministic ``object_verification_failed``, and the ledger keeps that fact. Opening the task
+    again reads the same bytes, so the receipt says why it lasts, never to restart."""
+
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    provenance = getattr(receipt, "_Provenance")
+    ledger = _CheckedLedger((_record(None),), True)
+    answer = asyncio.run(attested_by(_runtime(ledger)))
+    assert answer is provenance.COPY_UNVERIFIABLE
+    assert answer.value == SESSION_OPENING_COPY_UNVERIFIABLE
+    assert ledger.asked == [_OPENING_ID]
+    # An object that did not load for any other reason (an environmental fault) can pass.
+    ledger = _CheckedLedger((_record(None),), False)
+    assert asyncio.run(attested_by(_runtime(ledger))) is provenance.UNREADABLE
+    assert ledger.asked == [_OPENING_ID]
+
+
+@pytest.mark.parametrize(
+    ("record", "cause"),
+    [
+        (_record(None, redaction="logically_redacted"), SESSION_OPENING_REDACTED),
+        (_record(None, redaction="key_unavailable"), SESSION_OPENING_KEY_UNAVAILABLE),
+        (_unknown_version(None), SESSION_OPENING_FORMAT_UNKNOWN),
+    ],
+    ids=["logically_redacted", "key_unavailable", "unknown_event_unread"],
+)
+def test_only_a_decodable_present_opening_asks_whether_its_copy_failed_verification(
+    record: object, cause: WorkspaceProvenanceReason
+) -> None:
+    """The envelope state and the version decide first: a redacted record or one this version
+    cannot decode names that cause even when its payload object is also unverifiable."""
+
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    ledger = _CheckedLedger((record,), True)
+    assert asyncio.run(attested_by(_runtime(ledger))) is getattr(receipt, "_Provenance")(cause)
+    assert ledger.asked == []
+    read = _CheckedLedger((_opened(_HANDLE),), True)
+    assert asyncio.run(attested_by(_runtime(read))) == _INSTANCE
+    assert read.asked == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [OSError(5, "input/output error"), RuntimeError("ledger_unavailable"), "yes", 1, None],
+    ids=["os_error", "other_error", "not_a_bool", "truthy_int", "none"],
+)
+def test_an_unestablished_stored_copy_fact_stays_a_passing_cause(
+    answer: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an explicit True is a lasting claim. A failing lookup is recorded as one bounded
+    diagnostic and never refuses the receipt; anything else is not established, so it can pass."""
+
+    from finishup.application import receipt
+
+    recorded = _Recorded()
+    monkeypatch.setattr(receipt, "record_classified_exception_without_raising", recorded)
+    attested_by: Any = getattr(receipt, "_attested_by")
+    request_id = "req_00000000-0000-4000-8000-000000051005"
+    answered = asyncio.run(
+        attested_by(_runtime(_CheckedLedger((_record(None),), answer)), request_id=request_id)
+    )
+    assert answered is getattr(receipt, "_Provenance").UNREADABLE
+    expected = (
+        [
+            (
+                type(answer),
+                {
+                    "component": "application.receipt",
+                    "operation": "receipt_attestation_read",
+                    "request_id": request_id,
+                },
+            )
+        ]
+        if isinstance(answer, BaseException)
+        else []
+    )
+    assert recorded.calls == expected
+
+
+def test_a_cancelled_stored_copy_lookup_is_never_turned_into_an_answer() -> None:
+    from finishup.application import receipt
+
+    attested_by: Any = getattr(receipt, "_attested_by")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            attested_by(_runtime(_CheckedLedger((_record(None),), asyncio.CancelledError())))
+        )
 
 
 @pytest.mark.parametrize("reason", WORKSPACE_PROVENANCE_REASONS)
