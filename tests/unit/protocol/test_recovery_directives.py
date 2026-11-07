@@ -560,8 +560,6 @@ class TestWorkspaceBindingAndServerTargetReasons:
     _EXPECTED: dict[str, str] = {
         "workspace_binding_conflict": "workspace_binding_correction",
         "workspace_ref_not_portable": "workspace_handle_required",
-        "workspace_agent_unavailable": "workspace_agent_reconnect",
-        "workspace_agent_refused": "workspace_agent_refusal_review",
         "requires_server_host": "server_host_command_required",
         "target_root_is_remote": "remote_target_no_local_service",
         "target_reauthorization_required": "server_reauthorization_required",
@@ -598,19 +596,19 @@ class TestWorkspaceBindingAndServerTargetReasons:
         )
         assert error.safe_details == {"reason_code": reason, "continuation": token}
 
-    def test_a_refusal_points_the_user_to_both_ways_out_the_agent_never_takes(self) -> None:
-        """ADR-051 decision 5: the usual refusal is a task input in a folder the owner has not
-        let the server read. Only the user can list the folder or, for a server they trust,
-        switch it to mode local; the agent tells them, and never runs either command itself."""
+    def test_the_workspace_agent_reasons_are_receipt_gaps_with_no_directive(self) -> None:
+        """ADR-051: an agent that refused or gave no answer is a check-time change gap with its
+        own fixed receipt sentence, never a public error, so it carries no directive; the two
+        tokens that once stood for one are gone from every registry (refusal-guide review)."""
 
-        entry = directive_for("workspace_agent_refusal_review")
-        assert entry is not None and entry.nudge is not None
-        assert "'finishup server folders add'" in entry.directive
-        assert "'finishup server folders mode NAME local'" in entry.directive
-        assert "Tell the user only they can allow it" in entry.directive
-        assert "outside the claimed workspace" not in entry.directive
-        assert entry.nudge.startswith("Do not run either command yourself")
-        assert "only for a server the user trusts" in entry.nudge
+        for reason in ("workspace_agent_refused", "workspace_agent_unavailable"):
+            assert reason in PROTOCOL_REASON_CODES
+            assert reason not in REASON_CODE_CONTINUATIONS
+            assert continuation_for_reason(reason) is None
+            assert local_reason_has_disposition(reason)
+        for token in ("workspace_agent_reconnect", "workspace_agent_refusal_review"):
+            assert directive_for(token) is None
+            assert token not in CONTINUATION_TOKENS
 
     def test_the_handle_directive_names_a_start_an_agent_can_send(self) -> None:
         # An agent cannot know the connection's handle; it can send the pair, and the FinishUP

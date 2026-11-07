@@ -653,8 +653,6 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "server_host_command_required",
         "server_reauthorization_required",
         "server_selection_overridden",
-        "workspace_agent_reconnect",
-        "workspace_agent_refusal_review",
         "workspace_binding_correction",
         "workspace_handle_required",
     }
@@ -837,8 +835,6 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         # lives, the selected server target, and the phases of a failed remote connection.
         "workspace_binding_conflict": "workspace_binding_correction",
         "workspace_ref_not_portable": "workspace_handle_required",
-        "workspace_agent_unavailable": "workspace_agent_reconnect",
-        "workspace_agent_refused": "workspace_agent_refusal_review",
         "requires_server_host": "server_host_command_required",
         "target_root_is_remote": "remote_target_no_local_service",
         "target_reauthorization_required": "server_reauthorization_required",
