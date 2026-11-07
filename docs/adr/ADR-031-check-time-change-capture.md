@@ -975,7 +975,11 @@ and a server directory at the same path is a different tree. Once ADR-051 is acc
   with the new reason `workspace_agent_unavailable`
   (`check_time_change_unavailable_workspace_agent_unavailable`), and when the agent refuses the
   read with `workspace_agent_refused` (`check_time_change_unavailable_workspace_agent_refused`);
-  the existing gap rules and fail-closed defaults apply unchanged.
+  the existing gap rules and fail-closed defaults apply unchanged. A task input the client's
+  owner has not listed for a server in `listed` mode never makes the capture unavailable
+  (ADR-051 decision 5, amended 2026-11-07): only that input, or its kept copy, is left out, and
+  the stored object records the closed flag `outside_inputs_not_listed` (written only when true,
+  no path), which the composition discloses as `outside_reads_not_listed`.
 - **HOME projects.** The HOME admission of the 2026-10-21 decision is made by the agent on the
   client, never from the server's own home directory.
 - A connection that carries a locator (every local target) keeps this record's behaviour byte

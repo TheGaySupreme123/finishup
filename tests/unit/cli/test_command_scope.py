@@ -206,6 +206,26 @@ def test_a_guarded_command_refuses_before_running_with_no_owner_text(
     assert result.stdout == ""
 
 
+def test_a_refused_input_root_says_where_it_runs_and_what_that_means_for_a_remote_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``privacy input-roots`` admits a folder on the server host, which must exist there: the
+    refusal says so in fixed words, so the owner learns a client-only folder cannot be admitted
+    for a remote server yet (ADR-051 open question 1). Other commands keep their line."""
+
+    record = _remote_record()
+    monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)
+    result = CliRunner().invoke(cli.app, ["privacy", "input-roots", "add", "/srv/specs"])
+    assert result.exit_code == 2
+    assert "requires_server_host" in result.stderr
+    assert "run it on the server host" in result.stderr
+    assert "the folder must exist there" in result.stderr
+    assert "cannot be admitted for a remote server yet" in result.stderr
+    assert "/srv/specs" not in result.output + result.stderr
+    other = CliRunner().invoke(cli.app, ["service", "endpoint", "--json"])
+    assert "must exist there" not in other.stderr
+
+
 def test_root_wizard_flags_refuse_a_remote_target(monkeypatch: pytest.MonkeyPatch) -> None:
     record = _remote_record()
     monkeypatch.setattr("finishup.client.targets.active_target_record", lambda: record)

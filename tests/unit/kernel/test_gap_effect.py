@@ -140,6 +140,9 @@ _CHANGED = frozenset(
         # #1143 (PR #1167 review): freshness held on a caller-asserted complete declaration; a
         # disclosure from the start, never agent work and never a Stop-gate item.
         "verification_inputs_caller_asserted",
+        # ADR-051 decision 5: files a remote server's listed mode kept from review; a disclosure
+        # from the start, never agent work and never a Stop-gate item.
+        "outside_reads_not_listed",
     }
 )
 _CARRIED = frozenset(_GUARDED_AT_BASE)
@@ -156,8 +159,8 @@ def test_the_classification_is_a_view_of_the_table_with_the_same_readiness_group
     # verification_rerun_question limit and verification_inputs_caller_asserted disclosure.
     # + the #1138 semantic_review_skipped_privacy_block limit. + ADR-051's
     # check_time_change_unavailable_workspace_agent_unavailable and _workspace_agent_refused
-    # beside their G7 siblings.
-    assert len(GAP_EFFECT_TABLE) == 230
+    # beside their G7 siblings. + ADR-051 decision 5's outside_reads_not_listed disclosure.
+    assert len(GAP_EFFECT_TABLE) == 231
     for code, group in GAP_CLASSIFICATION.items():
         assert GAP_EFFECT_TABLE[code].readiness is group, code
     assert {row.why for row in GAP_EFFECT_TABLE.values()} <= set(GAP_EFFECT_WHY)
@@ -167,8 +170,9 @@ def test_exactly_the_documented_rows_are_marked_changed() -> None:
     changed = {code for code, row in GAP_EFFECT_TABLE.items() if row.changed}
     assert changed == _CHANGED
     # +1: the #1118 unit 4 verification_input_directory_unresolved disclosure; +2: the #1143
-    # route-dependent stale verification rows; +1: the #1143 caller-asserted input disclosure.
-    assert len(changed) == 47
+    # route-dependent stale verification rows; +1: the #1143 caller-asserted input disclosure;
+    # +1: ADR-051 decision 5's outside_reads_not_listed disclosure.
+    assert len(changed) == 48
 
 
 @pytest.mark.parametrize("route_requires_review", [False, True])

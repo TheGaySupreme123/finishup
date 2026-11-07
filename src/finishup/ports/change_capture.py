@@ -470,7 +470,10 @@ class CheckChangeCapture:
     task input files the same read carried (issue #1045); they are not part of the change and never
     enter ``text``. ``outside_inputs_not_admitted`` is the service's closed decision, taken when
     the read ran, that the task names an existing input outside the workspace that no root the
-    owner admitted covers (issue #1102); it names no path.
+    owner admitted covers (issue #1102); it names no path. ``outside_inputs_not_listed`` records,
+    for a claim-bound task, that the client's workspace agent left an existing task-named input
+    unread because its owner has not listed that folder for this server (ADR-051 decision 5);
+    only that input is missing, and it names no path either.
     """
 
     base: ChangeBaseKind
@@ -483,6 +486,7 @@ class CheckChangeCapture:
     base_commit: str = field(default="", repr=False)
     inputs: tuple[TaskInputFile, ...] = field(default=(), repr=False)
     outside_inputs_not_admitted: bool = False
+    outside_inputs_not_listed: bool = False
     # One-based diff-section ordinals whose body could not be redacted. Only their safe header
     # remains in text; composition gives each a separate, withheld item.
     withheld_sections: tuple[int, ...] = ()
@@ -512,6 +516,7 @@ class CheckChangeCapture:
             type(self.truncated) is not bool
             or type(self.redacted) is not bool
             or type(self.outside_inputs_not_admitted) is not bool
+            or type(self.outside_inputs_not_listed) is not bool
         ):
             raise _invalid()
         if self.omitted_files and not self.truncated:
@@ -1274,6 +1279,9 @@ def encode_check_change(capture: CheckChangeCapture) -> bytes:
     if capture.outside_inputs_not_admitted:
         # Issue #1102: written only when set, so every object without it keeps its bytes.
         body["outside_inputs_not_admitted"] = True
+    if capture.outside_inputs_not_listed:
+        # ADR-051 decision 5: written only when set, likewise.
+        body["outside_inputs_not_listed"] = True
     if capture.withheld_sections:
         body["withheld_sections"] = list(capture.withheld_sections)
     return canonical_encode(cast(JsonValue, body))
@@ -1288,6 +1296,7 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         "base_commit",
         "inputs",
         "outside_inputs_not_admitted",
+        "outside_inputs_not_listed",
         "withheld_sections",
     } != {
         "base",
@@ -1302,7 +1311,10 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         raise _invalid()
     if source["schema"] != _CHECK_CHANGE_SCHEMA or type(source["text"]) is not str:
         raise _invalid()
-    if source.get("outside_inputs_not_admitted", True) is not True:
+    if (
+        source.get("outside_inputs_not_admitted", True) is not True
+        or source.get("outside_inputs_not_listed", True) is not True
+    ):
         # A default value is never written, so a present ``false`` is not canonical.
         raise _invalid()
     withheld = source.get("withheld_sections", [])
@@ -1323,5 +1335,6 @@ def decode_check_change(data: bytes) -> CheckChangeCapture:
         base_commit=cast(str, source.get("base_commit", "")),
         inputs=tuple(inputs),
         outside_inputs_not_admitted=source.get("outside_inputs_not_admitted") is True,
+        outside_inputs_not_listed=source.get("outside_inputs_not_listed") is True,
         withheld_sections=tuple(cast(list[int], withheld)),
     )

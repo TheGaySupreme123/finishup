@@ -92,8 +92,13 @@ def test_the_task_input_counters_are_counts_only() -> None:
         "semantic_task_input_excerpts_selected": 2,
         "semantic_task_input_outside_candidates": 1,
         "semantic_task_inputs_outside_not_admitted": 1,
+        # ADR-051 decision 5: no claim-bound listed-mode skip in this change.
+        "semantic_task_inputs_outside_not_listed": 0,
     }
     assert all(type(value) is int for value in counts.values())
+    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=True))
+    flagged = _task_input_counts(inputs, CheckChangeOutcome(change=listed), semantic, True, outside)
+    assert flagged["semantic_task_inputs_outside_not_listed"] == 1
     empty = _task_input_counts(((), frozenset()), CheckChangeOutcome(), _build(case), False)
     assert set(empty.values()) == {0}
 

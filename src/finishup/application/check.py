@@ -79,6 +79,7 @@ from finishup.domain.receipts import (
     COMPLETION_SCOPE_UNDECLARED_GAP,
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
+    OUTSIDE_READS_NOT_LISTED_GAP,
     PREEXISTING_TEST_BASELINE_UNKNOWN_GAP,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
@@ -461,6 +462,8 @@ SEMANTIC_CASE_CONTENT_GAPS: Final = frozenset(
         TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
         # #1118 unit 4 (AIP-2): a verification oracle left out for an unresolvable directory.
         VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
+        # ADR-051 decision 5: files a remote server's listed mode kept from review.
+        OUTSIDE_READS_NOT_LISTED_GAP,
     }
 )
 # Every packet gap an evaluation may report: the content gaps above plus the codes whose resolution

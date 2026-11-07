@@ -24,6 +24,8 @@ from finishup.domain.receipt_closing import safe_closing_prompt
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+    OUTSIDE_READS_NOT_LISTED_GAP,
+    OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
@@ -1790,11 +1792,21 @@ def _lineage_sentence(raw: object, code: str | None = None) -> str:
     return texts[0] if texts else ""
 
 
+# The owner's steps for files review could not read outside the workspace, each with its short
+# form: an input no admitted root covers (issue #1102), and files a remote server's listed mode
+# kept from review (ADR-051 decision 5).
+_OUTSIDE_OWNER_STEPS: Final = (
+    (TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE),
+    (OUTSIDE_READS_NOT_LISTED_GAP, OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE),
+)
+
+
 def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
     # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code. The
-    # owner's step for an unadmitted outside input has its own part below (issue #1102).
+    # owner's steps for outside files review could not read have their own part below.
+    owner_steps = {code for code, _short in _OUTSIDE_OWNER_STEPS}
     for code in _safe_gap_codes(source):
-        if code == TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP:
+        if code in owner_steps:
             continue
         sentence = check_time_change_gap_sentence(code)
         if sentence is not None:
@@ -1803,19 +1815,21 @@ def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
 
 
 def _task_input_outside_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """Issue #1102: the owner's step when review lacked a task-named outside input, or nothing.
+    """The owner's steps when review lacked files outside the workspace, or nothing: issue #1102
+    (no admitted root covers a task-named input) and ADR-051 decision 5 (a remote server's listed
+    mode kept files from review).
 
     Its own part, so an unavailable-change sentence beside it never hides it; fixed text only.
+    The full sentences first, then the short forms.
     """
 
-    if TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP not in _safe_gap_codes(source):
+    present = set(_safe_gap_codes(source))
+    steps = tuple((code, short) for code, short in _OUTSIDE_OWNER_STEPS if code in present)
+    if not steps:
         return ()
-    sentence = check_time_change_gap_sentence(TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP)
-    return (
-        (TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,)
-        if sentence is None
-        else (sentence, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE)
-    )
+    full = tuple(check_time_change_gap_sentence(code) or short for code, short in steps)
+    short = tuple(short for _code, short in steps)
+    return tuple(dict.fromkeys((" ".join(full), " ".join(short))))
 
 
 def _check_fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:

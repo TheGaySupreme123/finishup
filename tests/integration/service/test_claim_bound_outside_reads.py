@@ -1,13 +1,15 @@
 """A claim-bound task reads outside its workspace only where the client's owner admitted it.
 
-ADR-051 decision 5 and #1220. The server names a declared test outside the claimed workspace;
-the client's workspace agent (the product's own handler, behind the test agent) reads it only
-beneath a folder the owner admitted for that server on the client (``finishup server folders
-add``). Not admitted, the server never pins the test and the reviewer is never offered it, though
-the very same file is there and readable; admitted, it is pinned and offered as a local service
-offers it. A task input the task names beneath a root the server's own policy admits is refused
-by the agent until the owner admits it on the client, and the server records that refusal as the
-check's ``workspace_agent_refused``, never as a silent absence.
+ADR-051 decision 5 and #1220, in ``listed`` mode. The server names a declared test outside the
+claimed workspace; the client's workspace agent (the product's own handler, behind the test
+agent) reads it only beneath a folder the owner admitted for that server on the client
+(``finishup server folders add``). Not admitted, the server never pins the test and the reviewer
+is never offered it, though the very same file is there and readable, and the check discloses
+``outside_reads_not_listed`` with the owner's two ways out; admitted, it is pinned and offered as
+a local service offers it. A task input the task names beneath a root the server's own policy
+admits is left unread by the agent until the owner admits it on the client: only that input is
+missing, the rest of the check-time change stands, and the capture records the same disclosure,
+never a silent absence.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pytest
 import finishup.service.ready_composition as ready_composition_module
 from builders.workspace_agent_fake import FakeWorkspaceAgent
 from finishup.adapters.task_input_read import read_declared_test
+from finishup.domain.receipts import OUTSIDE_READS_NOT_LISTED_GAP
 from finishup.kernel.declared_checks import DeclaredTestCandidate
 from finishup.service.workspace_hub import WorkspaceAgentHub
 from integration.service import test_claim_bound_sessions as claim_bound
@@ -62,6 +65,17 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
         return candidates
 
     monkeypatch.setattr(ready_composition_module, "declared_test_candidates", declared)
+    # What the job's case object froze, as recovery reads it back.
+    frozen: list[tuple[object, ...]] = []
+    publish = getattr(ready_composition_module, "_publish_semantic_case_object")
+    read_case = getattr(ready_composition_module, "_read_semantic_case")
+
+    async def spy(runtime: object, **kwargs: object) -> object:
+        ref = await publish(runtime, **kwargs)
+        frozen.append(await read_case(runtime, ref))
+        return ref
+
+    monkeypatch.setattr(ready_composition_module, "_publish_semantic_case_object", spy)
     hub = WorkspaceAgentHub(inline_wait_seconds=0.5, background_wait_seconds=0.5)
     agent = FakeWorkspaceAgent(claim_bound._reviewed_repository(tmp_path))  # pyright: ignore[reportPrivateUsage]
     if admitted:
@@ -88,44 +102,98 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
         assert listed == []
         assert declared_roots == []
         assert os.fspath(test) not in first[1][1]
+    # Not offered because the owner did not list it: the check says so, never in silence, and the
+    # job's case object freezes it, so a recovered job builds the same case.
+    assert (OUTSIDE_READS_NOT_LISTED_GAP in result.case_content_gaps) is not admitted
+    ((stored),) = frozen
+    assert stored[6] is (not admitted)
 
 
 @pytest.mark.parametrize("admitted", [False, True], ids=["not-admitted", "admitted"])
-async def test_a_task_input_beneath_a_root_the_owner_did_not_admit_is_a_recorded_refusal(
+async def test_a_task_input_the_owner_did_not_list_costs_only_that_input(
     tmp_path: Path, admitted: bool
 ) -> None:
     from finishup.application.check_change import (
-        _agent_loss_reason,  # pyright: ignore[reportPrivateUsage]
+        _with_outside_inputs,  # pyright: ignore[reportPrivateUsage]
     )
-    from finishup.ports.workspace_agent import WorkspaceAgentUnavailable
+    from finishup.ports.change_capture import CheckChangeCapture
     from finishup.service.workspace_routing import WorkspaceRouting
 
     specs = (tmp_path / "specs").resolve()
-    specs.mkdir(mode=0o700)
-    (specs / "spec.md").write_text("SPEC_MARKER\n")
-    (specs / "spec.md").chmod(0o600)
+    notes = (tmp_path / "notes").resolve()
+    for folder, name, text in ((specs, "spec.md", "SPEC_MARKER\n"), (notes, "n.md", "NOTE\n")):
+        folder.mkdir(mode=0o700)
+        (folder / name).write_text(text)
+        (folder / name).chmod(0o600)
     hub = WorkspaceAgentHub(inline_wait_seconds=0.5, background_wait_seconds=0.5)
     agent = FakeWorkspaceAgent(claim_bound._reviewed_repository(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    agent.admitted_folders.append(os.fspath(notes))
     if admitted:
         agent.admitted_folders.append(os.fspath(specs))
     await claim_bound._attach(hub, agent)  # pyright: ignore[reportPrivateUsage]
     assert agent.handle is not None
     routing = WorkspaceRouting.compose(hub, claim_bound.SpyLocalCapture())
-    # The server's own policy admits the root; the check-time reader the service composes.
+    # The server's own policy admits both roots; the check-time reader the service composes.
     reader = getattr(ready_composition_module, "_outside_input_reader")(
-        (os.fspath(specs),), (), routing
+        (os.fspath(notes), os.fspath(specs)), (), routing
     )
-    values = (f"{specs}/spec.md",)
-    if admitted:
-        found = await asyncio.to_thread(reader, values, 4, agent.handle, frozenset())
-        assert [(item.path, item.root) for item in found] == [(values[0], os.fspath(specs))]
-        return
-    with pytest.raises(WorkspaceAgentUnavailable) as refused:
-        await asyncio.to_thread(reader, values, 4, agent.handle, frozenset())
-    assert (refused.value.reason, refused.value.agent_reason) == (
-        "agent_refused",
-        "root_not_admitted",
+    values = (f"{specs}/spec.md", f"{notes}/n.md", f"{specs}/missing.md")
+    change = CheckChangeCapture(
+        base="task_start",
+        text=b"diff --git a/calc.py b/calc.py\n",
+        tracked_files=1,
+        untracked_files=0,
+        omitted_files=0,
+        truncated=False,
     )
-    # The check-time change is then unavailable with the refusal's own reason and sentence.
-    assert _agent_loss_reason(refused.value) == "workspace_agent_refused"
+    capture = await asyncio.to_thread(
+        _with_outside_inputs,
+        change,
+        values,
+        reader,
+        agent.handle,
+        verification_paths=frozenset(),
+    )
     assert "read_outside_inputs" in agent.operations
+    # The change itself stands either way: listed mode costs only the input it did not list.
+    assert capture.text == change.text
+    read = [(item.path, item.root) for item in capture.inputs]
+    if admitted:
+        assert read == [(values[0], os.fspath(specs)), (values[1], os.fspath(notes))]
+        assert capture.outside_inputs_not_listed is False
+        return
+    assert read == [(values[1], os.fspath(notes))]
+    # Recorded as a closed flag, never which file: the receipt's fixed line comes from it. The
+    # missing file is not counted as left out, as a local read finds nothing there either.
+    assert capture.outside_inputs_not_listed is True
+
+
+async def test_a_kept_copys_current_read_names_a_folder_the_owner_no_longer_lists(
+    tmp_path: Path,
+) -> None:
+    """The check compares each kept copy with the file now (#1118 unit 1). A claim-bound task's
+    agent names the kept paths whose folder the owner no longer lists, so their copies are not
+    sent, as a copy whose root the owner no longer admits is not (ADR-051 decision 5)."""
+
+    from finishup.application.check_change import CurrentInputsRead
+    from finishup.service.workspace_routing import WorkspaceRouting
+
+    specs = (tmp_path / "specs").resolve()
+    notes = (tmp_path / "notes").resolve()
+    for folder, name, text in ((specs, "spec.md", "SPEC_MARKER\n"), (notes, "n.md", "NOTE\n")):
+        folder.mkdir(mode=0o700)
+        (folder / name).write_text(text)
+        (folder / name).chmod(0o600)
+    hub = WorkspaceAgentHub(inline_wait_seconds=0.5, background_wait_seconds=0.5)
+    agent = FakeWorkspaceAgent(claim_bound._reviewed_repository(tmp_path))  # pyright: ignore[reportPrivateUsage]
+    agent.admitted_folders.append(os.fspath(notes))
+    await claim_bound._attach(hub, agent)  # pyright: ignore[reportPrivateUsage]
+    assert agent.handle is not None
+    routing = WorkspaceRouting.compose(hub, claim_bound.SpyLocalCapture())
+    current = getattr(ready_composition_module, "_current_input_reader")(
+        (os.fspath(notes), os.fspath(specs)), (agent.handle,), routing
+    )
+    paths = (f"{specs}/spec.md", f"{notes}/n.md")
+    found = await asyncio.to_thread(current, paths)
+    assert found == CurrentInputsRead({paths[1]: b"NOTE\n"}, frozenset({paths[0]}))
+    assert "snapshot_outside_inputs" in agent.operations

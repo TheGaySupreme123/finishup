@@ -76,6 +76,8 @@ from finishup.ports.workspace_agent import (
     LstatCandidatesArguments,
     LstatFacts,
     OpenWorkspaceArguments,
+    OutsideInputsRead,
+    OutsideSnapshotsRead,
     ProbeRequestedPathsArguments,
     ReadDeclaredTestArguments,
     ReadOutsideInputsArguments,
@@ -454,13 +456,18 @@ def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
     values = (f"{shared}/spec.md", f"{shared}/data/", f"{shared}/missing.md")
     excluded = (os.fspath(repository), os.fspath(protected))
 
-    inputs = _ok(
+    answer = _ok(
         handler,
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         ReadOutsideInputsArguments(roots, values, limit=4, excluded=(_HANDLE,)),
     )
-    assert inputs == read_outside_inputs(roots, values, limit=4, excluded=excluded)
-    assert [item.path for item in inputs] == [f"{shared}/spec.md", f"{shared}/data/rows.csv"]
+    assert answer == OutsideInputsRead(
+        read_outside_inputs(roots, values, limit=4, excluded=excluded)
+    )
+    assert [item.path for item in answer.inputs] == [
+        f"{shared}/spec.md",
+        f"{shared}/data/rows.csv",
+    ]
 
     snapshot = _ok(
         handler,
@@ -469,10 +476,12 @@ def test_outside_inputs_equal_the_local_reader_with_the_local_exclusions(
             roots, values, limit=4, max_bytes=65_536, budget_ms=10_000, excluded=(_HANDLE,)
         ),
     )
-    assert snapshot == snapshot_outside_inputs(
-        roots, values, limit=4, max_bytes=65_536, seconds=10.0, excluded=excluded
+    assert snapshot == OutsideSnapshotsRead(
+        snapshot_outside_inputs(
+            roots, values, limit=4, max_bytes=65_536, seconds=10.0, excluded=excluded
+        )
     )
-    assert snapshot[0].text == b"SPEC_MARKER\n"
+    assert snapshot.reads[0].text == b"SPEC_MARKER\n"
 
 
 def test_outside_reads_never_enter_the_workspace_or_finishup_directories(
@@ -490,24 +499,16 @@ def test_outside_reads_never_enter_the_workspace_or_finishup_directories(
     handler = _handler(repository, protected, folders=(root,))
     values = (f"{repository}/tracked.txt", f"{protected}/vault.txt")
     assert read_outside_inputs((root,), values, limit=4) != ()  # the bare reader would read them
-    assert (
-        _ok(
-            handler,
-            WorkspaceOperation.READ_OUTSIDE_INPUTS,
-            ReadOutsideInputsArguments((root,), values, limit=4),
-        )
-        == ()
-    )
-    assert (
-        _ok(
-            handler,
-            WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
-            SnapshotOutsideInputsArguments(
-                (root,), values, limit=4, max_bytes=65_536, budget_ms=5_000
-            ),
-        )
-        == ()
-    )
+    assert _ok(
+        handler,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((root,), values, limit=4),
+    ) == OutsideInputsRead(())
+    assert _ok(
+        handler,
+        WorkspaceOperation.SNAPSHOT_OUTSIDE_INPUTS,
+        SnapshotOutsideInputsArguments((root,), values, limit=4, max_bytes=65_536, budget_ms=5_000),
+    ) == OutsideSnapshotsRead(())
     # A reviewer read beneath that admitted root is refused the same way.
     assert (
         _ok(
@@ -597,7 +598,7 @@ def test_in_mode_local_finishup_directories_read_as_nothing_as_a_local_service_r
             handler,
             WorkspaceOperation.READ_OUTSIDE_INPUTS,
             ReadOutsideInputsArguments((root,), values, limit=4),
-        )
+        ).inputs
         == read_outside_inputs((root,), values, limit=4, excluded=excluded)
         == ()
     )
@@ -668,12 +669,20 @@ def test_a_declared_test_outside_the_claimed_workspace_is_refused(
     sibling = repository.parent / (repository.name + "-other")
     sibling.mkdir()
     (sibling / "test_x.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
-    for location in (
-        outside,
-        f"{sibling}/test_x.py",
-        f"{repository.parent}/{repository.name.upper()}/tests/test_app.py",
-        os.fspath(repository),
-    ):
+    upper = f"{repository.parent}/{repository.name.upper()}/tests/test_app.py"
+    for location in (outside, f"{sibling}/test_x.py", upper, os.fspath(repository)):
+        if not os.path.lexists(location):
+            # Another case on a case-sensitive volume names nothing: read as nothing, as locally.
+            assert location == upper
+            assert (
+                _ok(
+                    handler,
+                    WorkspaceOperation.READ_DECLARED_TEST,
+                    ReadDeclaredTestArguments(location),
+                )
+                is None
+            )
+            continue
         assert _refused(
             handler,
             WorkspaceOperation.READ_DECLARED_TEST,
@@ -709,19 +718,24 @@ def test_an_outside_root_is_read_only_beneath_a_folder_admitted_on_this_client(
             ),
         ),
     )
-    # A valid shape the local reader would read beneath, but nothing admitted here: every read
-    # is refused, task inputs too, so the server records the refusal (never a silent absence).
+    # A valid shape the local reader would read beneath, but nothing admitted here: a reviewer
+    # read or listing is refused, and a task-input read leaves both inputs unread and names
+    # them, so the server can say so (never a silent absence) and keep the rest of its read.
     assert read_text_beneath(root, "spec.md", excluded=(), expired=_never) is not None
     for folders in ((), (f"{shared}-other",), (f"{shared.parent}/SHARED",)):
         handler = _handler(repository, protected, folders=folders)
-        for operation, arguments in reads:
+        for operation, arguments in reads[:2]:
             assert _refused(handler, operation, arguments) == ("refused", "root_not_admitted")
+        assert _ok(handler, *reads[2]) == OutsideInputsRead((), (0, 1))
+        assert _ok(handler, *reads[3]) == OutsideSnapshotsRead((), (0, 1))
     # Admitted at the root itself, or above it: read as the local reader reads.
     for folders in ((shared,), (shared.parent,)):
         handler = _handler(repository, protected, folders=folders)
         assert _ok(handler, *reads[0]) == (b"SPEC_MARKER\n", 12)
         assert ("spec.md", False) in _ok(handler, *reads[1])[0]
-        assert [item.path for item in _ok(handler, *reads[2])] == list(values)
+        answer = _ok(handler, *reads[2])
+        assert [item.path for item in answer.inputs] == list(values)
+        assert answer.unlisted == ()
 
 
 def test_a_folder_narrower_than_the_servers_root_admits_only_what_lies_beneath_it(
@@ -745,13 +759,13 @@ def test_a_folder_narrower_than_the_servers_root_admits_only_what_lies_beneath_i
         WorkspaceOperation.READ_TEXT_BENEATH,
         ReadTextBeneathArguments(f"{shared}/data", "rows.csv"),
     ) == (b"a,b\n1,2\n", 8)
-    inputs = _ok(
+    answer = _ok(
         narrow,
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         ReadOutsideInputsArguments((root,), (f"{shared}/data/rows.csv",), limit=4),
     )
     # Read beneath the server's own root, which the server's bookkeeping keeps (#1118).
-    assert [(item.path, item.root) for item in inputs] == [(f"{shared}/data/rows.csv", root)]
+    assert [(item.path, item.root) for item in answer.inputs] == [(f"{shared}/data/rows.csv", root)]
     # Anything the root holds outside the folder stays refused, its listing included, and a
     # ``..`` that climbs out of the folder is judged where it lands.
     for operation, arguments in (
@@ -761,23 +775,28 @@ def test_a_folder_narrower_than_the_servers_root_admits_only_what_lies_beneath_i
             ReadTextBeneathArguments(root, "data/../spec.md"),
         ),
         (WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, "")),
-        (
-            WorkspaceOperation.READ_OUTSIDE_INPUTS,
-            ReadOutsideInputsArguments((root,), (f"{shared}/data/", f"{shared}/spec.md"), limit=4),
-        ),
-        (
-            WorkspaceOperation.READ_OUTSIDE_INPUTS,
-            ReadOutsideInputsArguments((root,), (f"{shared}/",), limit=4),
-        ),
     ):
         assert _refused(narrow, operation, arguments) == ("refused", "root_not_admitted")
+    # A task-input read keeps what lies beneath the folder and leaves the rest unread, named.
+    answer = _ok(
+        narrow,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((root,), (f"{shared}/data/", f"{shared}/spec.md"), limit=4),
+    )
+    assert [item.path for item in answer.inputs] == [f"{shared}/data/rows.csv"]
+    assert answer.unlisted == (1,)
+    assert _ok(
+        narrow,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((root,), (f"{shared}/",), limit=4),
+    ) == OutsideInputsRead((), (0,))
 
 
-def test_a_task_input_read_naming_a_path_the_owner_did_not_admit_is_refused(
+def test_a_task_input_the_owner_did_not_list_is_left_unread_and_named(
     repository: Path, protected: Path, shared: Path, tmp_path: Path
 ) -> None:
-    """Never passed over in silence: the server records the refusal as the check's
-    ``workspace_agent_refused`` (ADR-051 decision 5)."""
+    """Listed mode costs only that input: the rest is read, and the server is told which of its
+    values were left unread, so it says so in a fixed receipt line (ADR-051 decision 5)."""
 
     other = (tmp_path / "other").resolve()
     other.mkdir()
@@ -799,22 +818,70 @@ def test_a_task_input_read_naming_a_path_the_owner_did_not_admit_is_refused(
             ),
         )
 
-    for operation, arguments in both((f"{other}/notes.md", f"{shared}/spec.md")):
-        assert _refused(handler, operation, arguments) == ("refused", "root_not_admitted")
-    # A named root beneath which the task names nothing is never opened, so it needs no
-    # admission; nor does a path beneath no named root, which no read ever looks at.
-    values = (f"{shared}/spec.md", "/api/v1/users", f"{tmp_path.resolve()}/elsewhere.md")
+    read, snapshot = both((f"{other}/notes.md", f"{shared}/spec.md"))
+    answer = _ok(handler, *read)
+    assert [item.path for item in answer.inputs] == [f"{shared}/spec.md"]
+    assert answer.unlisted == (0,)
+    rows = _ok(handler, *snapshot)
+    assert [(row.path, row.text) for row in rows.reads] == [(f"{shared}/spec.md", b"SPEC_MARKER\n")]
+    assert rows.unlisted == (0,)
+    assert b"OTHER_MARKER" not in repr(answer).encode() + repr(rows).encode()
+    # A path that does not exist is not reported, as a local read finds nothing there; nor is a
+    # hidden or credential-named one, whose existence the server never learns. A named root
+    # beneath which the task names nothing is never opened, so it needs no listing; nor does a
+    # path beneath no named root, which no read ever looks at.
+    (other / ".hidden").mkdir()
+    (other / ".hidden" / "notes.md").write_text("HIDDEN\n", encoding="utf-8")
+    values = (
+        f"{shared}/spec.md",
+        f"{other}/missing.md",
+        f"{other}/.hidden/notes.md",
+        "/api/v1/users",
+        f"{tmp_path.resolve()}/elsewhere.md",
+    )
     read, snapshot = both(values)
-    assert [item.path for item in _ok(handler, *read)] == [f"{shared}/spec.md"]
-    assert [(row.path, row.text) for row in _ok(handler, *snapshot)] == [
+    assert _ok(handler, *read) == OutsideInputsRead(
+        read_outside_inputs((os.fspath(shared),), values, limit=4)
+    )
+    assert [(row.path, row.text) for row in _ok(handler, *snapshot).reads] == [
         (f"{shared}/spec.md", b"SPEC_MARKER\n")
     ]
+    assert _ok(handler, *snapshot).unlisted == ()
     # A root of a shape no owner could admit still refuses the whole call.
     assert _refused(
         handler,
         WorkspaceOperation.READ_OUTSIDE_INPUTS,
         ReadOutsideInputsArguments(("/etc", os.fspath(shared)), values, limit=4),
     ) == ("refused", "root_not_admitted")
+
+
+def test_listed_mode_refuses_a_reviewer_read_only_where_something_exists(
+    repository: Path, protected: Path, shared: Path
+) -> None:
+    """A path the server names that does not exist reads as nothing, as locally; one that exists
+    beyond the listed folders is refused. A hidden path's existence is never told (ADR-051
+    decision 5)."""
+
+    handler = _handler(repository, protected)
+    root = os.fspath(shared)
+    (shared / ".private").mkdir()
+    (shared / ".private" / "notes.md").write_text("PRIVATE\n", encoding="utf-8")
+    assert _refused(
+        handler, WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(root, "spec.md")
+    ) == ("refused", "root_not_admitted")
+    assert _refused(
+        handler, WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, "data")
+    ) == ("refused", "root_not_admitted")
+    for operation, arguments in (
+        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(root, "missing.md")),
+        (WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, "nowhere")),
+        (
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(root, ".private/notes.md"),
+        ),
+        (WorkspaceOperation.LIST_BENEATH, ListBeneathArguments(root, ".private")),
+    ):
+        assert _ok(handler, operation, arguments) is None, arguments
 
 
 def test_the_admitted_folders_are_read_on_every_call_and_fail_closed(
@@ -972,11 +1039,17 @@ def test_in_local_mode_outside_reads_are_answered_as_a_local_service_answers_the
             read_declared_test(f"{other}/notes.md", excluded=excluded),
         ),
     )
-    for operation, arguments, expected in reads:
+    for operation, arguments, expected in (*reads[:2], reads[4]):
         assert _refused(listed, operation, arguments) == ("refused", "root_not_admitted")
         assert expected  # the local reader reads it, so the comparison means something
         assert _ok(local, operation, arguments) == expected, operation
-    inputs = _ok(local, *reads[2][:2])
+    # Listed mode leaves every one of these task inputs unread and names them; local reads them.
+    assert reads[2][2] and reads[3][2]
+    assert _ok(listed, *reads[2][:2]) == OutsideInputsRead((), (0, 1, 2))
+    assert _ok(listed, *reads[3][:2]) == OutsideSnapshotsRead((), (0, 1, 2))
+    assert _ok(local, *reads[2][:2]) == OutsideInputsRead(cast(Any, reads[2][2]))
+    assert _ok(local, *reads[3][:2]) == OutsideSnapshotsRead(cast(Any, reads[3][2]))
+    inputs = _ok(local, *reads[2][:2]).inputs
     assert [item.path for item in inputs] == list(values)
 
 
@@ -1006,21 +1079,19 @@ def test_local_mode_keeps_every_fence_of_the_outside_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FinishUP's own directories, the claimed workspace through an outside root, hidden and
-    system files, and Git's ignore rule inside the workspace all hold in ``local`` mode."""
+    system files, and Git's ignore rule for a reviewer's workspace read all hold in ``local``
+    mode, as they do for a local service."""
 
     monkeypatch.setenv("HOME", os.fspath(tmp_path_factory.mktemp("elsewhere-home")))
     local = _handler(repository, protected, mode="local")
     root = os.fspath(tmp_path.resolve())
     values = (f"{repository}/tracked.txt", f"{protected}/vault.txt")
     assert read_outside_inputs((root,), values, limit=4) != ()  # the bare reader would read them
-    assert (
-        _ok(
-            local,
-            WorkspaceOperation.READ_OUTSIDE_INPUTS,
-            ReadOutsideInputsArguments((root,), values, limit=4),
-        )
-        == ()
-    )
+    assert _ok(
+        local,
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments((root,), values, limit=4),
+    ) == OutsideInputsRead(())
     for relative in ("project/tracked.txt", "finishup-state/vault.txt"):
         assert (
             _ok(
@@ -1043,12 +1114,69 @@ def test_local_mode_keeps_every_fence_of_the_outside_read(
         f"{hidden.resolve()}/test_h.py",
         "/etc/hostname",
         f"{protected}/vault.txt",
-        f"{repository}/ignored.log",
     ):
         assert (
             _ok(local, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location))
             is None
         ), location
+    # A local service's reviewer never reads a Git-ignored workspace file, so neither does this.
+    assert (
+        _ok(
+            local,
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(_HANDLE, "ignored.log"),
+        )
+        is None
+    )
+
+
+def test_in_local_mode_a_declared_test_is_read_as_a_local_service_reads_it(
+    repository: Path, protected: Path, tmp_path: Path
+) -> None:
+    """A local service reads the test its agent declared whether or not Git ignores it, and in a
+    folder Git cannot answer for (#1220). ``local`` mode reads it the same way; ``listed`` mode
+    keeps Git's ignore rule and refuses such a test that exists, so the server can say so, and
+    reads one that does not exist as nothing, as locally (ADR-051 decision 5)."""
+
+    (repository / "ignored.log").write_text("IGNORED_MARKER\n", encoding="utf-8")
+    plain = (tmp_path / "plain").resolve()  # no repository: Git cannot answer for it
+    plain.mkdir()
+    (plain / "test_plain.py").write_text("def test_plain():\n    pass\n", encoding="utf-8")
+    excluded = (os.fspath(protected),)
+    local = _handler(repository, protected, mode="local")
+    listed = _handler(repository, protected)
+    ignored = f"{repository}/ignored.log"
+    assert read_declared_test(ignored, excluded=excluded) == b"IGNORED_MARKER\n"
+    for location in (ignored, _HANDLE + "/ignored.log"):
+        assert _ok(
+            local, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location)
+        ) == read_declared_test(ignored, excluded=excluded)
+        assert _refused(
+            listed, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location)
+        ) == ("refused", "root_not_admitted")
+    # Claimed on a folder Git cannot answer for, local mode still reads it as locally.
+    unanswered_local = _handler(plain, protected, mode="local")
+    unanswered_listed = _handler(plain, protected)
+    location = f"{plain}/test_plain.py"
+    assert _ok(
+        unanswered_local, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location)
+    ) == read_declared_test(location, excluded=excluded)
+    assert _refused(
+        unanswered_listed,
+        WorkspaceOperation.READ_DECLARED_TEST,
+        ReadDeclaredTestArguments(location),
+    ) == ("refused", "root_not_admitted")
+    # A test that does not exist reads as nothing in both modes, as it does locally.
+    for handler in (local, listed):
+        for missing in (f"{repository}/missing_test.py", f"{tmp_path.resolve()}/gone/test_x.py"):
+            assert (
+                _ok(
+                    handler,
+                    WorkspaceOperation.READ_DECLARED_TEST,
+                    ReadDeclaredTestArguments(missing),
+                )
+                is None
+            ), missing
 
 
 def test_the_mode_is_read_on_every_call_and_switches_both_ways(
@@ -1237,15 +1365,13 @@ def test_a_declared_test_let_in_through_a_folder_never_reenters_the_workspace(
 
     monkeypatch.setattr(agent_module, "read_declared_test", spy)
     handler = _handler(project, protected, folders=(work,))
-    # The exact spelling inside the workspace asks Git, which ignores it.
-    assert (
-        _ok(
-            handler,
-            WorkspaceOperation.READ_DECLARED_TEST,
-            ReadDeclaredTestArguments(f"{project}/local_settings.py"),
-        )
-        is None
-    )
+    # The exact spelling inside the workspace asks Git, which ignores it: in listed mode it is
+    # refused, so the server can say a test was not offered.
+    assert _refused(
+        handler,
+        WorkspaceOperation.READ_DECLARED_TEST,
+        ReadDeclaredTestArguments(f"{project}/local_settings.py"),
+    ) == ("refused", "root_not_admitted")
     assert excluded_seen == []  # never read at all
     # Through the folder under another spelling: an outside read that excludes the workspace by
     # its case-folded path and by its device and inode, so it reads nothing there.
@@ -1278,18 +1404,20 @@ def test_a_workspace_file_git_ignores_is_never_returned(repository: Path, protec
         15,
     )
     assert read_declared_test(f"{repository}/ignored.log", excluded=()) == b"IGNORED_MARKER\n"
-    for operation, arguments in (
-        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(_HANDLE, "ignored.log")),
-        (
-            WorkspaceOperation.READ_DECLARED_TEST,
-            ReadDeclaredTestArguments(_HANDLE + "/ignored.log"),
-        ),
-        (
-            WorkspaceOperation.READ_DECLARED_TEST,
-            ReadDeclaredTestArguments(f"{repository}/ignored.log"),
-        ),
-    ):
-        assert _ok(handler, operation, arguments) is None, arguments
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(_HANDLE, "ignored.log"),
+        )
+        is None
+    )
+    # In listed mode a declared test is held to the same rule, and refused so the server can say
+    # so (ADR-051 decision 5); local mode reads it as a local service does (tested above).
+    for location in (_HANDLE + "/ignored.log", f"{repository}/ignored.log"):
+        assert _refused(
+            handler, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location)
+        ) == ("refused", "root_not_admitted"), location
     # A file Git does not ignore still reads.
     assert _ok(
         handler,
@@ -1326,12 +1454,19 @@ def _never_returned_where_git_cannot_answer(
     )
     assert read_declared_test(f"{root}/{relative}", excluded=()) == marker
     assert _probe(handler, relative) is not False
-    for operation, arguments in (
-        (WorkspaceOperation.READ_TEXT_BENEATH, ReadTextBeneathArguments(_HANDLE, relative)),
-        (WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(f"{_HANDLE}/{relative}")),
-        (WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(f"{root}/{relative}")),
-    ):
-        assert _ok(handler, operation, arguments) is None, (relative, arguments)
+    assert (
+        _ok(
+            handler,
+            WorkspaceOperation.READ_TEXT_BENEATH,
+            ReadTextBeneathArguments(_HANDLE, relative),
+        )
+        is None
+    )
+    # A declared test there is refused in listed mode (these handlers' mode): never its bytes.
+    for location in (f"{_HANDLE}/{relative}", f"{root}/{relative}"):
+        assert _refused(
+            handler, WorkspaceOperation.READ_DECLARED_TEST, ReadDeclaredTestArguments(location)
+        ) == ("refused", "root_not_admitted"), (relative, location)
 
 
 def test_in_a_linked_worktree_no_workspace_file_is_returned(
