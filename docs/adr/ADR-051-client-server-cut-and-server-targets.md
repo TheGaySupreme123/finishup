@@ -761,13 +761,27 @@ answers bounded `workspace_call`s on a connection that declared it.
   `target_root_unsafe`, `target_record_invalid`) and `finishup server use local` as the way back,
   never as "no server". While this computer's policy cannot be read,
   nothing claims the zero-network state either way, so the displays show the item only while this
-  computer's service is running and unlocked, the one source of that policy. **Honest limits:**
-  while the owner keeps the target, and after switching until open agent sessions restart (a running
-  MCP bridge keeps the target it started with), traffic to it continues; and usually nothing on this
-  computer uses its own service while a remote target is selected, so once that service relocks or
-  stops when idle the displays can no longer tell the state and say nothing, although work still
-  goes to the target. Agents cannot change the policy or the selection, so no MCP tool surfaces or
-  answers the choice.
+  computer's service is running and unlocked, the one source of that policy.
+
+  **Switching stops the traffic it names.** The choice's `1`, `finishup server use local` and the
+  terminal interface's `/server` "Use local" all run `cli.server.use_target`, which clears the
+  selection and then stops what this client runs for the remote target it left, through that
+  target's runtime exactly as `server disconnect` does, never by pattern (`use` of another target
+  does the same for the one it leaves). With the edge relay that is the target's connector: it
+  makes its last bounded delivery of what the hooks already captured for that server (at most
+  2 seconds; what is left stays in this client's outbox), closes its background workspace agents,
+  so a server job already under way (the AI-powered review loop, observation verification) can no
+  longer read files here, and exits before the command returns. Every surface that switches says
+  so by generated id and kind. When the stop does not finish within its wait the selection is
+  still cleared, and the command says so on stderr with `finishup server disconnect` as the way to
+  finish it. **Honest limits:** while the owner keeps the target, and after switching until open
+  agent sessions restart (a running MCP bridge keeps the target it started with, and its next call
+  starts that target's connector again), traffic to it continues; a selection that cannot be read
+  names no target, so switching away from it stops nothing (`finishup server disconnect NAME`
+  stops a target's connection); and usually nothing on this computer uses its own service while a
+  remote target is selected, so once that service relocks or stops when idle the displays can no
+  longer tell the state and say nothing, although work still goes to the target. Agents cannot
+  change the policy or the selection, so no MCP tool surfaces or answers the choice.
 - **Which server's policy a command changes is said before and after** (maintainer principle "be
   clear on what happened", 2026-11-06). While a remote target is selected, `privacy tighten`,
   `privacy propose` and the privacy step of `setup run` (the trusted questionnaire, which the
@@ -1024,7 +1038,8 @@ through the same relay; human-control and secret channels never leave the server
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
   connection per workspace whose claim it relayed, for 15 minutes after that workspace's last hello
-  (`open_background_agent(root, claim, dial)`); each linked worktree of one repository is its own
+  or until the connector stops (`server disconnect`, a `server use` that leaves the target, or its
+  idle exit) (`open_background_agent(root, claim, dial)`); each linked worktree of one repository is its own
   workspace here, with its own lease and agent, although the worktrees share the repository's claim
   digest. It learns which local workspace a claim stands for from the root's owner-only
   claimed-workspace index (`<troot>/state/claimed-workspaces/<64 hex>-<64 hex>.json`, named by the
@@ -1051,7 +1066,8 @@ through the same relay; human-control and secret channels never leave the server
   `remote_vault_unlock_required`. None of them names a local `service run` or `service unlock`,
   a host or a target name; a local root keeps its exact text.
 - **Reverse states.** `server connect` / `server disconnect` (the stamped pid only, then `ssh -O
-  exit` for a master that outlived it; never by pattern) and the 15-minute idle exit;
+  exit` for a master that outlived it; never by pattern), the same stop when `server use` leaves
+  the target (decision 8), and the 15-minute idle exit;
   `service gateway key create` / `key revoke`; `service gateway run` / Ctrl-C or the supervisor.
   `server status` and `server test` show the connector's state; `key list` shows the keys.
 - **Modules.** `finishup.client.connector` (relay, leases, drain), `connector_status`,
@@ -1069,7 +1085,7 @@ through the same relay; human-control and secret channels never leave the server
 | Way in | Way out | Way to see it |
 |---|---|---|
 | `server add NAME …` | `server remove NAME [--select-local]` (disconnects, deletes the credential, disposes of the root; refuses the selected target unless `--select-local`) | `server list` |
-| `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
+| `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue; a remote target it leaves is stopped as `server disconnect` stops it) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
 | `server add NAME …` for a remote kind records the outside-read mode the owner answered (or `--outside-reads`; an official endpoint is `local` unrecorded) | `server folders mode NAME local` or `listed` changes it; `server remove NAME` removes it with the target | `server add` output, `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server folders mode NAME local` (trusted console and typed name whenever it records `local`, an official endpoint's included; without the console an official endpoint's `local` is left unrecorded) | `server folders mode NAME listed` (applies from the workspace agent's next read; a read already in progress may finish) | `server folders list NAME`, `server status [--json]`, `/server` status |

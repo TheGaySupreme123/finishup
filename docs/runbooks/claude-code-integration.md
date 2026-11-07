@@ -481,9 +481,12 @@ process to the default service.
   otherwise, or for `--json`, the facts and `finishup server use local` on stderr) and keeps showing
   it in `setup status --next`, `server status` and the terminal interface while this computer's
   FinishUP service is running and unlocked (only it can report this computer's policy; it relocks or
-  stops when idle); it never switches on its own. After switching, restart open Claude Code
-  sessions: the running MCP bridge keeps the remote target until then, while hooks follow at once.
-  While a remote target is selected, fresh server-host privacy commands are refused
+  stops when idle); it never switches on its own. Switching (the choice, `finishup server use local`
+  or the terminal interface's "Use local") also stops this computer's connection to the target as
+  `finishup server disconnect` does: the target's connector closes its background workspace agents,
+  so server work already under way can no longer read files here. After switching, restart open
+  Claude Code sessions: the running MCP bridge keeps the remote target until then, while hooks
+  follow at once. While a remote target is selected, fresh server-host privacy commands are refused
   (`requires_server_host`) and `privacy tighten|propose` reach the target, so the choice comes from
   a FinishUP process already on this computer's server (an open terminal interface or menu, or a
   privacy step or setup under way). Host decision: supported, same code path; no MCP tool, hook or
@@ -547,14 +550,15 @@ process to the default service.
 - **Routes.** A strict route (`--semantic off`) stays allowed on a remote target, and the server
   enforces it. On the policy route the initialize instructions say that AI-powered review is
   decided by the selected server, named by its target id, not by a local provider.
-- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the
-  MCP bridge's connection also answers them while a call runs. Work that outlives a call (the
-  AI-powered review loop, observation verification) is answered by the target's connector, which
-  keeps a background workspace agent for `${CLAUDE_PROJECT_DIR}` for 15 minutes after its last use and delivers
-  the hook-captured rows every 30 seconds. A SessionStart context for an unreachable or locked
-  remote server names the closed phase and its continuation token (for example `remote_unreachable`
-  with `remote_server_test`, or `remote_vault_unlock_required`), never a local `service run` or
-  `service unlock`, a host or a target name.
+- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the MCP
+  bridge's connection also answers them while a call runs. Work that outlives a call (the AI-powered
+  review loop, observation verification) is answered by the target's connector, which keeps a
+  background workspace agent for `${CLAUDE_PROJECT_DIR}` for 15 minutes after its last use (until
+  `finishup server disconnect` or a `finishup server use` that leaves the target stops the
+  connector) and delivers the hook-captured rows every 30 seconds. A SessionStart context for an
+  unreachable or locked remote server names the closed phase and its continuation token (for example
+  `remote_unreachable` with `remote_server_test`, or `remote_vault_unlock_required`), never a local
+  `service run` or `service unlock`, a host or a target name.
 - **Budgets.** Hook budgets are not relaxed for a remote target. `finishup server test` measures
   the round trip and warns when the required startup gate would likely deny.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is

@@ -15,6 +15,10 @@ selected, FinishUP tells the owner and lets them decide; it never switches serve
 * Without that console, or for a machine-readable answer, it switches nothing and prints the same
   facts on standard error with the one command that switches, ``finishup server use local``, and
   the reminder that open agent sessions must be restarted after switching.
+* Switching (the choice, or ``finishup server use local``) also stops what this client runs for
+  the server it leaves, as ``finishup server disconnect`` does (``cli.server.use_target``): with
+  the edge relay, that target's connector and the background workspace agents that answer the
+  server's reads of files here. Only open agent sessions, until restarted, still reach it.
 * ``finishup setup``, ``finishup setup status [--next]``, ``finishup server status`` and ``list``,
   the menu, and the terminal interface's ``/server`` and header show the same item while the
   state lasts.
@@ -432,7 +436,7 @@ def _switch_to_local() -> bool:
     from finishup.client.targets import TargetError
 
     try:
-        use_target("local")
+        switch = use_target("local")
     except ServerCommandRefused as error:
         typer.echo(f"{error.reason}: {refusal_message(error)}", err=True)
         return False
@@ -440,6 +444,10 @@ def _switch_to_local() -> bool:
         typer.echo(f"{error.reason}: the server selection was not changed", err=True)
         return False
     typer.echo("Using this computer's everyday FinishUP server.")
+    # The switch also stopped what this client ran for the server (its connection and the
+    # background workspace agents that answer that server's reads); say so, or how to finish it.
+    for line in switch.left_lines():
+        typer.echo(line, err=switch.left_open)
     typer.echo(OPEN_SESSIONS_LINE)
     return True
 

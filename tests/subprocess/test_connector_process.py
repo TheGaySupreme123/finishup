@@ -98,3 +98,56 @@ def test_a_spawned_connector_relays_a_session_and_stops_by_its_stamped_pid(
     assert not (root / "run" / "upstream.sock").exists()
     stderr = (root / "log" / "connector.stderr").read_bytes()
     assert b"lab.example" not in stderr
+
+
+def test_switching_to_local_stops_the_connector_of_the_server_it_leaves(
+    short_state: Path,
+) -> None:
+    """ADR-051 decision 8: the way out of a remote selection stops its traffic.
+
+    A client's session spawned the target's connector as its own process. ``server use local``
+    (the zero-network choice's "switch" runs the same ``use_target``) clears the selection and
+    then stops that connector by its stamped pid, as ``server disconnect`` does: when it
+    returns, the connector has released its lock, recorded ``stopped`` and removed its endpoint,
+    so no background workspace agent of it is left to answer the server's reads.
+    """
+
+    from finishup.cli.server import use_target
+
+    with targets.registry_lock():
+        record, root = targets.new_remote_target(
+            "lab", "ssh", host="lab.example", port=22, remote_launcher="/opt/fu/bin/finishup"
+        )
+        record = replace(record, remote_endpoint=str(short_state / "d.sock"))
+        targets.write_target(root, record)
+        targets.write_selection(record)
+    reset_selection_memo()
+    daemon = ScriptedDaemon()
+
+    async def exercise() -> int:
+        server = await serve_unix(short_state / "d.sock", daemon)
+        try:
+            client = await connect_service_on_demand(ControlClientKind.CLI, timeout_seconds=30.0)
+            try:
+                await client.service_status()
+            finally:
+                await client.close()
+            holder = connector_holder(root)
+            assert holder is not None
+            switch = await asyncio.to_thread(use_target, "local")
+            assert switch.record is None and switch.left == record and not switch.left_open
+            # Stopped by the time the switch returned: nothing to wait for.
+            assert connector_holder(root) is None
+        finally:
+            server.cancel()
+            await asyncio.gather(server, return_exceptions=True)
+        return holder.pid
+
+    pid = asyncio.run(exercise())
+    reset_selection_memo()
+    assert targets.read_selected_target_id() is None
+    status = read_connector_status(root)
+    assert status is not None
+    assert (status.phase, status.reason, status.pid) == ("stopped", "stop_requested", pid)
+    assert not (root / "run" / "control.sock").exists()
+    assert not (root / "run" / "upstream.sock").exists()

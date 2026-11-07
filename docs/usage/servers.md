@@ -110,9 +110,18 @@ Choose 1 or 2 (Enter keeps the server):
 
 Pressing Enter or Ctrl-C, or any answer but 1, keeps the server. Choosing 1 is `finishup server
 use local`. Without a terminal to ask in (a script, or a command asked for JSON), FinishUP
-switches nothing and prints the same facts with that command. Either way, restart open agent
-sessions after switching: they keep the server they started with until then. Choosing the server
-again needs the setting turned off first.
+switches nothing and prints the same facts with that command.
+
+Switching, whichever way you do it, also closes this computer's connection to that server, as
+`finishup server disconnect` does. Work the server had already started for you, such as a review
+still running, can then no longer read your files. As the connection closes it sends that server,
+for at most 2 seconds, what your agents' hooks had already recorded for it; anything left stays on
+this computer. If the connection does not close in time, FinishUP still switches and tells you to
+run `finishup server disconnect` with that server's name.
+
+Either way, restart open agent sessions after switching: they keep the server they started with
+until then, and their next request opens the connection to it again. Choosing the server again
+needs the setting turned off first.
 
 Until you switch, `finishup setup status --next`, `finishup server status` and `finishup server
 list`, the setup summary and the terminal interface's header and `/server` keep saying so, as
@@ -123,7 +132,8 @@ setting is on and say nothing about it, even though your work still goes to the 
 `finishup server status` always shows which server is chosen; `finishup server status --json`
 gives the same notice as its `zero_network_selection` member (null when there is nothing to say).
 If the saved server choice cannot be read, FinishUP says that instead of guessing, and `finishup
-server use local` clears it.
+server use local` clears it. It cannot tell then which server's connection to close: run
+`finishup server disconnect NAME` for a server on another machine you were using.
 
 ## Sign in to a web server
 
@@ -190,7 +200,9 @@ finishup server disconnect devbox
 
 FinishUP connects on demand, so you rarely need these. `connect` gets the connection to a server
 ready now and keeps it ready while you work; `disconnect` closes what `connect` opened. Neither
-stops the FinishUP service on the server.
+stops the FinishUP service on the server. Choosing another server with `finishup server use`
+closes the connection to a server on another machine, a port or the web that you leave, in the
+same way.
 
 ## Remove a server
 
@@ -412,9 +424,10 @@ It runs inside your FinishUP clients while they are connected to the server: the
 your agent, the CLI and the terminal interface answer for the project they are working in. Some
 work happens after a call returns — a longer review, or an approved check after a hook saw a
 command — so the connection helper (below) also keeps a workspace agent for each project folder you
-used with that server, for 15 minutes after that folder was last used, and delivers what your
-agent's hooks recorded there. If nothing on your computer answers in time, the receipt names
-exactly what could not be read; a check never passes because a read was missing.
+used with that server, for 15 minutes after that folder was last used or until you disconnect
+from that server or switch away from it, and delivers what your agent's hooks recorded there. If
+nothing on your computer answers in time, the receipt names exactly what could not be read; a
+check never passes because a read was missing.
 
 ## Preparing the server
 
@@ -456,8 +469,9 @@ per server. Your agent's hooks, the FinishUP tools in your agent, the CLI and th
 interface all talk to that helper exactly as they talk to FinishUP on your own computer. The
 helper starts by itself when it is first needed, keeps the connection to the server open so each
 call is quick, and stops after 15 minutes without use. `finishup server connect NAME` starts it
-now and `finishup server disconnect NAME` stops it; `finishup server status NAME` shows whether
-it is connected and, if not, why.
+now and `finishup server disconnect NAME` stops it, and so does switching away from that server
+with `finishup server use`; `finishup server status NAME` shows whether it is connected and, if
+not, why.
 
 **SSH servers.** The helper uses your own OpenSSH setup: your keys, your SSH agent, your
 `~/.ssh/config` and your `known_hosts`. FinishUP never stores an SSH key and never asks for a

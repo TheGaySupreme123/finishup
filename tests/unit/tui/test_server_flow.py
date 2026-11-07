@@ -18,7 +18,7 @@ from builders.tui_runtime import FakeRuntime
 from finishup.cli.command_scope import ServerHostRequired
 from finishup.tui.app import FinishUpTui
 from finishup.tui.commands import command_named
-from finishup.tui.models import ServerRow
+from finishup.tui.models import ServerRow, ServerSwitch
 from finishup.tui.render import render_session_header
 from finishup.tui.runtime import RuntimeError_
 from finishup.tui.symbols import Level
@@ -100,6 +100,56 @@ async def test_switching_to_a_remote_server_hands_over_for_the_typed_confirmatio
     assert harness.handed_over == 1
     assert runtime.server_uses == ["lab"]
     assert runtime.server_indicator() == "ssh t_9f8e7d6c"
+
+
+_LEFT = (
+    "Closed this computer's connection to the server t_9f8e7d6c (ssh): it no longer answers "
+    "that server's requests for your files.",
+)
+
+
+async def test_switching_away_from_a_remote_server_says_its_connection_closed() -> None:
+    """ADR-051 decision 8: ``/server`` "Use local" is the way out, and it stops the traffic."""
+
+    rows = (
+        ServerRow("local", "local", None, None, False),
+        ServerRow("lab", "ssh", "t_9f8e7d6c", "ssh://owner@lab.example:22", True),
+    )
+    runtime = FakeRuntime(servers=rows, server_selected="ssh t_9f8e7d6c", server_left_lines=_LEFT)
+    harness = _Harness(runtime, ["use:local"])
+
+    await harness.app.command_server()
+
+    assert runtime.server_uses == ["local"]
+    level, title, body = harness.said[-1]
+    assert (level, title) == (Level.VERIFIED, "Using this computer's everyday server")
+    assert body[0] == _LEFT[0]
+    assert "Restart open agent sessions: a running" in body[1]
+
+
+async def test_a_left_connection_that_did_not_close_is_not_shown_as_done() -> None:
+    rows = (
+        ServerRow("local", "local", None, None, False),
+        ServerRow("lab", "ssh", "t_9f8e7d6c", "ssh://owner@lab.example:22", True),
+    )
+    still = ("The connection to the server t_9f8e7d6c (ssh) did not close in time, ...",)
+    runtime = FakeRuntime(
+        servers=rows,
+        server_selected="ssh t_9f8e7d6c",
+        server_left_lines=still,
+        server_left_open=True,
+    )
+    harness = _Harness(runtime, ["use:local"])
+
+    await harness.app.command_server()
+
+    verified = [entry for entry in harness.said if entry[0] is Level.VERIFIED]
+    assert len(verified) == 1 and still[0] not in verified[0][2]
+    assert harness.said[-1] == (
+        Level.UNPROVEN,
+        "The connection to the server you left did not close",
+        still,
+    )
 
 
 async def test_declining_the_remote_switch_changes_nothing() -> None:
@@ -344,11 +394,11 @@ async def test_the_real_runtime_lists_switches_and_names_the_header(
         assert [(row.name, row.selected) for row in rows] == [("local", True), ("work", False)]
         assert any(record.target_id in line for line in lines)
 
-        assert await runtime.use_server("work") == f"local {record.target_id}"
+        assert await runtime.use_server("work") == ServerSwitch(f"local {record.target_id}")
         reset_selection_memo()
         assert runtime.server_indicator() == f"local {record.target_id}"
 
-        assert await runtime.use_server("local") == "everyday"
+        assert await runtime.use_server("local") == ServerSwitch("everyday")
         reset_selection_memo()
         assert runtime.server_indicator() is None
 
@@ -356,6 +406,46 @@ async def test_the_real_runtime_lists_switches_and_names_the_header(
             await runtime.use_server("nowhere")
         assert raised.value.reason == "target_unknown"
         assert "nowhere" not in raised.value.message
+
+
+async def test_the_real_runtime_stops_the_remote_server_it_switches_away_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/server`` "Use local" runs ``finishup server use local``: what this client ran for the
+    remote server it leaves is stopped through that target's runtime, never by pattern."""
+
+    from builders.server_targets import ambient_home
+    from finishup.client import targets
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+    from finishup.config.paths import reset_selection_memo
+    from finishup.tui.runtime import FinishUpRuntime
+
+    stops: list[Path | None] = []
+
+    def stop(_self: object, target: Path | None) -> None:
+        stops.append(target)
+
+    monkeypatch.setattr(ConnectorTargetRuntime, "stop", stop)
+    with ambient_home(monkeypatch) as home:
+        with targets.registry_lock():
+            record, root = targets.new_remote_target(
+                "lab", "ssh", user="owner", host="lab.example", port=22
+            )
+            targets.write_selection(record)
+        reset_selection_memo()
+        runtime = FinishUpRuntime(cwd=home)
+
+        switch = await runtime.use_server("local")
+
+        assert stops == [root]
+        assert switch == ServerSwitch(
+            "everyday",
+            (
+                f"Closed this computer's connection to the server {record.target_id} (ssh): it "
+                "no longer answers that server's requests for your files.",
+            ),
+        )
+        assert targets.read_selected_target_id() is None
 
 
 async def test_the_real_runtime_status_shows_what_a_remote_server_may_read_outside(

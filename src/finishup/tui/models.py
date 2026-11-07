@@ -35,6 +35,7 @@ __all__ = [
     "ReadinessLayer",
     "ReceiptSummary",
     "ServerRow",
+    "ServerSwitch",
     "TaskStatusPage",
     "StatusSnapshot",
     "StorageChoice",
@@ -311,6 +312,20 @@ class ServerRow:
     @property
     def remote(self) -> bool:
         return self.kind != "local"
+
+
+@dataclass(frozen=True, slots=True)
+class ServerSwitch:
+    """What ``/server`` changed when it switched servers, as ``finishup server use`` says it.
+
+    ``indicator`` is the new header text (``everyday`` for this computer's own server).
+    ``left_lines`` say what became of this computer's connection to the remote server the switch
+    left (by generated id and closed kind), and ``left_open`` that it did not close.
+    """
+
+    indicator: str
+    left_lines: tuple[str, ...] = ()
+    left_open: bool = False
 
 
 @dataclass(frozen=True, slots=True)

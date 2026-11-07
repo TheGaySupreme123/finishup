@@ -1495,13 +1495,17 @@ later process to the default service.
   otherwise, or for `--json`, the facts and `finishup server use local` on stderr) and keeps showing
   it in `setup status --next`, `server status` and the terminal interface while this computer's
   FinishUP service is running and unlocked (only it can report this computer's policy; it relocks or
-  stops when idle); it never switches on its own. After switching, restart open Codex sessions: the
-  running MCP bridge keeps the remote target until then, while hooks follow at once. While a remote
-  target is selected, fresh server-host privacy commands are refused (`requires_server_host`) and
-  `privacy tighten|propose` reach the target, so the choice comes from a FinishUP process already on
-  this computer's server (an open terminal interface or menu, or a privacy step or setup under way).
-  Host decision: supported, same code path; no MCP tool, hook or SessionStart context carries or
-  answers the choice, because agents cannot change the policy or the selection.
+  stops when idle); it never switches on its own. Switching (the choice, `finishup server use local`
+  or the terminal interface's "Use local") also stops this computer's connection to the target as
+  `finishup server disconnect` does: the target's connector closes its background workspace agents,
+  so server work already under way can no longer read files here. After switching, restart open
+  Codex sessions: the running MCP bridge keeps the remote target until then, while hooks follow at
+  once. While a remote target is selected, fresh server-host privacy commands are refused
+  (`requires_server_host`) and `privacy tighten|propose` reach the target, so the choice comes from
+  a FinishUP process already on this computer's server (an open terminal interface or menu, or a
+  privacy step or setup under way). Host decision: supported, same code path; no MCP tool, hook or
+  SessionStart context carries or answers the choice, because agents cannot change the policy or the
+  selection.
 - **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
   `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
   interface's first run) change the target's policy and name it, by id and kind, before anything
@@ -1556,14 +1560,15 @@ later process to the default service.
 - **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
   runs. A remote server needs its own Codex installation and login on the server host; this
   machine's Codex home is never used for its reviews.
-- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the
-  MCP bridge's connection also answers them while a call runs. Work that outlives a call (the
-  AI-powered review loop, observation verification) is answered by the target's connector, which
-  keeps a background workspace agent for the session's workspace for 15 minutes after its last use and delivers
-  the hook-captured rows every 30 seconds. A SessionStart context for an unreachable or locked
-  remote server names the closed phase and its continuation token (for example `remote_unreachable`
-  with `remote_server_test`, or `remote_vault_unlock_required`), never a local `service run` or
-  `service unlock`, a host or a target name.
+- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the MCP
+  bridge's connection also answers them while a call runs. Work that outlives a call (the AI-powered
+  review loop, observation verification) is answered by the target's connector, which keeps a
+  background workspace agent for the session's workspace for 15 minutes after its last use (until
+  `finishup server disconnect` or a `finishup server use` that leaves the target stops the
+  connector) and delivers the hook-captured rows every 30 seconds. A SessionStart context for an
+  unreachable or locked remote server names the closed phase and its continuation token (for example
+  `remote_unreachable` with `remote_server_test`, or `remote_vault_unlock_required`), never a local
+  `service run` or `service unlock`, a host or a target name.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
   `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
   applies: put the intended launcher first on `PATH`.

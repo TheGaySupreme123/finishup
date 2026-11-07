@@ -321,13 +321,24 @@ def test_choosing_1_switches_to_the_everyday_server(
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+
     record = _remote()
     _policy(monkeypatch, "zero_network")
     console.answer = b"1"
+    stops: list[Path | None] = []
+
+    def stop(_self: object, target: Path | None) -> None:
+        stops.append(target)
+
+    monkeypatch.setattr(ConnectorTargetRuntime, "stop", stop)
 
     assert zero_network.surface_after_policy_change(interactive=True) == "switched"
 
     assert targets.read_selected_target_id() is None
+    # Switching stops the traffic it names: what this client ran for that server (approach A:
+    # its connector and the background workspace agents answering the server's reads) stopped.
+    assert stops == [targets.target_root(record.target_id)]
     shown = _shown(console)
     assert f"{record.target_id} (ssh)" in shown
     assert "does not stop traffic" in shown
@@ -337,6 +348,7 @@ def test_choosing_1_switches_to_the_everyday_server(
     assert _NAME not in shown.replace(record.target_id, "")
     out = capsys.readouterr().out
     assert "Using this computer's everyday FinishUP server." in out
+    assert f"Closed this computer's connection to the server {record.target_id} (ssh)" in out
     assert "Restart open agent sessions" in out
 
 
@@ -346,9 +358,15 @@ def test_choosing_2_keeps_the_server(
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from finishup.client.connector_runtime import ConnectorTargetRuntime
+
+    def never(_self: object, _target: Path | None) -> None:
+        raise AssertionError("keeping the server stops nothing")
+
     record = _remote()
     _policy(monkeypatch, "zero_network")
     console.answer = b"2"
+    monkeypatch.setattr(ConnectorTargetRuntime, "stop", never)
 
     assert zero_network.surface_after_policy_change(interactive=True) == "kept"
 
@@ -978,6 +996,10 @@ def test_a_process_on_this_computers_server_surfaces_a_remote_selected_meanwhile
         assert f"2  Keep using the server {record.target_id} (ssh)" in _shown(console)
         assert targets.read_selected_target_id() is None
         assert "Using this computer's everyday FinishUP server." in result.stdout
+        # The real stop of what this client ran for it (no connector was running here).
+        assert (
+            f"Closed this computer's connection to the server {record.target_id} (ssh)"
+        ) in result.stdout
 
 
 @pytest.mark.parametrize(("status", "surfaced"), [("committed", True), ("stale", False)])

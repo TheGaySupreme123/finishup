@@ -4722,7 +4722,14 @@ running async library under `anyio.run`. `surface_after_policy_change_async(inte
 after every committed policy change and returns `clear|switched|kept|warned`: only the read above
 runs in a worker thread; on the trusted console, read on the loop's thread with
 `signal.default_int_handler` installed for the read, `1` runs `use_target("local")` and anything
-else (Enter, end of input, Ctrl-C) keeps the target; otherwise one stderr line `<reason>: <facts>
+else (Enter, end of input, Ctrl-C) keeps the target. `cli.server.use_target(name, *, authorize=None)
+-> TargetSwitch` (`record`, the target now selected or `None`; `left`, the remote target the
+selection named before when the switch moved away from it; `left_open`; `left_lines()`) stops
+`left` through `runtime_for(left.kind).stop(target_root(left.target_id))` after the selection
+changed, as `server disconnect` does; `server use`, the choice and the terminal interface's
+`use_server` (`tui.models.ServerSwitch`: `indicator`, `left_lines`, `left_open`) print its lines,
+and a stop that did not finish goes to stderr (UNPROVEN in the terminal interface) with `finishup
+server disconnect` while the switch stands; otherwise one stderr line `<reason>: <facts>
 … finishup server use local …`. `machine_readable_answer(enabled)` (a context variable;
 `machine_readable_requested()` reads it) suppresses the choice for a `--json` command whose
 policy change happens further down (`privacy credential-heuristic|conversations|input-roots`).
@@ -5431,7 +5438,9 @@ session's `service_instance_id` and `service_generation`, never forwarded).
   BackgroundAgent | None` (a `BackgroundAgent` has `alive`, `drain()` and `aclose()`; `Dial` is
   `Callable[[], Awaitable[AuthenticatedUnixStream]]`, a connection the connector relays over a
   socket pair without passing its endpoint, which counts as no client activity and renews no
-  lease), kept for `AGENT_LEASE_SECONDS` (900) after that workspace's last client hello. Every
+  lease), kept for `AGENT_LEASE_SECONDS` (900) after that workspace's last client hello, or
+  until the connector stops (`server disconnect`, a `server use` that leaves the target, the idle
+  exit). Every
   `DRAIN_INTERVAL_SECONDS` (30), and once more as it stops before closing the agents, it calls
   each live agent's `drain()`.
 - `finishup.client.connector_agent`: `ConnectorAgent(binding, drain, dial)` holds one claim-bound
