@@ -483,6 +483,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
         review_route="D",
         changed=True,
         codes=(
+            "outside_reads_not_listed",
             "task_input_baseline_unavailable",
             "task_input_outside_not_admitted",
             "verification_input_directory_unresolved",
@@ -533,6 +534,8 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "check_time_change_unavailable_repository_mismatch",
             "check_time_change_unavailable_unsafe_root",
             "check_time_change_unavailable_unsupported_repository",
+            "check_time_change_unavailable_workspace_agent_refused",
+            "check_time_change_unavailable_workspace_agent_unavailable",
         ),
     ),
     _Family(
@@ -858,6 +861,8 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "check_time_change_unavailable_repository_mismatch",
         "check_time_change_unavailable_unsafe_root",
         "check_time_change_unavailable_unsupported_repository",
+        "check_time_change_unavailable_workspace_agent_refused",
+        "check_time_change_unavailable_workspace_agent_unavailable",
         "content_redacted",
         "content_unselected",
         "declared_output_content_moved",
@@ -880,6 +885,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "obligation_evidence_stale_after_scope_edit",
         "optional_semantic_review_blocked_by_policy",
         "optional_semantic_review_registration_drift",
+        "outside_reads_not_listed",
         "plan_unrefined_before_first_edit",
         "planned_verification_agent_linked",
         "planned_verification_failed",

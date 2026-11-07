@@ -21,6 +21,7 @@ import pytest
 
 import finishup.observability.diagnostics as diagnostics
 import finishup.service.daemon as daemon_module
+from builders.server_targets import ambient_home
 from finishup.adapters.control.unix_socket import LocalControlTransportError
 from finishup.adapters.sqlite.connection import StorageUnsafeError
 from finishup.config.installation import InstanceIdentityError
@@ -454,3 +455,60 @@ def test_startup_module_stays_import_light() -> None:
         timeout=60,
     )
     assert json.loads(completed.stdout) == ["finishup.service.startup_failure"]
+
+
+def _target_root(tmp_path: Path, record: bytes | None, mode: int = 0o600) -> Path:
+    root = tmp_path / "target-root"
+    root.mkdir(mode=0o700)
+    if record is not None:
+        (root / "target.json").write_bytes(record)
+        (root / "target.json").chmod(mode)
+    return root
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("record", "mode"),
+    [
+        (b'{"kind":"ssh","schema":"yoetz.server-target/1"}\n', 0o600),
+        (b'{"kind":"https"}\n', 0o600),
+        (b'{"kind":"local_port"}\n', 0o600),
+        (b"{not json", 0o600),  # cannot be read: it may be remote
+        (b'{"kind":"local"}\n', 0o644),  # shared mode: cannot be trusted
+    ],
+)
+async def test_a_remote_target_root_is_refused_before_anything_is_created(
+    ring: Path, monkeypatch: pytest.MonkeyPatch, record: bytes, mode: int
+) -> None:
+    """ADR-051: a service never runs in a remote target's root (``target_root_is_remote``)."""
+
+    from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, reset_selection_memo
+
+    # The root sits outside shared temp, where the runtime accepts an isolated root at all: under
+    # ``/tmp`` it would refuse the path (``path_shared_temp``) before reaching the target check.
+    with ambient_home(monkeypatch) as home:
+        root = _target_root(home, record, mode)
+        monkeypatch.setenv(ISOLATED_ROOT_ENV_NAMES[0], str(root))
+        reset_selection_memo()
+        real_composition = daemon_module._production_composition
+        _patch_run_service(monkeypatch, composition=real_composition)
+
+        with pytest.raises(LifecycleError) as raised:
+            await daemon_module.run_service(_SPAWN_ID)
+        contents = [path.name for path in root.iterdir()]
+
+    assert raised.value.reason == "target_root_is_remote"
+    assert contents == ["target.json"]  # no bundle, state, lock
+    (recorded,) = lookup_diagnostic_records(_SPAWN_ID, root=ring)
+    assert recorded["reason_code"] == "target_root_is_remote"
+    assert recorded["phase"] == "composition"
+    failure = read_startup_failure(_SPAWN_ID)
+    assert failure is not None and failure.reason_code == "target_root_is_remote"
+
+
+@pytest.mark.parametrize("record", [None, b'{"kind":"local","schema":"yoetz.server-target/1"}\n'])
+def test_a_local_root_or_a_named_local_server_is_served(
+    tmp_path: Path, record: bytes | None
+) -> None:
+    daemon_module._refuse_remote_target_root(None)
+    daemon_module._refuse_remote_target_root(_target_root(tmp_path, record))

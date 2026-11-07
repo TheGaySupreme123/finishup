@@ -14,12 +14,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol, cast
 
-from finishup.adapters.approved_checks import ApprovedCheckRunner, ApprovedCheckStatus
-from finishup.adapters.git_subject_state import (
-    GitSubjectStateAdapter,
-    list_changed_relative_paths,
-    open_local_workspace,
-)
+from finishup.adapters.approved_checks import ApprovedCheckStatus
 from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     acquire_session_lock,
@@ -34,7 +29,6 @@ from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     session_commitment_from_codex_id,
 )
-from finishup.adapters.workspace_inspect import LocalWorkspaceInspectAdapter
 from finishup.application.lineage_coordinator import LineageManifestCoordinator
 from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_PENDING_GAP,
@@ -51,10 +45,7 @@ from finishup.application.observation_advice_semantic import (
     ObservationAdviceSemanticSupervisor,
     ObservationAdviceSemanticWorker,
 )
-from finishup.application.observation_check_policy import (
-    ObservationCheckPolicyAbsent,
-    load_observation_check_policy,
-)
+from finishup.application.observation_check_policy import ObservationCheckPolicyAbsent
 from finishup.application.observation_committed import (
     action_event_committed,
     committed_event_ids,
@@ -98,6 +89,10 @@ from finishup.application.observation_verification import (
     ObservationVerificationWorker,
     VerificationDrainHandle,
     orchestrate_changed_path_inspection,
+)
+from finishup.application.observation_workspace import (
+    LocalObservationWorkspace,
+    ObservationWorkspaceAccess,
 )
 from finishup.application.projects import SourceConsentRevocationPlan
 from finishup.application.unit_of_work import (
@@ -958,6 +953,15 @@ class ObservationCoordinator:
     # evidence was offered as contact. Lineage holds the bound session's open work quiet until
     # ``observed_at`` plus ``seconds``, clamped by its setting.
     observed_quiet_hook: Callable[[str, str, str, datetime, int], Awaitable[None]] | None = None
+    # Where verification reads the observed workspace: this machine, or for a claim-bound
+    # workspace its client's agent (ADR-051). Every read runs in a worker thread.
+    workspace_access: ObservationWorkspaceAccess = field(default_factory=LocalObservationWorkspace)
+    # ADR-051: the ``client:`` handle of the one claim whose client-attested observation this
+    # coordinator serves, over that claim's own store (``observation_claims``). Its session
+    # commitments are the client's, under a key this service never holds, so ``local`` answers
+    # the attested ones; verification opens the workspace by this handle, never by a stored
+    # locator. None (this machine's own observation) leaves every path as it always was.
+    client_workspace_handle: str | None = None
     _advice_event_ref_cache: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=_empty_advice_event_ref_cache, init=False, repr=False
     )
@@ -2791,8 +2795,13 @@ class ObservationCoordinator:
         except ProtocolValueError:
             return _reject(ObservationGapCode.CONSENT_MISSING.value)
 
-        key_material = await self._local(self.local.key_material)
-        expected = session_commitment_from_codex_id(key_material, codex_session_id)
+        if self.client_workspace_handle is None:
+            key_material = await self._local(self.local.key_material)
+            expected = session_commitment_from_codex_id(key_material, codex_session_id)
+        else:
+            # A claim's commitments were made under the client's own observation key; its claim
+            # store answers the one the client attested for this host session (ADR-051).
+            expected = await self._local(partial(self.local.session_commitment, codex_session_id))
         if request.envelope.session_commitment != expected:
             return _reject(ObservationGapCode.CONSENT_MISSING.value)
         if codex_session_id in self._storage_corrupt_sessions:
@@ -6581,34 +6590,49 @@ class ObservationCoordinator:
         )
         if any(not callable(getattr(store, name, None)) for name in required):
             return None
-        descriptor = store.workspace_locator_descriptor(workspace)
-        if descriptor is None:
-            await self._local(
-                partial(
-                    self.local.note_coverage_gap,
-                    workspace,
-                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+        claimed = self.client_workspace_handle
+        content_b64: str | None = None
+        if claimed is None:
+            descriptor = store.workspace_locator_descriptor(workspace)
+            if descriptor is None:
+                await self._local(
+                    partial(
+                        self.local.note_coverage_gap,
+                        workspace,
+                        ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                    )
+                )
+                return None
+            locator_ref = await runtime.objects.resolve_verified(*descriptor)
+            encrypted = b"".join(
+                [chunk async for chunk in runtime.objects.open_verified(locator_ref)]
+            )
+            parsed = strict_json_parse(encrypted)
+            if not isinstance(parsed, dict) and type(parsed) is not JsonObject:
+                return None
+            stored_b64 = parsed.get("content_b64")
+            content_kind = parsed.get("content_kind")
+            if (
+                content_kind != ObservationContentKind.WORKSPACE_LOCATOR.value
+                or type(stored_b64) is not str
+            ):
+                return None
+            content_b64 = stored_b64
+        access = self.workspace_access
+        try:
+            # A claim's workspace is only ever its handle (ADR-051); no stored locator is read.
+            locator = (
+                claimed
+                if claimed is not None
+                else base64.b64decode(cast(str, content_b64).encode("ascii"), validate=True).decode(
+                    "utf-8"
                 )
             )
-            return None
-        locator_ref = await runtime.objects.resolve_verified(*descriptor)
-        encrypted = b"".join([chunk async for chunk in runtime.objects.open_verified(locator_ref)])
-        parsed = strict_json_parse(encrypted)
-        if not isinstance(parsed, dict) and type(parsed) is not JsonObject:
-            return None
-        content_b64 = parsed.get("content_b64")
-        content_kind = parsed.get("content_kind")
-        if (
-            content_kind != ObservationContentKind.WORKSPACE_LOCATOR.value
-            or type(content_b64) is not str
-        ):
-            return None
-        try:
-            locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
             # The locator was retained under this workspace's observation grant; the service
-            # does not inherit the host launcher's process-local HOME exception.
-            handle = open_local_workspace(Path(locator), admitted_home_project=True)
-            policy, _raw_policy = load_observation_check_policy(Path(locator))
+            # does not inherit the host launcher's process-local HOME exception. Off the event
+            # loop: a claim-bound workspace is opened by its client's agent (ADR-051).
+            handle = await asyncio.to_thread(access.open, locator)
+            policy, _raw_policy = await asyncio.to_thread(access.load_policy, locator)
         except ObservationCheckPolicyAbsent:
             # No approved-check policy is the ordinary opt-in state, not lost content capture.
             return None
@@ -6651,7 +6675,9 @@ class ObservationCoordinator:
                 trust_ref=trust_ref,
                 trusted_at=now,
             )
-        capture = GitSubjectStateAdapter()
+        # Every access read blocks (ObservationWorkspaceAccess): constructing the local Git
+        # adapter probes the Git version, so it never runs on the event loop.
+        capture = await asyncio.to_thread(access.subject_state)
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6669,6 +6695,9 @@ class ObservationCoordinator:
             )
 
         current_digest = await asyncio.to_thread(subject_digest, handle)
+        runner = await asyncio.to_thread(
+            access.runner, {item.approval_commitment: item for item in policy.checks}
+        )
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
         async def persist_output(
@@ -6686,7 +6715,7 @@ class ObservationCoordinator:
 
         worker = ObservationVerificationWorker(
             repository=repository,
-            runner=ApprovedCheckRunner({item.approval_commitment: item for item in policy.checks}),
+            runner=runner,
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,
@@ -6735,15 +6764,19 @@ class ObservationCoordinator:
             excerpt_redacted = False
             excerpt_truncated = False
             try:
-                relative_paths = list_changed_relative_paths(handle)
+                relative_paths = await asyncio.to_thread(access.list_changed, handle)
                 changed_digest = canonical_digest(
                     JsonObject({"relative_paths": list(relative_paths)})
                 )
-                orchestration = orchestrate_changed_path_inspection(
-                    workspace=handle,
-                    inspect_port=LocalWorkspaceInspectAdapter(),
-                    relative_paths=relative_paths,
-                    changed_paths_digest=changed_digest,
+                inspect_port = await asyncio.to_thread(access.inspect_port)
+                orchestration = await asyncio.to_thread(
+                    partial(
+                        orchestrate_changed_path_inspection,
+                        workspace=handle,
+                        inspect_port=inspect_port,
+                        relative_paths=relative_paths,
+                        changed_paths_digest=changed_digest,
+                    )
                 )
                 if orchestration.inspect_fact is not None:
                     fact_bytes = canonical_encode(
@@ -6857,30 +6890,46 @@ class ObservationCoordinator:
         )
         if any(not callable(getattr(store, name, None)) for name in required):
             return None
-        descriptor = store.workspace_locator_descriptor(workspace)
-        if descriptor is None:
-            return None
-        locator_ref = await runtime.objects.resolve_verified(*descriptor)
-        encrypted = b"".join([chunk async for chunk in runtime.objects.open_verified(locator_ref)])
-        parsed = strict_json_parse(encrypted)
-        if not isinstance(parsed, dict) and type(parsed) is not JsonObject:
-            return None
-        content_b64 = parsed.get("content_b64")
-        content_kind = parsed.get("content_kind")
-        if (
-            content_kind != ObservationContentKind.WORKSPACE_LOCATOR.value
-            or type(content_b64) is not str
-        ):
-            return None
+        claimed = self.client_workspace_handle
+        content_b64: str | None = None
+        if claimed is None:
+            descriptor = store.workspace_locator_descriptor(workspace)
+            if descriptor is None:
+                return None
+            locator_ref = await runtime.objects.resolve_verified(*descriptor)
+            encrypted = b"".join(
+                [chunk async for chunk in runtime.objects.open_verified(locator_ref)]
+            )
+            parsed = strict_json_parse(encrypted)
+            if not isinstance(parsed, dict) and type(parsed) is not JsonObject:
+                return None
+            stored_b64 = parsed.get("content_b64")
+            content_kind = parsed.get("content_kind")
+            if (
+                content_kind != ObservationContentKind.WORKSPACE_LOCATOR.value
+                or type(stored_b64) is not str
+            ):
+                return None
+            content_b64 = stored_b64
+        access = self.workspace_access
         try:
-            locator = base64.b64decode(content_b64.encode("ascii"), validate=True).decode("utf-8")
-            handle = open_local_workspace(Path(locator), admitted_home_project=True)
-            policy, _raw_policy = load_observation_check_policy(Path(locator))
+            # A claim's workspace is only ever its handle (ADR-051); no stored locator is read.
+            locator = (
+                claimed
+                if claimed is not None
+                else base64.b64decode(cast(str, content_b64).encode("ascii"), validate=True).decode(
+                    "utf-8"
+                )
+            )
+            handle = await asyncio.to_thread(access.open, locator)
+            policy, _raw_policy = await asyncio.to_thread(access.load_policy, locator)
         except Exception:
             return None
         if not store.policy_digest_is_trusted(workspace, policy.raw_digest):
             return None
-        capture = GitSubjectStateAdapter()
+        # Every access read blocks (ObservationWorkspaceAccess): constructing the local Git
+        # adapter probes the Git version, so it never runs on the event loop.
+        capture = await asyncio.to_thread(access.subject_state)
 
         def subject_digest(_handle: object) -> str:
             result = capture.capture(
@@ -6897,6 +6946,9 @@ class ObservationCoordinator:
                 )
             )
 
+        runner = await asyncio.to_thread(
+            access.runner, {item.approval_commitment: item for item in policy.checks}
+        )
         repository = cast(ObservationVerificationRepository, store.verification_repository())
 
         async def persist_output(
@@ -6914,7 +6966,7 @@ class ObservationCoordinator:
 
         return ObservationVerificationWorker(
             repository=repository,
-            runner=ApprovedCheckRunner({item.approval_commitment: item for item in policy.checks}),
+            runner=runner,
             workspace_provider=lambda _workspace: handle,
             policy_provider=lambda _workspace, _digest: policy.checks,
             capture_subject_state=subject_digest,

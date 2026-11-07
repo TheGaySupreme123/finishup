@@ -26,6 +26,7 @@ from finishup.ports.change_capture import (
     decode_check_change,
     encode_check_change,
 )
+from finishup.ports.workspace_agent import OutsideInputsRead
 
 _PNG = (
     b"\x89PNG\r\n\x1a\n"
@@ -328,8 +329,14 @@ def test_the_service_reader_binds_only_the_admitted_roots_and_the_room(
         (os.fspath(shared),), (os.fspath(shared / "legacy_app" / "forms"),)
     )
 
+    def files(answer: tuple[TaskInputFile, ...] | OutsideInputsRead) -> tuple[TaskInputFile, ...]:
+        # No workspace routing: this service's own read answers, with files only (an agent's
+        # OutsideInputsRead answers a claim-bound task's read, ADR-051).
+        assert isinstance(answer, tuple)
+        return answer
+
     def reader(values: tuple[str, ...], room: int, workspace: str) -> tuple[TaskInputFile, ...]:
-        return bound(values, room, workspace, frozenset())
+        return files(bound(values, room, workspace, frozenset()))
 
     values = (f"{shared}/spec.md", f"{shared}/legacy_app/")
     assert [item.path for item in reader(values, 1, workspace)] == [f"{shared}/spec.md"]
@@ -348,11 +355,11 @@ def test_the_service_reader_binds_only_the_admitted_roots_and_the_room(
     (shared / "legacy").mkdir()
     (shared / "legacy" / "notes.txt").write_text("UNRELATED_MARKER\n", "utf-8")
     spaced = (f"{shared}/legacy app", f"{shared}/legacy")
-    assert [item.path for item in bound(spaced, 4, workspace, frozenset(spaced[1:]))] == [
+    assert [item.path for item in files(bound(spaced, 4, workspace, frozenset(spaced[1:])))] == [
         f"{shared}/legacy app/main.c"
     ]
     assert f"{shared}/legacy/notes.txt" in [
-        item.path for item in bound(spaced, 4, workspace, frozenset())
+        item.path for item in files(bound(spaced, 4, workspace, frozenset()))
     ]
 
 

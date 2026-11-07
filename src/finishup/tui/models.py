@@ -34,6 +34,7 @@ __all__ = [
     "ProviderPosture",
     "ReadinessLayer",
     "ReceiptSummary",
+    "ServerRow",
     "TaskStatusPage",
     "StatusSnapshot",
     "StorageChoice",
@@ -295,6 +296,24 @@ class StorageChoice(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ServerRow:
+    """One FinishUP server this computer can use, as ``finishup server list`` shows it.
+
+    ``name`` and ``location`` are owner-typed display text for this owner's own terminal only.
+    """
+
+    name: str
+    kind: str
+    target_id: str | None
+    location: str | None
+    selected: bool
+
+    @property
+    def remote(self) -> bool:
+        return self.kind != "local"
+
+
+@dataclass(frozen=True, slots=True)
 class VaultPosture:
     """Read-only view of the local service and its vault."""
 
@@ -426,12 +445,14 @@ class PrivacyPosture:
         if not self.admitted_input_roots:
             return (
                 "Outside-workspace task inputs: none admitted"
-                " (add one with `finishup privacy input-roots add <folder>`)"
+                " (add one with `finishup privacy input-roots add <folder>` on the computer the"
+                " FinishUP service runs on; for a remote server, its server host)"
             )
         return (
             "Outside-workspace task inputs: "
             + ", ".join(self.admitted_input_roots)
-            + " (change with `finishup privacy input-roots`)"
+            + " (change with `finishup privacy input-roots` on the computer the FinishUP service"
+            " runs on; for a remote server, its server host)"
         )
 
     @property

@@ -35,7 +35,7 @@ from finishup.config.paths import (
 )
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.isolation_report import IsolationReportContract
-from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _PATH_KEYS = (
     "state_path_digest",
@@ -88,7 +88,7 @@ def test_ambient_mode_reports_the_exact_platform_identity(
     assert set(report["path_identity"]) == {*_PATH_KEYS, "executable_path_digest"}
     # Path identity only unless the content lane is requested.
     assert report["config_content"] is None
-    validate_schema_instance("isolation-report", "1.0.0", cast(JsonValue, dict(report)))
+    validate_schema_instance("isolation-report", "1.1.0", cast(JsonValue, dict(report)))
 
 
 def test_isolated_mode_reports_every_identity_beneath_the_exact_root(
@@ -218,7 +218,7 @@ def test_path_stable_config_edit_changes_content_not_path_identity(
     assert before_content["path_digest"] == before["path_identity"]["config_path_digest"]
     assert after_content["content_digest"] != before_content["content_digest"]
     for report in (before, after):
-        validate_schema_instance("isolation-report", "1.0.0", cast(JsonValue, dict(report)))
+        validate_schema_instance("isolation-report", "1.1.0", cast(JsonValue, dict(report)))
         rendered = json.dumps(report)
         # Privacy-safe rendering: neither the config bytes nor its path are ever published.
         assert "never-in-a-report" not in rendered
@@ -405,15 +405,32 @@ def test_cli_content_lane_is_opt_in_and_digest_only(
     for output in (plain.stdout, lane.stdout):
         assert "never-in-a-report" not in output
         assert str(config) not in output
-    validate_schema_instance("isolation-report", "1.0.0", cast(JsonValue, lane_report))
+    validate_schema_instance("isolation-report", "1.1.0", cast(JsonValue, lane_report))
 
 
 def test_golden_vector_matches_the_schema_and_contract() -> None:
     root = Path(__file__).parents[3]
     payload = json.loads((root / "fixtures/service/isolation-report.case.json").read_bytes())
 
+    # A 1.0.0 report is still a valid 1.1.0 report: the successor only adds ``selection``.
     validate_schema_instance("isolation-report", "1.0.0", payload)
+    validate_schema_instance("isolation-report", "1.1.0", payload)
     IsolationReportContract.model_validate(payload)
+
+
+def test_selection_golden_vector_needs_the_1_1_0_schema() -> None:
+    """ADR-051: a root chosen by the server selection reports ``binding: selection``."""
+
+    root = Path(__file__).parents[3]
+    payload = json.loads(
+        (root / "fixtures/service/isolation-report-selection.case.json").read_bytes()
+    )
+
+    assert payload["binding"] == "selection"
+    validate_schema_instance("isolation-report", "1.1.0", payload)
+    IsolationReportContract.model_validate(payload)
+    with pytest.raises(SchemaInstanceInvalid):  # the released 1.0.0 enum is closed
+        validate_schema_instance("isolation-report", "1.0.0", payload)
 
 
 def test_contract_rejects_the_untagged_ambiguous_shape_and_partial_evidence() -> None:

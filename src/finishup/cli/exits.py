@@ -89,6 +89,7 @@ LIFECYCLE_PUBLIC_CODES: Final = MappingProxyType(
         "session_monitor_unavailable": PublicErrorCode.SERVICE_UNAVAILABLE,
         "human_authorization_required": PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED,
         "human_authorization_stale": PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED,
+        "target_root_is_remote": PublicErrorCode.SERVICE_UNAVAILABLE,
     }
 )
 
@@ -215,6 +216,12 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
             "tty, in the foreground process group). From an agent session run "
             "'finishup consent prepare <operation>' then 'finishup consent authorize' instead"
         ),
+        # A passphrase rotation refused at open while the service is ready or unlocking (#492
+        # review).
+        "credential_store_check_in_progress": (
+            "the service is still finishing its latest unlock or the credential-store check after "
+            "it, so the passphrase was not changed and nothing was stored; try again in a moment"
+        ),
         "human_authority_unavailable": (
             "no verified foreground console was found for this review; run "
             "'finishup consent review' directly on a local terminal"
@@ -288,6 +295,11 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
         ),
         "service_draining": (
             "the local service is shutting down; wait for it to exit, then start it again"
+        ),
+        "target_root_is_remote": (
+            "this FinishUP root belongs to a server target on another machine, so no local "
+            "service runs in it; start the service on the server host, or select this "
+            "computer's server with 'finishup server use local'"
         ),
         "storage_unsafe": (
             "the local FinishUP observation store has an unsafe file or path shape; repair its "

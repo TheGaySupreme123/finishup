@@ -34,6 +34,7 @@ from finishup.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode
 from finishup.service.control_protocol import public_error_code_for_control_reason
 
 if TYPE_CHECKING:
+    from finishup.client.remote_remedy import RemoteRemedy
     from finishup.service.client import ServiceClient
     from finishup.service.startup_failure import StartupFailure
 
@@ -402,6 +403,40 @@ def _handshake_failure_line(error: ControlError, phase: str) -> str:
     return _with_correlation(_with_holder_pid(head), error)
 
 
+def _remote_failure(
+    error: ControlError,
+    code: PublicErrorCode,
+    remedy: RemoteRemedy,
+    *,
+    json_output: bool,
+    stderr_writer: Callable[[str], None],
+    stdout_writer: Callable[[JsonValue], None],
+) -> int:
+    """A failure on a remote target root: its closed reason, fixed words and its directive."""
+
+    from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
+
+    lines = [f"{code.value.lower()}: {remedy.line()}"]
+    if remedy.directive is not None:
+        lines.extend(render_recovery_directive_lines(remedy.directive))
+    stderr_writer(_with_correlation("\n".join(lines), error))
+    if json_output:
+        payload: dict[str, JsonValue] = {
+            "ok": False,
+            "public_code": code.value,
+            "reason": error.reason,
+            "retryable": error.retryable,
+        }
+        if remedy.reason != error.reason:
+            payload["phase"] = remedy.reason
+        if error.correlation_id is not None:
+            payload["correlation_id"] = error.correlation_id
+        if remedy.directive is not None:
+            payload["recovery"] = recovery_directive_json(remedy.directive)
+        stdout_writer(payload)
+    return exit_code_for(code)
+
+
 def control_failure(
     error: ControlError,
     *,
@@ -433,6 +468,21 @@ def control_failure(
         )
     error = _bind_handshake_correlation(error)
     code = public_error_code_for_control_reason(error.reason)
+    if error.reason in {"service_draining", "service_unavailable", "vault_locked"}:
+        from finishup.client.remote_remedy import remote_remedy
+
+        remedy = remote_remedy(error)
+        if remedy is not None:
+            # The selected server is on another machine: every local-service remedy below would
+            # be wrong there (ADR-051). Name the remote phase and its directive instead.
+            return _remote_failure(
+                error,
+                code,
+                remedy,
+                json_output=json_output,
+                stderr_writer=stderr_writer,
+                stdout_writer=stdout_writer,
+            )
     if error.reason == "request_timeout" and operation is not None:
         from finishup.cli.render import render_recovery_directive_lines
         from finishup.protocol.recovery import (

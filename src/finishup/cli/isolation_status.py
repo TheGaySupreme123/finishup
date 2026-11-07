@@ -37,9 +37,9 @@ from finishup.config.installation import (
 from finishup.config.load import environment_config_path, parse_minimal_safe_config
 from finishup.config.paths import (
     IsolationBinding,
+    active_root,
     bundle_root,
     config_file_path,
-    isolated_root,
     isolation_binding,
     runtime_dir,
     state_dir,
@@ -212,7 +212,9 @@ def isolation_report(
     storage.
     """
 
-    root = isolated_root()
+    # A selected server target's root is an isolated root too (ADR-051): ``binding`` names the
+    # selection as the source.
+    root = active_root()
     mode: Literal["isolated", "ambient"] = "ambient" if root is None else "isolated"
     binding = isolation_binding()
     # The everyday install is the permanent instance and carries no marker; an isolated root

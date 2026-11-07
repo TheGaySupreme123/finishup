@@ -23,12 +23,14 @@ from typing import Final, cast
 from finishup import __version__
 from finishup.cli.isolation_status import isolation_report
 from finishup.config.installation import (
+    MAX_SOCKET_PATH_BYTES,
     InstanceIdentity,
     InstanceIdentityError,
     InstanceLifecycle,
     SourceState,
     format_rfc3339_ms,
     instance_identity_path,
+    instance_root_fits,
     is_expired,
     new_instance_identity,
     parse_rfc3339_ms,
@@ -61,10 +63,6 @@ __all__ = [
     "parse_expiry",
 ]
 
-# Conservative bound for ``sun_path``: macOS allows 104 bytes including the terminator, Linux
-# 108. The longest endpoint beneath a root is ``<root>/run/secret-ingress.sock``.
-MAX_SOCKET_PATH_BYTES: Final = 100
-_LONGEST_ENDPOINT: Final = Path("run") / "secret-ingress.sock"
 # Bounded shutdown: the daemon drains for at most STOP_DRAIN_SECONDS (30 s) after SIGTERM.
 STOP_WAIT_SECONDS: Final = 35.0
 _STOP_POLL_SECONDS: Final = 0.1
@@ -97,7 +95,7 @@ def _check_root_shape(root: Path) -> None:
     home = Path.home()
     if root == home or home.is_relative_to(root):
         raise InstanceIdentityError("instance_root_invalid")
-    if len(os.fsencode(root / _LONGEST_ENDPOINT)) > MAX_SOCKET_PATH_BYTES:
+    if not instance_root_fits(root):
         raise InstanceIdentityError("instance_root_too_long")
 
 

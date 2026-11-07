@@ -1017,6 +1017,35 @@ async def test_no_label_or_name_carries_what_admission_did_not_scan(tmp_path: Pa
 
 
 @pytest.mark.anyio
+async def test_a_listing_asks_a_batched_refusal_once_for_all_its_children(tmp_path: Path) -> None:
+    """ADR-051: an agent-answered ignore rule costs one probe per listing, not one per entry."""
+
+    for name in ("ordinary.txt", "ignored.txt", "other.txt"):
+        (tmp_path / name).write_text("a")
+    asked: list[tuple[str, ...]] = []
+    single: list[str] = []
+
+    def per_path(path: str) -> bool:
+        single.append(path)  # the listed directory itself, never one of its entries
+        return False
+
+    def batched(paths: tuple[str, ...]) -> frozenset[str]:
+        asked.append(paths)
+        return frozenset(path for path in paths if path == "ignored.txt")
+
+    root = ReadRoot("w1", str(tmp_path.resolve()), refuse=per_path, refuse_many=batched)
+    listing = _read("read_file", root_id="w1", path=".", mode="list", cursor=None)
+    loop, _broker, _model, _ = _setup(listing, _FINAL, roots=(root,))
+    (result,) = _observations((await loop.run()).history)
+    assert cast(list[JsonValue], _data(result)["entries"]) == [
+        {"name": "ordinary.txt", "kind": "file"},
+        {"name": "other.txt", "kind": "file"},
+    ]
+    assert asked == [("ignored.txt", "ordinary.txt", "other.txt")]
+    assert single == [""]
+
+
+@pytest.mark.anyio
 async def test_listing_filters_every_child_and_cites_only_what_it_sent(tmp_path: Path) -> None:
     # M3: the refuse rule and the declared scope apply to each child, not only the directory.
     (tmp_path / "ordinary.txt").write_text("a")

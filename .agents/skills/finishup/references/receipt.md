@@ -82,6 +82,15 @@ resolved-history counts. Never write "0 unanswered findings" while a note is ope
 headline a bare “no findings”, “zero findings”, “clean”, or “verified” result. Say what the
 evidence covers and what it leaves unverified in plain language.
 
+Name the owner's step for a file review could not read, and never take it yourself. For
+`task_input_outside_not_admitted`, name the folder and `finishup privacy input-roots add <folder>`,
+run on the computer the FinishUP service runs on (for a remote server, its server host, where the
+folder must exist). For `outside_reads_not_listed`, the owner kept those files from that server on
+their computer: name `finishup server folders add NAME FOLDER` for a file outside the project, or,
+for a server they trust, `finishup server folders mode NAME local`, the only step for a test in
+the project that Git ignores; both run in the owner's own terminal on the computer that holds the
+project.
+
 Do not save the receipt as a file in the task workspace or in any output directory: the ledger
 keeps it, and a stray file can break a grader that lists an output directory. Put its conclusion
 in your final message instead. FinishUP never counts its own receipt or export files as an edit.

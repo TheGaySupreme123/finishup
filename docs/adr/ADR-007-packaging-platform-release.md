@@ -520,7 +520,12 @@ freeze every transitive distribution, source, artifact hash, marker, and license
 - Runtime: `anyio==4.14.2`, `apsw==3.53.3.1`, `argon2-cffi==25.1.0`,
   `cryptography==50.0.0`, `httpx==0.28.1`, `jsonschema==4.26.0`, `keyring==25.7.0`,
   `mcp==1.30.0`, `openai==2.46.0`, `platformdirs==4.10.0`, `pydantic==2.13.4`,
-  `textual==8.2.8`, and `typer==0.27.0`.
+  `starlette==1.3.1`, `textual==8.2.8`, `typer==0.27.0`, and `uvicorn==0.51.0`.
+- Gateway pins (ADR-051, maintainer-approved 2026-11-06): the same-user HTTPS gateway
+  (`finishup service gateway run`) imports `starlette` and `uvicorn` directly, so both are declared
+  at the versions the lock already carried through `mcp==1.30.0` (`starlette==1.3.1`,
+  `uvicorn==0.51.0`). No resolved version, artifact or license changed; only the declarations moved
+  from transitive to direct.
 - Advisory refresh: `mcp` moved from the locked `1.28.1` to `1.30.0`, the smallest release
   fixing CVE-2026-59951, CVE-2026-116684, CVE-2026-116685, and CVE-2026-116686, and the
   transitive `certifi` moved to `2026.10.23` for PYSEC-2026-4320. No other declaration moved.

@@ -7643,3 +7643,61 @@ def test_deferred_session_end_pending_cap_is_named(
     assert "hook_observe_degraded: session_end_unrecorded" in err
     assert isinstance(reasons, Mapping)
     assert cast(Mapping[str, object], reasons["session_end_unrecorded"])["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_service_ingest_attests_only_over_a_claim_bound_connection(tmp_path: Path) -> None:
+    """ADR-051 decision 12: a remote target receives the row attested from this client's store."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    envelope = _drain_envelope(store, "remote-session", "hook:remote-session", 1)
+    bodies: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self, handle: str | None) -> None:
+            self.workspace_handle = handle
+
+        async def observation_ingest(self, body: object, *, deadline_ms: int):
+            del deadline_ms
+            bodies.append(dict(cast(Mapping[str, object], body)))
+            return observation_ingest_result_to_json(
+                ObservationIngestResult(ObservationIngestDisposition.DUPLICATE, None, None)
+            )
+
+    for handle in (None, "client:0a1b2c3d4e5f6071"):
+        await observe_hooks_module._try_service_ingest(  # pyright: ignore[reportPrivateUsage]
+            Client(handle),  # type: ignore[arg-type]
+            "remote-session",
+            envelope,
+            deadline_ms=100,
+            store=store,
+            workspace_commitment=workspace,
+            _state=tmp_path,
+        )
+    local, remote = bodies
+    assert "client_attestation" not in local
+    attestation = cast(Mapping[str, object], remote["client_attestation"])
+    assert attestation["consent"] == "active"
+    assert attestation["route"] is None
+    assert {key: value for key, value in remote.items() if key != "client_attestation"} == local
+
+    # A claim the server could not key (its vault was locked) sends nothing: the row stays
+    # pending behind a retryable vault_locked, and never carries this workspace's path.
+    locked = Client(None)
+    locked.workspace_binding = "client_claim"  # type: ignore[attr-defined]
+    held = await observe_hooks_module._try_service_ingest(  # pyright: ignore[reportPrivateUsage]
+        locked,  # type: ignore[arg-type]
+        "remote-session",
+        envelope,
+        deadline_ms=100,
+        store=store,
+        workspace_commitment=workspace,
+        _state=tmp_path,
+    )
+    from finishup.application.observation_drain import ObservationControlFailure
+
+    assert len(bodies) == 2
+    assert isinstance(held, ObservationControlFailure)
+    assert (held.control_reason, held.control_retryable) == ("vault_locked", True)

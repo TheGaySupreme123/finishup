@@ -39,10 +39,11 @@ def test_development_manifest_is_truthful_and_complete() -> None:
     # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role); 55 with
     # reviewer-reply 1.0.0 (#1118 unit 2); 57 with the host-connection-batch report and
     # ai-status (issue #1119).
-    assert len(manifest.request_result_schema_versions) == 57
+    assert len(manifest.request_result_schema_versions) == 60
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
-    assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"
+    assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.1.0"
+    assert dict(manifest.request_result_schema_versions)["server-target-status"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions) == dict(
         request_result_schema_versions(load_schema_catalog())
     )
@@ -69,7 +70,7 @@ def test_development_manifest_is_truthful_and_complete() -> None:
 def test_version_json_allows_installed_sdk_with_empty_tested_protocol_set() -> None:
     rendered = version_manifest_json(build_version_manifest())
     document = json.loads(rendered)
-    schema = json.loads(Path("schemas/version/version-manifest-2.3.0.schema.json").read_text())
+    schema = json.loads(Path("schemas/version/version-manifest-2.4.0.schema.json").read_text())
 
     assert document["mcp_sdk_version"]["status"] == "present"
     assert document["mcp_protocol_supported"] == []

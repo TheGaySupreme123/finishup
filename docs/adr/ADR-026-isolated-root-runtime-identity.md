@@ -177,3 +177,30 @@ registration supplied the exact root.
   root is an error instead of a silently different target.
 - Existing unsupported isolation mechanisms remain internal test details; new tooling must use
   this contract.
+
+## Amendment proposed by ADR-051 (2026-11-05): the selection file
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) adds server
+targets. Once it is accepted, this record changes as follows.
+
+- **A fourth, lowest-precedence root source.** Decision 1 keeps `FINISHUP_ISOLATED_ROOT` as the
+  one way to *isolate* a runtime. Target selection is a different thing: an owner-only selection
+  file (`<ambient config dir>/server-selection.json`, `yoetz.server-selection/1`) names one target
+  root beneath `<ambient state dir>/servers/`. The new `active_root()` resolves the variable, then
+  the ADR-028 pin, then the selection file, then ambient; `isolated_root()` keeps resolving only
+  the variable and the pin. The roots that follow a target (state, runtime, config, log, cache,
+  bundle) derive from `active_root()`; host registrations and launch lines keep deriving from
+  `isolated_root()`, so a selection is never stamped into decision 6's registration environment.
+- **Fail closed, unchanged.** A selection naming a missing, malformed or unsafe root raises
+  `isolation_root_invalid` with the existing path-safety reasons and never falls back to the
+  ambient singleton (decision 2).
+- **The endpoint still follows the root (decision 3).** A remote target's root holds only
+  client-side state and its approach's client-side endpoint; nothing beneath it can reach the
+  ambient singleton, and the client never spawns or supersedes a service for a remote root.
+- **Decision 4.** The client forwards the *active* root to the process it spawns for a target, so
+  a selected local target spawns exactly as an isolated one does.
+- **Decision 5.** `isolation_binding()` gains the value `selection`; the isolation report's wire
+  schema moves to `service/isolation-report-1.1.0`, whose `binding` enum adds it (the 1.0.0 enum
+  is closed).
+- **Reverse state.** `finishup server use local` deletes the selection file and restores ambient
+  resolution with no residue; `finishup server remove` disposes of a target's root.

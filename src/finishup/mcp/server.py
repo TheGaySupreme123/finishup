@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 from urllib.parse import unquote_to_bytes, urlsplit
 
 import anyio
@@ -42,6 +42,12 @@ from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
     canonical_workspace_locator,
 )
+from finishup.client.attribution import (
+    ServiceAttribution,
+    attribution_lines,
+    connection_attribution,
+)
+from finishup.client.workspace_ref import start_request_for_connection
 from finishup.config.env import EnvNameConflictError, read_env
 from finishup.config.load import load_config
 from finishup.config.models import ConfigError, LoggingConfig
@@ -126,6 +132,7 @@ from finishup.ports.integrations import FINISHUP_MCP_TOOL_NAMES
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.consent import CONSENT_PENDING_TTL_SECONDS
 from finishup.protocol.errors import (
+    SERVICE_HANDSHAKE_PHASES,
     SERVICE_STARTUP_PHASES,
     PublicErrorCode,
     PublicOperationError,
@@ -174,8 +181,12 @@ from finishup.service.client import (
     holder_version_order,
     path_refusal_reason,
     service_holder_identity,
+    serving_workspace_binding,
     start_timed_out,
 )
+
+if TYPE_CHECKING:
+    from finishup.client.agent_session import BridgeBackgroundWork
 
 __all__ = [
     "BRIDGE_RUNTIME",
@@ -546,6 +557,9 @@ class _ClientSlot:
     # Bumped whenever the slot's client is retired (a Cursor binding change, shutdown): a probe
     # that started before a retirement never publishes its client (review of #1226).
     retirement_generation: int = 0
+    # A remote target's background agent connection and drain (ADR-051, direct dial); each
+    # service call renews its lease. ``None`` for a local root.
+    remote_background: BridgeBackgroundWork | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1038,6 +1052,8 @@ async def _ensure_service_client(
     workspace_locator = _workspace_locator_for_runtime(runtime)
     if workspace_locator is None:
         raise _CursorWorkspaceBindingError()
+    if slot.remote_background is not None:
+        slot.remote_background.note_activity(workspace_locator)
     generation = slot.retirement_generation
     owner = object()
     owns_probe = False
@@ -1081,18 +1097,34 @@ async def _ensure_service_client(
                 continue
             connected_attempt: ServiceClient | None = None
             try:
-                connected_attempt = (
-                    await connect_service_on_demand(
-                        ControlClientKind.MCP_BRIDGE,
-                        workspace_locator=workspace_locator,
+                binding = await serving_workspace_binding(workspace_locator)
+                if binding is not None:
+                    # A server on another machine: claim the workspace and serve its calls on
+                    # this long-lived connection, for this session's background work too.
+                    connected_attempt = (
+                        await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE, workspace_binding=binding
+                        )
+                        if start_timeout_seconds is None
+                        else await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_binding=binding,
+                            timeout_seconds=start_timeout_seconds,
+                        )
                     )
-                    if start_timeout_seconds is None
-                    else await connect_service_on_demand(
-                        ControlClientKind.MCP_BRIDGE,
-                        workspace_locator=workspace_locator,
-                        timeout_seconds=start_timeout_seconds,
+                else:
+                    connected_attempt = (
+                        await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_locator=workspace_locator,
+                        )
+                        if start_timeout_seconds is None
+                        else await connect_service_on_demand(
+                            ControlClientKind.MCP_BRIDGE,
+                            workspace_locator=workspace_locator,
+                            timeout_seconds=start_timeout_seconds,
+                        )
                     )
-                )
                 await connected_attempt.connect()
             except BaseException as exc:
                 if connected_attempt is not None:
@@ -1321,18 +1353,64 @@ def _result_text(
     return "\n".join(part for part in (*parts, note, complete_check) if part)
 
 
+# ADR-051: the results whose text names a claim-bound connection's producing service.
+_ATTRIBUTED_OPERATIONS: Final = frozenset({"status", "receipt"})
+
+
+def _attributed_text(
+    text: str,
+    attribution: ServiceAttribution | None,
+    *,
+    receipt_page: bool = False,
+    provenance_unknown: bool = False,
+) -> str:
+    """``text`` followed by a claim-bound connection's provenance lines (ADR-051), unchanged for
+    any other connection. A line the text already carries is not repeated, and a page of a paged
+    receipt, or a receipt whose ``workspace_provenance`` says it is unknown, names only the
+    producing service (``attribution_lines``)."""
+
+    lines = attribution_lines(
+        attribution,
+        shown=text,
+        receipt_page=receipt_page,
+        provenance_unknown=provenance_unknown,
+    )
+    if not lines:
+        return text
+    return "\n".join((text, *lines) if text else lines)
+
+
 def result_from_public_model(
     result: object,
     *,
     host_profile: McpHostProfile = "generic",
     request_id: str | None = None,
     operation: str | None = None,
+    attribution: ServiceAttribution | None = None,
 ) -> types.CallToolResult:
-    """Validate and project one public result to structured plus host-compatible text."""
+    """Validate and project one public result to structured plus host-compatible text.
+
+    ``attribution`` is set for a claim-bound connection's status and receipt (ADR-051): the
+    text, and its canonical fallback, then end with the fixed workspace-evidence line and the
+    producing service. A delivery page of a receipt, whether ``receipt`` or a ``status``
+    continuation returned it, ends with the producing service only: the receipt's own
+    "Workspace evidence" section is on at most one page. So does a receipt whose
+    ``workspace_provenance`` member says the provenance is unknown (decision D4); that member is
+    in the canonical text and, paged, on the first page. The structured result never carries
+    the connection's lines.
+    """
 
     wire = public_model_to_wire(result)
-    rendered = _result_text(
-        wire, host_profile=host_profile, request_id=request_id, operation=operation
+    receipt_page = (
+        wire.get("state") == "delivery_page" and wire.get("source_operation") == "receipt"
+    )
+    # ADR-051 decision D4: every receipt format, JSON included, says when its provenance is unknown.
+    provenance_unknown = "receipt_id" in wire and "workspace_provenance" in wire
+    rendered = _attributed_text(
+        _result_text(wire, host_profile=host_profile, request_id=request_id, operation=operation),
+        attribution,
+        receipt_page=receipt_page,
+        provenance_unknown=provenance_unknown,
     )
     # The service budgets canonical text plus structured content. A small result's prose can
     # repeat several fields more often: fall back to that complete canonical text if needed.
@@ -1340,7 +1418,12 @@ def result_from_public_model(
     # the canonical copy can be the longer channel, and a fallback must never enlarge a result.
     rendered_bytes = mcp_delivery_bytes(wire, text=rendered)
     if rendered_bytes > HOST_RESULT_BUDGET_BYTES:
-        canonical = canonical_encode(wire).decode("utf-8")
+        canonical = _attributed_text(
+            canonical_encode(wire).decode("utf-8"),
+            attribution,
+            receipt_page=receipt_page,
+            provenance_unknown=provenance_unknown,
+        )
         if mcp_delivery_bytes(wire, text=canonical) < rendered_bytes:
             rendered = canonical
     return types.CallToolResult(
@@ -1853,6 +1936,113 @@ def _vault_initialization_required_message(include_authorize: bool) -> str:
     )
 
 
+_REMOTE_UNAVAILABLE_MESSAGE: Final = (
+    "The selected FinishUP server on another machine could not be reached, or the connection to "
+    "it ended before it answered. If the server already received this request it may be "
+    "recorded; retrying with the same request_id returns that record instead of a second one. "
+    "Follow the continuation for this phase, then retry this operation with the same request_id. "
+    "Never fall back to another server or a local service, and never run local service "
+    "lifecycle commands for this."
+)
+# The remote phases raised before any dial: nothing reached the server.
+_REMOTE_NOT_SENT_MESSAGES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "target_reauthorization_required": (
+            "The selected FinishUP server on another machine was confirmed under an older "
+            "disclosure of what leaves this computer, so nothing was sent to it. Follow the "
+            "continuation for this phase, then retry this operation with the same request_id. "
+            "Never fall back to another server or a local service."
+        ),
+        "target_root_is_remote": (
+            "The selected FinishUP target is a server on another machine, so this computer has no "
+            "FinishUP service of its own for it, and nothing was started or sent. Follow the "
+            "continuation for this phase. Never fall back to another server or a local service, "
+            "and never run local service lifecycle commands for this."
+        ),
+    }
+)
+_REMOTE_DRAINING_MESSAGE: Final = (
+    "The selected FinishUP server on another machine answered that it is shutting down or "
+    "restarting, so it did not serve this request. Wait a few seconds, then retry this operation "
+    "with the same request_id. Never fall back to another server or a local service, and never "
+    "run local service lifecycle commands for this."
+)
+_REMOTE_UNCLAIMABLE_MESSAGE: Final = (
+    "This folder could not be named to the selected FinishUP server as a workspace, because this "
+    "computer's Git could not resolve it, so nothing was sent or recorded. Work from the folder "
+    "or repository the task is about; never send a local path to the server instead."
+)
+_REMOTE_LOCKED_MESSAGE: Final = (
+    "The selected FinishUP server's vault is locked, so nothing was recorded. Its owner unlocks "
+    "it on the server host; then retry this operation with the same request_id. Never run local "
+    "service lifecycle commands for this, and never send secrets over MCP."
+)
+
+
+def _remote_control_error_result(
+    error: ControlError,
+    request_id: str | None,
+    operation: str,
+    *,
+    host_profile: McpHostProfile,
+) -> types.CallToolResult | None:
+    """The bridge's answer when the selected server is on another machine (ADR-051), else None.
+
+    The remote phase travels as the ``reason_code``, so its ADR-030 continuation attaches as for
+    any other reason; no host, user, name or path is ever in the text.
+    """
+
+    from finishup.client.remote_remedy import remote_remedy
+
+    remedy = remote_remedy(error)
+    if remedy is None:
+        return None
+    if remedy.reason == "vault_locked":
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.VAULT_LOCKED,
+            message=_REMOTE_LOCKED_MESSAGE,
+            retryable=error.retryable,
+            host_profile=host_profile,
+        )
+    if remedy.reason == "service_draining":
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.SERVICE_UNAVAILABLE,
+            message=_REMOTE_DRAINING_MESSAGE,
+            retryable=True,
+            host_profile=host_profile,
+            safe_details={"reason_code": "service_draining"},
+        )
+    if remedy.reason in SERVICE_HANDSHAKE_PHASES:
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.SERVICE_UNAVAILABLE,
+            message=_REMOTE_UNCLAIMABLE_MESSAGE,
+            retryable=False,
+            host_profile=host_profile,
+            safe_details={"reason_code": "service_unavailable"},
+            diagnostic_reason=remedy.reason,
+        )
+    return _control_public_error_result(
+        error,
+        request_id,
+        operation,
+        code=PublicErrorCode.SERVICE_UNAVAILABLE,
+        message=_REMOTE_NOT_SENT_MESSAGES.get(remedy.reason, _REMOTE_UNAVAILABLE_MESSAGE),
+        retryable=error.retryable,
+        host_profile=host_profile,
+        safe_details={"reason_code": remedy.reason},
+        diagnostic_reason=remedy.reason,
+    )
+
+
 def _control_error_result(
     error: ControlError,
     request_id: str | None,
@@ -1868,6 +2058,12 @@ def _control_error_result(
     # Prefer the service-minted diagnostic id when present so the agent-facing public error
     # resolves the same durable sink record the daemon already wrote. Never mint a second id for
     # a failure the service already correlated.
+    if error.reason in {"service_draining", "service_unavailable", "vault_locked"}:
+        remote = _remote_control_error_result(
+            error, request_id, operation, host_profile=host_profile
+        )
+        if remote is not None:
+            return remote
     if error.reason == "vault_locked":
         # The daemon's retryable flag distinguishes a soft lock or transient re-unlock
         # failure (heals on a later attempt) from a hard lock or missing setup (needs a
@@ -2471,8 +2667,13 @@ async def _quiet_probe(runtime: BridgeRuntime) -> ServiceClient | None:
     if workspace_locator is None:
         return None
     try:
-        client = await connect_service(
-            ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator
+        binding = await serving_workspace_binding(workspace_locator)
+        client = (
+            await connect_service(ControlClientKind.MCP_BRIDGE, workspace_binding=binding)
+            if binding is not None
+            else await connect_service(
+                ControlClientKind.MCP_BRIDGE, workspace_locator=workspace_locator
+            )
         )
     except Exception:
         return None
@@ -2964,13 +3165,21 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
         )
     if inherited is not None:
         return inherited
+    # ADR-051: the connection that answered, so a claim-bound status or receipt text can name
+    # its producing service.
+    served: list[ServiceClient] = []
+
+    async def invoke_served(client: ServiceClient, request: RequestT) -> ResultT:
+        served.append(client)
+        return await invoke(client, request)
+
     # Invoke first. Once this returns, a write may already be durable; response shaping must not
     # collapse that into a non-retryable INTERNAL_ERROR that steers agents away from same-id resume.
     try:
         result = await _invoke_with_reconnect(
             runtime,
             request,
-            invoke,
+            invoke_served,
             request_id,
             retain_availability_failure_for_latch=True,
         )
@@ -3043,7 +3252,7 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
                     # is idempotent and returns the stored outcome without appending again.
                     try:
                         recovered = await _invoke_with_reconnect(
-                            runtime, request, invoke, request_id
+                            runtime, request, invoke_served, request_id
                         )
                     except Exception:  # noqa: BLE001 - fall back to the typed pollable handle
                         recovered = None
@@ -3094,6 +3303,11 @@ async def _dispatch_within_budget[RequestT: BaseModel, ResultT: BaseModel](
             host_profile=runtime.host_profile,
             request_id=request_id,
             operation=operation,
+            attribution=(
+                connection_attribution(served[-1])
+                if served and operation in _ATTRIBUTED_OPERATIONS
+                else None
+            ),
         )
     except Exception as exc:
         # The operation committed. Only a structural failure reaches here -- the result cannot be
@@ -3131,7 +3345,12 @@ async def dispatch_start(
         arguments,
         StartRequest,
         StartResult,
-        lambda client, request: client.start(request, deadline_ms=_stage_deadline_ms("start")),
+        # ADR-051: on a connection to a server on another machine, the workspace path becomes
+        # the connection's handle here, so every attempt (a reconnect too) sends its own.
+        lambda client, request: client.start(
+            start_request_for_connection(request, client),
+            deadline_ms=_stage_deadline_ms("start"),
+        ),
         runtime,
         "start",
     )
@@ -4640,9 +4859,22 @@ def _initialization_options(
 
 
 async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
-    """Run bounded stdio and let the SDK negotiate protocol versions conformantly."""
+    """Run bounded stdio and let the SDK negotiate protocol versions conformantly.
+
+    For a remote server target the bridge is also this approach's long-lived client process
+    (ADR-051, direct dial): it holds a background workspace-agent connection while the session is
+    active and delivers what hooks captured. A local root starts no background work.
+    """
+
+    from finishup.client.agent_session import start_remote_background_work
 
     active_server = server if runtime is BRIDGE_RUNTIME else _build_server(runtime)
+    started = start_remote_background_work()
+    background: asyncio.Task[None] | None = None
+    if started is not None:
+        work, background = started
+        runtime._slot.remote_background = work  # pyright: ignore[reportPrivateUsage]
+        work.note_activity(_workspace_locator_for_runtime(runtime))
     async with bounded_stdio_server(drain_pending_responses=True) as (read_stream, write_stream):
         try:
             await active_server.run(
@@ -4652,6 +4884,10 @@ async def run_stdio(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> None:
                 raise_exceptions=False,
             )
         finally:
+            if background is not None:
+                background.cancel()
+                await asyncio.gather(background, return_exceptions=True)
+                runtime._slot.remote_background = None  # pyright: ignore[reportPrivateUsage]
             await close_bridge_runtime(runtime)
 
 

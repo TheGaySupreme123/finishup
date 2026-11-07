@@ -13,6 +13,7 @@ import pytest
 
 from builders.privacy_policies import local_only_policy
 from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
+from finishup.cli.policy_server import PendingProposal
 from finishup.cli.privacy_setup import (
     PrivacyRecipe,
     PrivacySetupAnswers,
@@ -553,9 +554,9 @@ def _install_setup_stubs(
         _digest: str,
         *,
         workspace_locator: object = None,
-    ) -> str:
+    ) -> PendingProposal:
         del workspace_locator
-        return "pvp_1"
+        return PendingProposal("pvp_1")
 
     async def decide(_proposal: str) -> PrivacyDecisionResult:
         return PrivacyDecisionResult("committed", "sha256:" + "c" * 64)
@@ -584,7 +585,7 @@ def _install_setup_stubs(
     monkeypatch.setattr(module, "_render_recipe_options", render_options)
     monkeypatch.setattr(module, "_render_review", render_review)
     monkeypatch.setattr(module.typer, "confirm", confirm)
-    monkeypatch.setattr(module, "_propose", propose)
+    monkeypatch.setattr(module, "_propose_pending", propose)
     monkeypatch.setattr(module, "_decide", decide)
 
     def conversation_prompt(default: ConversationReview) -> ConversationReview:
@@ -657,10 +658,10 @@ async def test_tui_opt_out_reaches_review_without_proposing_authority(
     monkeypatch.setenv("FINISHUP_CONFIG", str(tmp_path / "missing.toml"))
     monkeypatch.setenv("FINISHUP_TUI", "0")
 
-    async def forbidden_propose(*_args: object, **_kwargs: object) -> str:
+    async def forbidden_propose(*_args: object, **_kwargs: object) -> PendingProposal:
         raise AssertionError("declining the review must not create a privacy proposal")
 
-    monkeypatch.setattr(module, "_propose", forbidden_propose)
+    monkeypatch.setattr(module, "_propose_pending", forbidden_propose)
 
     report = await module.run_privacy_setup(recipe_hint="private")
 
@@ -890,12 +891,12 @@ async def test_named_private_recipe_applies_explicit_update_choice_before_propos
         _digest: str,
         *,
         workspace_locator: object = None,
-    ) -> str:
+    ) -> PendingProposal:
         del workspace_locator
         proposed.append(candidate)
-        return "pvp_1"
+        return PendingProposal("pvp_1")
 
-    monkeypatch.setattr(module, "_propose", capture_proposal)
+    monkeypatch.setattr(module, "_propose_pending", capture_proposal)
 
     report = await module.run_privacy_setup(
         recipe_hint="private",
@@ -946,12 +947,12 @@ async def test_recommended_recipe_applies_update_override_without_changing_revie
         _digest: str,
         *,
         workspace_locator: object = None,
-    ) -> str:
+    ) -> PendingProposal:
         del workspace_locator
         proposed.append(candidate)
-        return "pvp_1"
+        return PendingProposal("pvp_1")
 
-    monkeypatch.setattr(module, "_propose", capture_proposal)
+    monkeypatch.setattr(module, "_propose_pending", capture_proposal)
 
     report = await module.run_privacy_setup(
         offer_recommended=True,
@@ -992,10 +993,10 @@ async def test_update_override_never_bypasses_exact_candidate_confirmation(
         external=None,
     )
 
-    async def forbidden_propose(*_args: object, **_kwargs: object) -> str:
+    async def forbidden_propose(*_args: object, **_kwargs: object) -> PendingProposal:
         raise AssertionError("declined update override must not reach the trusted proposal")
 
-    monkeypatch.setattr(module, "_propose", forbidden_propose)
+    monkeypatch.setattr(module, "_propose_pending", forbidden_propose)
 
     report = await module.run_privacy_setup(
         recipe_hint="private",

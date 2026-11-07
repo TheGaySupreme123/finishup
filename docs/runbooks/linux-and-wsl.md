@@ -420,6 +420,72 @@ that inspection. Windows executables and the Windows-side IDE with Remote WSL ar
 unverified surfaces; an accessible Windows launcher is not a Linux IDE identity. Layout and
 failure details are in the [Cursor runbook](cursor-integration.md#linux-and-wsl).
 
+## A FinishUP server on a headless host (ADR-051)
+
+Operator facts for running the FinishUP service on a machine that clients reach as a server target
+(the [servers guide](../usage/servers.md) is the user-facing page). The decisions are in
+[ADR-051](../adr/ADR-051-client-server-cut-and-server-targets.md). Evidence state: none of the
+platform notes below has a recorded acceptance run yet; each approach's pull request records its
+real-environment runs, and a cell is claimed only from that evidence.
+
+- **Same release on both machines.** The handshake pins the exact schema-manifest digest. A client
+  that runs another release is refused with `remote_incompatible`, which names both releases; a
+  client never replaces a remote service.
+- **Set the server up on the server.** Run `finishup setup` in a terminal on the server host: the
+  vault, privacy policy, repository permissions and any AI-powered review provider live there.
+  The Codex subscription evaluator needs its own Codex installation and login on the server.
+- **Unattended restarts.** Setup's generated passphrase in owner-only file custody (no platform
+  store is usable on most headless hosts; ADR-008, 2026-10-19) lets a restarted service come back
+  `ready`. A human-passphrase vault stays `locked` after every restart until the owner runs
+  `ssh -t <server> finishup service unlock`. On Linux the service's session-event monitor has no
+  login1 subscription today and reports itself unavailable without locking, so session-lock and
+  suspend relock do not apply on such a server; idle relock still does.
+- **The runtime directory must outlive the login.** By default the service's endpoints live under
+  `$XDG_RUNTIME_DIR` (`/run/user/<uid>`), which systemd-logind removes at the user's last logout
+  unless lingering is enabled. A service started from an SSH login then keeps its lock but loses
+  its socket. Either enable lingering (`loginctl enable-linger <user>`, which needs a systemd login
+  manager) or run the server from its own isolated root (`FINISHUP_ISOLATED_ROOT`, or a
+  provisioned instance), whose endpoints live beneath that root. `finishup service endpoint
+  --json`, run on the server, reports the endpoint, the absolute launcher, the release, whether the
+  runtime directory is tied to the login session, and linger state.
+- **Supervision is yours.** The service stops after 7,200 idle seconds and has no native systemd or
+  launchd installer (deferred). A per-user supervisor may run the foreground `finishup service run`
+  from the server's absolute launcher; `finishup service start` is the idempotent on-demand start.
+- **sshd.** The SSH user must be the account that runs the service: the service's peer check
+  admits only that UID, and FinishUP adds no other identity. Use key authentication; FinishUP runs
+  OpenSSH with `BatchMode=yes` and `StrictHostKeyChecking=yes`, so the client's `known_hosts` must
+  already hold the server's host key and no password prompt is ever answered. Approaches that
+  forward to the server's Unix-domain control endpoint need sshd to permit stream-local forwarding
+  (`AllowStreamLocalForwarding` `yes`, `all` or `local`; OpenSSH's default is `yes`) and must not
+  set `DisableForwarding yes`; on the client, OpenSSH 6.7 or later is needed for Unix-socket
+  forwarding. The human-control and secret endpoints are never forwarded. An approach that tunnels
+  to a loopback TCP port instead needs `AllowTcpForwarding`; its topology section says which
+  applies.
+- **Direct dial over SSH (ADR-051 approach B).** Each client process opens one `ssh -W <remote
+  control.sock>` channel, a stdio stream to the server's Unix socket (sshd's `direct-streamlocal`
+  channel, so `AllowStreamLocalForwarding` must allow `local`), over a master at
+  `<target root>/run/m` that persists for 15 idle minutes. No helper runs on the server and no
+  forced command is involved. Verified with OpenSSH 9.6 on both ends against a real `sshd`; on
+  loopback a cold hello plus status took 234 ms and a warm one 16 ms p50 and 22.5 ms p95. A refused
+  channel reads as `remote_service_not_running`; when the target recorded a launcher, the client
+  runs `<launcher> service start` once over the master and retries. OpenSSH reports every refused
+  stream-local channel the same way (`open failed`, or `Session open refused by peer` through a
+  master), whether no service listens, sshd refuses stream-local forwarding, or the login user
+  cannot reach the socket (checked against OpenSSH 9.6). So when that start succeeds and the
+  channel is still refused, the client reports `remote_unreachable`, not a stopped service.
+- **macOS as a server.** Remote Login must be on. A service started from an SSH login runs outside
+  the desktop session: it cannot show the Touch ID dialog (`presence_unavailable`), so the owner
+  receipt view over SSH uses `--use-passphrase`, and the login keychain may be unavailable to it, in
+  which case the service starts `locked`. Starting the service from the desktop session avoids
+  both. AF_UNIX paths are limited to 104 bytes, which the short `t_<8 hex>` target ids respect.
+- **WSL 2 as a server.** The distribution stops when idle or on `wsl --shutdown`, taking the
+  service with it; with systemd enabled in `/etc/wsl.conf` lingering works as on Linux. Reaching
+  sshd inside WSL from another machine needs Windows port forwarding, which FinishUP does not set
+  up. State must stay on the distribution's own disk (see [Where state may live](#where-state-may-live)).
+- **WSL 2 as a client.** Use the Linux `ssh` and `ssh-agent` inside the distribution; the Windows
+  OpenSSH agent is not reachable from WSL without a bridge, and FinishUP neither installs nor uses
+  one. Native Windows remains unsupported.
+
 ## Setup and vault acceptance still owned by #737
 
 Use `setup status --next --operation local|review|connection` to identify the next prerequisite

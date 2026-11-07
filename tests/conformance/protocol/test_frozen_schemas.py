@@ -26,13 +26,19 @@ _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
-_EXPECTED_MEMBER_COUNT = 244  # #1239 +1 contact-expectation-declared 1.0.0;
+_EXPECTED_MEMBER_COUNT = (
+    254  # ADR-051 +1 version-manifest 2.4.0; #1239 +1 contact-expectation-declared 1.0.0;
+)
+# ADR-051 decision D4 +1 receipt-result 1.5.0 (the optional ``workspace_provenance`` member);
 # #1170 +1 result-recorded 1.1.0;
 # #1139 +4 lossless result-delivery schemas;
 # #1118 +1 reviewer-reply 1.0.0, +2 check-result/-recorded 1.6.0,
 # +1 privacy-policy 1.3.0;
-# #1119 +2 host-connection batch report and ai-status 1.0.0
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 57  # #1118 reviewer-reply; #1119 batch, ai-status
+# #1119 +2 host-connection batch report and ai-status 1.0.0;
+# ADR-051 +4 control envelopes 2.10.0, +1 isolation-report 1.1.0, +1 server-target-status 1.0.0,
+# +2 HTTPS binding v1 (rest-error 1.0.0, server-info 1.0.0)
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 60  # #1118 reviewer-reply; #1119 batch, ai-status;
+# ADR-051 server-target-status, rest-error, server-info
 _EXPECTED_EVENT_VERSION_COUNT = 30  # #1239 +1 contact-expectation-declared
 
 
@@ -218,6 +224,10 @@ def test_schema_registry_is_complete() -> None:
                 "consent/review-result-3.0.0.schema.json",
                 "consent/status-3.0.0.schema.json",
             }
+            else "2.10.0"
+            if path.endswith("-2.10.0.schema.json")
+            else "1.1.0"
+            if path == "service/isolation-report-1.1.0.schema.json"
             else "2.9.0"
             if path.endswith("-2.9.0.schema.json")
             else "2.8.0"
@@ -344,6 +354,7 @@ def test_schema_registry_is_complete() -> None:
                     "operations/read-guidance-result-1.1.0.schema.json",
                     "privacy/privacy-policy-1.1.0.schema.json",
                     "receipts/receipt-document-1.1.0.schema.json",
+                    "service/isolation-report-1.1.0.schema.json",
                 }
                 else "1.0.0"
             )
@@ -528,12 +539,23 @@ def test_released_version_manifest_2_2_1_retains_the_0_2_3_inventory() -> None:
     )
 
 
-def test_live_version_manifest_2_3_tracks_the_current_inventory() -> None:
-    from finishup.version import REVIEWED_RESOURCE_COUNT
+def test_released_version_manifest_2_3_retains_the_0_3_0_inventory() -> None:
+    """v0.3.0 shipped 2.3.0; the ADR-051 inventory is reported by 2.4.0 instead."""
 
     document = _version_manifest_document("2.3.0")
-
     assert document["properties"]["schema_version"]["const"] == "2.3.0"
+    assert int(_version_manifest_consts(document, "resource_counts")["total"]) == 342
+    requests = _version_manifest_consts(document, "request_result_schema_versions")
+    assert requests["control-hello"] == "2.9.0"
+    assert "server-target-status" not in requests
+
+
+def test_live_version_manifest_2_4_tracks_the_current_inventory() -> None:
+    from finishup.version import REVIEWED_RESOURCE_COUNT
+
+    document = _version_manifest_document("2.4.0")
+
+    assert document["properties"]["schema_version"]["const"] == "2.4.0"
     counts = _version_manifest_consts(document, "resource_counts")
     assert int(counts["total"]) == REVIEWED_RESOURCE_COUNT
     assert sum(int(count) for name, count in counts.items() if name != "total") == int(

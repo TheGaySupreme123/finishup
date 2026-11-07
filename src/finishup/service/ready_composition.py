@@ -80,6 +80,7 @@ from finishup.adapters.sqlite.project_operations import SqliteProjectOperationJo
 from finishup.adapters.sqlite.repository import SqliteLedger
 from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
 from finishup.adapters.task_input_read import (
+    ReadDeadline,
     read_declared_test,
     read_outside_inputs,
     snapshot_outside_inputs,
@@ -88,6 +89,7 @@ from finishup.application.check import SEMANTIC_EVALUATION_GAPS, FinalSemanticEv
 from finishup.application.check_change import (
     CheckChangeOutcome,
     CurrentInputReader,
+    CurrentInputsRead,
     OutsideInputReader,
     capture_check_time_change,
     check_change_shown_files,
@@ -154,6 +156,7 @@ from finishup.application.observation_advice_semantic import (
     observation_advice_to_candidate_context,
     reconcile_cancelled_advice_request,
 )
+from finishup.application.observation_claims import ClaimObservationRouter
 from finishup.application.observation_control import build_observation_support_handlers
 from finishup.application.observation_coordinator import ObservationCoordinator
 from finishup.application.observation_drain import (
@@ -271,6 +274,7 @@ from finishup.domain.privacy import (
     ReviewSelectionPolicy,
 )
 from finishup.domain.receipts import (
+    OUTSIDE_READS_NOT_LISTED_GAP,
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
@@ -306,6 +310,7 @@ from finishup.domain.values import (
 )
 from finishup.kernel.declared_checks import (
     DECLARED_TEST_ROOT,
+    MAX_DECLARED_TESTS,
     DeclaredTest,
     declared_test_candidates,
     declared_test_location,
@@ -417,6 +422,10 @@ from finishup.ports.start_catalog import (
     TaskRoute,
     TaskRouteState,
 )
+from finishup.ports.workspace_agent import (
+    OutsideInputsRead,
+    WorkspaceAgentUnavailable,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
@@ -463,6 +472,13 @@ from finishup.service.semantic_ceiling import (
     with_ceiling_planning_gap,
 )
 from finishup.service.vault import ProviderCredentialBinding, provider_credential_profile_binding
+from finishup.service.workspace_hub import WorkspaceAgentHub
+from finishup.service.workspace_routing import (
+    ClientWorkspaceReads,
+    RoutedObservationWorkspace,
+    WorkspaceRouting,
+    client_bound,
+)
 from finishup.version import build_version_manifest, version_manifest_json
 
 __all__ = [
@@ -2694,19 +2710,24 @@ def _bootstrap_seed_digest(installation_id: str, *, revision: str | None) -> str
 
 
 def _outside_input_reader(
-    roots: tuple[str, ...], protected: tuple[str, ...] = ()
+    roots: tuple[str, ...],
+    protected: tuple[str, ...] = (),
+    routing: WorkspaceRouting | None = None,
 ) -> OutsideInputReader:
     """The check-time reader of task inputs beneath the admitted outside roots (issue #1082).
 
     It never reads from the check's workspace or from ``protected`` (this service's own bundle
     and state directories), by path or by device and inode, even when an admitted root contains
-    them (PR #1086 review R1-02).
+    them (PR #1086 review R1-02). A claim-bound task's inputs are read on the client's machine by
+    its workspace agent, under the same roots and exclusions (ADR-051).
     """
 
     def read(
         values: tuple[str, ...], room: int, workspace: str, space_cut: frozenset[str]
-    ) -> tuple[TaskInputFile, ...]:
-        return read_outside_inputs(
+    ) -> tuple[TaskInputFile, ...] | OutsideInputsRead:
+        client = None if routing is None else routing.reads_for(workspace)
+        reader = read_outside_inputs if client is None else client.outside_inputs
+        return reader(
             roots, values, limit=room, excluded=(workspace, *protected), space_cut=space_cut
         )
 
@@ -2719,6 +2740,7 @@ async def _outside_inputs(
     selection: ReviewSelectionPolicy,
     excluded: tuple[str, ...],
     request_id: str,
+    routing: WorkspaceRouting | None = None,
 ) -> tuple[OutsideInputReader | None, tuple[TaskInputSnapshotSet, ...], CurrentInputReader | None]:
     """The check-time outside reader (#1082), the task's kept copies and the current-bytes reader
     (#1118 unit 1); none unless the owner admitted a root and the recipe carries task inputs.
@@ -2731,9 +2753,9 @@ async def _outside_inputs(
     if not roots:
         return None, (), None
     return (
-        _outside_input_reader(roots, excluded[1:]),
+        _outside_input_reader(roots, excluded[1:], routing),
         await load_input_snapshots(runtime, request_id),
-        _current_input_reader(roots, excluded),
+        _current_input_reader(roots, excluded, routing),
     )
 
 
@@ -2748,6 +2770,23 @@ def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tupl
     if not any(i.origin == "outside_workspace" and i.baseline == "current" for i in inputs):
         return tuple(gaps)
     return tuple(sorted({*gaps, TASK_INPUT_BASELINE_UNAVAILABLE_GAP}, key=str.encode))
+
+
+def _with_not_listed_gap(
+    gaps: Sequence[str], outcome: CheckChangeOutcome, declared_tests_not_listed: int
+) -> tuple[str, ...]:
+    """``gaps`` plus ``outside_reads_not_listed`` when a claim-bound task's agent kept files from
+    this server under its owner's listed mode (ADR-051 decision 5).
+
+    Either the check-time read left task-named inputs unread (frozen into the check change as
+    ``outside_inputs_not_listed``) or a declared test was refused (frozen into the job's case
+    object); a closed code with no path, so new and recovered jobs agree.
+    """
+
+    inputs = outcome.change is not None and outcome.change.capture.outside_inputs_not_listed
+    if not (inputs or declared_tests_not_listed):
+        return tuple(gaps)
+    return tuple(sorted({*gaps, OUTSIDE_READS_NOT_LISTED_GAP}, key=str.encode))
 
 
 def _with_oracle_directory_gap(
@@ -2768,13 +2807,21 @@ def _with_oracle_directory_gap(
     return tuple(sorted({*gaps, VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP}, key=str.encode))
 
 
-def _current_input_reader(roots: tuple[str, ...], excluded: tuple[str, ...]) -> CurrentInputReader:
-    """Whole current bytes of snapshot paths, to say whether each still matches (#1118 unit 1)."""
+def _current_input_reader(
+    roots: tuple[str, ...],
+    excluded: tuple[str, ...],
+    routing: WorkspaceRouting | None = None,
+) -> CurrentInputReader:
+    """Whole current bytes of snapshot paths, to say whether each still matches (#1118 unit 1).
 
-    def read(paths: tuple[str, ...]) -> dict[str, bytes | None]:
-        return {
-            row.path: row.text
-            for row in snapshot_outside_inputs(
+    ``excluded`` names the check's workspace first; a claim-bound one is read by its agent.
+    """
+
+    client = None if routing is None else routing.reads_excluding(excluded)
+
+    def read(paths: tuple[str, ...]) -> dict[str, bytes | None] | CurrentInputsRead:
+        if client is None:
+            rows = snapshot_outside_inputs(
                 roots,
                 paths,
                 limit=len(paths),
@@ -2782,8 +2829,21 @@ def _current_input_reader(roots: tuple[str, ...], excluded: tuple[str, ...]) -> 
                 seconds=MAX_SNAPSHOT_ADMISSION_SECONDS,
                 excluded=excluded,
             )
-            if row.reason != "unreadable"
-        }
+            return {row.path: row.text for row in rows if row.reason != "unreadable"}
+        # A claim-bound task's agent also names the kept paths its owner no longer lists for this
+        # server (ADR-051 decision 5): their copies are not sent.
+        answer = client.outside_snapshots(
+            roots,
+            paths,
+            limit=len(paths),
+            max_bytes=MAX_SNAPSHOT_FILE_BYTES,
+            seconds=MAX_SNAPSHOT_ADMISSION_SECONDS,
+            excluded=excluded,
+        )
+        return CurrentInputsRead(
+            {row.path: row.text for row in answer.reads if row.reason != "unreadable"},
+            frozenset(paths[index] for index in answer.unlisted if index < len(paths)),
+        )
 
     return read
 
@@ -3834,12 +3894,13 @@ def _execution_from_json(value: object) -> _SemanticExecution:
 async def _read_semantic_case(
     runtime: TaskRuntime,
     ref: ObjectRef,
-) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None]:
+) -> tuple[_SemanticExecution | None, str, str, object | None, str | None, object | None, int]:
     """The frozen execution, case identity and check-time change pointer of one job's case.
 
     The fifth value is the case digest of the check's own first review when this job is an
-    in-check follow-up round (issue #1047), else ``None``; the last the declared tests the job
-    pinned (issue #1220), else ``None``.
+    in-check follow-up round (issue #1047), else ``None``; the sixth the declared tests the job
+    pinned (issue #1220), else ``None``; the last how many declared tests a claim-bound task's
+    agent kept from the server under listed mode (ADR-051 decision 5), else 0.
     """
 
     from finishup.protocol.canonical import strict_json_parse
@@ -3876,6 +3937,15 @@ async def _read_semantic_case(
     # Absent on jobs created before ADR-031 or without a trusted workspace source: such a job
     # rebuilds its case without a check-time change, exactly as it was first built. The declared
     # tests (#1220) are absent on a job that pinned none, and it rebuilds without them.
+    # ADR-051 decision 5: how many declared tests a claim-bound task's agent kept back, written
+    # only when not zero.
+    not_listed = body.get("declared_tests_not_listed", 0)
+    if type(not_listed) is not int or not (
+        1 <= not_listed <= MAX_DECLARED_TESTS
+        if "declared_tests_not_listed" in body
+        else not_listed == 0
+    ):
+        raise ValueError("semantic_execution_invalid")
     return (
         execution,
         case_id,
@@ -3883,6 +3953,7 @@ async def _read_semantic_case(
         body.get("check_change"),
         base_digest,
         body.get("declared_tests"),
+        not_listed,
     )
 
 
@@ -3964,6 +4035,7 @@ async def _publish_semantic_case_object(
     execution: _SemanticExecution,
     check_change: CanonicalJsonValue | None = None,
     declared_tests: CanonicalJsonValue | None = None,
+    declared_tests_not_listed: int = 0,
 ) -> ObjectRef:
     """Persist a structural SEMANTIC_CASE object bound into the durable job row.
 
@@ -3986,6 +4058,10 @@ async def _publish_semantic_case_object(
         # #1220: the declared tests' paths and pinned digests, so recovery rebuilds the same case
         # without reading a file that may have changed since.
         body["declared_tests"] = declared_tests
+    if declared_tests_not_listed:
+        # ADR-051 decision 5: a count, written only when not zero, so every other case object
+        # keeps its bytes.
+        body["declared_tests_not_listed"] = declared_tests_not_listed
     payload = canonical_encode(cast(CanonicalJsonValue, body))
     staged = await runtime.objects.stage(
         ObjectSource(data=payload, declared_size=len(payload)),
@@ -4666,6 +4742,7 @@ def _task_input_counts(
     and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
     says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
     written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
+    What listed mode kept back has its own record (``_record_outside_not_listed``).
     """
 
     read = () if check_change.change is None else check_change.change.capture.inputs
@@ -4682,6 +4759,39 @@ def _task_input_counts(
         "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
     }
+
+
+def _outside_not_listed_count(
+    check_change: CheckChangeOutcome, declared_tests_not_listed: int
+) -> int:
+    """How many task-named inputs and declared tests a claim-bound task's agent kept back under
+    its owner's listed mode (ADR-051 decision 5), as frozen in the check change and the job's
+    case object: a count, never which, never a path."""
+
+    kept = (
+        0 if check_change.change is None else check_change.change.capture.outside_inputs_not_listed
+    )
+    return declared_tests_not_listed + kept
+
+
+def _record_outside_not_listed(request_id: str, count: int) -> None:
+    """Record ``semantic_task_inputs_outside_not_listed`` in its own diagnostic record.
+
+    ``semantic_outside_reads_not_listed`` (same request id as ``semantic_case_built``), written
+    only when listed mode kept something back. It is its own record because a diagnostic line is
+    at most 1,024 bytes and ``semantic_case_built`` is already at that bound: carried there, the
+    count pushed every case's record over it, and the sink dropped the whole record.
+    """
+
+    if not count:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_outside_reads_not_listed",
+        outcome="not_listed",
+        request_id=request_id,
+        counts={"semantic_task_inputs_outside_not_listed": count},
+    )
 
 
 def _outside_candidate_count(
@@ -4712,10 +4822,12 @@ def _outside_candidate_count(
 
 
 async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None:
-    """The absolute workspace path the task's session opened with, or ``None``.
+    """The absolute workspace path the task's session opened with, its handle, or ``None``.
 
     Issue #907: a repeated missing-item request anchors absolute paths the agent names to this
-    root. It is compared in process only, never recorded, logged or sent.
+    root. It is compared in process only, never recorded, logged or sent. A claim-bound task's
+    root is its ``client:`` handle (ADR-051): reads beneath it go to its workspace agent, and
+    nothing lexical treats it as a path (``_case_workspace_root``).
     """
 
     if runtime is None:
@@ -4724,10 +4836,24 @@ async def _workspace_root_for_runtime(runtime: TaskRuntime | None) -> str | None
         async for record in runtime.ledger.load_events(runtime.session_id):
             if isinstance(record.payload, SessionOpenedPayload):
                 root = record.payload.workspace_ref
-                return root if root is not None and os.path.isabs(root) else None
+                return (
+                    root
+                    if root is not None and (os.path.isabs(root) or client_bound(root))
+                    else None
+                )
     except Exception:
         return None
     return None
+
+
+def _case_workspace_root(root: str | None) -> str | None:
+    """The root the case builder may compare paths against: never a claim-bound handle.
+
+    The service does not know where a client's workspace lies, so no path in a claim-bound
+    task's content is placed inside or outside it lexically here.
+    """
+
+    return None if root is None or client_bound(root) else root
 
 
 def _observation_workspace_for_runtime(runtime: TaskRuntime) -> str | None:
@@ -5101,6 +5227,7 @@ async def _reviewer_read_roots(
     withheld: tuple[str, ...],
     change_capture: ChangeCapturePort | None,
     admitted_home_project: bool = False,
+    routing: WorkspaceRouting | None = None,
 ) -> tuple[ReadRoot, ...]:
     """The ``read_file`` roots a review may name (#1118): none where repository excerpts are
     withheld; else the workspace (Git-ignored paths refused) and, per owner-admitted outside root,
@@ -5112,6 +5239,8 @@ async def _reviewer_read_roots(
     ):
         return ()
     probe = getattr(change_capture, "probe_requested_paths", None)
+    # A claim-bound task's every root is read on the client's machine by its agent (ADR-051).
+    reads = None if routing is None else routing.reads_for(workspace_root)
 
     def ignored(path: str) -> bool:
         if not path:
@@ -5120,6 +5249,12 @@ async def _reviewer_read_roots(
             (found,) = cast(Callable[..., Sequence[RequestedPathProbe]], probe)(
                 workspace_root, (path,)
             )
+        except WorkspaceAgentUnavailable as exc:
+            if exc.reason in {"agent_refused", "agent_unavailable"}:
+                return True  # the agent answered that it cannot say: refused, as locally
+            # A claim-bound task's agent is gone: the review ends under that reason instead of
+            # judging around every read it could no longer make (ADR-051).
+            raise
         except Exception:  # noqa: BLE001 - an unanswerable ignore state refuses the read
             return True
         return found.ignored is not False
@@ -5136,15 +5271,32 @@ async def _reviewer_read_roots(
         )
     )
     statement = tuple(i.source_ref for i in case.items if i.section == "task_statement")
-    roots = [
-        ReadRoot(
-            "w1",
-            workspace_root,
-            excluded=protected,
-            subject_refs=evidence,
-            refuse=ignored if callable(probe) else (lambda _path: True),
-        )
-    ]
+    if reads is not None:
+        # The agent answers the ignored-path rule in batches within the reviewer's read budget:
+        # a listing costs one round trip per batch, never one per entry (ADR-051).
+        batched = reads.refused_paths
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=lambda path: path in batched((path,)),
+                refuse_many=batched,
+                reads=reads,
+            )
+        ]
+    else:
+        roots = [
+            ReadRoot(
+                "w1",
+                workspace_root,
+                excluded=protected,
+                subject_refs=evidence,
+                refuse=ignored if callable(probe) else (lambda _path: True),
+                reads=reads,
+            )
+        ]
     # Issue #1220: the declared tests the packet lists, by ref, wherever they were declared;
     # each read is pinned to the digest the packet lists. Never FinishUP's own directories.
     pinned = tuple(
@@ -5153,7 +5305,9 @@ async def _reviewer_read_roots(
         if (location := declared_test_location(test.path, workspace_root)) is not None
     )
     if pinned:
-        roots.append(ReadRoot(DECLARED_TEST_ROOT, "/", excluded=protected, pinned=pinned))
+        roots.append(
+            ReadRoot(DECLARED_TEST_ROOT, "/", excluded=protected, pinned=pinned, reads=reads)
+        )
     snapshots = await load_input_snapshots(runtime, request_id) if outside else ()
     for index, root in enumerate(outside, start=1):
         prefix = root.rstrip("/") + "/"
@@ -5169,6 +5323,7 @@ async def _reviewer_read_roots(
                 declared=declared,
                 excluded=excluded,
                 subject_refs=statement,
+                reads=reads,
             )
         )
         kept = next((s for s in snapshots if any(f.path.startswith(prefix) for f in s.files)), None)
@@ -5198,6 +5353,10 @@ def _file_reads_offered(
     # A public start's workspace_ref is a task selector, not read authority. HOME reads
     # require the current connection's selected locator and task repository binding below;
     # a claimed HOME in session history must never acquire the service adapter's exception.
+    # A claim-bound handle is never this service's HOME: the client's agent applies its own
+    # home-directory fences to every read it answers (ADR-051).
+    if client_bound(workspace_root):
+        return True
     return Path(workspace_root) != Path.home() or admitted_home_project
 
 
@@ -5225,24 +5384,44 @@ def _small_review_channel(
 
 
 def _pin_declared_tests(
-    case: DeterministicCase, workspace_root: str | None, excluded: tuple[str, ...]
-) -> tuple[DeclaredTest, ...]:
-    """The declared test files that are readable now, each with the digest of its bytes (#1220).
+    case: DeterministicCase,
+    workspace_root: str | None,
+    excluded: tuple[str, ...],
+    reads: ClientWorkspaceReads | None = None,
+) -> tuple[tuple[DeclaredTest, ...], int]:
+    """The declared test files that are readable now, each with the digest of its bytes (#1220),
+    and how many a claim-bound task's agent kept from this server under listed mode.
 
     The candidates are the frozen case's own (``declared_test_candidates``); a file refused by
     shape, missing, unreadable, binary or over 1 MiB is not listed. Nothing read here enters the
-    case but the digest.
+    case but the digest. ``reads`` is a claim-bound task's agent (ADR-051); a test it could not
+    reach is not listed, as for a local file that could not be read. One it refused as
+    ``root_not_admitted`` exists but lies beyond what its owner listed for this server (ADR-051
+    decision 5): not listed either, and reported, so the check discloses
+    ``outside_reads_not_listed`` with the owner's ways out. Blocking: run it in a worker thread.
     """
 
     statement = None if case.task_statement is None else case.task_statement.text
     tests: list[DeclaredTest] = []
+    not_listed = 0
     for candidate in declared_test_candidates(case.projection, statement):
         location = declared_test_location(candidate.path, workspace_root)
         if location is None or scan_for_sensitive_content(candidate.path.encode()):
             # The path travels in the envelope: one that looks like a secret is not listed, so it
             # can never block the whole review at the egress scan.
             continue
-        data = read_declared_test(location, excluded=excluded)
+        if reads is None:
+            data = read_declared_test(location, excluded=excluded)
+        else:
+            try:
+                data = reads.declared_test(location, excluded=excluded)
+            except WorkspaceAgentUnavailable as exc:
+                not_listed += (
+                    exc.reason == "agent_refused" and exc.agent_reason == "root_not_admitted"
+                )
+                data = None
+            except ReadDeadline:
+                data = None
         if data is None:
             continue
         tests.append(
@@ -5255,7 +5434,7 @@ def _pin_declared_tests(
                 candidate.expected_from,
             )
         )
-    return tuple(tests)
+    return tuple(tests), not_listed
 
 
 def _record_case_narrowing(
@@ -5297,6 +5476,21 @@ def _record_case_narrowing(
     )
 
 
+def _record_case_side_counts(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    case: SemanticCase,
+    outside_not_listed: int,
+) -> None:
+    """The records beside ``semantic_case_built`` that its line bound leaves no room for: the
+    case's narrowing (#1245) and what listed mode kept back (ADR-051 decision 5), each written
+    only when there is something to say."""
+
+    _record_case_narrowing(request_id, ceiling_rounds, approved, case)
+    _record_outside_not_listed(request_id, outside_not_listed)
+
+
 def _privacy_gated_semantic_evaluator(
     privacy: PrivacyCoordinator,
     clock: ClockPort,
@@ -5317,6 +5511,7 @@ def _privacy_gated_semantic_evaluator(
     attention: SemanticAttentionTracker | None = None,
     change_capture: ChangeCapturePort | None = None,
     protected_directories: tuple[str, ...] = (),
+    workspace_routing: WorkspaceRouting | None = None,
 ):
     total_timeout = float(max(1, min(int(timeout_seconds), 3600)))
     # The fallback endpoint owns its own deadline share (#582): a primary that spends its whole
@@ -5544,6 +5739,7 @@ def _privacy_gated_semantic_evaluator(
             recovered_case_digest: str | None = None
             recovered_check_change: object | None = None
             recovered_declared_tests: object | None = None
+            recovered_declared_tests_not_listed = 0
             if runtime is not None:
                 job = await runtime.ledger.load_semantic_job(
                     frozen.lease.writer_id, frozen.lease.operation_id
@@ -5556,6 +5752,7 @@ def _privacy_gated_semantic_evaluator(
                         recovered_check_change,
                         base_case_digest,
                         recovered_declared_tests,
+                        recovered_declared_tests_not_listed,
                     ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if base_case_digest is not None:
                         # An in-check follow-up job (issue #1047): the check's own review job is
@@ -5574,6 +5771,7 @@ def _privacy_gated_semantic_evaluator(
                             recovered_check_change,
                             _,
                             recovered_declared_tests,
+                            recovered_declared_tests_not_listed,
                         ) = await _read_semantic_case(runtime, job.case_object_ref)
                     if execution is None:
                         return await _finish_legacy_semantic_job(
@@ -5693,7 +5891,9 @@ def _privacy_gated_semantic_evaluator(
                                 max(16, review_selection.max_excerpts * 16),
                             ),
                             max_total_bytes=MAX_CAPTURED_SEMANTIC_INPUT_BYTES,
-                            workspace_root=await _workspace_root_for_runtime(runtime),
+                            workspace_root=_case_workspace_root(
+                                await _workspace_root_for_runtime(runtime)
+                            ),
                         )
                         captured_content = captured_resolution.content
                         captured_content_scope = captured_resolution.scope
@@ -5736,6 +5936,7 @@ def _privacy_gated_semantic_evaluator(
                             review_selection,
                             (workspace_source.workspace, *protected_directories),
                             frozen.lease.operation_id,
+                            workspace_routing,
                         )
                         check_change = await capture_check_time_change(
                             runtime=runtime,
@@ -5816,6 +6017,9 @@ def _privacy_gated_semantic_evaluator(
             # Never on a channel no larger than the minimal policy's (PR #1221 review): nothing is
             # read or planned, so such a review is byte-identical to one without declared tests.
             declared_tests: tuple[DeclaredTest, ...] = ()
+            # ADR-051 decision 5: a claim-bound task's agent kept a declared test from this
+            # server under listed mode; frozen into the job's case object, so recovery agrees.
+            declared_tests_not_listed = recovered_declared_tests_not_listed
             if job is not None:
                 declared_tests = declared_tests_from_json(recovered_declared_tests)
             elif (
@@ -5837,9 +6041,20 @@ def _privacy_gated_semantic_evaluator(
                     if binding is not None
                 )
             ):
-                declared_tests = _pin_declared_tests(
-                    frozen.case, workspace_root, protected_directories
+                # Off the event loop: each test is read whole, and a claim-bound task's tests are
+                # read by its workspace agent, whose reply this loop delivers (ADR-051).
+                declared_tests, declared_tests_not_listed = await asyncio.to_thread(
+                    _pin_declared_tests,
+                    frozen.case,
+                    workspace_root,
+                    protected_directories,
+                    None
+                    if workspace_routing is None
+                    else workspace_routing.reads_for(workspace_root),
                 )
+            captured_content_gaps = _with_not_listed_gap(
+                captured_content_gaps, check_change, declared_tests_not_listed
+            )
 
             def build_case(
                 selection: ReviewSelectionPolicy,
@@ -5860,7 +6075,7 @@ def _privacy_gated_semantic_evaluator(
                     captured_content_scope=captured_content_scope,
                     captured_content_gaps=gaps,
                     prepared_byte_ceiling=_semantic_prepared_byte_ceiling(policy),
-                    workspace_root=workspace_root,
+                    workspace_root=_case_workspace_root(workspace_root),
                     check_time_change=check_change.change,
                     check_time_change_unavailable=check_change.unavailable,
                     check_time_change_unavailable_reason=check_change.reason,
@@ -5884,6 +6099,7 @@ def _privacy_gated_semantic_evaluator(
                     withheld=withheld,
                     change_capture=change_capture,
                     admitted_home_project=_admitted_home_project(workspace_root, repository),
+                    routing=workspace_routing,
                 )
 
             try:
@@ -6023,11 +6239,12 @@ def _privacy_gated_semantic_evaluator(
                     ),
                 },
             )
-            _record_case_narrowing(
+            _record_case_side_counts(
                 frozen.lease.operation_id,
                 ceiling_rounds,
                 review_selection,
                 semantic_case,
+                _outside_not_listed_count(check_change, declared_tests_not_listed),
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then
@@ -6172,7 +6389,7 @@ def _privacy_gated_semantic_evaluator(
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
-                    case_workspace_root=workspace_root,
+                    case_workspace_root=_case_workspace_root(workspace_root),
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
                     case_excerpt_refs=sent_excerpt_content_refs(
@@ -6231,6 +6448,7 @@ def _privacy_gated_semantic_evaluator(
                         if declared_tests
                         else None
                     ),
+                    declared_tests_not_listed=declared_tests_not_listed,
                 )
                 job = await runtime.ledger.enqueue_semantic_job(
                     frozen.lease,
@@ -6616,7 +6834,7 @@ def _privacy_gated_semantic_evaluator(
                     case_captured_edit_paths=packet_edit_paths,
                     case_binary_paths=packet_binary_paths,
                     case_text_paths=packet_text_paths,
-                    case_workspace_root=workspace_root,
+                    case_workspace_root=_case_workspace_root(workspace_root),
                     check_change_files=check_change_files,
                     continuation=continuation,
                     reviewer=reviewer,
@@ -6908,8 +7126,13 @@ async def provide_service_ready_context(
     diagnostics: DiagnosticsPort | None = None,
     observation_gate: asyncio.Lock | None = None,
     startup_bundle_upgrade: _StartupBundleUpgrade | None = None,
+    workspace_hub: WorkspaceAgentHub | None = None,
 ) -> ServiceReadyContext:
-    """Compose one generation-bound ready application context."""
+    """Compose one generation-bound ready application context.
+
+    ``workspace_hub`` reaches the workspace agents of claim-bound connections (ADR-051); every
+    workspace read of a claim-bound task goes there, never to this machine's disk.
+    """
 
     if not vault.ready or vault.generation != vault_generation:
         raise ControlError("vault_locked", retryable=True)
@@ -7456,8 +7679,12 @@ async def provide_service_ready_context(
             ),
         )
 
-    # One read-only Git adapter serves both the task-start base and the check-time change.
-    change_capture = GitChangeCaptureAdapter(admitted_home_project=True)
+    # One read-only Git adapter serves both the task-start base and the check-time change; a
+    # claim-bound task's workspace is read by its client's agent instead (ADR-051).
+    workspace_routing = WorkspaceRouting.compose(
+        workspace_hub, GitChangeCaptureAdapter(admitted_home_project=True)
+    )
+    change_capture = workspace_routing.change_capture
     if not semantic_configured:
         semantic_evaluator = _semantic_not_configured
     elif not provider_endpoint_bound:
@@ -7486,6 +7713,7 @@ async def provide_service_ready_context(
             change_capture=change_capture,
             # The service's own data is never an outside-workspace task input (#1086 R1-02).
             protected_directories=(str(paths.bundle), str(paths.state)),
+            workspace_routing=workspace_routing,
         )
 
     # attempt_id -> (physical request identity, provider identity) of the single in-flight
@@ -8302,11 +8530,34 @@ async def provide_service_ready_context(
         observed_quiet_hook=observed_quiet_period(catalog, lineage),
         capture_budget_bootstrap=bootstrap_capture_reservations,
         capture_handoff_reconcile=reconcile_capture_handoffs,
+        # A claim-bound workspace's verification reads go to its client's agent (ADR-051).
+        workspace_access=RoutedObservationWorkspace(workspace_hub),
     )
     if advice_semantic_enabled:
         advice_semantic_supervisor.set_revisit_handler(
             observation_coordinator.revisit_advice_semantic
         )
+
+    def claim_observation_coordinator(
+        handle: str, claim_store: LocalObservationStore, claim_state: Path
+    ) -> ObservationCoordinator:
+        # A claim-bound connection's rows run the same coordinator over that claim's own
+        # client-attested store (ADR-051 decision 12). The capture-budget bootstrap reads this
+        # machine's own store, so a claim composes none: its store never requires one.
+        return replace(
+            observation_coordinator,
+            local=claim_store,
+            state_root=claim_state,
+            capture_budget_bootstrap=None,
+            client_workspace_handle=handle,
+        )
+
+    claim_observation = ClaimObservationRouter(
+        state_root=paths.state,
+        coordinator_for=claim_observation_coordinator,
+        resolve_route=catalog.resolve_route,
+        observation_enabled=config.observation.enabled,
+    )
     observation_sweeper = ObservationOutboxSweeper(
         local_observation,
         observation_coordinator,
@@ -8372,6 +8623,7 @@ async def provide_service_ready_context(
     def close_observation_maintenance() -> None:
         legacy_spool_forwarder.close()
         observation_sweeper.close()
+        claim_observation.close()
         observation_coordinator.close()
 
     async def refresh_ready_recommendations() -> object:
@@ -8387,7 +8639,9 @@ async def provide_service_ready_context(
         )
         return await refresh_pending(context=context, root=paths.state)
 
-    observation_handlers = build_observation_support_handlers(observation_coordinator)
+    observation_handlers = build_observation_support_handlers(
+        observation_coordinator, claims=claim_observation
+    )
     support_handlers: dict[ControlMethod, Callable[..., Awaitable[JsonObject]]] = dict(
         cast(Mapping[ControlMethod, Callable[..., Awaitable[JsonObject]]], observation_handlers)
     )
@@ -8492,7 +8746,10 @@ async def provide_service_ready_context(
         """
 
         locator = context.workspace_locator
-        if privacy_application is None or locator is None:
+        # A claim-bound task's inputs are read by its client's agent beneath the same roots,
+        # excluding the claimed workspace by its handle (ADR-051).
+        handle = context.workspace_handle if context.identity_kind == "client_claim" else None
+        if privacy_application is None or (locator is None and handle is None):
             return None
         scope = AuthorizationScope(
             AuthorizationScopeKind.TASK, installation_id, context.commitment, task_id
@@ -8501,6 +8758,13 @@ async def provide_service_ready_context(
         roots = snapshot_roots(policy, carries_task_inputs(review_selection_for_delivery(policy)))
         if not roots:
             return None
+        if handle is not None:
+            client = workspace_routing.reads_for(handle)
+            assert client is not None  # a handle always routes to its agent
+            return InputSnapshotScope(
+                roots, (handle, str(paths.bundle), str(paths.state)), client.snapshot_outside_inputs
+            )
+        assert locator is not None
         return InputSnapshotScope(
             roots, (locator.path, str(paths.bundle), str(paths.state)), snapshot_outside_inputs
         )
@@ -8574,6 +8838,7 @@ def build_ready_application_factory(
     diagnostics: DiagnosticsPort | None = None,
     observation_gate: asyncio.Lock | None = None,
     startup_bundle_upgrade: _StartupBundleUpgrade | None = None,
+    workspace_hub: WorkspaceAgentHub | None = None,
 ) -> ReadyApplicationFactory:
     upgrade = startup_bundle_upgrade
     if upgrade is None:
@@ -8601,5 +8866,6 @@ def build_ready_application_factory(
             diagnostics=diagnostics,
             observation_gate=observation_gate,
             startup_bundle_upgrade=upgrade,
+            workspace_hub=workspace_hub,
         )
     )

@@ -5,6 +5,17 @@ is [`docs/protocol/data-egress-and-privacy.md`](../protocol/data-egress-and-priv
 [ADR-009](../adr/ADR-009-data-egress-privacy.md). This page is the operator's view: what the
 defaults are, and what changes when you turn something on.
 
+Throughout this page, "your machine" is the machine that runs your FinishUP service. If you use a
+[FinishUP server](servers.md) on another machine, the policy, records and receipts described here
+live on that server, and what travels to it is listed under
+[What leaves this computer](servers.md#what-leaves-this-computer). With such a server chosen,
+`finishup privacy tighten`, `finishup privacy propose` and the privacy step of `finishup setup`
+change that server's policy, and each says so before and after, naming the server by its id and
+kind. A change that sends more waits for `finishup privacy decide-policy` with the proposal's id
+on the server's own machine; FinishUP prints that exact command and the time (UTC, about five
+minutes away) after which the proposal expires unchanged and you can make the change again. See
+[Whose privacy policy a command changes](servers.md#whose-privacy-policy-a-command-changes).
+
 ## Two defaults, deliberately separate
 
 An unconfigured installation is **external-LLM-egress-free and local-only**. No task content
@@ -311,9 +322,16 @@ does not prove the reviewer read every outside file the task named.
 
 The note never names the path, never stops your agent or asks it to change the work, and never
 lowers the receipt's conclusion; your agent tells you which folder the task named. Only you can let
-review read it, with `finishup privacy input-roots add <folder>` on this terminal. Copying the file
-into the workspace does not help: a file that appears during the task is your agent's work, not a
-task input.
+review read it, with `finishup privacy input-roots add <folder>` in a terminal on the computer
+FinishUP's service runs on. With FinishUP on this computer, that is here. With a server on another
+machine, it is that server's machine, in the project's folder there, and the folder must exist
+there too: a folder that exists only on this computer cannot be admitted for such a server yet
+(see [Servers](servers.md)). Copying the file into the workspace does not help: a file that
+appears during the task is your agent's work, not a task input.
+
+On a server on another machine, a file review could not read for another reason, because you have
+not listed its folder for that server, is reported as `outside_reads_not_listed` instead, with
+the commands that let it read there.
 
 ## Commands
 
@@ -334,9 +352,9 @@ ends that review exchange unavailable. Images observed only by digest in your ho
 finishup --privacy                 # the AI-powered review options or the recommended policy (below)
 finishup privacy setup             # equivalent guided policy review
 finishup privacy show              # current effective policy
-finishup privacy tighten           # tighten (proceeds through gates)
-finishup privacy propose           # propose a change for decision
-finishup privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
+finishup privacy tighten           # tighten (proceeds through gates); names a chosen server
+finishup privacy propose           # propose a change for decision; names a chosen server
+finishup privacy decide-policy ID  # approve or deny one exact pending policy proposal on the terminal (on the server's machine)
 finishup privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
 finishup privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
 finishup privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository

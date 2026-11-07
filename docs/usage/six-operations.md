@@ -178,7 +178,9 @@ check; without the option nothing changes.
 
 `"mode": "inspect"` asks FinishUP to look at its own record instead of checking it. It is a read like
 `status`: nothing is recorded, no finding is returned or created, no AI-powered review runs and
-nothing leaves your machine, so a lost answer is fixed by asking again. Your agent host still sees
+nothing leaves your machine (when you use a [FinishUP server](servers.md) on another machine, only
+the request and its answer travel to and from that server), so a lost answer is fixed by asking
+again. Your agent host still sees
 a `check` call and approves it as it approves any check (host admission of `check` covers it); if
 the host holds or refuses an inspection, nothing is waiting in FinishUP and your agent reads `status`
 instead. One call answers three questions:

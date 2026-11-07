@@ -148,7 +148,7 @@ async def test_the_reviewer_reads_a_declared_test_outside_the_workspace(
     stored = await ready_composition_module._read_semantic_case(  # pyright: ignore[reportPrivateUsage]
         runtime, job.case_object_ref
     )
-    assert stored[-1] == listed
+    assert stored[5] == listed and stored[6] == 0
 
 
 async def test_a_declared_test_changed_after_it_was_listed_is_not_sent(
@@ -402,4 +402,4 @@ async def test_the_agent_tag_rides_the_entry_and_the_verdict_reaches_the_check(
     stored = await ready_composition_module._read_semantic_case(  # pyright: ignore[reportPrivateUsage]
         runtime, job.case_object_ref
     )
-    assert stored[-1] == listed
+    assert stored[5] == listed and stored[6] == 0

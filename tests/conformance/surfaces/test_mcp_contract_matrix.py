@@ -309,8 +309,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:9d602539114cc0b0b689f589ee7b85249742b58b78ed603a309fc83143ab9efc",
-        "strict": "sha256:5a504aa5d9c0665a7ab41a5cded235d547e876241766785c4e483f991e1b360d",
+        "policy": "sha256:fb2a3250c76b3cc02dbc28974aef6d2c64287e34f43b08130f318be1a94922cc",
+        "strict": "sha256:abc6b61032ff3e339ee3dede09bb7fb48452830dff0d88c800cddac8387381f0",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -374,7 +374,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert status_descriptor.input_schema_ref.endswith("status-request-1.3.0.schema.json")
     assert status_descriptor.output_schema_ref.endswith("status-result-1.5.0.schema.json")
     receipt_descriptor = descriptor_for("receipt")
-    assert receipt_descriptor.output_schema_ref.endswith("receipt-result-1.4.0.schema.json")
+    # ADR-051 decision D4: 1.5.0 adds the optional ``workspace_provenance`` member.
+    assert receipt_descriptor.output_schema_ref.endswith("receipt-result-1.5.0.schema.json")
     closure_descriptor = descriptor_for("closure_prepare")
     assert closure_descriptor.input_schema_ref.endswith("closure-prepare-request-1.0.0.schema.json")
     assert closure_descriptor.output_schema_ref.endswith("closure-prepare-result-1.0.0.schema.json")

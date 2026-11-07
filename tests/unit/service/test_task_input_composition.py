@@ -8,8 +8,15 @@ closed coverage code ``task_input_outside_not_admitted`` from the frozen case al
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
+from typing import cast
 
+import pytest
+
+import finishup.observability.diagnostics as diagnostics_module
 from finishup.application.check import SEMANTIC_EVALUATION_GAPS
 from finishup.application.check_change import CheckChangeOutcome
 from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
@@ -31,6 +38,8 @@ _review_inputs = ready_composition._review_inputs  # pyright: ignore[reportPriva
 _outside_not_admitted = ready_composition._outside_not_admitted  # pyright: ignore[reportPrivateUsage]
 _task_input_counts = ready_composition._task_input_counts  # pyright: ignore[reportPrivateUsage]
 _outside_candidate_count = ready_composition._outside_candidate_count  # pyright: ignore[reportPrivateUsage]
+_outside_not_listed_count = ready_composition._outside_not_listed_count  # pyright: ignore[reportPrivateUsage]
+_record_outside_not_listed = ready_composition._record_outside_not_listed  # pyright: ignore[reportPrivateUsage]
 
 _EXPANDED = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 _OUTSIDE = "/shared/legacy app/main.c"
@@ -94,8 +103,44 @@ def test_the_task_input_counters_are_counts_only() -> None:
         "semantic_task_inputs_outside_not_admitted": 1,
     }
     assert all(type(value) is int for value in counts.values())
+    # ADR-051 decision 5: the task inputs and the declared tests the agent kept back, counted
+    # for their own record, never on ``semantic_case_built``.
+    assert _outside_not_listed_count(CheckChangeOutcome(change=change), 0) == 0
+    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=2))
+    assert _outside_not_listed_count(CheckChangeOutcome(change=listed), 1) == 3
+    assert _outside_not_listed_count(CheckChangeOutcome(), 2) == 2
     empty = _task_input_counts(((), frozenset()), CheckChangeOutcome(), _build(case), False)
     assert set(empty.values()) == {0}
+
+
+def _records(root: Path) -> list[Mapping[str, object]]:
+    path = diagnostics_module.diagnostic_log_path(root=root)
+    if not path.exists():
+        return []
+    return [
+        cast(Mapping[str, object], json.loads(line))
+        for line in path.read_text(encoding="ascii").splitlines()
+        if line
+    ]
+
+
+def test_what_listed_mode_kept_back_has_its_own_record_within_the_line_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051 decision 5: the count is its own durable record, beside ``semantic_case_built``
+    (which is already at the 1,024-byte line bound), and only when something was kept back."""
+
+    monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
+    _record_outside_not_listed("req_53000000-0000-4000-8000-000000000001", 0)
+    assert _records(tmp_path) == []
+
+    _record_outside_not_listed("req_53000000-0000-4000-8000-000000000001", 3)
+    [row] = _records(tmp_path)
+    assert row["operation"] == "semantic_outside_reads_not_listed"
+    assert row["component"] == "semantic_composition"
+    assert row["reason"] == "not_listed"
+    assert row["request_id"] == "req_53000000-0000-4000-8000-000000000001"
+    assert row["semantic_task_inputs_outside_not_listed"] == 3
 
 
 def test_the_outside_candidate_counter_tells_undecided_from_none_named() -> None:

@@ -198,6 +198,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/operations/receipt-result-1.5.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/operations/status-request-1.3.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -465,7 +471,31 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "fixtures/canonical/control-hello-claim-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-hello-locator-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-hello-result-claim-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/control-native-capture-2.5.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-observation-ingest-attested-2.10.case.json",
         "canonical_vector",
         "application/json",
         True,
@@ -484,6 +514,24 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "fixtures/canonical/control-project-policy-2.7.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-git-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-observation-2.10.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
+        "fixtures/canonical/control-workspace-reads-2.10.case.json",
         "canonical_vector",
         "application/json",
         True,
@@ -1863,7 +1911,55 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/service/control-hello-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-hello-result-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-request-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/control-result-2.10.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/service/isolation-report-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/isolation-report-1.1.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/rest-error-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/server-info-1.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/service/server-target-status-1.0.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,
@@ -1894,6 +1990,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/version/version-manifest-2.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/version/version-manifest-2.4.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

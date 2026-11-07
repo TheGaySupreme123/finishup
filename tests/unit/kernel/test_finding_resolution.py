@@ -3233,6 +3233,8 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         "task_input_baseline_unavailable": (False, True),
         # #1118 unit 4 (AIP-2): an oracle left out for an unresolvable directory; same terms.
         "verification_input_directory_unresolved": (False, True),
+        # ADR-051 decision 5: files a remote server's listed mode kept from review; same terms.
+        "outside_reads_not_listed": (False, True),
     }
     # Structural test-edit accounting (ADR-032, #961) is decided by kind rather than baseline: the
     # standing accounting limits bound only ``task_requirement_unmet``, while the actionable

@@ -185,8 +185,8 @@ def _version_manifest_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     # owning ripple mirrors the enlarged inventory, then rebuilds this schema in the same
     # pass and verifies a fixed point before reporting success.
     destination = source.parents[1] / entry.relative_path
-    if entry.schema_version == "2.3.0" and not destination.exists():
-        document = _load_versioned_template(entry, "version/version-manifest-2.2.4.schema.json")
+    if entry.schema_version == "2.4.0" and not destination.exists():
+        document = _load_versioned_template(entry, "version/version-manifest-2.3.0.schema.json")
         cast(dict[str, JsonValue], document["properties"])["schema_version"] = {
             "const": entry.schema_version
         }
@@ -7902,6 +7902,57 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """ADR-051 decision D4: 1.4.0 plus the optional ``workspace_provenance`` member.
+
+    1.4.0 shipped in v0.3.0, so it is never amended; a 1.4.0 reader keeps rejecting the member.
+    The member is present, on every receipt format, exactly when the record that opened the
+    task's session could not be read or could not say whether the task is claim-bound. Its
+    ``status``, ``reason`` and ``notice`` admit only the fixed values of
+    ``finishup.domain.workspace_provenance``: nothing user-controlled. ``reason`` names the cause,
+    and so whether it can pass or lasts, and ``oneOf`` pairs each reason with its own notice, so a
+    reader that validates by schema alone admits no notice beside another reason's token.
+    """
+
+    from finishup.domain.workspace_provenance import (
+        WORKSPACE_PROVENANCE_REASONS,
+        WORKSPACE_PROVENANCE_UNKNOWN,
+        workspace_provenance_unknown_notice,
+    )
+
+    document = _load_versioned_template(entry, "operations/receipt-result-1.4.0.schema.json")
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    success = cast(dict[str, JsonValue], definitions["success"])
+    properties = cast(dict[str, JsonValue], success["properties"])
+    if "workspace_provenance" in properties:
+        raise SchemaGenerationError(
+            "receipt_result_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    notices = [
+        workspace_provenance_unknown_notice(reason) for reason in WORKSPACE_PROVENANCE_REASONS
+    ]
+    properties["workspace_provenance"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "reason": {"const": reason},
+                },
+            }
+            for reason, notice in zip(WORKSPACE_PROVENANCE_REASONS, notices, strict=True)
+        ],
+        "properties": {
+            "notice": {"enum": cast(list[JsonValue], notices), "type": "string"},
+            "reason": {"enum": list(WORKSPACE_PROVENANCE_REASONS), "type": "string"},
+            "status": {"const": WORKSPACE_PROVENANCE_UNKNOWN, "type": "string"},
+        },
+        "required": ["status", "reason", "notice"],
+        "type": "object",
+    }
+    return document
+
+
 def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     document = _simple_versioned_schema(
         entry,
@@ -9981,6 +10032,325 @@ def _control_v2_9_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         _admit_privacy_audit_unreadable(entry, definitions)
         _admit_control_error_phase(entry, definitions)
     return _admit_privacy_policy_v1_2(document)
+
+
+def _control_v2_10_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """Extend frozen 2.9 with workspace claims and the workspace-agent frames (ADR-051).
+
+    ``control-hello`` gains two optional members: ``workspace_claim``, a client's keyed claim on
+    its workspace sent in place of ``workspace_locator`` (the service refuses a hello carrying
+    both with ``workspace_binding_conflict``; the schema leaves that check to the handshake so the
+    refusal keeps its own reason), with the keyed ``worktree`` digest that gives each linked
+    worktree of one repository its own workspace handle, and ``workspace_agent``, the catalog
+    operations the connection answers. ``control-hello-result`` gains ``workspace_binding`` and ``workspace_handle``; the
+    binding is on every admitted session's answer and absent only from the manifest-mismatch
+    answer, which keeps the frozen pre-2.10 shape so an older peer still reads it and names
+    ``manifest_mismatch`` (#436). A hello-result that carries ``workspace_handle`` must carry
+    ``workspace_binding: "client_claim"``, as the client's handshake requires; the schema cannot
+    tell an admitted answer from the mismatch answer, so the client, not the schema, requires the
+    binding on every admitted answer. ``control-result`` gains the server-to-client
+    ``workspace_call`` frame and ``control-request`` the client-to-server ``workspace_reply``;
+    their ``arguments`` and ``result`` are the catalog codecs of
+    ``finishup.ports.workspace_agent``, which owns each operation's exact shape and byte bound.
+    """
+
+    from finishup.ports.workspace_agent import (
+        MAX_WORKSPACE_DEADLINE_MS,
+        MAX_WORKSPACE_FRAME_BYTES,
+        WORKSPACE_FAILURE_REASONS,
+        WORKSPACE_OPERATION_NAMES,
+        WORKSPACE_REFUSAL_REASONS,
+        WORKSPACE_UNAVAILABLE_REASONS,
+    )
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "schemas"
+        / entry.relative_path.replace("2.10.0", "2.9.0")
+    )
+    # ADR-051 decision D4 (in place on the unreleased 2.10.0): the receipt bodies it carries are
+    # receipt-result 1.5.0, which adds the optional ``workspace_provenance`` member.
+    document = cast(
+        dict[str, JsonValue],
+        json.loads(
+            source.read_bytes().replace(
+                b"operations/receipt-result-1.4.0.schema.json",
+                b"operations/receipt-result-1.5.0.schema.json",
+            )
+        ),
+    )
+    document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
+    rpc_id: dict[str, JsonValue] = {
+        "maxLength": 40,
+        "minLength": 40,
+        "pattern": "^rpc_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+    }
+    operations = cast(list[JsonValue], list(WORKSPACE_OPERATION_NAMES))
+    if entry.schema_name == "control-hello":
+        properties = cast(dict[str, JsonValue], document["properties"])
+        if "workspace_locator" not in properties or "workspace_claim" in properties:
+            raise SchemaGenerationError(
+                "control_hello_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        properties["workspace_claim"] = {
+            "additionalProperties": False,
+            "properties": {
+                "digest": {
+                    "maxLength": 71,
+                    "minLength": 71,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string",
+                },
+                "identity_kind": {"enum": ["directory", "git_common_root"], "type": "string"},
+                "schema_version": {"const": "1.0.0"},
+                "worktree": {
+                    "maxLength": 71,
+                    "minLength": 71,
+                    "pattern": "^sha256:[0-9a-f]{64}$",
+                    "type": "string",
+                },
+            },
+            "required": ["schema_version", "identity_kind", "digest", "worktree"],
+            "type": "object",
+        }
+        properties["workspace_agent"] = {
+            "additionalProperties": False,
+            "properties": {
+                "max_reply_bytes": {
+                    "maximum": MAX_WORKSPACE_FRAME_BYTES,
+                    "minimum": 1,
+                    "type": "integer",
+                },
+                "operations": {
+                    "items": {"enum": operations, "type": "string"},
+                    "maxItems": len(operations),
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": True,
+                },
+                "schema_version": {"const": "1.0.0"},
+            },
+            "required": ["schema_version", "operations", "max_reply_bytes"],
+            "type": "object",
+        }
+    elif entry.schema_name == "control-hello-result":
+        properties = cast(dict[str, JsonValue], document["properties"])
+        if "allowed_methods" not in properties or "workspace_binding" in properties:
+            raise SchemaGenerationError(
+                "control_hello_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        properties["workspace_binding"] = {
+            "enum": ["client_claim", "local_path", "none"],
+            "type": "string",
+        }
+        properties["workspace_handle"] = {
+            "maxLength": 23,
+            "minLength": 23,
+            "pattern": "^client:[0-9a-f]{16}$",
+            "type": "string",
+        }
+        # A handle names a claimed workspace, so it rides only a ``client_claim`` binding. The
+        # manifest-mismatch answer carries neither member and stays valid.
+        if "if" in document or "then" in document:
+            raise SchemaGenerationError(
+                "control_hello_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        document["if"] = {"required": ["workspace_handle"]}
+        document["then"] = {
+            "properties": {"workspace_binding": {"const": "client_claim"}},
+            "required": ["workspace_binding"],
+        }
+    elif entry.schema_name == "control-request":
+        branches = document.get("oneOf")
+        if not isinstance(branches, list):
+            raise SchemaGenerationError(
+                "control_request_schema_template_invalid", entries=(entry.relative_path,)
+            )
+
+        def reply(outcome: JsonValue, result: JsonValue, reason: JsonValue) -> JsonValue:
+            return {
+                "additionalProperties": False,
+                "properties": {
+                    "call_id": dict(rpc_id),
+                    "kind": {"const": "workspace_reply"},
+                    "outcome": outcome,
+                    "protocol_version": {"const": "1.0"},
+                    "reason": reason,
+                    "result": result,
+                },
+                "required": ["kind", "protocol_version", "call_id", "outcome", "result", "reason"],
+                "type": "object",
+            }
+
+        any_json: dict[str, JsonValue] = {
+            "type": ["array", "boolean", "integer", "null", "object", "string"]
+        }
+        branches.extend(
+            [
+                reply({"const": "ok"}, any_json, {"type": "null"}),
+                reply(
+                    {"const": "unavailable"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue],
+                            sorted(WORKSPACE_UNAVAILABLE_REASONS, key=str.encode),
+                        ),
+                        "type": "string",
+                    },
+                ),
+                reply(
+                    {"const": "refused"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue], sorted(WORKSPACE_REFUSAL_REASONS, key=str.encode)
+                        ),
+                        "type": "string",
+                    },
+                ),
+                reply(
+                    {"const": "failed"},
+                    {"type": "null"},
+                    {
+                        "enum": cast(
+                            list[JsonValue], sorted(WORKSPACE_FAILURE_REASONS, key=str.encode)
+                        ),
+                        "type": "string",
+                    },
+                ),
+            ]
+        )
+        _add_observation_client_attestation(entry, document)
+    elif entry.schema_name == "control-result":
+        branches = document.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            raise SchemaGenerationError(
+                "control_result_schema_template_invalid", entries=(entry.relative_path,)
+            )
+        template = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branches[0])["properties"])
+        branches.append(
+            {
+                "additionalProperties": False,
+                "properties": {
+                    "arguments": {"type": "object"},
+                    "call_id": dict(rpc_id),
+                    "deadline_ms": {
+                        "maximum": MAX_WORKSPACE_DEADLINE_MS,
+                        "minimum": 1,
+                        "type": "integer",
+                    },
+                    "kind": {"const": "workspace_call"},
+                    "operation": {"enum": operations, "type": "string"},
+                    "protocol_version": {"const": "1.0"},
+                    "service_generation": copy.deepcopy(template["service_generation"]),
+                    "service_instance_id": copy.deepcopy(template["service_instance_id"]),
+                },
+                "required": [
+                    "kind",
+                    "protocol_version",
+                    "call_id",
+                    "service_instance_id",
+                    "service_generation",
+                    "operation",
+                    "arguments",
+                    "deadline_ms",
+                ],
+                "type": "object",
+            }
+        )
+    return document
+
+
+def _add_observation_client_attestation(
+    entry: _RegistryEntry, document: dict[str, JsonValue]
+) -> None:
+    """Let a claim-bound ``observation_ingest`` carry the client's own attestation (ADR-051).
+
+    For a remote target the client's observation store is the authority: the consent state, its
+    grant time, the enabled content profiles, the client's content-capture fence, the one trusted
+    approved-check policy digest and the route its lifecycle mapping names. The service accepts the
+    member only on a claim-bound connection, as ``client_attested``; every member is required (the
+    nullable ones say "none" explicitly) so an attestation is never partial.
+    """
+
+    from finishup.domain.observation import (
+        OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION,
+        OBSERVATION_CLIENT_CONSENT_STATES,
+    )
+    from finishup.domain.observation_profiles import ORDINARY_CONTENT_CAPTURE_PROFILE_IDS
+
+    definitions = document.get("$defs")
+    ingest = definitions.get("observation_ingest_body") if isinstance(definitions, dict) else None
+    properties = ingest.get("properties") if isinstance(ingest, dict) else None
+    if not isinstance(properties, dict) or "client_attestation" in properties:
+        raise SchemaGenerationError(
+            "control_request_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    digest: dict[str, JsonValue] = {
+        "maxLength": 71,
+        "minLength": 71,
+        "pattern": _CONTROL_DIGEST_PATTERN,
+        "type": "string",
+    }
+    properties["client_attestation"] = {
+        "additionalProperties": False,
+        "properties": {
+            "authority_generation": {"anyOf": [dict(digest), {"type": "null"}]},
+            "check_policy_digest": {"anyOf": [dict(digest), {"type": "null"}]},
+            "consent": {
+                "enum": cast(
+                    list[JsonValue], sorted(OBSERVATION_CLIENT_CONSENT_STATES, key=str.encode)
+                ),
+                "type": "string",
+            },
+            "content_capture_profiles": {
+                "items": {
+                    "enum": cast(
+                        list[JsonValue],
+                        sorted(ORDINARY_CONTENT_CAPTURE_PROFILE_IDS, key=str.encode),
+                    ),
+                    "type": "string",
+                },
+                "maxItems": len(ORDINARY_CONTENT_CAPTURE_PROFILE_IDS),
+                "type": "array",
+                "uniqueItems": True,
+            },
+            "granted_at": {
+                "maxLength": 24,
+                "minLength": 24,
+                "pattern": _CONTROL_TIMESTAMP_PATTERN,
+                "type": "string",
+            },
+            "route": {
+                "anyOf": [
+                    {
+                        "additionalProperties": False,
+                        "properties": {
+                            "session_id": _control_id_schema("session_id"),
+                            "task_id": _control_id_schema("task_id"),
+                            "writer_id": _control_id_schema("writer_id"),
+                        },
+                        "required": ["task_id", "session_id", "writer_id"],
+                        "type": "object",
+                    },
+                    {"type": "null"},
+                ]
+            },
+            "schema_version": {"const": OBSERVATION_CLIENT_ATTESTATION_SCHEMA_VERSION},
+        },
+        "required": [
+            "schema_version",
+            "consent",
+            "granted_at",
+            "content_capture_profiles",
+            "authority_generation",
+            "check_policy_digest",
+            "route",
+        ],
+        "type": "object",
+    }
 
 
 # The largest page ``privacy_receipts_list`` answers; a partial page cannot skip more rows than it
@@ -13020,6 +13390,20 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             ).ReceiptResultModel
         ),
     ),
+    # ADR-051 decision D4: 1.4.0 shipped in v0.3.0 and is frozen; 1.5.0 adds the optional
+    # ``workspace_provenance`` member.
+    _RegistryEntry(
+        "operations/receipt-result-1.5.0.schema.json",
+        "receipt-result",
+        "1.5.0",
+        "request_result",
+        "MCP output",
+        lambda: (
+            __import__(
+                "finishup.protocol.models", fromlist=["ReceiptResultModel"]
+            ).ReceiptResultModel
+        ),
+    ),
     _RegistryEntry(
         "operations/status-result-1.5.0.schema.json",
         "status-result",
@@ -13655,6 +14039,38 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
     ),
     _RegistryEntry(
+        "service/control-hello-2.10.0.schema.json",
+        "control-hello",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+    ),
+    _RegistryEntry(
+        "service/control-hello-result-2.10.0.schema.json",
+        "control-hello-result",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
+    ),
+    _RegistryEntry(
+        "service/control-request-2.10.0.schema.json",
+        "control-request",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlRequest"]).ControlRequest,
+    ),
+    _RegistryEntry(
+        "service/control-result-2.10.0.schema.json",
+        "control-result",
+        "2.10.0",
+        "request_result",
+        "local-control",
+        lambda: __import__("finishup.ports.control", fromlist=["ControlResult"]).ControlResult,
+    ),
+    _RegistryEntry(
         "service/isolation-report-1.0.0.schema.json",
         "isolation-report",
         "1.0.0",
@@ -13664,6 +14080,58 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
             __import__(
                 "finishup.protocol.isolation_report", fromlist=["IsolationReportContract"]
             ).IsolationReportContract
+        ),
+    ),
+    # ADR-051: ``binding`` gains ``selection`` (the owner-only server selection); the released
+    # 1.0.0 enum is closed, so it stays byte-frozen and this successor carries the new value.
+    _RegistryEntry(
+        "service/isolation-report-1.1.0.schema.json",
+        "isolation-report",
+        "1.1.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.isolation_report", fromlist=["IsolationReportContract"]
+            ).IsolationReportContract
+        ),
+    ),
+    # ADR-051 approach A: the HTTPS binding v1 between a connector and the gateway.
+    _RegistryEntry(
+        "service/rest-error-1.0.0.schema.json",
+        "rest-error",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.rest_binding", fromlist=["RestErrorContract"]
+            ).RestErrorContract
+        ),
+    ),
+    _RegistryEntry(
+        "service/server-info-1.0.0.schema.json",
+        "server-info",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.rest_binding", fromlist=["ServerInfoContract"]
+            ).ServerInfoContract
+        ),
+    ),
+    # ADR-051: ``finishup server status --json``.
+    _RegistryEntry(
+        "service/server-target-status-1.0.0.schema.json",
+        "server-target-status",
+        "1.0.0",
+        "request_result",
+        "service-status",
+        lambda: (
+            __import__(
+                "finishup.protocol.server_target_status", fromlist=["ServerTargetStatusContract"]
+            ).ServerTargetStatusContract
         ),
     ),
     _RegistryEntry(
@@ -13742,6 +14210,15 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         "version/version-manifest-2.3.0.schema.json",
         "version-manifest",
         "2.3.0",
+        "version_manifest",
+        "version-report",
+        lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
+    ),
+    # ADR-051: the first inventory change after v0.3.0 shipped 2.3.0; that report is frozen.
+    _RegistryEntry(
+        "version/version-manifest-2.4.0.schema.json",
+        "version-manifest",
+        "2.4.0",
         "version_manifest",
         "version-report",
         lambda: __import__("finishup.version", fromlist=["VersionManifest"]).VersionManifest,
@@ -13838,6 +14315,11 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "service/control-hello-result-2.9.0.schema.json",
         "service/control-request-2.9.0.schema.json",
         "service/control-result-2.9.0.schema.json",
+        # Workspace claims and the workspace-agent frames (ADR-051).
+        "service/control-hello-2.10.0.schema.json",
+        "service/control-hello-result-2.10.0.schema.json",
+        "service/control-request-2.10.0.schema.json",
+        "service/control-result-2.10.0.schema.json",
     }
 )
 
@@ -14200,6 +14682,7 @@ def build_schema_documents(
             "findings/semantic-provenance-1.0.0.schema.json",
             "operations/check-result-1.0.0.schema.json",
             "operations/receipt-result-1.0.0.schema.json",
+            "service/isolation-report-1.0.0.schema.json",
         }:
             # Released contracts whose owning model has since moved on stay byte-frozen.
             normalized = _frozen_schema(entry)
@@ -14312,6 +14795,13 @@ def build_schema_documents(
             "service/control-result-2.9.0.schema.json",
         }:
             normalized = _control_v2_9_schema(entry)
+        elif entry.relative_path in {
+            "service/control-hello-2.10.0.schema.json",
+            "service/control-hello-result-2.10.0.schema.json",
+            "service/control-request-2.10.0.schema.json",
+            "service/control-result-2.10.0.schema.json",
+        }:
+            normalized = _control_v2_10_schema(entry)
         elif entry.relative_path == "operations/publish-work-request-1.1.0.schema.json":
             normalized = _publish_work_request_schema(entry)
         elif entry.relative_path == "operations/publish-work-request-1.2.0.schema.json":
@@ -14363,6 +14853,8 @@ def build_schema_documents(
             )
         elif entry.relative_path == "operations/receipt-result-1.3.0.schema.json":
             normalized = _receipt_result_v1_3_schema(entry)
+        elif entry.relative_path == "operations/receipt-result-1.5.0.schema.json":
+            normalized = _receipt_result_v1_5_schema(entry)
         elif entry.relative_path == "operations/start-result-1.0.0.schema.json":
             normalized = _start_result_schema(entry)
         elif entry.relative_path == "operations/start-result-1.1.0.schema.json":
@@ -14427,9 +14919,10 @@ def build_schema_documents(
             "version/version-manifest-2.2.2.schema.json",
             "version/version-manifest-2.2.3.schema.json",
             "version/version-manifest-2.2.4.schema.json",
+            "version/version-manifest-2.3.0.schema.json",
         }:
             normalized = _frozen_version_manifest_schema(entry)
-        elif entry.relative_path == "version/version-manifest-2.3.0.schema.json":
+        elif entry.relative_path == "version/version-manifest-2.4.0.schema.json":
             normalized = _version_manifest_schema(entry)
         elif entry.relative_path == "service/control-request-2.6.1.schema.json":
             normalized = _control_request_v2_6_1_schema(entry)

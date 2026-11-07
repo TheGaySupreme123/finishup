@@ -11175,6 +11175,19 @@ class LocalObservationStore:
                 and hmac.compare_digest(state.trusted_policy_mac, expected)
             )
 
+    def trusted_policy_digest(self, workspace: str) -> str | None:
+        """The one approved-check policy digest trusted for ``workspace``, while its MAC holds.
+
+        A claim-bound client attests it to a remote server with each observation row (ADR-051
+        decision 12); None when nothing is trusted or the cache no longer verifies.
+        """
+
+        with self._reading():
+            digest = self._load(workspace).trusted_policy_digest
+        if digest is None or not self.policy_digest_is_trusted(workspace, digest):
+            return None
+        return digest
+
     def revoke_policy_trust(self, workspace: str) -> None:
         with self._lock:
             state = self._load(workspace)

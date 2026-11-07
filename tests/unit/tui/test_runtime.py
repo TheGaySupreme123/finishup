@@ -13,6 +13,7 @@ from finishup.adapters.workspace_binding import canonical_workspace_locator
 from finishup.tui.models import HarnessOption
 from finishup.tui.runtime import (
     FinishUpRuntime,
+    RuntimeError_,
     _WorkSession,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -254,6 +255,28 @@ async def test_store_provider_credential_supplies_the_scoped_reauthentication_se
     assert credential is None
     assert reauthentication is not None
     assert bytes(cast(bytearray, reauthentication)) == b"scoped-reauth"
+
+
+async def test_a_rotation_refused_while_a_credential_store_check_runs_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing changed while an unlock finishes, so the screen says why and to retry (#492)."""
+
+    from finishup.cli.unlock import HumanCeremonyCliError
+
+    async def refused() -> None:
+        raise HumanCeremonyCliError("credential_store_check_in_progress")
+
+    monkeypatch.setattr("finishup.cli.unlock.rotate_vault_passphrase", refused)
+
+    with pytest.raises(RuntimeError_) as error:
+        await FinishUpRuntime(cwd=tmp_path).rotate_vault_passphrase()
+
+    assert error.value.reason == "credential_store_check_in_progress"
+    assert error.value.message.startswith(
+        "the service is still finishing its latest unlock or the credential-store check"
+    )
+    assert error.value.message.endswith("try again in a moment")
 
 
 def test_every_reviewed_provider_preset_gets_a_friendly_picker_label(tmp_path: Path) -> None:

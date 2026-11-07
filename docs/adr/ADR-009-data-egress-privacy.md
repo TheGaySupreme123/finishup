@@ -1901,3 +1901,52 @@ exact bytes in every sink and a new case may carry both spellings, as the amendm
 **Hosts and surfaces.** The behaviour is service-side and identical on Codex, Claude Code and
 Cursor. The CLI, MCP, hooks, the terminal interface and the receipt renderings (JSON, markdown,
 text) read the same records.
+
+## Amendment proposed by ADR-051 (2026-11-05): the FinishUP server hop
+
+[ADR-051](ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) lets a client
+use a FinishUP service on another machine that the same owner runs. Once it is accepted, this
+record changes as follows.
+
+- **A distinct hop, outside the five channels.** Traffic between a FinishUP client and the
+  owner's own FinishUP server is the *FinishUP server hop*. It is not `llm_inference` and not one
+  of the four non-LLM channels, and enabling it enables none of them. It carries the ordinary
+  control traffic (task statements, published work, evidence, check, respond and receipt
+  traffic), observation rows, the workspace claim digest, and the workspace evidence the server
+  asks the client's workspace agent for within each operation's existing bound. It never carries
+  a vault secret, a provider credential, or human-control or secret-ingress traffic.
+- **Authorization.** Each remote target is authorized by the owner on the trusted foreground
+  console with a versioned disclosure and a typed confirmation, recorded in the target record; a
+  new disclosure version requires a fresh confirmation. Agents cannot add or select a remote
+  target. This is a trusted-console decision, not a vault-reauthenticated ceremony, because a
+  client machine may have no vault; ADR-051 records that limit.
+- **Refused in the zero-network state, when a target is added or selected.** Decision 10 holds
+  at that point: adding or selecting a remote target is refused while this computer's set-up
+  installation reports an effective policy that does not permit network egress, and also while
+  that policy cannot be read (`network_policy_unreadable`); a computer whose own FinishUP was
+  never set up has no policy of its own, and the server's policy governs the work sent to it
+  (ADR-051 decision 8). Clients do not consult the local policy again before each connection, so
+  setting this computer's policy to zero-network does not by itself stop an already selected
+  remote target. The maintainer decided (2026-11-06) that FinishUP surfaces it and the owner
+  decides: after every committed policy change in that state, the trusted console names the
+  target and offers switching to this computer's everyday FinishUP or keeping the target (the
+  default; FinishUP never switches on its own); without that console the facts and `finishup
+  server use local` are printed; and setup readiness, `server status` and the terminal interface
+  show the item while this computer's service is running and unlocked, the only source of its
+  policy. While a remote target is selected a fresh command does not set this computer's policy
+  (server-host privacy commands are refused; `privacy tighten|propose` reach the target), so the
+  choice arises from a process that resolved this computer's server before the selection changed.
+  **Honest limits:** while the owner keeps the target, and after switching until open agent
+  sessions restart, traffic to it continues; once this computer's idle service stops or locks,
+  the displays can no longer tell the state and say nothing. Apart from such a target,
+  the FinishUP-owned process set in the zero-network state still permits only the exact endpoints
+  decision 10 lists.
+- **Policy authority sits on the server.** The server's own effective policy, repository grants
+  and never-send fence decide every AI-powered review disclosure from there, exactly as they do
+  locally; the client's profile does not widen or narrow them. Workspace evidence reaches the
+  server as the agent read it, and the server applies minimization, redaction and the never-send
+  scan before any egress, as for a service read. A claim-bound repository's rows are keyed by its
+  claim commitment.
+- **Local sinks (decision 3).** `agent_context` and `local_human_view` remain non-egress sinks on
+  the client machine; with a remote target, the content they receive has first crossed the
+  owner-authorized hop from the server.
