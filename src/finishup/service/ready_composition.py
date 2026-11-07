@@ -4733,18 +4733,16 @@ def _task_input_counts(
     semantic_case: SemanticCase,
     outside_not_admitted: bool,
     outside_candidates: int = 0,
-    declared_tests_not_listed: int = 0,
 ) -> dict[str, int]:
     """Issue #1102 pilot counters for ``semantic_case_built``; counts only, never a path.
 
     How many task inputs the statement and the recorded verification named, how many the
     check-time read kept (directory listings among them), how many the packet selected, how
     many named outside candidates could lexically be an unadmitted input (before any ``lstat``),
-    whether a named outside input lacked an admitted root, and how many existing task inputs and
-    declared tests a claim-bound task's agent kept back under its owner's listed mode (ADR-051
-    decision 5), as frozen in the check change and the job's case object. A candidate count beside a 0 flag
+    and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
     says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
     written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
+    What listed mode kept back has its own record (``_record_outside_not_listed``).
     """
 
     read = () if check_change.change is None else check_change.change.capture.inputs
@@ -4760,15 +4758,40 @@ def _task_input_counts(
         ),
         "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
-        # ADR-051 decision 5: how many task-named inputs and declared tests a claim-bound task's
-        # agent kept back under its owner's listed mode (never which, never a path).
-        "semantic_task_inputs_outside_not_listed": declared_tests_not_listed
-        + (
-            0
-            if check_change.change is None
-            else check_change.change.capture.outside_inputs_not_listed
-        ),
     }
+
+
+def _outside_not_listed_count(
+    check_change: CheckChangeOutcome, declared_tests_not_listed: int
+) -> int:
+    """How many task-named inputs and declared tests a claim-bound task's agent kept back under
+    its owner's listed mode (ADR-051 decision 5), as frozen in the check change and the job's
+    case object: a count, never which, never a path."""
+
+    kept = (
+        0 if check_change.change is None else check_change.change.capture.outside_inputs_not_listed
+    )
+    return declared_tests_not_listed + kept
+
+
+def _record_outside_not_listed(request_id: str, count: int) -> None:
+    """Record ``semantic_task_inputs_outside_not_listed`` in its own diagnostic record.
+
+    ``semantic_outside_reads_not_listed`` (same request id as ``semantic_case_built``), written
+    only when listed mode kept something back. It is its own record because a diagnostic line is
+    at most 1,024 bytes and ``semantic_case_built`` is already at that bound: carried there, the
+    count pushed every case's record over it, and the sink dropped the whole record.
+    """
+
+    if not count:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_outside_reads_not_listed",
+        outcome="not_listed",
+        request_id=request_id,
+        counts={"semantic_task_inputs_outside_not_listed": count},
+    )
 
 
 def _outside_candidate_count(
@@ -5451,6 +5474,21 @@ def _record_case_narrowing(
             "semantic_claim_rows_selected": len(case.packet.claim_item_ids),
         },
     )
+
+
+def _record_case_side_counts(
+    request_id: str,
+    ceiling_rounds: int,
+    approved: ReviewSelectionPolicy,
+    case: SemanticCase,
+    outside_not_listed: int,
+) -> None:
+    """The records beside ``semantic_case_built`` that its line bound leaves no room for: the
+    case's narrowing (#1245) and what listed mode kept back (ADR-051 decision 5), each written
+    only when there is something to say."""
+
+    _record_case_narrowing(request_id, ceiling_rounds, approved, case)
+    _record_outside_not_listed(request_id, outside_not_listed)
 
 
 def _privacy_gated_semantic_evaluator(
@@ -6198,15 +6236,15 @@ def _privacy_gated_semantic_evaluator(
                             policy.admitted_input_roots,
                             declared_output_paths(frozen.case.projection),
                         ),
-                        declared_tests_not_listed,
                     ),
                 },
             )
-            _record_case_narrowing(
+            _record_case_side_counts(
                 frozen.lease.operation_id,
                 ceiling_rounds,
                 review_selection,
                 semantic_case,
+                _outside_not_listed_count(check_change, declared_tests_not_listed),
             )
             if captured_local_fence_required and captured_content_scope is not None:
                 # A resolver may authenticate a group that the active excerpt selection then
