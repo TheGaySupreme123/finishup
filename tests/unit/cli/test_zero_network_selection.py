@@ -1029,9 +1029,7 @@ def test_server_status_and_list_show_the_item(
 ) -> None:
     record = _remote()
     _policy(monkeypatch, "zero_network")
-    monkeypatch.setattr(
-        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
-    )
+    monkeypatch.setattr("finishup.client.rest_runtime.SshTargetRuntime.probe", _unreachable)
 
     status = _invoke("server", "status", "--json")
     assert status.exit_code == 0, status.output
@@ -1057,9 +1055,7 @@ def test_server_status_is_unchanged_without_the_item(
 ) -> None:
     _remote()
     _policy(monkeypatch, "network_permitted")
-    monkeypatch.setattr(
-        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
-    )
+    monkeypatch.setattr("finishup.client.rest_runtime.SshTargetRuntime.probe", _unreachable)
 
     status = _invoke("server", "status", "--json")
 
