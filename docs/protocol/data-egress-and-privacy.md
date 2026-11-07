@@ -35,8 +35,11 @@ the selection changed makes the change. As the last line of defence every client
 remote target is refused, before anything is sent, while this computer last reported the
 zero-network state: the client remembers each report of this computer's machine-scope policy in an
 owner-only marker outside the vault, and the connection check reads that marker, never the
-service, so a process whose selection predates the change sends nothing either. The owner
-displays read the live policy first and fall back to that marker ("this computer last reported").
+service, so a process whose selection predates the change sends nothing either. Client-owned
+processes that hold connections to a remote target open (a relay, a background workspace agent,
+an observation delivery) check the same marker before each connection and every second, and on
+finding it close what they hold and send nothing more. The owner displays read the live policy
+first and fall back to that marker ("this computer last reported").
 
 ## Content classes
 

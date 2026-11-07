@@ -4783,7 +4783,11 @@ before `target_reauthorization_required`. `zero_network_remote_selected` is a pr
 and a member of `REMOTE_CONNECTION_PHASES`, continuation `zero_network_local_server_required`
 (directive: this computer makes no network connections, nothing was sent, ask the owner to run
 `finishup server use local`, then restart the session; nudge: never select a server or change the
-policy for the owner). `server login` refuses its key check with the same reason.
+policy for the owner). `server login` refuses its key check with the same reason. A client-owned
+process that keeps connections to a remote target open or reconnects on its own reads
+`last_reported_zero_network()` itself before each connection and at least once a second, closes
+what it holds and sends nothing more once it answers; each approach's own section names such
+processes (approach A: the connector and `ConnectorAgent`).
 
 *Displays.* Owner displays carry the item, live or last reported: `server status` (stderr, and
 beside `--json` also the document's `zero_network_selection` above), `server list`, `setup status`

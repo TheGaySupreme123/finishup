@@ -128,8 +128,11 @@ agent session or hook started before the change, or a server you kept with an ea
 refused before anything is sent to it, on every surface, with `zero_network_remote_selected` and
 the same fix: `finishup server use local`, then restart open agent sessions. This check uses what
 this computer last reported (below), so after an upgrade it starts once this computer's FinishUP
-has reported its policy again. A connection that was already open when the setting changed is not
-cut; the next one is refused.
+has reported its policy again. The connections FinishUP keeps open to that server, including the
+one through which the server reads your project for its checks and reviews and the delivery of
+what your hooks captured, are closed within about a second of this computer reporting the
+setting, and nothing more is sent over them; a request already under way in that second may
+still finish.
 
 ### What this computer last reported
 

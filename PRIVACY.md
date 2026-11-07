@@ -79,11 +79,13 @@ FinishUP never switches on its own. Without your terminal to ask in, for a comma
 in JSON, or for a decision relayed from an agent, the change is refused before it is applied,
 with `zero_network_remote_selected`, and nothing changes; `finishup server use local`, then the
 same change again, is the fix. Anything still pointed at such a server while this computer is in
-that mode (an agent session or a hook started earlier) is refused at its next connection, before
-anything is sent, with the same reason and fix. Two limits: a connection already open when the
-mode is turned on is not cut, and this check relies on what this computer last reported (below),
-so after an upgrade from a release without that record it applies once this computer's FinishUP
-has reported its policy again.
+that mode (an agent session or a hook started earlier) is refused before anything is sent, with
+the same reason and fix, and the connections FinishUP keeps open to that server (through which
+the server reads your project for its checks and reviews, and through which FinishUP delivers
+what your hooks captured) are closed within about a second, with nothing more sent over them.
+Two limits: a request already under way in that second may still finish, and this check relies
+on what this computer last reported (below), so after an upgrade from a release without that
+record it applies once this computer's FinishUP has reported its policy again.
 
 To tell the mode when this computer's own FinishUP service is stopped or locked (as it usually is
 while another server is used), FinishUP remembers, in a small file only you can read beside its
@@ -343,8 +345,9 @@ the LLM profiles and the four non-LLM channels above, and enabling it enables no
   variable, a settings file, a log, or anything an agent can read. Software running as your own
   account can read it, as it can read other owner-only files.
 - **Zero-network mode and such a server are never in force together.** While your policy forbids
-  all network use, no such server can be added or chosen, and anything still pointed at one is
-  refused at its next connection, before anything is sent (a connection already open is not cut). While one is chosen, new FinishUP commands do not change this
+  all network use, no such server can be added or chosen, anything still pointed at one is
+  refused before anything is sent, and connections already open to it are closed within about a
+  second. While one is chosen, new FinishUP commands do not change this
   computer's policy (they refuse, or change the chosen server's policy instead); if FinishUP that
   was already running here would turn the mode on anyway, it asks first: switch to this
   computer's own FinishUP and make the change, or cancel it and keep the server (Enter or Ctrl-C

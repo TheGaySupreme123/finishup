@@ -1940,9 +1940,12 @@ record changes as follows.
   policy (the zero-network check, `privacy show`, every privacy change made here) in an
   owner-only marker beside the server registry, outside the vault, holding only whether it was
   zero-network and when; the connection check reads that marker, never the service, and the
-  displays read the live policy first and fall back to it. **Honest limits:** a connection already
-  open when the policy changes is not cut by this check (it is refused at its next connection);
-  a marker that cannot be read counts as no record until the next report replaces it; and after
+  displays read the live policy first and fall back to it. Client-owned processes that hold
+  connections to a remote target open (a relay, a background workspace agent, an observation
+  delivery) check the same marker before each connection and every second, close what they hold
+  and send nothing more once it says zero-network. **Honest limits:** connections already open are
+  closed within about a second of the marker, so a request under way then may still finish; a
+  marker that cannot be read counts as no record until the next report replaces it; and after
   an upgrade from a release without the marker, nothing is remembered until this computer's
   policy is next reported. Apart from such a target, the FinishUP-owned process set in the
   zero-network state still permits only the exact endpoints decision 10 lists.
