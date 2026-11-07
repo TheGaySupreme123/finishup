@@ -551,3 +551,66 @@ async def test_capacity_no_cap_is_a_typed_outcome_that_changes_nothing(
     assert locator is not None
     settings = store.selection_settings_for(store.workspace_commitment(locator))
     assert settings.workspace is None
+
+
+@pytest.mark.parametrize(
+    ("vault_mode", "ceremony", "refused"),
+    [
+        ("passphrase", "unlock_vault", ("vault_state", "unlock_wrong")),
+        ("os_keyring", "retry_keyring", ("keyring_retry", "keyring_locked")),
+    ],
+)
+async def test_unlock_that_leaves_the_vault_locked_is_reported_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    vault_mode: str,
+    ceremony: str,
+    refused: tuple[str, str],
+) -> None:
+    """A refused unlock comes back as a locked result, not an error (#1323)."""
+
+    from finishup.service.confidential_protocol import KeyringRetryResult, VaultStateResult
+    from finishup.tui.runtime import RuntimeError_
+
+    kind, reason = refused
+    result = (
+        VaultStateResult("locked", reason)
+        if kind == "vault_state"
+        else KeyringRetryResult("locked", reason)
+    )
+
+    async def locked(*_args: object, **_kwargs: object) -> object:
+        return result
+
+    runtime = FinishUpRuntime(cwd=tmp_path)
+
+    async def posture() -> SimpleNamespace:
+        return SimpleNamespace(vault_mode=vault_mode)
+
+    monkeypatch.setattr(runtime, "vault_posture", posture)
+    monkeypatch.setattr(f"finishup.cli.unlock.{ceremony}", locked)
+
+    with pytest.raises(RuntimeError_) as raised:
+        await runtime.unlock_vault()
+
+    assert raised.value.reason == reason
+    assert raised.value.message == "the vault is still locked"
+
+
+async def test_unlock_that_readies_the_vault_returns_quietly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from finishup.service.confidential_protocol import VaultStateResult
+
+    async def ready(*_args: object, **_kwargs: object) -> object:
+        return VaultStateResult("ready", "succeeded")
+
+    runtime = FinishUpRuntime(cwd=tmp_path)
+
+    async def posture() -> SimpleNamespace:
+        return SimpleNamespace(vault_mode="passphrase")
+
+    monkeypatch.setattr(runtime, "vault_posture", posture)
+    monkeypatch.setattr("finishup.cli.unlock.unlock_vault", ready)
+
+    await runtime.unlock_vault()
