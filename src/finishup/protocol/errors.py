@@ -441,6 +441,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "workspace_binding_conflict",
     "workspace_ref_not_portable",
     "workspace_task_exists",
+    "zero_network_remote_selected",
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
@@ -466,9 +467,11 @@ SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
 # protocol reason code a surface reports for it, so its recovery directive resolves the same way
 # on every surface; no host, user or path rides on it. Besides the five ``remote_*`` connection
 # failures, the client itself refuses a target the owner authorized under an older disclosure
-# (``target_reauthorization_required``) before anything is sent, and refuses to start a local
-# service for a remote target's root (``target_root_is_remote``). Every phase is retryable: the
-# same request succeeds once that phase's own repair is made.
+# (``target_reauthorization_required``) before anything is sent, refuses to start a local
+# service for a remote target's root (``target_root_is_remote``), and refuses any connection to a
+# remote target while this computer last reported a zero-network privacy policy
+# (``zero_network_remote_selected``, maintainer decision of 2026-11-07). Every phase is retryable:
+# the same request succeeds once that phase's own repair is made.
 REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
     {
         "remote_auth_failed",
@@ -478,12 +481,14 @@ REMOTE_CONNECTION_PHASES: frozenset[str] = frozenset(
         "remote_unreachable",
         "target_reauthorization_required",
         "target_root_is_remote",
+        "zero_network_remote_selected",
     }
 )
 # #1244: the four delivery_* continuation refusals; #1190: review_mode_parent_is_check; ADR-051:
 # the twelve workspace-binding, server-target and remote-connection reasons, plus the stale
-# disclosure refusal (``target_reauthorization_required``).
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 369
+# disclosure refusal (``target_reauthorization_required``) and the zero-network refusal
+# (``zero_network_remote_selected``).
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 370
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -656,6 +661,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "server_selection_overridden",
         "workspace_binding_correction",
         "workspace_handle_required",
+        "zero_network_local_server_required",
     }
 )
 
@@ -845,6 +851,7 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "remote_identity_changed": "remote_identity_verify",
         "remote_service_not_running": "remote_service_start_required",
         "remote_incompatible": "remote_release_mismatch",
+        "zero_network_remote_selected": "zero_network_local_server_required",
     }
 )
 if set(REASON_CODE_CONTINUATIONS.values()) - ADMITTED_CONTINUATION_TOKENS:

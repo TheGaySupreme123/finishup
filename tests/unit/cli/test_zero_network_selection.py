@@ -1,13 +1,18 @@
-"""A remote server still selected when this computer's policy forbids network use (ADR-051).
+"""This computer's zero-network policy and a server elsewhere are never in force together (ADR-051).
 
-Maintainer decision of 2026-11-06 (decision 8): whenever this computer's privacy policy is set to
-the zero-network state while the selection names a server on another machine, a port or the web,
-FinishUP tells the owner and lets them decide. On the trusted console the owner chooses to switch
-to this computer's everyday FinishUP or keep the server, and anything but "1" keeps it; without a
-console the facts and ``finishup server use local`` go to stderr and nothing switches. The same
-item shows afterwards on ``server status``/``list``, ``setup status [--next]``, the setup wizard
-and the menu. An unreadable selection is said with its closed reason, never as "no server". Every
-line names the target by its generated id and closed kind, never by the name the owner typed.
+Maintainer decision of 2026-11-07 (decision 8), replacing the 2026-11-06 choice to keep such a
+server: "Remember but also make it so if user uses remote server it can't be zero network."
+
+* Remember: every report of this computer's everyday policy to a client command is recorded;
+  while the live policy cannot be read, the surfaces fall back to that record and say "this
+  computer last reported".
+* A change that would make this computer zero-network while a remote server is selected offers
+  exactly two choices on the trusted console (switch to this computer's everyday FinishUP and
+  make the change, or cancel it and keep the server; Enter, end of input and Ctrl-C cancel) and
+  is refused before it is applied without that console. ``server add|use`` of a remote kind stay
+  refused, live or last reported.
+* Every surface shows the item while it lasts; every line names the target by its generated id
+  and closed kind, never by the name the owner typed.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -31,11 +37,13 @@ import pytest
 from typer.testing import CliRunner, Result
 
 import finishup.cli.zero_network_selection as zero_network
-from builders.privacy_policies import local_only_policy
+import finishup.client.everyday_policy as everyday_policy
+from builders.privacy_policies import local_only_policy, minimal_external_policy
 from builders.server_targets import ambient_home
 from finishup.cli import app as cli
 from finishup.cli import server as server_cli
 from finishup.client import targets
+from finishup.client.everyday_policy import ReportedPolicy, read_marker, record_reported_policy
 from finishup.config.paths import active_root, reset_selection_memo
 from finishup.domain.privacy import ConversationReview, CredentialHeuristic, PrivacyPolicy
 from finishup.domain.values import JsonObject
@@ -44,14 +52,21 @@ from finishup.protocol.schemas import validate_schema_instance
 
 _RUNNER = CliRunner()
 _NAME = "lab"
+_AT = datetime(2026, 11, 7, 9, 30, tzinfo=UTC)
+_STAMP = "2026-11-07T09:30:00.000Z"
 
 
 @pytest.fixture
 def home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """An owner-only ambient home whose selection the checks really read."""
+    """An owner-only ambient home whose selection and marker the checks really read."""
 
     with ambient_home(monkeypatch) as root:
         monkeypatch.setattr(zero_network, "_selection_on_disk", zero_network.read_selection_on_disk)
+        monkeypatch.setattr(
+            everyday_policy,
+            "_location",
+            everyday_policy._ambient_marker_path,  # pyright: ignore[reportPrivateUsage]
+        )
         yield root
 
 
@@ -81,6 +96,17 @@ def _remote(kind: str = "ssh", *, select: bool = True) -> targets.ServerTarget:
         if select:
             targets.write_selection(record)
     return record
+
+
+def _select_elsewhere(record: targets.ServerTarget, monkeypatch: pytest.MonkeyPatch) -> None:
+    """'finishup server use lab' in another terminal: this process keeps the root it resolved.
+
+    The other process writes the owner-only selection file and resets only its own memo.
+    """
+
+    with monkeypatch.context() as other_process, targets.registry_lock():
+        other_process.setattr(targets, "reset_selection_memo", lambda: None)
+        targets.write_selection(record)
 
 
 class _Console:
@@ -131,7 +157,226 @@ def _shown(console: type[_Console]) -> str:
     return "".join(text for instance in console.instances for text in instance.written)
 
 
-# --- the item ---------------------------------------------------------------------------------
+def _invoke(*arguments: str) -> Result:
+    reset_selection_memo()
+    return _RUNNER.invoke(cli.app, list(arguments))
+
+
+_MACHINE_SCOPE = JsonObject({"scope": {"kind": "machine"}})
+
+
+def _everyday_service(
+    home: Path, monkeypatch: pytest.MonkeyPatch, *, egress: bool | None
+) -> list[object]:
+    """This computer's set-up everyday installation and its running service; records each read.
+
+    Only the control connection is a stand-in: ``everyday_network_state`` itself runs. ``egress``
+    ``None`` is a service that cannot be asked (stopped or locked).
+    """
+
+    from finishup.ports.control import ControlError
+
+    bundle = home / "data" / "finishup"
+    bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (bundle / "installation-state.json").write_bytes(b"{}\n")
+    requests: list[object] = []
+
+    class Client:
+        async def privacy_get_effective(self, request: object) -> object:
+            requests.append(request)
+            return JsonObject({"policy": {"network_egress_permitted": egress}})
+
+        async def close(self) -> None:
+            return None
+
+    async def connect(_kind: object, *, workspace_locator: object = None) -> Client:
+        assert workspace_locator is None
+        if egress is None:
+            raise ControlError("service_unavailable", retryable=True)
+        return Client()
+
+    monkeypatch.setattr("finishup.service.client.connect_service", connect)
+    monkeypatch.setattr(
+        "finishup.cli.provider_status.machine_scope_request", lambda: _MACHINE_SCOPE
+    )
+    return requests
+
+
+# --- remember ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("egress", "state"), [(False, "zero_network"), (True, "network_permitted")]
+)
+def test_the_everyday_machine_scope_policy_decides_and_is_remembered(
+    home: Path, monkeypatch: pytest.MonkeyPatch, egress: bool, state: str
+) -> None:
+    requests = _everyday_service(home, monkeypatch, egress=egress)
+
+    assert zero_network.everyday_network_state() == state
+
+    assert requests == [_MACHINE_SCOPE]
+    reading = read_marker()
+    assert isinstance(reading, ReportedPolicy) and reading.zero_network is (not egress)
+
+
+def test_a_policy_that_cannot_be_read_leaves_the_last_report_as_it_was(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_reported_policy(zero_network=True, now=_AT)
+    _everyday_service(home, monkeypatch, egress=None)
+
+    assert zero_network.everyday_network_state() == "unreadable"
+
+    assert read_marker() == ReportedPolicy(True, _STAMP)
+
+
+def test_a_computer_never_set_up_has_no_policy_and_keeps_no_report(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The way out of the marker besides deleting the state folder (uninstalling): once this
+    computer's everyday installation no longer exists, what it reported is removed."""
+
+    record_reported_policy(zero_network=True, now=_AT)
+
+    def never(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("nothing to ask")
+
+    monkeypatch.setattr("finishup.service.client.connect_service", never)
+    assert zero_network.everyday_network_state() == "no_policy"
+    assert read_marker() == "absent"
+
+
+def test_an_isolation_root_reads_its_own_policy_and_leaves_the_everyday_report(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_reported_policy(zero_network=True, now=_AT)
+    isolated = home / "isolated"
+    isolated.mkdir(mode=0o700)
+    monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(isolated))
+    reset_selection_memo()
+
+    assert zero_network.everyday_network_state() == "no_policy"
+
+    monkeypatch.delenv("FINISHUP_ISOLATED_ROOT")
+    reset_selection_memo()
+    assert read_marker() == ReportedPolicy(True, _STAMP)
+
+
+def _effective(*, egress: bool, scope: str = "machine") -> JsonObject:
+    return JsonObject(
+        {
+            "policy": {
+                "network_egress_permitted": egress,
+                "effective_scope": {"kind": scope, "installation_id": "ins_1"},
+            }
+        }
+    )
+
+
+@pytest.mark.parametrize("egress", [False, True])
+def test_privacy_show_on_this_computer_remembers_its_machine_policy(
+    home: Path, monkeypatch: pytest.MonkeyPatch, egress: bool
+) -> None:
+    class Client:
+        async def privacy_get_effective(self, _request: object, **_kwargs: object) -> object:
+            return _effective(egress=egress)
+
+        async def close(self) -> None:
+            return None
+
+    async def build(*_args: object, **_kwargs: object) -> Client:
+        return Client()
+
+    monkeypatch.setattr(cli, "build_service_client", build)
+    monkeypatch.setattr(cli, "_machine_scope_request_or_none", lambda: _MACHINE_SCOPE)
+
+    result = _invoke("privacy", "show", "--json")
+
+    assert result.exit_code == 0, result.output
+    reading = read_marker()
+    assert isinstance(reading, ReportedPolicy) and reading.zero_network is (not egress)
+
+
+def test_only_this_computers_own_machine_policy_is_remembered(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A repository's policy narrows that repository, not this computer.
+    assert (
+        zero_network.remember_reported_policy(_effective(egress=False, scope="workspace")) is False
+    )
+    assert read_marker() == "absent"
+
+    # A process on a remote server's root reads that server's policy, not this computer's.
+    _remote()
+    reset_selection_memo()
+    assert active_root() is not None
+    assert zero_network.remember_reported_policy(_effective(egress=False)) is False
+    assert read_marker() == "absent"
+
+    with targets.registry_lock():
+        targets.clear_selection()
+    assert zero_network.remember_reported_policy(_effective(egress=False)) is True
+    assert read_marker() == ReportedPolicy(True, cast(ReportedPolicy, read_marker()).reported_at)
+
+
+def test_a_change_on_this_computer_reads_the_policy_again_and_remembers_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        zero_network,
+        "_after_change_state",
+        zero_network._read_after_change,  # pyright: ignore[reportPrivateUsage]
+    )
+    requests = _everyday_service(home, monkeypatch, egress=False)
+
+    asyncio.run(zero_network.after_policy_change_async())
+
+    assert requests == [_MACHINE_SCOPE]
+    assert cast(ReportedPolicy, read_marker()).zero_network is True
+    assert capsys.readouterr() == ("", "")
+
+
+def test_a_change_made_on_a_remote_server_reads_nothing_here(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        zero_network,
+        "_after_change_state",
+        zero_network._read_after_change,  # pyright: ignore[reportPrivateUsage]
+    )
+    requests = _everyday_service(home, monkeypatch, egress=False)
+    _remote()
+    reset_selection_memo()
+
+    zero_network.after_policy_change()
+
+    assert requests == []
+    assert read_marker() == "absent"
+
+
+def test_a_remote_selected_while_a_change_was_made_is_said(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``server use`` ran in another terminal between the check and the change: connections to
+    that server are refused now, and the owner is told so and the way out."""
+
+    monkeypatch.setattr(zero_network, "_after_change_state", lambda: "zero_network")
+    record = _remote(select=False)
+    reset_selection_memo()
+    assert active_root() is None
+    _select_elsewhere(record, monkeypatch)
+
+    zero_network.after_policy_change()
+
+    err = capsys.readouterr().err
+    assert err.startswith("zero_network_remote_selected: ")
+    assert f"{record.target_id} (ssh)" in err
+    assert "refused before anything is sent" in err
+    assert "'finishup server use local'" in err
+
+
+# --- the item, live and last reported -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("kind", ["ssh", "https", "local_port"])
@@ -148,20 +393,93 @@ def test_a_remote_selection_under_zero_network_is_the_item(
         zero_network.REMOTE_SELECTED, record.target_id, kind
     )
     text = " ".join(item.lines())
+    assert text.startswith("This computer's privacy policy forbids all network use")
     assert f"{record.target_id} ({kind})" in text
-    assert "does not stop traffic" in text
+    assert "refused before anything is sent" in text
     assert "'finishup server use local', then restart open agent sessions" in text
-    for line in (*item.lines(), item.line(), item.indicator(), item.next_step()):
+    assert item.indicator() == f"{kind} {record.target_id} · refused: zero-network here"
+    for line in (*item.lines(), item.line(), item.indicator(), item.next_step(), item.heading()):
         assert _NAME not in line.replace(record.target_id, "")
         assert "lab.example" not in line and "127.0.0.1" not in line
     assert item.line().startswith("zero_network_remote_selected: ")
+    assert item.fact() == {
+        "reason": "zero_network_remote_selected",
+        "target_id": record.target_id,
+        "kind": kind,
+        "detail": None,
+        "policy_read": "live",
+        "last_reported_at": None,
+    }
 
 
-@pytest.mark.parametrize("state", ["network_permitted", "no_policy", "unreadable"])
-def test_nothing_is_claimed_unless_the_policy_is_zero_network(
+def test_an_unreadable_policy_falls_back_to_this_computers_last_report(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The normal case while a remote server is used: this computer's service is stopped or
+    locked. What it last reported decides, and the item says so, with when."""
+
+    record = _remote()
+    record_reported_policy(zero_network=True, now=_AT)
+    _policy(monkeypatch, "unreadable")
+
+    item = zero_network.find_zero_network_selection()
+
+    assert item == zero_network.ZeroNetworkSelection(
+        zero_network.REMOTE_SELECTED,
+        record.target_id,
+        "ssh",
+        policy_read="last_reported",
+        last_reported_at=_STAMP,
+    )
+    assert item is not None
+    text = " ".join(item.lines())
+    assert text.startswith(f"This computer last reported, at {_STAMP}, that its privacy policy")
+    assert "cannot be asked now" in text
+    assert "'finishup server use local'" in text
+    assert item.indicator() == f"ssh {record.target_id} · refused: last reported zero-network here"
+    assert "last reported" in item.heading() and "last reported" in item.next_step()
+    assert item.fact()["policy_read"] == "last_reported"
+    assert item.fact()["last_reported_at"] == _STAMP
+
+
+def test_the_fallback_reads_the_real_policy_path_when_the_service_cannot_be_asked(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _remote()
+    record_reported_policy(zero_network=True, now=_AT)
+    _everyday_service(home, monkeypatch, egress=None)
+
+    item = zero_network.find_zero_network_selection()
+
+    assert item is not None and (item.target_id, item.policy_read) == (
+        record.target_id,
+        "last_reported",
+    )
+
+
+@pytest.mark.parametrize("marker", ["permitted", "absent", "unreadable"])
+def test_an_unreadable_policy_without_a_zero_network_report_says_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
+    _remote()
+    if marker == "permitted":
+        record_reported_policy(zero_network=False, now=_AT)
+    elif marker == "unreadable":
+        path = everyday_policy.marker_path()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_bytes(b"{zero")
+        path.chmod(0o600)
+    _policy(monkeypatch, "unreadable")
+
+    assert zero_network.find_zero_network_selection() is None
+
+
+@pytest.mark.parametrize("state", ["network_permitted", "no_policy"])
+def test_a_live_answer_outranks_the_last_report(
     home: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     _remote()
+    record_reported_policy(zero_network=True, now=_AT)
     reads = _policy(monkeypatch, state)
 
     assert zero_network.find_zero_network_selection() is None
@@ -171,6 +489,7 @@ def test_nothing_is_claimed_unless_the_policy_is_zero_network(
 def test_no_selection_or_a_local_one_asks_no_service(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    record_reported_policy(zero_network=True, now=_AT)
     reads = _policy(monkeypatch, "zero_network")
     assert zero_network.find_zero_network_selection() is None
 
@@ -200,7 +519,7 @@ def test_an_unreadable_selection_is_said_with_its_closed_reason(
     )
     text = item.line()
     assert text.startswith("zero_network_selection_unreadable: ")
-    assert "cannot tell whether a server on another machine is still selected" in text
+    assert "cannot tell whether a server on another machine is selected" in text
     assert "'finishup server use local' clears it" in text
     # Never reported as "no server": it says the selection could not be read.
     assert "could not be read (selection_invalid)" in text
@@ -225,6 +544,7 @@ def test_an_isolation_root_decides_its_own_process_tree(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _remote()
+    record_reported_policy(zero_network=True, now=_AT)
     reads = _policy(monkeypatch, "zero_network")
     isolated = home / "isolated"
     isolated.mkdir(mode=0o700)
@@ -233,51 +553,6 @@ def test_an_isolation_root_decides_its_own_process_tree(
 
     assert zero_network.find_zero_network_selection() is None
     assert reads == []
-
-
-_MACHINE_SCOPE = JsonObject({"scope": {"kind": "machine"}})
-
-
-def _everyday_service(home: Path, monkeypatch: pytest.MonkeyPatch, *, egress: bool) -> list[object]:
-    """This computer's set-up everyday installation and its running service; records each read.
-
-    Only the control connection is a stand-in: ``everyday_network_state`` itself runs.
-    """
-
-    bundle = home / "data" / "finishup"
-    bundle.mkdir(mode=0o700, parents=True, exist_ok=True)
-    (bundle / "installation-state.json").write_bytes(b"{}\n")
-    requests: list[object] = []
-
-    class Client:
-        async def privacy_get_effective(self, request: object) -> object:
-            requests.append(request)
-            return JsonObject({"policy": {"network_egress_permitted": egress}})
-
-        async def close(self) -> None:
-            return None
-
-    async def connect(_kind: object, *, workspace_locator: object = None) -> Client:
-        assert workspace_locator is None
-        return Client()
-
-    monkeypatch.setattr("finishup.service.client.connect_service", connect)
-    monkeypatch.setattr(
-        "finishup.cli.provider_status.machine_scope_request", lambda: _MACHINE_SCOPE
-    )
-    return requests
-
-
-@pytest.mark.parametrize(
-    ("egress", "state"), [(False, "zero_network"), (True, "network_permitted")]
-)
-def test_the_everyday_machine_scope_policy_decides(
-    home: Path, monkeypatch: pytest.MonkeyPatch, egress: bool, state: str
-) -> None:
-    requests = _everyday_service(home, monkeypatch, egress=egress)
-
-    assert zero_network.everyday_network_state() == state
-    assert requests == [_MACHINE_SCOPE]
 
 
 def test_the_policy_read_works_from_a_cli_commands_event_loop(
@@ -302,20 +577,92 @@ def test_the_policy_read_works_from_a_cli_commands_event_loop(
     assert requests == [_MACHINE_SCOPE]
 
 
-def test_a_computer_never_set_up_has_no_policy_of_its_own(
+# --- server add and use: refused, live or last reported -----------------------------------------
+
+
+def test_remote_use_stays_refused_under_zero_network(
+    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console]
+) -> None:
+    record = _remote(select=False)
+    _policy(monkeypatch, "zero_network")
+
+    result = _invoke("server", "use", _NAME)
+
+    assert result.exit_code == 2
+    assert result.stderr.startswith("zero_network_in_force:")
+    assert console.instances == []
+    assert targets.read_selected_target_id() is None
+    assert record.target_id not in result.stderr
+
+
+@pytest.mark.parametrize("command", ["use", "add"])
+def test_remote_add_and_use_are_refused_when_this_computer_last_reported_zero_network(
+    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console], command: str
+) -> None:
+    if command == "use":
+        _remote(select=False)
+        arguments = ("server", "use", _NAME)
+    else:
+        arguments = ("server", "add", "lab2", "ssh://owner@lab.example:22")
+    record_reported_policy(zero_network=True, now=_AT)
+    _policy(monkeypatch, "unreadable")
+
+    result = _invoke(*arguments)
+
+    assert result.exit_code == 2, result.output
+    assert result.stderr.startswith("zero_network_in_force: ")
+    assert f"last reported, at {_STAMP}, that it makes no network connections" in result.stderr
+    assert "change the privacy policy on this computer first" in result.stderr
+    assert console.instances == []
+    assert targets.read_selected_target_id() is None
+    assert len(targets.list_targets()) == (1 if command == "use" else 0)
+
+
+@pytest.mark.parametrize("marker", ["permitted", "absent"])
+def test_an_unreadable_policy_without_a_zero_network_report_stays_refused_as_unreadable(
+    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console], marker: str
+) -> None:
+    """Fail closed: only a live answer allows a hop; the last report never does."""
+
+    _remote(select=False)
+    if marker == "permitted":
+        record_reported_policy(zero_network=False, now=_AT)
+    _policy(monkeypatch, "unreadable")
+
+    result = _invoke("server", "use", _NAME)
+
+    assert result.exit_code == 20
+    assert result.stderr.startswith("network_policy_unreadable:")
+    assert console.instances == []
+
+
+def test_server_login_sends_no_key_check_while_this_computer_last_reported_zero_network(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _remote("https", select=False)
+    record_reported_policy(zero_network=True, now=_AT)
+
     def never(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("nothing to ask")
+        raise AssertionError("nothing is read or sent")
 
-    monkeypatch.setattr("finishup.service.client.connect_service", never)
-    assert zero_network.everyday_network_state() == "no_policy"
+    monkeypatch.setattr(server_cli, "_check_https_key", never)
+    monkeypatch.setattr(server_cli, "_read_secret_on_console", never)
+
+    result = _invoke("server", "login", _NAME)
+
+    assert result.exit_code == 2
+    assert result.stderr.startswith("zero_network_remote_selected: ")
+    assert "'finishup server use local'" in result.stderr
 
 
-# --- the owner's choice -----------------------------------------------------------------------
+# --- a change that would make this computer zero-network: two choices, or refused --------------
 
 
-def test_choosing_1_switches_to_the_everyday_server(
+def _guard(*, interactive: bool = True, forbids: bool = True) -> str:
+    return zero_network.guard_policy_change(forbids_network=forbids, interactive=interactive)
+
+
+def test_choosing_1_switches_to_the_everyday_server_then_the_change_goes_ahead(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
@@ -323,8 +670,7 @@ def test_choosing_1_switches_to_the_everyday_server(
 ) -> None:
     from finishup.client.connector_runtime import ConnectorTargetRuntime
 
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
     console.answer = b"1"
     stops: list[Path | None] = []
 
@@ -333,18 +679,19 @@ def test_choosing_1_switches_to_the_everyday_server(
 
     monkeypatch.setattr(ConnectorTargetRuntime, "stop", stop)
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "switched"
+    assert _guard() == "switched"
 
     assert targets.read_selected_target_id() is None
     # Switching stops the traffic it names: what this client ran for that server (approach A:
     # its connector and the background workspace agents answering the server's reads) stopped.
     assert stops == [targets.target_root(record.target_id)]
     shown = _shown(console)
-    assert f"{record.target_id} (ssh)" in shown
-    assert "does not stop traffic" in shown
-    assert "1  Switch to this computer's everyday FinishUP now" in shown
-    assert f"2  Keep using the server {record.target_id} (ssh)" in shown
-    assert console.instances[0].prompts == ["Choose 1 or 2 (Enter keeps the server): "]
+    assert f"the selected FinishUP server {record.target_id} (ssh)" in shown
+    assert "make no network connections" in shown
+    assert "both cannot stay" in shown
+    assert "1  Switch to this computer's everyday FinishUP and make this change" in shown
+    assert f"2  Cancel this change and keep using the server {record.target_id} (ssh)" in shown
+    assert console.instances[0].prompts == ["Choose 1 or 2 (Enter cancels the change): "]
     assert _NAME not in shown.replace(record.target_id, "")
     out = capsys.readouterr().out
     assert "Using this computer's everyday FinishUP server." in out
@@ -352,7 +699,17 @@ def test_choosing_1_switches_to_the_everyday_server(
     assert "Restart open agent sessions" in out
 
 
-def test_choosing_2_keeps_the_server(
+def _stale_process_with_a_remote_selected(monkeypatch: pytest.MonkeyPatch) -> targets.ServerTarget:
+    """This process resolved this computer's server; another terminal then selected a remote one."""
+
+    record = _remote(select=False)
+    reset_selection_memo()
+    assert active_root() is None
+    _select_elsewhere(record, monkeypatch)
+    return record
+
+
+def test_choosing_2_cancels_the_change_and_keeps_the_server(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
@@ -363,30 +720,33 @@ def test_choosing_2_keeps_the_server(
     def never(_self: object, _target: Path | None) -> None:
         raise AssertionError("keeping the server stops nothing")
 
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
     console.answer = b"2"
     monkeypatch.setattr(ConnectorTargetRuntime, "stop", never)
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "kept"
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+        _guard()
 
+    assert (stopped.value.reason, stopped.value.cancelled) == (zero_network.REMOTE_SELECTED, True)
     assert targets.read_selected_target_id() == record.target_id
     out = capsys.readouterr().out
-    assert f"Kept the server {record.target_id} (ssh). Traffic to it continues" in out
-    assert "'finishup server use local', then restart open agent sessions" in out
+    assert "Cancelled: nothing was changed." in out
+    assert f"the server {record.target_id} (ssh) stays selected" in out
 
 
 @pytest.mark.parametrize(
     "answer", ["empty_input", "eof", "cancelled", "interrupted", "input_invalid"]
 )
-def test_enter_end_of_input_or_any_other_answer_keeps_the_server(
+def test_enter_end_of_input_ctrl_c_or_any_other_answer_cancels(
     home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console], answer: str
 ) -> None:
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
     console.answer = answer
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "kept"
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+        _guard()
+
+    assert stopped.value.cancelled is True
     assert targets.read_selected_target_id() == record.target_id
     # Ctrl-C ("cancelled") and Ctrl-D echo no newline, so the prompt's line is ended for them.
     last = console.instances[0].written[-1]
@@ -394,9 +754,6 @@ def test_enter_end_of_input_or_any_other_answer_keeps_the_server(
         assert last == "\n"
     else:
         assert last.endswith("(ssh)\n")
-
-
-# --- an interrupt answers the prompt -----------------------------------------------------------
 
 
 def test_the_choice_is_read_on_the_loop_thread_where_ctrl_c_reaches_it(
@@ -410,8 +767,7 @@ def test_the_choice_is_read_on_the_loop_thread_where_ctrl_c_reaches_it(
     and the runner's handler must be back afterwards.
     """
 
-    _remote()
-    _policy(monkeypatch, "zero_network")
+    _stale_process_with_a_remote_selected(monkeypatch)
     seen: list[tuple[bool, bool]] = []
 
     class Reading(_Console):
@@ -429,26 +785,28 @@ def test_the_choice_is_read_on_the_loop_thread_where_ctrl_c_reaches_it(
     def runner_handler(_signum: int, _frame: object) -> None:
         """Stands in for the handler ``asyncio.Runner`` installs: it does not raise."""
 
-    async def run() -> tuple[str, bool]:
+    async def run() -> tuple[bool, bool]:
         previous = signal.signal(signal.SIGINT, runner_handler)
         try:
-            outcome = await zero_network.surface_after_policy_change_async(interactive=True)
-            return outcome, signal.getsignal(signal.SIGINT) is runner_handler
+            try:
+                _guard()
+            except zero_network.ZeroNetworkChangeStopped as stopped:
+                return stopped.cancelled, signal.getsignal(signal.SIGINT) is runner_handler
+            return False, False
         finally:
             signal.signal(signal.SIGINT, previous)
 
-    outcome, restored = asyncio.run(run())
+    cancelled, restored = asyncio.run(run())
 
-    assert outcome == "kept"
+    assert cancelled
     assert seen == [(True, True)]
     assert restored
 
 
-def test_ctrl_c_before_the_read_begins_keeps_the_server(
+def test_ctrl_c_before_the_read_begins_cancels(
     home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console]
 ) -> None:
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
 
     class Interrupted(_Console):
         def write(self, value: str) -> None:
@@ -457,16 +815,18 @@ def test_ctrl_c_before_the_read_begins_keeps_the_server(
     monkeypatch.setattr("finishup.cli.trusted_console.TrustedForegroundConsole", Interrupted)
 
     try:
-        outcome = zero_network.surface_after_policy_change(interactive=True)
+        with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+            _guard()
     except KeyboardInterrupt:
-        pytest.fail("the interrupt escaped the prompt instead of keeping the server")
-    assert outcome == "kept"
+        pytest.fail("the interrupt escaped the prompt instead of cancelling the change")
+    assert stopped.value.cancelled is True
     assert targets.read_selected_target_id() == record.target_id
 
 
 _PTY_CHILD = textwrap.dedent(
     """
     import signal
+    from types import SimpleNamespace
 
     # A fresh terminal process: SIGINT deliverable and Python's own handler, whatever the test
     # process's signal state was when it forked.
@@ -476,8 +836,12 @@ _PTY_CHILD = textwrap.dedent(
     import anyio
     import finishup.cli.zero_network_selection as zero_network
 
-    item = zero_network.ZeroNetworkSelection(zero_network.REMOTE_SELECTED, "t_1a2b3c4d", "ssh")
-    zero_network.find_zero_network_selection = lambda: item
+    # Only the process root, the selection and the switch are stand-ins: nothing reads or
+    # changes real state.
+    zero_network._on_everyday_root = lambda: True
+    zero_network._remote_on_disk = lambda: SimpleNamespace(
+        target_id="t_1a2b3c4d", kind="ssh", is_remote=True
+    )
 
     def switch():
         print("SWITCHED", flush=True)
@@ -486,7 +850,10 @@ _PTY_CHILD = textwrap.dedent(
     zero_network._switch_to_local = switch
 
     async def main():
-        return await zero_network.surface_after_policy_change_async(interactive=True)
+        try:
+            return zero_network.guard_policy_change(forbids_network=True, interactive=True)
+        except zero_network.ZeroNetworkChangeStopped as stopped:
+            return "cancelled" if stopped.cancelled else "refused"
 
     print("OUTCOME " + anyio.run(main), flush=True)
     """
@@ -518,12 +885,11 @@ def _read_pty(fd: int, output: bytearray, until: bytes | None, seconds: float) -
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX pseudo-terminals only")
-def test_ctrl_c_at_a_real_console_prompt_keeps_the_server_and_exits() -> None:
+def test_ctrl_c_at_a_real_console_prompt_cancels_the_change_and_exits() -> None:
     """A real pseudo-terminal, the production coroutine path, and ``anyio.run``'s SIGINT handler.
 
-    Only the item and the switch are stubs in the child, so nothing reads or changes real state.
-    Ctrl-C at the prompt must keep the server and let the command finish at once; before the fix
-    the read ran in a worker thread and the child waited for another line instead.
+    Ctrl-C at the prompt must cancel the change, keep the server and let the command finish at
+    once: never wait for another line, never switch.
     """
 
     pid, fd = pty.fork()
@@ -535,7 +901,7 @@ def test_ctrl_c_at_a_real_console_prompt_keeps_the_server_and_exits() -> None:
     output = bytearray()
     finished = False
     try:
-        assert _read_pty(fd, output, b"Enter keeps the server", 60), output.decode(
+        assert _read_pty(fd, output, b"Enter cancels the change", 60), output.decode(
             "utf-8", "replace"
         )
         os.write(fd, b"\x03")
@@ -548,97 +914,149 @@ def test_ctrl_c_at_a_real_console_prompt_keeps_the_server_and_exits() -> None:
     text = output.decode("utf-8", "replace")
     assert finished, text
     assert os.waitstatus_to_exitcode(status) == 0, text
-    assert "Kept the server t_1a2b3c4d (ssh)" in text
-    assert "OUTCOME kept" in text
+    assert "Cancelled: nothing was changed." in text
+    assert "the server t_1a2b3c4d (ssh) stays selected" in text
+    assert "OUTCOME cancelled" in text
     assert "SWITCHED" not in text
 
 
-def test_without_a_trusted_console_the_facts_go_to_stderr(
+def test_without_a_trusted_console_the_change_is_refused_before_it_is_applied(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
     console.unavailable = True
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "warned"
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+        _guard()
 
+    assert (stopped.value.reason, stopped.value.cancelled) == (zero_network.REMOTE_SELECTED, False)
     assert targets.read_selected_target_id() == record.target_id
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.startswith("zero_network_remote_selected: ")
-    assert "'finishup server use local', then restart open agent sessions" in captured.err
-    assert "FinishUP did not switch servers." in captured.err
+    assert f"server {record.target_id} (ssh) is on another machine, a port or the web" in (
+        captured.err
+    )
+    assert "nothing was changed" in captured.err
+    assert "Run 'finishup server use local' in your own terminal, then make the change again" in (
+        captured.err
+    )
 
 
-def test_non_interactive_never_prompts_and_never_switches(
+def test_non_interactive_and_machine_readable_never_prompt(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    record = _remote("https")
-    _policy(monkeypatch, "zero_network")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
 
-    assert zero_network.surface_after_policy_change(interactive=False) == "warned"
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped):
+        _guard(interactive=False)
+    with (
+        zero_network.machine_readable_answer(),
+        pytest.raises(zero_network.ZeroNetworkChangeStopped),
+    ):
+        _guard(interactive=True)
 
     assert console.instances == []
     assert targets.read_selected_target_id() == record.target_id
     err = capsys.readouterr().err
-    assert f"{record.target_id} (https)" in err
-    assert "finishup server use local" in err
+    assert err.count("zero_network_remote_selected: ") == 2
     assert "lab.example" not in err
 
 
-def test_an_unreadable_selection_is_reported_not_offered(
+def test_an_unreadable_selection_offers_the_same_two_choices_or_is_refused(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _policy(monkeypatch, "zero_network")
     path = targets.selection_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_bytes(b"[]\n")
-    path.chmod(0o600)
+    with monkeypatch.context() as patched:
+        patched.setattr(zero_network, "_on_everyday_root", lambda: True)
+        path.write_bytes(b"[]\n")
+        path.chmod(0o600)
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "warned"
+        with pytest.raises(zero_network.ZeroNetworkChangeStopped) as refused:
+            _guard(interactive=False)
+        assert refused.value.reason == zero_network.SELECTION_UNREADABLE
+        assert capsys.readouterr().err.startswith("zero_network_selection_unreadable: ")
 
-    assert console.instances == []
-    assert capsys.readouterr().err.startswith("zero_network_selection_unreadable: ")
+        console.answer = b"1"
+        assert _guard() == "switched"
+    # 'server use local' clears a damaged selection: the change may then go ahead.
+    assert not path.exists()
+    assert "may still be selected" in _shown(console)
 
 
-def test_nothing_to_say_shows_nothing(
+@pytest.mark.parametrize(
+    "case", ["keeps_network", "nothing_selected", "local_selected", "on_remote_root", "isolated"]
+)
+def test_nothing_is_asked_or_refused_when_both_would_not_be_in_force(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
     console: type[_Console],
     capsys: pytest.CaptureFixture[str],
+    case: str,
 ) -> None:
-    _remote()
-    _policy(monkeypatch, "network_permitted")
+    forbids = case != "keeps_network"
+    if case == "keeps_network":
+        _stale_process_with_a_remote_selected(monkeypatch)
+    elif case == "local_selected":
+        with targets.registry_lock():
+            local, _root = targets.new_local_target("work")
+        _select_elsewhere(local, monkeypatch)
+    elif case == "on_remote_root":
+        # A process on the remote server's root changes that server's own policy (D1b).
+        _remote()
+        reset_selection_memo()
+        assert active_root() is not None
+    elif case == "isolated":
+        _remote()
+        isolated = home / "isolated"
+        isolated.mkdir(mode=0o700)
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(isolated))
+        reset_selection_memo()
 
-    assert zero_network.surface_after_policy_change(interactive=True) == "clear"
+    assert _guard(forbids=forbids) == "clear"
     assert console.instances == []
     assert capsys.readouterr() == ("", "")
 
 
-# --- every path that sets the policy ----------------------------------------------------------
+def test_which_candidates_would_make_this_computer_zero_network() -> None:
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind
+
+    machine_zero = local_only_policy()
+    assert zero_network.candidate_forbids_network(machine_zero) is True
+    assert zero_network.candidate_forbids_network(minimal_external_policy()) is False
+    repository = replace(
+        machine_zero,
+        effective_scope=AuthorizationScope(
+            AuthorizationScopeKind.WORKSPACE,
+            machine_zero.effective_scope.installation_id,
+            workspace_ref_commitment="hmac-sha256:" + "a" * 64,
+        ),
+    )
+    assert zero_network.candidate_forbids_network(repository) is False
+    wire = encode_privacy_policy_json(machine_zero)
+    assert zero_network.candidate_forbids_network(wire) is True
+    assert zero_network.candidate_forbids_network(encode_privacy_policy_json(repository)) is False
+    assert zero_network.candidate_forbids_network({"network_egress_permitted": False}) is False
+    assert zero_network.candidate_forbids_network(None) is False
 
 
-def _record_surfacing(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
-    calls: list[bool] = []
-
-    async def surface(*, interactive: bool) -> str:
-        calls.append(interactive)
-        return "clear"
-
-    monkeypatch.setattr(zero_network, "surface_after_policy_change_async", surface)
-    return calls
+# --- every path that changes this computer's policy ---------------------------------------------
 
 
 class _PolicyClient:
+    sent: list[str] = []
+
     def __init__(self, outcome: str) -> None:
         self.outcome = outcome
 
@@ -651,32 +1069,54 @@ class _PolicyClient:
         return JsonObject(body)
 
     async def privacy_propose_policy(self, request: JsonObject, **_kwargs: object) -> JsonObject:
+        _PolicyClient.sent.append("propose")
         return self._result(cast(str | None, request.get("schema_version")))
 
     async def privacy_tighten_policy(self, _request: JsonObject, **_kwargs: object) -> JsonObject:
+        _PolicyClient.sent.append("tighten")
         return self._result()
 
     async def close(self) -> None:
         return None
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+def _serve(monkeypatch: pytest.MonkeyPatch, outcome: str) -> list[str]:
+    _PolicyClient.sent = []
+
     async def build(*_args: object, **_kwargs: object) -> _PolicyClient:
         return _PolicyClient(outcome)
 
     monkeypatch.setattr(cli, "build_service_client", build)
+    return _PolicyClient.sent
+
+
+def _record_steps(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
+    """Record the guard before each change (with its two facts) and the read after it."""
+
+    steps: list[tuple[str, object]] = []
+
+    def guard(*, forbids_network: bool, interactive: bool) -> str:
+        steps.append(("guard", (forbids_network, interactive)))
+        return "clear"
+
+    async def after() -> None:
+        steps.append(("after", None))
+
+    monkeypatch.setattr(zero_network, "guard_policy_change", guard)
+    monkeypatch.setattr(zero_network, "after_policy_change_async", after)
+    return steps
 
 
 @pytest.mark.parametrize(
-    ("outcome", "surfaced"), [("tightening_applied", True), ("decision_required", False)]
+    ("outcome", "applied"), [("tightening_applied", True), ("decision_required", False)]
 )
 @pytest.mark.parametrize("terminal", [True, False])
-def test_a_repository_policy_change_surfaces_once_it_applies(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str, surfaced: bool, terminal: bool
+def test_a_repository_policy_change_is_guarded_before_and_remembered_once_it_applies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outcome: str, applied: bool, terminal: bool
 ) -> None:
     import finishup.cli.privacy_setup as privacy_setup
 
-    calls = _record_surfacing(monkeypatch)
+    steps = _record_steps(monkeypatch)
     _serve(monkeypatch, outcome)
     monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: terminal)
 
@@ -686,52 +1126,65 @@ def test_a_repository_policy_change_surfaces_once_it_applies(
         )
     )
 
-    assert calls == ([terminal] if surfaced else [])
+    assert steps == [("guard", (True, terminal)), *([("after", None)] if applied else [])]
 
 
-def test_a_relayed_proposal_never_prompts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_a_relayed_proposal_is_refused_never_offered(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """The elevated bootstrap relays an agent chat's approval: no console, nothing sent."""
+
     import finishup.cli.privacy_setup as privacy_setup
 
-    calls = _record_surfacing(monkeypatch)
-    _serve(monkeypatch, "tightening_applied")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    sent = _serve(monkeypatch, "tightening_applied")
     monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: True)
 
-    asyncio.run(
-        privacy_setup.propose_privacy_candidate(
-            local_only_policy(), "sha256:" + "d" * 64, workspace_locator=tmp_path
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as refused:
+        asyncio.run(
+            privacy_setup.propose_privacy_candidate(
+                local_only_policy(), "sha256:" + "d" * 64, workspace_locator=tmp_path
+            )
         )
-    )
 
-    # The elevated bootstrap relays an agent chat's approval: stderr only, never a console.
-    assert calls == [False]
+    assert refused.value.cancelled is False
+    assert sent == []
+    assert console.instances == []
+    assert targets.read_selected_target_id() == record.target_id
+    assert capsys.readouterr().err.startswith("zero_network_remote_selected: ")
 
 
 @pytest.mark.parametrize(
-    ("outcome", "surfaced"), [("tightening_applied", True), ("decision_required", False)]
+    ("outcome", "applied"), [("tightening_applied", True), ("decision_required", False)]
 )
-def test_a_machine_policy_change_surfaces_once_it_applies(
-    monkeypatch: pytest.MonkeyPatch, outcome: str, surfaced: bool
+def test_a_machine_policy_change_is_guarded_before_and_remembered_once_it_applies(
+    monkeypatch: pytest.MonkeyPatch, outcome: str, applied: bool
 ) -> None:
     import finishup.cli.privacy_setup as privacy_setup
 
-    calls = _record_surfacing(monkeypatch)
+    steps = _record_steps(monkeypatch)
     _serve(monkeypatch, outcome)
     monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: True)
 
     asyncio.run(
         privacy_setup._propose_machine(  # pyright: ignore[reportPrivateUsage]
-            local_only_policy(), "sha256:" + "2" * 64
+            minimal_external_policy(), "sha256:" + "2" * 64
         )
     )
-    assert calls == ([True] if surfaced else [])
+    assert steps == [("guard", (False, True)), *([("after", None)] if applied else [])]
 
     if outcome == "tightening_applied":
+        steps.clear()
         asyncio.run(
             privacy_setup._tighten_machine(  # pyright: ignore[reportPrivateUsage]
                 local_only_policy(), "sha256:" + "2" * 64
             )
         )
-        assert calls == [True, True]
+        assert steps == [("guard", (True, True)), ("after", None)]
 
 
 def _decision(status: str) -> object:
@@ -748,13 +1201,13 @@ class _NoStoredPassphrase:
         return None
 
 
-@pytest.mark.parametrize(("status", "surfaced"), [("committed", True), ("denied", False)])
-def test_a_trusted_decision_surfaces_only_when_it_commits(
-    home: Path, monkeypatch: pytest.MonkeyPatch, status: str, surfaced: bool
+@pytest.mark.parametrize(("status", "applied"), [("committed", True), ("denied", False)])
+def test_a_trusted_decision_is_remembered_only_when_it_commits(
+    home: Path, monkeypatch: pytest.MonkeyPatch, status: str, applied: bool
 ) -> None:
     import finishup.cli.privacy_setup as privacy_setup
 
-    calls = _record_surfacing(monkeypatch)
+    steps = _record_steps(monkeypatch)
     monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: False)
     monkeypatch.setattr(
         "finishup.adapters.keys.os_keyring.AutoUnlockPassphraseStore", _NoStoredPassphrase
@@ -768,41 +1221,110 @@ def test_a_trusted_decision_surfaces_only_when_it_commits(
     decision = asyncio.run(privacy_setup._decide("ppr_1"))  # pyright: ignore[reportPrivateUsage]
 
     assert getattr(decision, "status", None) == status
-    assert calls == ([False] if surfaced else [])
+    assert steps == ([("after", None)] if applied else [])
 
 
-def _invoke(*arguments: str) -> Result:
-    reset_selection_memo()
-    return _RUNNER.invoke(cli.app, list(arguments))
+def _request(policy: PrivacyPolicy) -> str:
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+
+    return json.dumps(
+        {
+            "expected_policy_digest": "sha256:" + "2" * 64,
+            "candidate_policy": cast(object, encode_privacy_policy_json(policy)),
+        }
+    )
 
 
 @pytest.mark.parametrize("command", ["tighten", "propose"])
-@pytest.mark.parametrize("json_output", [False, True])
-def test_the_privacy_commands_surface_after_an_applied_tightening(
-    monkeypatch: pytest.MonkeyPatch, command: str, json_output: bool
+def test_the_privacy_commands_refuse_a_zero_network_change_with_json_and_send_nothing(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    command: str,
 ) -> None:
-    calls = _record_surfacing(monkeypatch)
-    _serve(monkeypatch, "tightening_applied")
+    record = _remote(select=False)
+    sent = _serve(monkeypatch, "tightening_applied")
     monkeypatch.setattr(zero_network, "interactive_terminal", lambda: True)
+    # This process resolved this computer's server before another terminal chose the remote one.
+    monkeypatch.setattr(zero_network, "_on_everyday_root", lambda: True)
+    with targets.registry_lock():
+        targets.write_selection(record)
 
-    arguments = ["privacy", command, "--request", "{}"]
-    result = _invoke(*arguments, *(["--json"] if json_output else []))
+    result = _invoke("privacy", command, "--request", _request(local_only_policy()), "--json")
+
+    assert result.exit_code == 2, result.output
+    assert sent == []
+    assert result.stdout == ""
+    assert result.stderr.startswith("zero_network_remote_selected: ")
+    assert "'finishup server use local'" in result.stderr
+    assert console.instances == []
+    assert targets.read_selected_target_id() == record.target_id
+
+
+@pytest.mark.parametrize(("answer", "switched"), [(b"1", True), (b"2", False)])
+def test_the_privacy_commands_offer_the_two_choices_on_the_owners_terminal(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    answer: bytes,
+    switched: bool,
+) -> None:
+    steps: list[str] = []
+
+    async def after() -> None:
+        steps.append("after")
+
+    record = _remote(select=False)
+    sent = _serve(monkeypatch, "tightening_applied")
+    monkeypatch.setattr(zero_network, "interactive_terminal", lambda: True)
+    monkeypatch.setattr(zero_network, "_on_everyday_root", lambda: True)
+    monkeypatch.setattr(zero_network, "after_policy_change_async", after)
+    with targets.registry_lock():
+        targets.write_selection(record)
+    console.answer = answer
+
+    result = _invoke("privacy", "tighten", "--request", _request(local_only_policy()))
+
+    assert len(console.instances) == 1
+    if switched:
+        assert result.exit_code == 0, result.output
+        assert sent == ["tighten"] and steps == ["after"]
+        assert targets.read_selected_target_id() is None
+        assert "Using this computer's everyday FinishUP server." in result.stdout
+    else:
+        assert result.exit_code == 2, result.output
+        assert sent == [] and steps == []
+        assert targets.read_selected_target_id() == record.target_id
+        assert "Cancelled: nothing was changed." in result.stdout
+
+
+def test_a_change_that_keeps_network_use_is_sent_without_a_question(
+    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console]
+) -> None:
+    record = _remote()
+    sent = _serve(monkeypatch, "tightening_applied")
+    monkeypatch.setattr(zero_network, "_on_everyday_root", lambda: True)
+
+    result = _invoke(
+        "privacy", "tighten", "--request", _request(minimal_external_policy()), "--json"
+    )
 
     assert result.exit_code == 0, result.output
-    # A machine-readable answer never prompts; a human terminal may.
-    assert calls == [not json_output]
+    assert sent == ["tighten"]
+    assert console.instances == []
+    assert targets.read_selected_target_id() == record.target_id
 
 
-def test_a_proposal_that_needs_a_decision_surfaces_nothing_yet(
+def test_a_proposal_that_needs_a_decision_reads_nothing_yet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _record_surfacing(monkeypatch)
+    steps = _record_steps(monkeypatch)
     _serve(monkeypatch, "decision_required")
 
     result = _invoke("privacy", "propose", "--request", "{}", "--json")
 
     assert result.exit_code == 0, result.output
-    assert calls == []
+    assert steps == [("guard", (False, False))]
 
 
 _SETTING_COMMANDS = (
@@ -830,7 +1352,7 @@ def test_the_setting_commands_offer_the_choice_only_without_json(
     result = _invoke(*arguments, *(["--json"] if json_output else []))
 
     assert result.exit_code == 0, result.output
-    # A JSON answer keeps stdout to the document: no console choice, the facts on stderr.
+    # A JSON answer keeps stdout to the document: no console choice, the refusal on stderr.
     assert machine_readable == [json_output]
     assert zero_network.machine_readable_requested() is False
 
@@ -852,15 +1374,7 @@ def _granted(policy: PrivacyPolicy) -> object:
     return read
 
 
-def _no_stored_passphrase(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "finishup.adapters.keys.os_keyring.AutoUnlockPassphraseStore", _NoStoredPassphrase
-    )
-
-
-@pytest.mark.parametrize(
-    "change", ["credential_heuristic", "conversations", "input_roots", "decision"]
-)
+@pytest.mark.parametrize("change", ["credential_heuristic", "conversations", "input_roots"])
 @pytest.mark.parametrize("json_output", [False, True])
 def test_a_json_answer_reaches_every_policy_change_beneath_the_command(
     home: Path,
@@ -871,13 +1385,16 @@ def test_a_json_answer_reaches_every_policy_change_beneath_the_command(
     change: str,
     json_output: bool,
 ) -> None:
-    """The real setting changes and the real surfacing; only the services and console are fakes."""
+    """The real setting changes and the real guard; only the services and console are fakes.
+
+    Each change leaves this computer's machine policy zero-network while a remote server is
+    selected: a JSON answer is refused before anything is sent; the owner's terminal asks.
+    """
 
     import finishup.cli.privacy_setup as privacy_setup
 
-    record = _remote()
-    _policy(monkeypatch, "zero_network")
-    _serve(monkeypatch, "tightening_applied")
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    sent = _serve(monkeypatch, "tightening_applied")
     monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: True)
     console.answer = b"2"
 
@@ -903,39 +1420,74 @@ def test_a_json_answer_reaches_every_policy_change_beneath_the_command(
                 return await privacy_setup.run_conversation_review_change(
                     ConversationReview.LOCAL_ONLY, workspace_locator=tmp_path
                 )
-            if change == "input_roots":
-                root = str(tmp_path.resolve())
-                current = replace(local_only_policy(), admitted_input_roots=(root,))
-                monkeypatch.setattr(privacy_setup, "get_privacy_setup_snapshot", _granted(current))
-                return await privacy_setup.run_input_root_change(
-                    "remove", root, workspace_locator=tmp_path
-                )
-            _no_stored_passphrase(monkeypatch)
-
-            async def decide(_proposal_id: str) -> object:
-                return _decision("committed")
-
-            monkeypatch.setattr("finishup.cli.privacy_control.decide_policy", decide)
-            return await privacy_setup._decided_report(  # pyright: ignore[reportPrivateUsage]
-                "ppr_1", local_only_policy(), local_only_policy(), None
+            root = str(tmp_path.resolve())
+            current = replace(local_only_policy(), admitted_input_roots=(root,))
+            monkeypatch.setattr(privacy_setup, "get_privacy_setup_snapshot", _granted(current))
+            return await privacy_setup.run_input_root_change(
+                "remove", root, workspace_locator=tmp_path
             )
 
-    report = asyncio.run(run())
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+        asyncio.run(run())
 
-    assert getattr(report, "outcome", None) == "configured"
+    assert sent == []
     assert targets.read_selected_target_id() == record.target_id
     captured = capsys.readouterr()
     if json_output:
+        assert stopped.value.cancelled is False
         assert console.instances == []
-        assert "Kept the server" not in captured.out
+        assert captured.out == ""
         assert captured.err.startswith("zero_network_remote_selected: ")
     else:
+        assert stopped.value.cancelled is True
         assert len(console.instances) == 1
-        assert f"Kept the server {record.target_id} (ssh)" in captured.out
+        assert "Cancelled: nothing was changed." in captured.out
+
+
+def test_the_questionnaire_reports_a_cancelled_change_with_its_reason(
+    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console], tmp_path: Path
+) -> None:
+    import finishup.cli.privacy_setup as privacy_setup
+
+    _stale_process_with_a_remote_selected(monkeypatch)
+    sent = _serve(monkeypatch, "tightening_applied")
+    monkeypatch.setattr(privacy_setup, "_interactive_terminal", lambda: True)
+    current = minimal_external_policy()
+    monkeypatch.setattr(privacy_setup, "get_privacy_setup_snapshot", _granted(current))
+
+    def quiet(_snapshot: object) -> None:
+        return None
+
+    def chosen(*_args: object, **_kwargs: object) -> PrivacyPolicy:
+        return local_only_policy()
+
+    monkeypatch.setattr(privacy_setup, "_render_repository_authority", quiet)
+    monkeypatch.setattr(privacy_setup, "_configured_bindings", lambda: (None, None))
+    monkeypatch.setattr(privacy_setup, "_configured_fallback_binding", lambda: None)
+    monkeypatch.setattr(privacy_setup, "_choose_candidate", chosen)
+    console.answer = "empty_input"
+
+    report = asyncio.run(
+        privacy_setup._privacy_setup_questionnaire(  # pyright: ignore[reportPrivateUsage]
+            recipe_hint="private",
+            offer_recommended=False,
+            credential_probe_authorized=False,
+            update_checks_override=None,
+            workspace_locator=tmp_path,
+            credential_heuristic=None,
+            conversation_review=None,
+            ai_review_add_on=False,
+            ai_review_add_on_when_hybrid=False,
+            decide_here=True,
+        )
+    )
+
+    assert (report.outcome, report.reason) == ("cancelled", "zero_network_remote_selected")
+    assert sent == []
 
 
 @pytest.mark.parametrize("json_output", [False, True])
-def test_a_process_on_this_computers_server_surfaces_a_remote_selected_meanwhile(
+def test_a_process_on_this_computers_server_with_a_remote_selected_meanwhile(
     home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console], json_output: bool
 ) -> None:
     """End to end through a real command, the one way this computer's policy changes then.
@@ -944,13 +1496,20 @@ def test_a_process_on_this_computers_server_surfaces_a_remote_selected_meanwhile
     privacy ceremonies are refused (``requires_server_host``) and ``privacy tighten|propose``
     reach the selected server. A FinishUP process that resolved this computer's server first
     can: here ``privacy credential-heuristic enable --machine-default`` passes its server-host
-    check on the everyday root, another terminal then selects the remote server, and the
-    tightening commits on this computer's service. The selection, the policy read, the choice
-    and the switch are the real code; only the two services and the console are stand-ins.
+    check on the everyday root, another terminal then selects the remote server, and the change
+    would leave this computer zero-network with it selected. With ``--json`` it is refused before
+    anything is sent; on the owner's terminal "1" switches, the change is made, and this
+    computer's policy is read again and remembered. The selection, the guard, the switch and the
+    policy read are the real code; only the two services and the console are stand-ins.
     """
 
     import finishup.cli.privacy_setup as privacy_setup
 
+    monkeypatch.setattr(
+        zero_network,
+        "_after_change_state",
+        zero_network._read_after_change,  # pyright: ignore[reportPrivateUsage]
+    )
     record = _remote(select=False)
     policy_reads = _everyday_service(home, monkeypatch, egress=False)
     console.answer = b"1"
@@ -960,15 +1519,14 @@ def test_a_process_on_this_computers_server_surfaces_a_remote_selected_meanwhile
 
     async def machine_policy() -> PrivacyPolicy:
         roots.append(active_root())
-        # 'finishup server use lab' in another terminal: it writes the owner-only selection file
-        # and resets only its own process's memo, so this process keeps the root it resolved.
-        with monkeypatch.context() as other_process, targets.registry_lock():
-            other_process.setattr(targets, "reset_selection_memo", lambda: None)
-            targets.write_selection(record)
+        _select_elsewhere(record, monkeypatch)
         return machine
+
+    sent: list[str] = []
 
     async def build(*_args: object, **_kwargs: object) -> _PolicyClient:
         roots.append(active_root())
+        _PolicyClient.sent = sent
         return _PolicyClient("tightening_applied")
 
     monkeypatch.setattr(privacy_setup, "_machine_effective_policy", machine_policy)
@@ -982,32 +1540,36 @@ def test_a_process_on_this_computers_server_surfaces_a_remote_selected_meanwhile
         *(["--json"] if json_output else []),
     )
 
-    assert result.exit_code == 0, result.output
-    # This process kept this computer's server; the check read the selection from its file.
-    assert roots == [None, None]
-    assert policy_reads == [_MACHINE_SCOPE]
     if json_output:
-        assert json.loads(result.stdout)["outcome"] == "configured"
+        assert result.exit_code == 20, result.output
+        assert sent == [] and policy_reads == []
         assert console.instances == []
         assert targets.read_selected_target_id() == record.target_id
         assert result.stderr.startswith("zero_network_remote_selected: ")
-        assert "FinishUP did not switch servers." in result.stderr
+        assert read_marker() == "absent"
     else:
-        assert f"2  Keep using the server {record.target_id} (ssh)" in _shown(console)
+        assert result.exit_code == 0, result.output
+        assert roots == [None, None]
+        assert sent == ["tighten"]
+        assert f"2  Cancel this change and keep using the server {record.target_id} (ssh)" in (
+            _shown(console)
+        )
         assert targets.read_selected_target_id() is None
         assert "Using this computer's everyday FinishUP server." in result.stdout
         # The real stop of what this client ran for it (no connector was running here).
         assert (
             f"Closed this computer's connection to the server {record.target_id} (ssh)"
         ) in result.stdout
+        # The change was made on this computer: its policy is read again and remembered.
+        assert policy_reads == [_MACHINE_SCOPE]
+        assert cast(ReportedPolicy, read_marker()).zero_network is True
 
 
-@pytest.mark.parametrize(("status", "surfaced"), [("committed", True), ("stale", False)])
-def test_decide_policy_surfaces_after_a_committed_decision(
-    monkeypatch: pytest.MonkeyPatch, status: str, surfaced: bool
+@pytest.mark.parametrize(("status", "applied"), [("committed", True), ("stale", False)])
+def test_decide_policy_remembers_after_a_committed_decision(
+    monkeypatch: pytest.MonkeyPatch, status: str, applied: bool
 ) -> None:
-    calls = _record_surfacing(monkeypatch)
-    monkeypatch.setattr(zero_network, "interactive_terminal", lambda: True)
+    steps = _record_steps(monkeypatch)
     monkeypatch.setattr(cli, "_auto_unlock_store", lambda: _NoStoredPassphrase(None))
 
     async def decide(_pending_id: str) -> object:
@@ -1019,25 +1581,10 @@ def test_decide_policy_surfaces_after_a_committed_decision(
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["status"] == status
-    assert calls == ([False] if surfaced else [])
+    assert steps == ([("after", None)] if applied else [])
 
 
-def test_remote_use_stays_refused_under_zero_network(
-    home: Path, monkeypatch: pytest.MonkeyPatch, console: type[_Console]
-) -> None:
-    record = _remote(select=False)
-    _policy(monkeypatch, "zero_network")
-
-    result = _invoke("server", "use", _NAME)
-
-    assert result.exit_code == 2
-    assert result.stderr.startswith("zero_network_in_force:")
-    assert console.instances == []
-    assert targets.read_selected_target_id() is None
-    assert record.target_id not in result.stderr
-
-
-# --- visible afterwards ------------------------------------------------------------------------
+# --- visible while it lasts -------------------------------------------------------------------
 
 
 def _unreachable(_self: object, _root: Path | None) -> object:
@@ -1057,7 +1604,6 @@ def test_server_status_and_list_show_the_item(
 
     status = _invoke("server", "status", "--json")
     assert status.exit_code == 0, status.output
-    # The released contract keeps its shape; the item rides on stderr beside it.
     document = cast(JsonValue, json.loads(status.stdout))
     validate_schema_instance("server-target-status", "1.0.0", document)
     assert status.stderr.startswith("zero_network_remote_selected: ")
@@ -1071,7 +1617,35 @@ def test_server_status_and_list_show_the_item(
 
     server_cli._show_zero_network_item(machine_readable=False)  # pyright: ignore[reportPrivateUsage]
     out = capsys.readouterr().out
-    assert "To stop, run 'finishup server use local'" in out
+    assert "To keep working, run 'finishup server use local'" in out
+
+
+def test_server_status_text_and_json_say_this_computer_last_reported_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _remote("https")
+    record_reported_policy(zero_network=True, now=_AT)
+    _policy(monkeypatch, "unreadable")
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
+    )
+
+    document, stderr = _status_document()
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_remote_selected",
+        "target_id": record.target_id,
+        "kind": "https",
+        "detail": None,
+        "policy_read": "last_reported",
+        "last_reported_at": _STAMP,
+    }
+    assert stderr.startswith(
+        f"zero_network_remote_selected: This computer last reported, at {_STAMP}"
+    )
+
+    listed = _invoke("server", "list")
+    assert listed.stdout.startswith(f"This computer last reported, at {_STAMP}")
 
 
 def test_server_status_is_unchanged_without_the_item(
@@ -1117,6 +1691,8 @@ def test_server_status_json_carries_the_remote_selected_item(
         "target_id": record.target_id,
         "kind": "https",
         "detail": None,
+        "policy_read": "live",
+        "last_reported_at": None,
     }
     assert stderr.startswith("zero_network_remote_selected: ")
     assert reads == [1]
@@ -1141,6 +1717,8 @@ def test_server_status_json_carries_an_unreadable_selection_with_its_reason(
         "target_id": None,
         "kind": None,
         "detail": "target_record_invalid",
+        "policy_read": "live",
+        "last_reported_at": None,
     }
     assert stderr.startswith("zero_network_selection_unreadable: ")
 
@@ -1150,7 +1728,8 @@ def test_server_status_json_says_nothing_when_there_is_nothing_to_say(
     home: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     """Null, never a guess: no selection asks no service; a remote selection under a policy that
-    permits network use, was never set up, or cannot be read is not the item."""
+    permits network use, was never set up, or cannot be read with no zero-network report is not
+    the item."""
 
     reads = _policy(monkeypatch, state)
     document, stderr = _status_document()
@@ -1184,6 +1763,8 @@ def test_the_status_document_reads_the_item_itself_when_not_given_one(
         "target_id": record.target_id,
         "kind": "local_port",
         "detail": None,
+        "policy_read": "live",
+        "last_reported_at": None,
     }
 
 
@@ -1204,13 +1785,21 @@ def test_server_test_never_asks_this_computers_policy(
     assert reads == []
 
 
+@pytest.mark.parametrize("policy_read", ["live", "last_reported"])
 def test_setup_readiness_names_the_item_with_its_continuation(
-    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    policy_read: str,
 ) -> None:
     from finishup.cli import setup_readiness
 
     record = _remote()
-    _policy(monkeypatch, "zero_network")
+    if policy_read == "live":
+        _policy(monkeypatch, "zero_network")
+    else:
+        record_reported_policy(zero_network=True, now=_AT)
+        _policy(monkeypatch, "unreadable")
 
     def readiness(json_output: bool) -> str:
         code = setup_readiness._setup_next(  # pyright: ignore[reportPrivateUsage]
@@ -1227,18 +1816,25 @@ def test_setup_readiness_names_the_item_with_its_continuation(
 
     report = json.loads(readiness(True))
     fact = report["facts"]["server_selection"]
-    assert {key: fact[key] for key in ("reason", "target_id", "kind", "detail")} == {
+    assert {
+        key: fact[key]
+        for key in ("reason", "target_id", "kind", "detail", "policy_read", "last_reported_at")
+    } == {
         "reason": "zero_network_remote_selected",
         "target_id": record.target_id,
         "kind": "ssh",
         "detail": None,
+        "policy_read": policy_read,
+        "last_reported_at": None if policy_read == "live" else _STAMP,
     }
     assert fact["next_command"].endswith("server use local")
 
     human = readiness(False)
     line = next(line for line in human.splitlines() if line.startswith("Server: "))
-    assert f"{record.target_id} (ssh)" in line
+    assert f"refuses the selected server {record.target_id} (ssh)" in line
     assert "server use local, then restart open agent sessions" in line
+    if policy_read == "last_reported":
+        assert f"last reported, at {_STAMP}" in line
 
 
 def test_setup_status_puts_the_item_on_stderr(
@@ -1269,12 +1865,19 @@ def test_setup_status_puts_the_item_on_stderr(
     assert captured.err.startswith("zero_network_remote_selected: ")
 
 
+@pytest.mark.parametrize("policy_read", ["live", "last_reported"])
 def test_the_menu_home_shows_the_item(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], policy_read: str
 ) -> None:
     from finishup.cli import menu
 
-    item = zero_network.ZeroNetworkSelection(zero_network.REMOTE_SELECTED, "t_1a2b3c4d", "ssh")
+    item = zero_network.ZeroNetworkSelection(
+        zero_network.REMOTE_SELECTED,
+        "t_1a2b3c4d",
+        "ssh",
+        policy_read=cast(zero_network.PolicyRead, policy_read),
+        last_reported_at=None if policy_read == "live" else _STAMP,
+    )
 
     async def service() -> str:
         return "reachable"
@@ -1293,3 +1896,63 @@ def test_the_menu_home_shows_the_item(
     assert lines and all(line.startswith("  Server     ") for line in lines)
     assert any("t_1a2b3c4d (ssh)" in line for line in lines)
     assert any("finishup server use local" in line for line in lines)
+    if policy_read == "last_reported":
+        assert any(f"last reported, at {_STAMP}" in line for line in lines)
+
+
+def test_the_menu_privacy_view_remembers_this_computers_policy(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.cli import menu
+
+    class Client:
+        async def privacy_get_effective(self, _request: object) -> object:
+            return _effective(egress=False)
+
+        async def close(self) -> None:
+            return None
+
+    async def build(*_args: object, **_kwargs: object) -> Client:
+        return Client()
+
+    monkeypatch.setattr(cli, "build_service_client", build)
+    monkeypatch.setattr(
+        "finishup.cli.provider_status.machine_scope_request", lambda: _MACHINE_SCOPE
+    )
+
+    def shown(_result: object) -> None:
+        return None
+
+    monkeypatch.setattr(menu, "_show", shown)
+
+    asyncio.run(menu._privacy_show("privacy_get_effective"))  # pyright: ignore[reportPrivateUsage]
+
+    assert cast(ReportedPolicy, read_marker()).zero_network is True
+
+
+def test_setup_reading_the_update_policy_remembers_this_computers_policy(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.cli import setup
+
+    class Client:
+        async def privacy_get_effective(self, _request: object) -> object:
+            return _effective(egress=True)
+
+        async def close(self) -> None:
+            return None
+
+    async def build(*_args: object, **_kwargs: object) -> Client:
+        return Client()
+
+    monkeypatch.setattr(cli, "build_service_client", build)
+    monkeypatch.setattr(
+        "finishup.cli.provider_status.machine_scope_request", lambda: _MACHINE_SCOPE
+    )
+
+    network, _enabled = asyncio.run(
+        setup._effective_update_policy_bits()  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert network is True
+    assert cast(ReportedPolicy, read_marker()).zero_network is False

@@ -1465,6 +1465,7 @@ async def _propose_pending(
     from finishup.cli.app import build_service_client
     from finishup.ports.control import ProjectionRenderMode, WorkspaceLocator
 
+    _guard_zero_network(candidate, prompt=prompt)
     locator = Path.cwd() if workspace_locator is None else workspace_locator
     client = await build_service_client(
         workspace_locator=WorkspaceLocator(str(locator.resolve(strict=True))),
@@ -1489,7 +1490,7 @@ async def _propose_pending(
     if result.get("outcome") == "decision_required" and pending is not None:
         return pending
     if result.get("outcome") == "tightening_applied":
-        await _surface_zero_network_selection(prompt=prompt)
+        await _after_policy_change()
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 
@@ -1502,8 +1503,9 @@ async def propose_privacy_candidate(
 ) -> str | None:
     """Propose one exact privacy candidate through the public setup helper.
 
-    Its caller relays an agent chat's approval, so a remote server left selected under
-    zero-network is reported on stderr, never asked about on a console (ADR-051 decision 8).
+    Its caller relays an agent chat's approval, so a candidate that would make this computer
+    zero-network while a server elsewhere is selected is refused, never asked about on a console
+    (ADR-051 decision 8).
     """
 
     return await _propose(
@@ -1530,21 +1532,35 @@ async def _decide(proposal_id: str) -> object:
     else:
         decision = await decide_policy_with_local_reauthentication(proposal_id, passphrase)
     if getattr(decision, "status", None) == "committed":
-        await _surface_zero_network_selection()
+        await _after_policy_change()
     return decision
 
 
-async def _surface_zero_network_selection(*, prompt: bool = True) -> None:
-    """After a committed policy change: a remote server still selected under zero-network.
+def _guard_zero_network(candidate: PrivacyPolicy, *, prompt: bool = True) -> None:
+    """Before a change is sent: never leave this computer zero-network with a server elsewhere.
 
-    ADR-051 decision 8 (maintainer decision, 2026-11-06): on this terminal the owner chooses to
-    switch to this computer's everyday FinishUP or keep the server; without one, or with
-    ``prompt`` off, the facts and the command are printed. FinishUP never switches on its own.
+    ADR-051 decision 8 (maintainer decision, 2026-11-07). When ``candidate`` would make this
+    computer's machine-scope policy zero-network while the selection names a remote server, the
+    owner's own terminal offers to switch to this computer's everyday FinishUP first or cancel;
+    with ``prompt`` off or without that terminal the change is refused. A cancel or refusal raises
+    ``ZeroNetworkChangeStopped`` (a ``ValueError`` with its ``reason``) after saying why and
+    ``finishup server use local``. FinishUP never switches on its own.
     """
 
-    from finishup.cli.zero_network_selection import surface_after_policy_change_async
+    from finishup.cli.zero_network_selection import candidate_forbids_network, guard_policy_change
 
-    await surface_after_policy_change_async(interactive=prompt and _interactive_terminal())
+    guard_policy_change(
+        forbids_network=candidate_forbids_network(candidate),
+        interactive=prompt and _interactive_terminal(),
+    )
+
+
+async def _after_policy_change() -> None:
+    """After a committed change: remember this computer's policy (ADR-051 decision 8)."""
+
+    from finishup.cli.zero_network_selection import after_policy_change_async
+
+    await after_policy_change_async()
 
 
 def _confirmed_candidate(
@@ -1894,11 +1910,24 @@ async def _privacy_setup_questionnaire(
             grant_state=snapshot.grant_state,
             migration_state=snapshot.migration_state,
         )
-    pending = await _propose_pending(
-        candidate,
-        snapshot.authority_digest,
-        workspace_locator=locator,
-    )
+    from finishup.cli.zero_network_selection import ZeroNetworkChangeStopped
+
+    try:
+        pending = await _propose_pending(
+            candidate,
+            snapshot.authority_digest,
+            workspace_locator=locator,
+        )
+    except ZeroNetworkChangeStopped as stopped:
+        # ADR-051 decision 8: the owner cancelled, or was told why and how to fix it; nothing
+        # was proposed and this computer's policy is as it was.
+        return PrivacySetupReport(
+            "cancelled",
+            current.profile.value,
+            reason=stopped.reason,
+            grant_state=snapshot.grant_state,
+            migration_state=snapshot.migration_state,
+        )
     if pending is None:
         await _warn_if_agent_route_cannot_dispatch(candidate)
         _reconcile_host_admission(candidate, locator)
@@ -1987,6 +2016,7 @@ async def _machine_effective_policy() -> PrivacyPolicy:
 async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> None:
     from finishup.cli.app import build_service_client
 
+    _guard_zero_network(candidate)
     client = await build_service_client()
     try:
         result = await client.privacy_tighten_policy(
@@ -2001,12 +2031,13 @@ async def _tighten_machine(candidate: PrivacyPolicy, expected_policy_digest: str
         await client.close()
     if result.get("outcome") != "tightening_applied":
         raise ValueError("privacy_tightening_not_applied")
-    await _surface_zero_network_selection()
+    await _after_policy_change()
 
 
 async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str) -> str | None:
     from finishup.cli.app import build_service_client
 
+    _guard_zero_network(candidate)
     client = await build_service_client()
     try:
         result = await client.privacy_propose_policy(
@@ -2024,7 +2055,7 @@ async def _propose_machine(candidate: PrivacyPolicy, expected_policy_digest: str
     if result.get("outcome") == "decision_required" and type(proposal_id) is str:
         return proposal_id
     if result.get("outcome") == "tightening_applied":
-        await _surface_zero_network_selection()
+        await _after_policy_change()
         return None
     raise ValueError("privacy_setup_proposal_invalid")
 

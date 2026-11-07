@@ -1,15 +1,19 @@
-"""The terminal interface shows a remote server still selected under zero-network (ADR-051).
+"""The terminal interface shows a remote server refused under zero-network (ADR-051).
 
-Maintainer decision of 2026-11-06 (decision 8): the header and ``/server`` say so while this
-computer's privacy policy forbids network use and the selection names a server on another
-machine, a port or the web; ``/server`` keeps "Use local" as the owner's way to switch, and the
-header drops the item once the selection changes. The item is read when the interface starts,
-before any command, and again after a privacy ceremony and on ``/server``.
+Maintainer decision of 2026-11-07 (decision 8): this computer's zero-network policy and a server
+on another machine, a port or the web are never in force together. While the selection still
+names one (a process that resolved it earlier, a change made elsewhere), the header and
+``/server`` say that connections to it are refused, from the live policy or, when this
+computer's service cannot be asked, from what it last reported; ``/server`` keeps "Use local" as
+the owner's way out, and the header drops the item once the selection changes. The item is read
+when the interface starts, before any command, and again after a privacy ceremony and on
+``/server``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,6 +21,7 @@ from typing import Any, cast
 import pytest
 
 import finishup.cli.zero_network_selection as zero_network
+import finishup.client.everyday_policy as everyday_policy
 from builders.server_targets import ambient_home
 from builders.tui_runtime import FakeRuntime
 from finishup.client import targets
@@ -33,10 +38,11 @@ _ROWS = (
     ServerRow("lab", "ssh", "t_9f8e7d6c", "ssh://owner@lab.example:22", True),
 )
 _ITEM_LINES = (
-    "This computer's privacy policy forbids all network use, but the selected FinishUP server "
+    "This computer's privacy policy forbids all network use, and the selected FinishUP server "
     "t_9f8e7d6c (ssh) is on another machine, reached over SSH.",
-    "To stop, run 'finishup server use local', then restart open agent sessions.",
+    "To keep working, run 'finishup server use local', then restart open agent sessions.",
 )
+_TITLE = "This computer is zero-network: the selected server is refused"
 
 
 @pytest.fixture
@@ -48,6 +54,11 @@ def anyio_backend() -> str:
 def home(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     with ambient_home(monkeypatch) as root:
         monkeypatch.setattr(zero_network, "_selection_on_disk", zero_network.read_selection_on_disk)
+        monkeypatch.setattr(
+            everyday_policy,
+            "_location",
+            everyday_policy._ambient_marker_path,  # pyright: ignore[reportPrivateUsage]
+        )
         yield root
 
 
@@ -84,8 +95,8 @@ async def test_server_shows_the_item_and_keeps_use_local_as_the_way_out() -> Non
 
     await app.command_server()
 
-    item = [entry for entry in said if entry[1] == "Zero-network does not stop the selected server"]
-    assert item == [(Level.UNPROVEN, "Zero-network does not stop the selected server", _ITEM_LINES)]
+    item = [entry for entry in said if entry[1] == _TITLE]
+    assert item == [(Level.UNPROVEN, _TITLE, _ITEM_LINES)]
     selection = views[0]
     assert isinstance(selection, SelectionView)
     assert "use:local" in [option.key for option in selection.options]
@@ -134,10 +145,11 @@ async def test_the_header_names_the_item_until_the_selection_changes(
 
     lines = await runtime.refresh_zero_network_item()
 
-    assert any("does not stop traffic" in line for line in lines)
+    assert any("refused before anything is sent" in line for line in lines)
     indicator = runtime.server_indicator()
-    assert indicator == f"ssh {record.target_id} · zero-network here does not stop it"
+    assert indicator == f"ssh {record.target_id} · refused: zero-network here"
     assert "lab" not in str(indicator).replace(record.target_id, "")
+    assert runtime.zero_network_heading() == _TITLE
 
     with targets.registry_lock():
         targets.clear_selection()
@@ -157,7 +169,7 @@ async def test_a_privacy_ceremony_refreshes_the_item(
     assert runtime.server_indicator() == f"ssh {record.target_id}"
 
     async def ceremony(**_kwargs: object) -> object:
-        # The owner chose zero-network and kept the server when the ceremony asked.
+        # Another terminal made this computer zero-network while the ceremony ran.
         state[0] = "zero_network"
         return SimpleNamespace(outcome="configured")
 
@@ -166,9 +178,50 @@ async def test_a_privacy_ceremony_refreshes_the_item(
     report = await runtime.run_privacy_setup("private")
 
     assert getattr(report, "outcome", None) == "configured"
-    assert runtime.server_indicator() == (
-        f"ssh {record.target_id} · zero-network here does not stop it"
+    assert runtime.server_indicator() == f"ssh {record.target_id} · refused: zero-network here"
+
+
+async def test_the_header_and_server_say_what_this_computer_last_reported(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This computer's service is stopped or locked, the normal case while a remote server is
+    used: what it last reported decides, worded as such."""
+
+    from finishup.tui.runtime import FinishUpRuntime
+
+    record = _remote_selected()
+    monkeypatch.setattr(zero_network, "everyday_network_state", lambda: "unreadable")
+    everyday_policy.record_reported_policy(
+        zero_network=True, now=datetime(2026, 11, 7, 9, 30, tzinfo=UTC)
     )
+    runtime = FinishUpRuntime(cwd=home)
+
+    lines = await runtime.refresh_zero_network_item()
+
+    assert lines[0].startswith(
+        "This computer last reported, at 2026-11-07T09:30:00.000Z, that its privacy policy"
+    )
+    assert runtime.server_indicator() == (
+        f"ssh {record.target_id} · refused: last reported zero-network here"
+    )
+    assert runtime.zero_network_heading() == (
+        "This computer last reported zero-network: the selected server is refused"
+    )
+
+
+async def test_server_titles_the_item_as_last_reported() -> None:
+    title = "This computer last reported zero-network: the selected server is refused"
+    runtime = FakeRuntime(
+        servers=_ROWS,
+        server_selected="ssh t_9f8e7d6c",
+        zero_network=_ITEM_LINES,
+        zero_network_title=title,
+    )
+    app, said, _views = _harness(runtime, [None])
+
+    await app.command_server()
+
+    assert (Level.UNPROVEN, title, _ITEM_LINES) in said
 
 
 async def test_server_status_reuses_the_item_server_read_and_asks_no_service_again(
@@ -219,6 +272,8 @@ async def test_server_status_reuses_the_item_server_read_and_asks_no_service_aga
             "target_id": record.target_id,
             "kind": "ssh",
             "detail": None,
+            "policy_read": "live",
+            "last_reported_at": None,
         }
     ]
 

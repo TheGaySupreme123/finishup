@@ -168,6 +168,7 @@ _REASONS: Final = frozenset(
         "target_root_too_long",
         "target_root_unsafe",
         "selection_invalid",
+        "zero_network_remote_selected",
     }
 )
 
@@ -827,17 +828,34 @@ def reauthorized(record: ServerTarget, *, now: str | None = None) -> ServerTarge
 
 
 def require_current_authorization(record: ServerTarget | None) -> None:
-    """Refuse a remote target the owner authorized under an older disclosure (ADR-051 section 8).
+    """Refuse a remote target that nothing may be sent to now (ADR-051 decision 8).
 
-    A new disclosure version needs a fresh typed confirmation before anything is sent to that
-    target: ``finishup server use NAME`` on the trusted console shows the current disclosure and
-    records it (``reauthorized``). Raises ``target_reauthorization_required``; ``None`` and a local
-    record pass. Every path that opens a connection to a remote target calls this; the display and
-    reverse paths (``server status``, ``list``, ``test``, ``remove``, ``logout``) do not, so the
-    owner can still see and remove a stale target.
+    Two refusals, before anything is sent, with or without a workspace:
+
+    * ``zero_network_remote_selected``: this computer last reported that its privacy policy
+      forbids all network use (``client.everyday_policy``, a file read, never a service round
+      trip). This computer's zero-network policy and a server on another machine, a port or the
+      web are never in force together (maintainer decision, 2026-11-07); this is the last line of
+      defence for a process whose selection predates the change. ``finishup server use local``
+      is the way out. A process whose root an isolation variable or runtime pin decides keeps its
+      own policy and is not refused here.
+    * ``target_reauthorization_required``: the owner authorized the target under an older
+      disclosure. A new disclosure version needs a fresh typed confirmation: ``finishup server use
+      NAME`` on the trusted console shows the current disclosure and records it
+      (``reauthorized``).
+
+    ``None`` and a local record pass. Every path that opens a connection to a remote target calls
+    this; the display and reverse paths (``server status``, ``list``, ``test``, ``remove``,
+    ``logout``) do not, so the owner can still see and remove a stale target.
     """
 
-    if record is not None and record.needs_reauthorization:
+    if record is None or not record.is_remote:
+        return
+    from finishup.client.everyday_policy import last_reported_zero_network
+
+    if last_reported_zero_network() is not None:
+        raise TargetError("zero_network_remote_selected")
+    if record.needs_reauthorization:
         raise TargetError("target_reauthorization_required")
 
 

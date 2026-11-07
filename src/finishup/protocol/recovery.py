@@ -780,6 +780,16 @@ _DIRECTIVES: Final = (
         nudge="Never select or authorize a FinishUP server for the owner.",
     ),
     RecoveryDirective(
+        token="zero_network_local_server_required",
+        directive=(
+            "This computer's FinishUP is set to make no network connections, so nothing was sent "
+            "to the selected FinishUP server elsewhere. Ask the owner to run 'finishup server use "
+            "local' in their own terminal, then restart this session."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge="Never select a FinishUP server or change the privacy policy for the owner.",
+    ),
+    RecoveryDirective(
         token="server_selection_overridden",
         directive=(
             "An environment variable or a runtime pin chooses the FinishUP root, so the saved "

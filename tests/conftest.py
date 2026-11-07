@@ -162,6 +162,33 @@ def _no_real_server_selection_read(  # pyright: ignore[reportUnusedFunction]
     except ImportError:
         return
     monkeypatch.setattr(zero_network_module, "_selection_on_disk", lambda: None)
+    # After every privacy change made on this computer, its policy is read again so it can be
+    # remembered (maintainer decision, 2026-11-07); a test reaches no real service for it unless
+    # it puts ``_read_after_change`` back with its own stand-in for the service.
+    monkeypatch.setattr(zero_network_module, "_after_change_state", lambda: "unreadable")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_everyday_policy_marker(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep what this computer last reported about network use out of the real state directory.
+
+    The marker (``finishup.client.everyday_policy``, ADR-051 decision 8) lives beside the server
+    registry in the everyday state directory; the connection check reads it before every hop to a
+    remote server, and a policy read writes it. Each test gets its own private folder, so a real
+    marker never refuses a test's connection and no test writes one. A test of the real location
+    puts ``_ambient_marker_path`` back inside an ambient home of its own.
+    """
+
+    try:
+        import finishup.client.everyday_policy as everyday_policy_module
+    except ImportError:
+        return
+    root = tmp_path_factory.mktemp("everyday-policy")
+    root.chmod(0o700)
+    marker = Path(root) / everyday_policy_module.MARKER_NAME
+    monkeypatch.setattr(everyday_policy_module, "_location", lambda: marker)
 
 
 @pytest.fixture(autouse=True)

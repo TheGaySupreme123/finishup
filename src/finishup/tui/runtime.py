@@ -947,8 +947,8 @@ class FinishUpRuntime:
                 getattr(error, "reason", "privacy_setup_failed"),
                 "the trusted privacy ceremony could not be completed",
             ) from error
-        # The ceremony itself told the owner on this terminal when the change leaves a remote
-        # server selected under zero-network (ADR-051 decision 8); the header follows it.
+        # The ceremony itself asked the owner on this terminal before a change that would leave a
+        # remote server selected under zero-network (ADR-051 decision 8); the header follows it.
         await self.refresh_zero_network_item()
         return report
 
@@ -1524,7 +1524,8 @@ class FinishUpRuntime:
         """Whether this computer forbids network use while a remote server is selected.
 
         Reads the selection file afresh and, only when it names a remote server, asks this
-        computer's everyday service for its policy (in a worker thread). Returns the item's lines
+        computer's everyday service for its policy (in a worker thread); when that service cannot
+        be asked, what it last reported decides (ADR-051 decision 8). Returns the item's lines
         for ``/server``, empty when there is nothing to say; the header shows it until the
         selection changes.
         """
@@ -1533,6 +1534,14 @@ class FinishUpRuntime:
 
         self._zero_network = await find_zero_network_selection_async()
         return () if self._zero_network is None else self._zero_network.lines()
+
+    def zero_network_heading(self) -> str:
+        """The ``/server`` title of the item last read (live, or as last reported)."""
+
+        item = self._zero_network
+        if item is None:
+            return "This computer is zero-network: the selected server is refused"
+        return item.heading()
 
     async def server_rows(self) -> tuple[tuple[ServerRow, ...], tuple[str, ...]]:
         """Every server target (``local`` first) and the ``finishup server list`` lines."""

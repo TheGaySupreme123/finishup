@@ -2076,6 +2076,10 @@ async def _call_support(
         # Every support body passes through here, whichever branch built it, so the normalization
         # is one step rather than a property of one path.
         request = with_body_schema_version(method, request)
+        if method in _POLICY_CHANGE_METHODS:
+            refused = _zero_network_change_refused(request, json_output)
+            if refused is not None:
+                return refused
         # ADR-051 decision 8: with a remote server selected the change is that server's, so it is
         # named before and after. The result document is released, so the lines go to stderr.
         policy_server = _policy_server_for(method)
@@ -2095,7 +2099,13 @@ async def _call_support(
         if policy_server is not None:
             _stderr(policy_server.answer_line(result))
         if method in _POLICY_CHANGE_METHODS and result.get("outcome") == "tightening_applied":
-            await _surface_zero_network_selection(json_output)
+            await _after_policy_change()
+        if method == "privacy_get_effective":
+            # ADR-051 decision 8: this computer's own machine-scope answer is remembered for when
+            # its service can no longer be asked (a server elsewhere selected, an idle relock).
+            from finishup.cli.zero_network_selection import remember_reported_policy
+
+            remember_reported_policy(result)
         if method == "privacy_get_effective" and not json_output and sys.stdout.isatty():
             plain = _plain_json(result)
             for line in (
@@ -2125,20 +2135,39 @@ def _policy_server_for(method: str) -> PolicyServer | None:
     return selected_policy_server()
 
 
-async def _surface_zero_network_selection(json_output: bool) -> None:
-    """After a policy change: a remote server still selected while network use is forbidden.
+def _zero_network_change_refused(request: JsonObject, json_output: bool) -> int | None:
+    """Before ``privacy propose|tighten`` sends anything (ADR-051 decision 8, 2026-11-07).
 
-    ADR-051 decision 8 (maintainer decision, 2026-11-06). A human terminal gets the choice to
-    switch to this computer's everyday FinishUP or keep the server; a machine-readable answer
-    keeps stdout's shape and gets the facts and the command on stderr. Nothing switches unasked.
+    A candidate that would make this computer zero-network while a server elsewhere is selected
+    offers, on the owner's own terminal, to switch to this computer's everyday FinishUP first or
+    cancel; with ``--json`` or without that terminal it is refused. Returns the exit code when
+    the change is not made (the owner was told why and the one command that fixes it), else
+    ``None``.
     """
 
     from finishup.cli.zero_network_selection import (
+        ZeroNetworkChangeStopped,
+        candidate_forbids_network,
+        guard_policy_change,
         interactive_terminal,
-        surface_after_policy_change_async,
     )
 
-    await surface_after_policy_change_async(interactive=not json_output and interactive_terminal())
+    try:
+        guard_policy_change(
+            forbids_network=candidate_forbids_network(request.get("candidate_policy")),
+            interactive=not json_output and interactive_terminal(),
+        )
+    except ZeroNetworkChangeStopped:
+        return exit_code_for(PublicErrorCode.INVALID_REQUEST)
+    return None
+
+
+async def _after_policy_change() -> None:
+    """After this computer's policy changed: remember it (ADR-051 decision 8, 2026-11-07)."""
+
+    from finishup.cli.zero_network_selection import after_policy_change_async
+
+    await after_policy_change_async()
 
 
 def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
@@ -2297,8 +2326,9 @@ async def _run_credential_heuristic_command(
 
     setting = CredentialHeuristic.DISABLED if action == "disable" else CredentialHeuristic.ENFORCED
     try:
-        # A JSON answer keeps stdout to the document: a remote server left selected under
-        # zero-network is reported on stderr, never offered on the console (ADR-051 decision 8).
+        # A JSON answer keeps stdout to the document: a change that would leave a server
+        # elsewhere selected under zero-network is refused on stderr, never offered on the
+        # console (ADR-051 decision 8).
         with machine_readable_answer(json_output):
             report = await run_credential_heuristic_change(setting, machine_default=machine_default)
     except ControlError as error:
@@ -2362,7 +2392,7 @@ async def _run_conversation_review_command(setting_name: str, json_output: bool)
         return 2
     setting = ConversationReview(token)
     try:
-        # A JSON answer never offers the server choice (ADR-051 decision 8): stderr only.
+        # A JSON answer never offers the server choice (ADR-051 decision 8): it is refused.
         with machine_readable_answer(json_output):
             report = await run_conversation_review_change(setting)
     except ControlError as error:
@@ -2504,7 +2534,7 @@ async def _run_input_root_command(action: str, value: str, json_output: bool) ->
     from finishup.cli.zero_network_selection import machine_readable_answer
 
     try:
-        # A JSON answer never offers the server choice (ADR-051 decision 8): stderr only.
+        # A JSON answer never offers the server choice (ADR-051 decision 8): it is refused.
         with machine_readable_answer(json_output):
             report = await run_input_root_change("add" if action == "add" else "remove", value)
     except ControlError as error:
@@ -5843,7 +5873,7 @@ def _privacy_decision_command(kind: str) -> Callable[..., None]:
         async def decide() -> int:
             code = await _trusted_call(run_decision, json_output)
             if code == 0 and decided and getattr(decided[-1], "status", None) == "committed":
-                await _surface_zero_network_selection(json_output)
+                await _after_policy_change()
             return code
 
         _finish(run_async(decide))

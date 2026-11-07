@@ -7,7 +7,8 @@ also carries what that target's server may read outside the claimed project on t
 (ADR-051 decision 5): the outside-read mode, where the mode came from, and the folders listed for
 it, from this client's own record. ``zero_network_selection`` says when this computer forbids
 all network use while a remote server is, or may be, selected (ADR-051 decision 8), by generated
-id and closed tokens; it is null otherwise. It is an owner display: the target name, its location
+id and closed tokens, and whether this computer said so now or last reported it (with when); it
+is null otherwise. It is an owner display: the target name, its location
 (a host, a URL) and the listed folders appear here and in ``server list``, ``server status`` and
 ``server folders list`` only, never in errors, logs, hook output, or MCP text. The claim salt and
 any credential never appear.
@@ -15,7 +16,7 @@ any credential never appear.
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "SERVER_TARGET_STATUS_SCHEMA_VERSION",
@@ -106,19 +107,43 @@ class ServerTargetProbe(BaseModel):
 
 class ServerTargetZeroNetworkSelection(BaseModel):
     """This computer forbids all network use while the selection names, or may name, a server on
-    another machine, a port or the web (ADR-051 decision 8).
+    another machine, a port or the web (ADR-051 decision 8). FinishUP never uses such a server in
+    that state: connections to it are refused until ``finishup server use local``.
 
     ``zero_network_remote_selected``: ``target_id`` and ``kind`` name the selected server.
     ``zero_network_selection_unreadable``: the selection could not be read; ``detail`` is its
-    closed reason and the server is unknown. Generated ids and closed tokens only.
+    closed reason and the server is unknown. ``policy_read`` is ``live`` when this computer's
+    service answered now, or ``last_reported`` when it could not be asked (stopped or locked) and
+    it last reported zero-network at ``last_reported_at`` (maintainer decision, 2026-11-07).
+    Generated ids, closed tokens and a fixed-shape UTC time only.
     """
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "if": {
+                "properties": {"policy_read": {"const": "last_reported"}},
+                "required": ["policy_read"],
+            },
+            "then": {"properties": {"last_reported_at": {"not": {"type": "null"}}}},
+            "else": {"properties": {"last_reported_at": {"type": "null"}}},
+        },
+    )
 
     reason: Literal["zero_network_remote_selected", "zero_network_selection_unreadable"]
     target_id: TargetId | None
     kind: Literal["local_port", "ssh", "https"] | None
     detail: Token | None
+    policy_read: Literal["live", "last_reported"]
+    # Set exactly when ``policy_read`` is ``last_reported``.
+    last_reported_at: Timestamp | None
+
+    @model_validator(mode="after")
+    def _reported_time_matches_how_it_was_read(self) -> "ServerTargetZeroNetworkSelection":
+        if (self.policy_read == "last_reported") != (self.last_reported_at is not None):
+            raise ValueError("zero_network_last_reported_at_mismatch")
+        return self
 
 
 class ServerTargetStatusContract(BaseModel):
@@ -132,7 +157,7 @@ class ServerTargetStatusContract(BaseModel):
     client_version: Annotated[str, Field(min_length=1, max_length=128)]
     target: ServerTargetDescription
     probe: ServerTargetProbe
-    # Null unless this computer is in the zero-network state while a remote server is (or may
-    # be) selected: the zero-network setting does not stop traffic to it.
+    # Null unless this computer is (or last reported being) in the zero-network state while a
+    # remote server is (or may be) selected: connections to it are refused.
     zero_network_selection: ServerTargetZeroNetworkSelection | None
     observed_at: Timestamp

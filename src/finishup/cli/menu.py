@@ -543,6 +543,12 @@ async def _privacy_show(method: str) -> None:
         result = await getattr(client, method)(request)
     finally:
         await client.close()
+    if method == "privacy_get_effective":
+        # ADR-051 decision 8: this computer's machine-scope answer is remembered, as by
+        # 'finishup privacy show'.
+        from finishup.cli.zero_network_selection import remember_reported_policy
+
+        remember_reported_policy(result)
     _show(result)
 
 

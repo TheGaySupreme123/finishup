@@ -3583,6 +3583,10 @@ async def _effective_update_policy_bits() -> tuple[bool | None, bool]:
         finally:
             await client.close()
         raw_map = cast(Mapping[str, object], raw)
+        from finishup.cli.zero_network_selection import remember_reported_policy
+
+        # ADR-051 decision 8: this computer's machine-scope answer is remembered.
+        remember_reported_policy(raw_map)
         policy_obj = raw_map.get("policy")
         if not isinstance(policy_obj, Mapping):
             return None, False

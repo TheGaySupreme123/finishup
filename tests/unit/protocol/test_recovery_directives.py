@@ -569,6 +569,7 @@ class TestWorkspaceBindingAndServerTargetReasons:
         "remote_identity_changed": "remote_identity_verify",
         "remote_service_not_running": "remote_service_start_required",
         "remote_incompatible": "remote_release_mismatch",
+        "zero_network_remote_selected": "zero_network_local_server_required",
     }
 
     @pytest.mark.parametrize("reason", sorted(_EXPECTED))
@@ -626,7 +627,11 @@ class TestWorkspaceBindingAndServerTargetReasons:
 
         assert REMOTE_CONNECTION_PHASES == frozenset(
             reason for reason in self._EXPECTED if reason.startswith("remote_")
-        ) | {"target_reauthorization_required", "target_root_is_remote"}
+        ) | {
+            "target_reauthorization_required",
+            "target_root_is_remote",
+            "zero_network_remote_selected",
+        }
         assert REMOTE_CONNECTION_PHASES <= PROTOCOL_REASON_CODES
         for phase in REMOTE_CONNECTION_PHASES:
             assert re.fullmatch(r"[a-z][a-z0-9_]{0,63}", phase)
@@ -648,6 +653,17 @@ class TestWorkspaceBindingAndServerTargetReasons:
         assert "nothing was recorded" not in entry.directive
         assert "sent nothing" not in entry.directive
         assert entry.directive.endswith("under its original identity rules.")
+
+    def test_the_zero_network_refusal_says_why_and_the_one_way_out(self) -> None:
+        # Maintainer decision of 2026-11-07: this computer's zero-network policy and a server
+        # elsewhere are never in force together; the refusal names why, that nothing was sent,
+        # and the one command that fixes it, and never tells an agent to do it for the owner.
+        entry = directive_for("zero_network_local_server_required")
+        assert entry is not None
+        assert "make no network connections" in entry.directive
+        assert "nothing was sent" in entry.directive
+        assert "'finishup server use local'" in entry.directive
+        assert entry.nudge is not None and "Never select a FinishUP server" in entry.nudge
 
     def test_the_new_tokens_are_protocol_tokens_not_local_ones(self) -> None:
         tokens = set(self._EXPECTED.values())

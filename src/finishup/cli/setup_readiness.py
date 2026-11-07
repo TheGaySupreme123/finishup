@@ -109,8 +109,9 @@ def _background_advice() -> dict[str, JsonValue] | None:
 def _zero_network_selection() -> dict[str, JsonValue] | None:
     """The zero-network item (ADR-051 decision 8) as a readiness fact, with its continuation.
 
-    A remote server still selected while this computer's policy forbids network use: every
-    readiness operation reports it, because hooks and agent sessions keep sending work there.
+    A remote server still selected while this computer's policy forbids network use, or last
+    reported so: every readiness operation reports it, because hooks and agent sessions are
+    refused before anything is sent there until the owner switches.
     """
 
     from finishup.cli.zero_network_selection import find_zero_network_selection
@@ -128,19 +129,24 @@ def _server_selection_line(fact: JsonValue) -> str | None:
 
     if not isinstance(fact, dict):
         return None
+    state = (
+        f"this computer last reported, at {fact.get('last_reported_at')}, that it forbids all "
+        "network use"
+        if fact.get("policy_read") == "last_reported"
+        else "this computer forbids all network use"
+    )
     if fact.get("reason") == REMOTE_SELECTED:
         what = (
-            "this computer forbids all network use, but work still goes to the selected server "
-            f"{fact.get('target_id')} ({fact.get('kind')}); that setting does not stop it"
+            f"{state}, so FinishUP refuses the selected server {fact.get('target_id')} "
+            f"({fact.get('kind')}): hooks, commands and agent sessions send nothing to it"
         )
     else:
         what = (
-            "this computer forbids all network use, and the server selection could not be read "
-            f"({fact.get('detail')}), so whether a server on another machine is still selected "
-            "is not known"
+            f"{state}, and the server selection could not be read ({fact.get('detail')}), so "
+            "whether a server on another machine is still selected is not known"
         )
     return (
-        f"{what}. To switch to this computer's everyday FinishUP, run "
+        f"{what}. To keep working on this computer's everyday FinishUP, run "
         f"{fact.get('next_command')}, then restart open agent sessions"
     )
 

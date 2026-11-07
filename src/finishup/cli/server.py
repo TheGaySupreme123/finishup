@@ -216,6 +216,12 @@ _REMEDIES: Final[dict[str, tuple[str, int]]] = {
         "server on another machine; change the privacy policy on this computer first",
         _USAGE,
     ),
+    # ADR-051 decision 8 (2026-11-07): a connection's own refusal, e.g. at 'server connect'.
+    "zero_network_remote_selected": (
+        "this computer's FinishUP is set to make no network connections (as it last reported), "
+        "so nothing was sent to the selected server elsewhere; run 'finishup server use local'",
+        _USAGE,
+    ),
     "network_policy_unreadable": (
         "this computer's FinishUP has its own privacy policy, which could not be read (its "
         "service is stopped, locked, or did not answer), so a server on another machine is "
@@ -439,17 +445,33 @@ def _zero_network_in_force() -> bool:
     Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
     This computer's own FinishUP decides (``zero_network_selection.everyday_network_state``): its
     everyday installation's effective machine-scope policy, when it was set up. A policy that does
-    not permit network egress is the zero-network state; one that cannot be read (the service is
-    stopped, locked, or does not answer, or the installation's identity cannot be read) refuses
-    the hop with ``network_policy_unreadable``, never allows it. A computer whose everyday
-    FinishUP was never set up has no policy of its own, so nothing here refuses it: it is a
-    client of the server it names, and that server's own policy governs its data.
+    not permit network egress is the zero-network state. One that cannot be read now (the service
+    is stopped, locked, or does not answer, or the installation's identity cannot be read) falls
+    back to what this computer last reported (``client.everyday_policy``, maintainer decision of
+    2026-11-07): last reported zero-network refuses as ``zero_network_in_force``, saying when;
+    anything else (permitted, no report, or a report that cannot be read) refuses with
+    ``network_policy_unreadable``, never allows the hop. A computer whose everyday FinishUP was
+    never set up has no policy of its own, so nothing here refuses it: it is a client of the
+    server it names, and that server's own policy governs its data.
     """
 
     from finishup.cli.zero_network_selection import everyday_network_state
 
     state = everyday_network_state()
     if state == "unreadable":
+        from finishup.client.everyday_policy import last_reported_zero_network
+
+        reported = last_reported_zero_network()
+        if reported is not None:
+            raise ServerCommandRefused(
+                "zero_network_in_force",
+                message=(
+                    f"this computer's FinishUP last reported, at {reported.reported_at}, that it "
+                    "makes no network connections, and it cannot be asked now (its service is "
+                    "stopped or locked), so it cannot use a server on another machine; change "
+                    "the privacy policy on this computer first"
+                ),
+            )
         raise ServerCommandRefused("network_policy_unreadable")
     return state == "zero_network"
 
@@ -1567,6 +1589,12 @@ def server_login(
     record = _target_or_fail(name)
     if record.kind not in {"https", "local_port"}:
         raise ServerCommandRefused("credential_not_applicable")
+    from finishup.client.everyday_policy import last_reported_zero_network
+
+    if last_reported_zero_network() is not None:
+        # The key is checked against the server before it is stored: a connection, and nothing
+        # is sent to a server elsewhere while this computer is zero-network (ADR-051 decision 8).
+        raise ServerCommandRefused("zero_network_remote_selected")
     try:
         secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
         _check_https_key(record, secret)

@@ -729,6 +729,25 @@ def test_server_status_json_carries_the_zero_network_item_the_check_reports(
         "target_id": "t_1a2b3c4d",
         "kind": "https",
         "detail": None,
+        "policy_read": "live",
+        "last_reported_at": None,
+    }
+    # This computer's service could not be asked: what it last reported decides, and says when.
+    reported = zero_network.ZeroNetworkSelection(
+        zero_network.REMOTE_SELECTED,
+        "t_1a2b3c4d",
+        "https",
+        policy_read="last_reported",
+        last_reported_at="2026-11-07T09:30:00.000Z",
+    )
+    monkeypatch.setattr(zero_network, "find_zero_network_selection", lambda: reported)
+    assert _status_json()["zero_network_selection"] == {
+        "reason": "zero_network_remote_selected",
+        "target_id": "t_1a2b3c4d",
+        "kind": "https",
+        "detail": None,
+        "policy_read": "last_reported",
+        "last_reported_at": "2026-11-07T09:30:00.000Z",
     }
 
 
@@ -752,12 +771,24 @@ def test_the_status_document_carries_the_zero_network_item_by_id_and_token_only(
             "target_id": "t_1a2b3c4d",
             "kind": "ssh",
             "detail": None,
+            "policy_read": "live",
+            "last_reported_at": None,
         },
         {
             "reason": "zero_network_selection_unreadable",
             "target_id": None,
             "kind": None,
             "detail": "selection_invalid",
+            "policy_read": "live",
+            "last_reported_at": None,
+        },
+        {
+            "reason": "zero_network_remote_selected",
+            "target_id": "t_1a2b3c4d",
+            "kind": "ssh",
+            "detail": None,
+            "policy_read": "last_reported",
+            "last_reported_at": "2026-11-07T09:30:00.000Z",
         },
     )
     for right in rights:
@@ -770,6 +801,12 @@ def test_the_status_document_carries_the_zero_network_item_by_id_and_token_only(
         {**rights[0], "target_id": "devbox"},
         {**rights[1], "detail": "/srv/shared/.config"},
         {k: v for k, v in rights[0].items() if k != "detail"},
+        {k: v for k, v in rights[0].items() if k != "policy_read"},
+        {**rights[0], "policy_read": "remembered"},
+        # The time is there exactly when the state was last reported, in its fixed shape.
+        {**rights[0], "last_reported_at": "2026-11-07T09:30:00.000Z"},
+        {**rights[2], "last_reported_at": None},
+        {**rights[2], "last_reported_at": "yesterday"},
     )
     for wrong in wrongs:
         broken = {**payload, "zero_network_selection": wrong}
