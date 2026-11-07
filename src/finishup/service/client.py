@@ -2063,11 +2063,15 @@ def _remote_target_refusal(error: Exception) -> ControlError:
 
 
 def _require_remote_authorization(root: Path) -> None:
-    """Refuse, before any dial, a remote target confirmed under an older disclosure (ADR-051).
+    """Refuse, before any dial, a remote target nothing may be sent to now (ADR-051).
 
-    Nothing is sent to such a target, with or without a workspace to claim, and no connector is
-    started for it, until the owner confirms the current disclosure (``finishup server use
-    NAME``). A record that can no longer be read refuses the same way.
+    ``targets.require_current_authorization`` decides: while this computer last reported a
+    zero-network policy (decision 8, 2026-11-07) every remote target is refused as
+    ``zero_network_remote_selected``, until ``finishup server use local``; a target confirmed
+    under an older disclosure is refused as ``target_reauthorization_required``, until the owner
+    confirms the current disclosure (``finishup server use NAME``). Nothing is sent, with or
+    without a workspace to claim, and no connector is started. A record that can no longer be
+    read refuses the same way.
     """
 
     from finishup.client.targets import TargetError, read_target, require_current_authorization

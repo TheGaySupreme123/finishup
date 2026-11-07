@@ -3036,12 +3036,10 @@ def _connect_failure(error: BaseException) -> RuntimeError_:
     remote = remote_failure(error)
     if remote is not None:
         # The selected server is on another machine (ADR-051): its phase and directive only.
+        from finishup.cli.remote_remedy import remote_summary
+
         reason, directive = remote
-        return RuntimeError_(
-            reason,
-            "the selected FinishUP server could not serve this connection",
-            details=(directive.directive,),
-        )
+        return RuntimeError_(reason, remote_summary(reason), details=(directive.directive,))
     return RuntimeError_(
         str(getattr(error, "reason", "service_unavailable")),
         "the local FinishUP service is not reachable",

@@ -1060,7 +1060,10 @@ through the same relay; human-control and secret channels never leave the server
   owner confirmed under an older disclosure is refused before any dial, with or without a
   workspace to claim, as the retryable `service_unavailable` with phase
   `target_reauthorization_required` (a record that can no longer be read: `target_root_is_remote`);
-  no connector is started and nothing is sent until `finishup server use NAME` renews it.
+  no connector is started and nothing is sent until `finishup server use NAME` renews it. While
+  this computer last reported a zero-network policy (decision 8) every remote target is refused
+  the same way, with phase `zero_network_remote_selected`, before the disclosure check; the
+  connector's background agents open through `binding_for_active_root`, so none is opened then.
 - **Workspace agent location.** Per connection, the client process's own `ServiceClient` answers
   through the relay. For work that outlives the call, the connector keeps one long-lived agent
   connection per workspace whose claim it relayed, for 15 minutes after that workspace's last hello

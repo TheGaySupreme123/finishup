@@ -22,8 +22,23 @@ __all__ = [
     "remote_failure",
     "remote_locked_directive",
     "remote_remedy_line",
+    "remote_summary",
     "remote_unreachable_directive",
 ]
+
+# A remote phase's one-line summary, before its directive. This computer refusing to connect
+# while it is zero-network (ADR-051 decision 8) is not the server failing to serve.
+_ZERO_NETWORK_SUMMARY = (
+    "this computer's FinishUP is set to make no network connections, so nothing was sent to the "
+    "selected FinishUP server"
+)
+_REMOTE_SUMMARY = "the selected FinishUP server could not serve this connection"
+
+
+def remote_summary(phase: str | None) -> str:
+    """The fixed summary a surface shows for a remote phase (the CLI line, the terminal)."""
+
+    return _ZERO_NETWORK_SUMMARY if phase == "zero_network_remote_selected" else _REMOTE_SUMMARY
 
 
 def _directive(token: str | None) -> RecoveryDirective:
