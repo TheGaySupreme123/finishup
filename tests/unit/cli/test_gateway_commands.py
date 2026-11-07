@@ -55,7 +55,11 @@ def test_a_key_is_written_once_to_a_new_owner_only_file(home: Path) -> None:
     key = output.read_text(encoding="ascii").strip()
     assert API_KEY_PATTERN.match(key)
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
-    assert key not in created.output and key.split("_")[2] not in created.output
+    # The secret's alphabet includes "_", so take it from the key pattern, never by splitting.
+    matched = API_KEY_PATTERN.match(key)
+    assert matched is not None
+    secret = matched.group(2)
+    assert key not in created.output and secret not in created.output
     assert not isinstance(KeyRing(_keys(home)).authenticate(key), str)
 
     again = _invoke(
@@ -70,7 +74,7 @@ def test_a_key_is_written_once_to_a_new_owner_only_file(home: Path) -> None:
     assert listed.exit_code == 0
     (row,) = json.loads(listed.stdout)["keys"]
     assert row["label"] == "laptop" and row["revoked_at"] is None
-    assert key.split("_")[2] not in listed.output
+    assert secret not in listed.output
 
     revoked = _invoke("service", "gateway", "key", "revoke", row["key_id"])
     assert revoked.exit_code == 0
