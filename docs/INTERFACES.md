@@ -4342,7 +4342,11 @@ rejected rather than rendered. Simultaneous tightenings are included so the huma
 diff. For a compound transition, top-level `changes` is empty and `members` is the complete ordered
 set of `PrivacyPolicyTransitionPreviewMember(authority, action, changes)` values. `authority` is
 `machine_ceiling|repository_grant`; `action` is `replace|insert`, subject to the closed valid
-combinations enforced by that type. A first repository grant may contain both a machine-ceiling
+combinations enforced by that type. The member sequence is `[repository_grant]` or
+`[machine_ceiling, repository_grant]`; a lone `machine_ceiling` member is never sent. A
+machine-only proposal is a single-layer transition even though the policy store records it as one
+installation-ceiling `replace` member, so its preview carries that member's whole diff in
+`changes` (#1322). A first repository grant may contain both a machine-ceiling
 replacement and repository-row insertion; those members are rendered together and commit
 atomically. The `PolicyTransitionProposal.authority_digest`, rather than an extra confidential
 preview field, binds that decision to the machine ceiling, repository commitment and current row,
