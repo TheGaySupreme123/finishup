@@ -505,10 +505,10 @@ def test_a_background_agent_reads_the_folders_of_its_own_target(home: Path, tmp_
         try:
             handler = agent._binding.agent  # pyright: ignore[reportPrivateUsage]
             assert type(handler) is WorkspaceAgentHandler
-            folders = handler._folders  # pyright: ignore[reportPrivateUsage]
-            assert folders() == (admitted[0],)
+            outside = handler._outside  # pyright: ignore[reportPrivateUsage]
+            assert outside().folders == (admitted[0],)
             with selection_override(other_root):
-                assert folders() == (admitted[0],)
+                assert outside().folders == (admitted[0],)
         finally:
             await agent.aclose()
 
