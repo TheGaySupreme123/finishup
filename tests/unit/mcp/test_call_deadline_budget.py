@@ -86,7 +86,11 @@ def _install(
     durations = list(discovery_ms) if isinstance(discovery_ms, list) else None
 
     async def on_demand(
-        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator
         budgets.append(timeout_seconds)
@@ -418,7 +422,12 @@ class _Probe:
         self.client = _LiveClient()
 
     async def __call__(
-        self, _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        self,
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator, timeout_seconds
         self.entered.set()

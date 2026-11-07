@@ -73,11 +73,17 @@ from finishup.ports.change_capture import (
 from finishup.ports.clock import ClockPort
 from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
 from finishup.ports.runtime import TaskRuntime
+from finishup.ports.workspace_agent import (
+    OutsideInputsRead,
+    WorkspaceAgentUnavailable,
+    workspace_handle_valid,
+)
 from finishup.protocol.canonical import JsonValue
 
 __all__ = [
     "declared_output_paths",
     "CurrentInputReader",
+    "CurrentInputsRead",
     "OutsideInputReader",
     "outside_input_candidates",
     "outside_inputs_not_admitted",
@@ -104,6 +110,26 @@ _MAX_REDACTION_PASSES: Final = 64
 _SHOWN_FILE_DOMAIN: Final = b"yoetz/check-change-shown-file/v1\x00"
 _SHOWN_VIEW_DOMAIN: Final = b"yoetz/check-change-shown-view/v1\x00"
 _STRUCTURAL_METADATA_UNAVAILABLE: Final = "metadata_unavailable"
+# A claim-bound task's workspace agent did not answer a read the capture needed (ADR-051).
+_WORKSPACE_AGENT_UNAVAILABLE: Final = "workspace_agent_unavailable"
+_WORKSPACE_AGENT_REFUSED: Final = "workspace_agent_refused"
+# The hub reasons for an agent that answered with a refusal, or declared no such operation.
+_AGENT_REFUSALS: Final = frozenset({"agent_refused", "operation_not_declared"})
+
+
+def _agent_loss_reason(exc: WorkspaceAgentUnavailable) -> str:
+    """The check-time change reason for a workspace read the client's agent did not serve.
+
+    A refusal (or an operation the agent never offered) is ``workspace_agent_refused``; every
+    other loss (no agent, a dropped connection, a deadline, a busy agent, a reply that did not
+    decode, an agent that failed or was itself unavailable) is ``workspace_agent_unavailable``.
+    Each has its own fixed receipt sentence, so a receipt never says the agent was silent when it
+    refused, nor that it refused when it failed (ADR-051).
+    """
+
+    if exc.reason in _AGENT_REFUSALS:
+        return _WORKSPACE_AGENT_REFUSED
+    return _WORKSPACE_AGENT_UNAVAILABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +360,13 @@ async def _pin_first_check_base(
             reason=exc.reason,
             request_id=request_id,
         )
+    except WorkspaceAgentUnavailable as exc:
+        record_bounded_event_without_raising(
+            component=_COMPONENT,
+            operation="check_time_change_base_not_pinned",
+            reason=_agent_loss_reason(exc),
+            request_id=request_id,
+        )
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -472,9 +505,11 @@ def _with_input_origins(
 # ``(values, room, workspace, space_cut)``, ``space_cut`` the values only the spaces of a quoted
 # value cut out (``space_cut_input_paths``, issue #1112 review). Bound by the service to the
 # effective policy's roots, so this layer never sees a root itself; the workspace is never read
-# from, by path or by identity.
+# from, by path or by identity. A claim-bound task's reader answers ``OutsideInputsRead``: the
+# inputs, and the values its client's owner has not listed for the server (ADR-051 decision 5).
 type OutsideInputReader = Callable[
-    [tuple[str, ...], int, str, frozenset[str]], tuple[TaskInputFile, ...]
+    [tuple[str, ...], int, str, frozenset[str]],
+    tuple[TaskInputFile, ...] | OutsideInputsRead,
 ]
 
 
@@ -498,29 +533,56 @@ def _snapshot_inputs(
     current_reader: CurrentInputReader | None,
     present: set[str],
     room: int,
-) -> list[TaskInputFile]:
-    """The kept snapshot copies of outside files the task names, each beside its current state.
+    *,
+    client_bound: bool = False,
+) -> tuple[list[TaskInputFile], tuple[str, ...]]:
+    """The kept snapshot copies of outside files the task names, each beside its current state,
+    and the paths of those left out because the owner no longer lets the server read them.
 
     ``current_reader`` returns, per path it reached, the whole current file (``None`` when it is
-    no longer text within the snapshot bound); a path it did not reach is ``unavailable``.
+    no longer text within the snapshot bound); a path it did not reach is ``unavailable``. A
+    claim-bound task's reader also names the paths its client's owner no longer lists for the
+    server (``CurrentInputsRead.unlisted``, ADR-051 decision 5): their copies are not sent, as a
+    copy whose root the owner no longer admits is not, and the read is flagged instead. For a
+    ``client_bound`` task a copy kept beneath a folder its client's owner listed for this server
+    rather than beneath a policy root is asked about too, and sent only while the agent says a
+    listed folder still covers it (``CurrentInputsRead.listed``, ADR-051 decision 5, amended
+    2026-11-07); it is marked ``client_listed``, as its check-time read would be.
     """
 
     wanted = tuple(os.path.normpath(value) for value in outside)
-    kept = [
+    candidates = [
         (snapshot.boundary, item)
         for snapshot in snapshots
         for item in snapshot.files
-        if item.root in admitted_roots
+        if (client_bound or item.root in admitted_roots)
         and item.path not in present
         and any(item.path == path or item.path.startswith(path + "/") for path in wanted)
-    ][:room]
-    if not kept:
-        return []
-    current: Mapping[str, bytes | None] = (
-        {} if current_reader is None else current_reader(tuple(i.path for _, i in kept))
+    ]
+    # A local task's copies are all beneath a policy root, so the room is taken before reading;
+    # a claim-bound task's are asked about first (at most the task's few kept files).
+    asked = candidates if client_bound else candidates[:room]
+    if not asked:
+        return [], ()
+    found: Mapping[str, bytes | None] | CurrentInputsRead = (
+        {} if current_reader is None else current_reader(tuple(i.path for _, i in asked))
     )
+    current: Mapping[str, bytes | None]
+    unlisted: frozenset[str] = frozenset()
+    listed: frozenset[str] = frozenset()
+    if type(found) is CurrentInputsRead:
+        current, unlisted, listed = found.current, found.unlisted, found.listed
+    else:
+        current = cast(Mapping[str, bytes | None], found)
+    kept = [
+        (boundary, item)
+        for boundary, item in asked
+        if item.root in admitted_roots or (client_bound and item.path in listed)
+    ][:room]
     added: list[TaskInputFile] = []
     for boundary, item in kept:
+        if item.path in unlisted:
+            continue
         state: TaskInputCurrentState = "unavailable"
         if item.path in current:
             now = current[item.path]
@@ -544,18 +606,35 @@ def _snapshot_inputs(
                 root=item.root,
                 baseline=boundary,
                 current_state=state,
+                client_listed=item.root not in admitted_roots,
             )
         )
-    return added
+    return added, tuple(item.path for _boundary, item in kept if item.path in unlisted)
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentInputsRead:
+    """A claim-bound task's current bytes of kept-copy paths (ADR-051): ``current`` as a local
+    reader returns it, ``unlisted``, the paths the client's owner no longer lists for the server,
+    whose kept copies are therefore not sent, and ``listed``, those a listed folder covers."""
+
+    current: Mapping[str, bytes | None]
+    unlisted: frozenset[str] = frozenset()
+    # The paths a folder the client's owner listed for the server still covers (ADR-051 decision
+    # 5, amended 2026-11-07): a copy kept beneath such a folder is sent only while it does.
+    listed: frozenset[str] = frozenset()
 
 
 # Reads the whole current bytes of outside paths beneath the admitted roots, for comparing a
 # snapshot with the file now (#1118 unit 1): path -> bytes, ``None`` when no longer whole text
-# within the snapshot bound; a path it could not reach is absent.
-type CurrentInputReader = Callable[[tuple[str, ...]], Mapping[str, bytes | None]]
+# within the snapshot bound; a path it could not reach is absent. A claim-bound task's reader
+# answers ``CurrentInputsRead``.
+type CurrentInputReader = Callable[
+    [tuple[str, ...]], Mapping[str, bytes | None] | CurrentInputsRead
+]
 
 
-def _with_outside_inputs(
+def _outside_inputs_read(
     capture: CheckChangeCapture,
     input_paths: tuple[str, ...],
     reader: OutsideInputReader | None,
@@ -566,8 +645,9 @@ def _with_outside_inputs(
     snapshots: tuple[TaskInputSnapshotSet, ...] = (),
     admitted_roots: tuple[str, ...] = (),
     current_reader: CurrentInputReader | None = None,
-) -> CheckChangeCapture:
-    """Add inputs the task names beneath an admitted outside root, in the room left (#1082).
+) -> tuple[CheckChangeCapture, tuple[str, ...]]:
+    """Add inputs the task names beneath an admitted outside root, in the room left (#1082), and
+    say which named values a claim-bound task's client admitted on its own.
 
     Only paths the task itself names (its statement or a ``role: input`` item) may be read
     outside the workspace (ADR-009): ``verification_paths``, the candidates only an agent-recorded
@@ -584,11 +664,23 @@ def _with_outside_inputs(
     Issue #1102: a file the task names outside the workspace outranks what the repository read
     chose beneath a task-named directory (its listing and the members FinishUP picked), so that
     material gives way to it and keeps only the room left after it.
+
+    ADR-051 decision 5: a claim-bound task's reader leaves unread the inputs its client's owner
+    has not listed for the server and says so; only those inputs are left out, and the capture
+    records how many (``outside_inputs_not_listed``: the task-named values left unread, and any
+    kept copy left out beneath none of them), never which, so the receipt can say so and name the
+    owner's two ways out while the rest of the change still reaches review. Amended 2026-11-07:
+    the client's own folders admit task inputs too, in both modes, where this server's policy
+    names no root, so a claim-bound task's reader is asked whenever the recipe carries task
+    inputs, even with no room left (it then reads nothing, and only says which values its folders
+    cover). An input it read beneath a root this server's policy does not admit is marked
+    ``client_listed``; the normalized values its folders cover are returned beside the capture,
+    so the not-admitted decision leaves them to the client (``outside_inputs_not_admitted``).
     """
 
     named = tuple(item for item in capture.inputs if not _directory_material(item))
     chosen = tuple(item for item in capture.inputs if _directory_material(item))
-    room = MAX_TASK_INPUT_FILES - len(named)
+    room = max(0, MAX_TASK_INPUT_FILES - len(named))
     outside = tuple(
         value
         for value in input_paths
@@ -596,15 +688,50 @@ def _with_outside_inputs(
         and value not in verification_paths
         and not _within(value, workspace)
     )
-    if reader is None or room < 1 or not outside:
-        return capture
+    client_bound = workspace_handle_valid(workspace)
+    if reader is None or not outside or (room < 1 and not client_bound):
+        return capture, ()
     present = {item.path for item in capture.inputs}
     # #1118 unit 1 (AIP-1): a kept snapshot of a file the task names is sent in place of its
     # current bytes, so a later rewrite cannot pose as the original; only while its root is
-    # still admitted (E2E-2).
-    added = _snapshot_inputs(snapshots, outside, admitted_roots, current_reader, present, room)
+    # still admitted (E2E-2), and, on a remote server, while its folder is still listed.
+    added, copies_not_listed = (
+        _snapshot_inputs(
+            snapshots,
+            outside,
+            admitted_roots,
+            current_reader,
+            present,
+            room,
+            client_bound=client_bound,
+        )
+        if room
+        else ([], ())
+    )
     present.update(item.path for item in added)
-    for item in reader(outside, room, workspace, space_cut_paths & frozenset(outside)):
+    found = reader(outside, room, workspace, space_cut_paths & frozenset(outside))
+    values_not_listed: tuple[str, ...] = ()
+    covered: tuple[str, ...] = ()
+    agent_read = type(found) is OutsideInputsRead
+    if type(found) is OutsideInputsRead:
+        covered = tuple(
+            os.path.normpath(outside[index]) for index in found.listed if index < len(outside)
+        )
+        # With no room left nothing could be read either way, so nothing was kept back.
+        values_not_listed = (
+            tuple(
+                os.path.normpath(outside[index]) for index in found.unlisted if index < len(outside)
+            )
+            if room
+            else ()
+        )
+        found = found.inputs
+    # A kept copy beneath a value left unread is that same input, counted once.
+    not_listed = len(values_not_listed) + sum(
+        not any(path == value or path.startswith(value + "/") for value in values_not_listed)
+        for path in copies_not_listed
+    )
+    for item in cast(tuple[TaskInputFile, ...], found):
         if (
             item.origin != "outside_workspace"
             or not item.path.startswith("/")
@@ -614,10 +741,20 @@ def _with_outside_inputs(
         ):
             continue
         present.add(item.path)
-        added.append(item)
+        # Decided here from this server's own policy, never taken from the agent's answer.
+        added.append(
+            replace(
+                item,
+                client_listed=agent_read
+                and item.root is not None
+                and item.root not in admitted_roots,
+            )
+        )
+    if not_listed:
+        capture = replace(capture, outside_inputs_not_listed=not_listed)
     if not added:
-        return capture
-    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES])
+        return capture, covered
+    return replace(capture, inputs=(*named, *added, *chosen)[:MAX_TASK_INPUT_FILES]), covered
 
 
 def _directory_material(item: TaskInputFile) -> bool:
@@ -664,30 +801,40 @@ def _capture_redacted(
     if type(capture) is not CheckChangeCapture:
         raise TypeError("check_change_capture_invalid")
     capture = _with_input_origins(capture, verification_paths, workspace)
-    # Every input, inside the repository or beneath an admitted root, takes the same redaction.
-    capture = _redacted(
-        _with_outside_inputs(
-            capture,
-            input_paths,
-            outside_reader,
-            workspace,
-            verification_paths=verification_paths,
-            space_cut_paths=space_cut_paths,
-            snapshots=snapshots,
-            admitted_roots=admitted_roots,
-            current_reader=current_reader,
-        )
+    capture, client_listed = _outside_inputs_read(
+        capture,
+        input_paths,
+        outside_reader,
+        workspace,
+        verification_paths=verification_paths,
+        space_cut_paths=space_cut_paths,
+        snapshots=snapshots,
+        admitted_roots=admitted_roots,
+        current_reader=current_reader,
     )
+    # Every input, inside the repository or beneath an admitted root, takes the same redaction.
+    capture = _redacted(capture)
     # Issue #1102 (RC6f): decided once, here, against the root this read used, and frozen into
     # the stored object, so a recovered job replays the decision instead of re-reading the disk.
+    # A claim-bound workspace's candidates are looked up on the client's machine (ADR-051).
+    lstat_probe = getattr(port, "lstat_probe", None)
+    probe = (
+        cast(Callable[[str], Callable[[str], os.stat_result | None] | None], lstat_probe)(workspace)
+        if callable(lstat_probe)
+        else None
+    )
+    # ADR-051 decision 5 (amended 2026-11-07): a claim-bound task's client admits, on its own,
+    # what lies beneath a folder its owner listed for this server; this server's policy does not
+    # decide those, so a value the agent said such a folder covers counts as admitted.
     if outside_inputs_not_admitted(
         input_paths,
         verification_paths,
         workspace,
-        admitted_roots,
+        (*admitted_roots, *client_listed),
         priority_paths,
         task_started_at=task_started_at,
         space_cut=space_cut_paths,
+        probe=probe,
     ):
         capture = replace(capture, outside_inputs_not_admitted=True)
     return capture
@@ -770,6 +917,17 @@ async def capture_check_time_change(
             request_id=request_id,
         )
         return CheckChangeOutcome(unavailable=True, reason=exc.reason)
+    except WorkspaceAgentUnavailable as exc:
+        # The capture, or an input read inside it, needed the client's agent and got no usable
+        # answer, or a refusal.
+        reason = _agent_loss_reason(exc)
+        record_bounded_event_without_raising(
+            component=_COMPONENT,
+            operation="check_time_change_unavailable",
+            reason=reason,
+            request_id=request_id,
+        )
+        return CheckChangeOutcome(unavailable=True, reason=reason)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -817,6 +975,8 @@ async def capture_structural_check_change(
             raise TypeError("check_change_metadata_invalid")
     except ChangeCaptureUnavailable as exc:
         return None, exc.reason
+    except WorkspaceAgentUnavailable as exc:
+        return None, _agent_loss_reason(exc)
     except Exception as exc:
         record_unexpected_exception_without_raising(
             exc,
@@ -898,6 +1058,13 @@ async def record_task_change_base(
             component="start",
             operation="task_change_base_unavailable",
             reason=exc.reason,
+            request_id=request_id,
+        )
+    except WorkspaceAgentUnavailable as exc:
+        record_bounded_event_without_raising(
+            component="start",
+            operation="task_change_base_unavailable",
+            reason=_agent_loss_reason(exc),
             request_id=request_id,
         )
     except Exception as exc:
@@ -1731,7 +1898,7 @@ async def requested_output_states(
         probes = cast(tuple[object, ...], raw_probes)
         if len(probes) != len(bounded):
             raise TypeError("requested_path_probe_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return unverified
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -1875,7 +2042,7 @@ async def _with_declared_line_counts(
             base_paths
         ):
             raise TypeError("change_line_counts_invalid")
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return states
     except Exception as exc:
         record_unexpected_exception_without_raising(
@@ -2085,7 +2252,7 @@ async def undeclared_references(
             tuple(sorted(pairs, key=lambda item: (os.fsencode(item[0]), os.fsencode(item[1])))),
             tuple(sorted(ambiguous.items(), key=lambda item: os.fsencode(item[0]))),
         )
-    except ChangeCaptureUnavailable:
+    except (ChangeCaptureUnavailable, WorkspaceAgentUnavailable):
         return empty
     except Exception as exc:
         record_unexpected_exception_without_raising(

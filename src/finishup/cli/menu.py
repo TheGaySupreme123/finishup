@@ -46,6 +46,12 @@ def menu_available() -> bool:
 
 
 def _control_guidance(error: ControlError) -> str:
+    from finishup.cli.remote_remedy import remote_remedy_line
+
+    remote = remote_remedy_line(error)
+    if remote is not None:
+        # The selected server is on another machine (ADR-051): its own repair, never a local one.
+        return remote
     code = public_error_code_for_control_reason(error.reason)
     return {
         PublicErrorCode.VAULT_LOCKED: (
@@ -186,6 +192,8 @@ class _Overview:
     service_line: str
     harness_lines: tuple[str, ...]
     setup_line: str
+    # ADR-051 decision 8: a remote server still selected while this computer forbids network use.
+    server_lines: tuple[str, ...] = ()
 
 
 async def _service_summary() -> str:
@@ -197,7 +205,12 @@ async def _service_summary() -> str:
             status = await client.service_status()
         finally:
             await client.close()
-    except ControlError:
+    except ControlError as error:
+        from finishup.cli.remote_remedy import remote_remedy_line
+
+        remote = remote_remedy_line(error)
+        if remote is not None:
+            return f"not reachable — {remote}"
         return "not reachable — start it with 'finishup service run'"
     return f"reachable ({status.state.value}, vault: {status.vault_mode})"
 
@@ -255,10 +268,14 @@ def _gather_overview() -> _Overview:
 
     run_async(collect)
     setup_line = "complete" if setup_marker_present() else "not completed — option 2 runs it"
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    zero_network = find_zero_network_selection()
     return _Overview(
         service_line=cast(str, lines["service"]),
         harness_lines=cast(tuple[str, ...], lines["harness"]),
         setup_line=setup_line,
+        server_lines=() if zero_network is None else zero_network.lines(),
     )
 
 
@@ -270,6 +287,8 @@ def _print_home(overview: _Overview) -> None:
     for line in overview.harness_lines:
         typer.echo(f"  Harness    {line}")
     typer.echo(f"  First-run  {overview.setup_line}")
+    for line in overview.server_lines:
+        typer.echo(f"  Server     {line}")
     typer.echo("")
     typer.echo("  1  Refresh status      re-probe the summary above")
     typer.echo("  2  Setup wizard        guided harness discovery and MCP registration")
@@ -524,6 +543,12 @@ async def _privacy_show(method: str) -> None:
         result = await getattr(client, method)(request)
     finally:
         await client.close()
+    if method == "privacy_get_effective":
+        # ADR-051 decision 8: this computer's machine-scope answer is remembered, as by
+        # 'finishup privacy show'.
+        from finishup.cli.zero_network_selection import remember_reported_policy
+
+        remember_reported_policy(result)
     _show(result)
 
 

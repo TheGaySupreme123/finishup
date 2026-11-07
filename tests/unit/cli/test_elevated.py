@@ -2506,3 +2506,38 @@ def test_expiry_during_preflight_does_not_leave_reusable_approval(
             assert '"outcome":"approved"' not in audit_path().read_text()
 
     anyio.run(run)
+
+
+def test_a_committed_relayed_grant_remembers_this_computers_policy_without_prompting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051 decision 8 (2026-11-07): once the relayed grant commits, this computer's policy is
+    read again and remembered; nothing is offered on a console."""
+
+    import finishup.cli.zero_network_selection as zero_network
+
+    surfaced: list[bool] = []
+
+    async def remember() -> None:
+        surfaced.append(False)
+
+    monkeypatch.setattr(zero_network, "after_policy_change_async", remember)
+    committed = PrivacyDecisionResult("committed", "sha256:" + ("f" * 64))
+
+    async def decide(*_args: object, **_kwargs: object) -> object:
+        return committed
+
+    async def run() -> dict[str, Any]:
+        with _patch_state(tmp_path):
+            elevated.prepare_elevated("repository_privacy_grant", grant_binding=_GRANT_BINDING)
+            pending = load_pending(_state=tmp_path)
+            assert pending is not None
+            with _repository_grant_patches(decide):
+                return cast(
+                    dict[str, Any],
+                    await elevated.authorize_elevated(_chat_attestation(pending)),
+                )
+
+    result = anyio.run(run)
+    assert result["result"] == {"recipe": "expanded_review", "outcome": "granted"}
+    assert surfaced == [False]

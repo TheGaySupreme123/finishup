@@ -48,6 +48,7 @@ SLASH_COMMANDS: Final[tuple[SlashCommand, ...]] = (
     SlashCommand("privacy", "choose what may leave this computer"),
     SlashCommand("provider", "configure optional deeper review"),
     SlashCommand("service", "manage the protected local service"),
+    SlashCommand("server", "choose which FinishUP server this computer uses"),
     SlashCommand("doctor", "diagnose installation problems"),
     SlashCommand("help", "show what FinishUP can do here"),
     SlashCommand("quit", "leave FinishUP"),

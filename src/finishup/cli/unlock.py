@@ -102,6 +102,9 @@ _FIXED_ERROR_REASONS: Final = frozenset(
     {
         "cancelled",
         "confirmation_mismatch",
+        # A passphrase rotation refused at open while the service is ready or unlocking: it is
+        # still finishing its latest unlock or the credential-store check after it (#492 review).
+        "credential_store_check_in_progress",
         "empty_input",
         "eof",
         "input_invalid",
@@ -1199,7 +1202,25 @@ async def _complete_human_ceremony(
     vault_rewrap_secret: bytearray | None,
     authorization: _AuthorizationChoice | None = None,
 ) -> HumanResult:
-    session = await client.open(kind, target)
+    try:
+        session = await client.open(kind, target)
+    except ConfidentialClientError as error:
+        if (
+            kind is HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE
+            and vault_rewrap_secret is None
+            and error.reason == "state_forbidden"
+            and await _service_reports_unlocking_or_ready_passphrase_vault()
+        ):
+            # A passphrase vault ready or still unlocking: the service refused the open while the
+            # credential-store check after its latest unlock still ran (#492 review), not for the
+            # locked vault ``state_forbidden`` usually means. The open needs only an open vault,
+            # so it can come while that unlock still activates, with the status ``unlocking``.
+            # Status alone cannot tell that from a lock the service is already unlocking again;
+            # either way a retry in a moment is the answer, not an unlock. This helper stages the
+            # replacement only after the open, so nothing was staged or changed and running it
+            # again is safe.
+            raise HumanCeremonyCliError("credential_store_check_in_progress") from None
+        raise
     async with session:
         try:
             preview = _verify_preview(kind, target, session)
@@ -1467,6 +1488,26 @@ async def _service_reports_unusable_auto_unlock() -> bool:
         return False
     reason = getattr(status, "state_reason", None)
     return reason in {"auto_unlock_stale", "auto_unlock_rejected"}
+
+
+async def _service_reports_unlocking_or_ready_passphrase_vault() -> bool:
+    """True when the status shows a passphrase vault ready or unlocking; False when unproven."""
+
+    try:
+        from finishup.ports.control import ControlClientKind, ServiceState
+        from finishup.service.client import connect_service
+
+        client = await connect_service(ControlClientKind.CLI)
+        try:
+            status = await client.service_status()
+        finally:
+            await client.close()
+    except Exception:
+        return False
+    return (
+        status.state in {ServiceState.READY, ServiceState.UNLOCKING}
+        and status.vault_mode == "passphrase"
+    )
 
 
 async def unlock_vault(passphrase: bytearray | None = None) -> VaultStateResult:

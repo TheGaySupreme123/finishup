@@ -65,7 +65,7 @@ _REQUEST_SCHEMA = {
     ControlMethod.STATUS: "status-request",
     ControlMethod.RECEIPT: "receipt-request",
 }
-_CONTROL_VERSION = "2.9.0"
+_CONTROL_VERSION = "2.10.0"
 _MUTATIONS_PER_DOCUMENT = 12
 _PROBES: tuple[JsonValue, ...] = (
     {},

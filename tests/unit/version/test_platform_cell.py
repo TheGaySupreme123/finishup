@@ -76,7 +76,7 @@ def test_manifest_flags_an_untested_cell_and_still_validates(
 
     manifest = build_version_manifest()
     document = json.loads(version_manifest_json(manifest))
-    schema = json.loads(Path("schemas/version/version-manifest-2.3.0.schema.json").read_text())
+    schema = json.loads(Path("schemas/version/version-manifest-2.4.0.schema.json").read_text())
 
     assert PLATFORM_CELL_UNTESTED in manifest.limitations
     assert manifest.limitations == tuple(sorted(set(manifest.limitations), key=str.encode))

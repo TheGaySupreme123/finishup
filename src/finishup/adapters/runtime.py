@@ -320,6 +320,18 @@ class _ReadLedger:
     async def load_frontier(self) -> Frontier:
         return await self._value.load_frontier()
 
+    async def payload_object_unverifiable(self, event_id: str) -> bool:
+        """The ledger's structural fact that an event's payload object failed verification.
+
+        A ledger that holds every payload in memory never loses one, so it has no such fact and
+        the answer is False (ADR-051, decision D4b).
+        """
+
+        probe = getattr(self._value, "payload_object_unverifiable", None)
+        if not callable(probe):
+            return False
+        return await cast(Callable[[str], Awaitable[bool]], probe)(event_id)
+
     async def verify_recovery_objects(self) -> int:
         verifier = getattr(self._value, "verify_recovery_objects", None)
         if not callable(verifier):

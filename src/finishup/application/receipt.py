@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 from finishup.application import closure_basis as _closure_basis
@@ -21,6 +23,9 @@ from finishup.domain.events import (
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
+    RedactionState,
+    SessionOpenedPayload,
+    UnknownEvent,
     encode_payload,
     media_type_for,
 )
@@ -29,10 +34,12 @@ from finishup.domain.receipts import (
     ReceiptDocument,
     ReceiptSectionKey,
     ReceiptVersionSlice,
+    client_attested_receipt_block,
     live_receipt_gap_codes,
     receipt_document_from_json,
     receipt_document_to_json,
     render_receipt_human,
+    workspace_provenance_unknown_block,
 )
 from finishup.domain.values import (
     Actor,
@@ -45,6 +52,16 @@ from finishup.domain.values import (
     session_id,
     task_id,
     timestamp_from_datetime,
+)
+from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_COPY_UNVERIFIABLE,
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_REDACTED,
+    SESSION_OPENING_UNREADABLE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_wire,
 )
 from finishup.kernel.deterministic_checks import build_deterministic_case
 from finishup.kernel.projections import ProjectionState
@@ -73,6 +90,7 @@ from finishup.ports.objects import (
     StagedObject,
 )
 from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -116,6 +134,37 @@ _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
 )
 
 
+class _Provenance(Enum):
+    """A claim binding that the session's opening event cannot establish (ADR-051, decision D4).
+
+    Each value is the closed ``reason`` the receipt's ``workspace_provenance`` member carries, one
+    per cause, and picks the last line of its "Workspace evidence" section, which says only what is
+    true of that cause (decision D4b): ``UNREADABLE`` can pass (the read failed or the record did
+    not load), so the section says to retry; every other value lasts, so the section says why no
+    retry or restart reads the record and how long the receipt will keep saying so: for good when
+    it was ``REDACTED`` or ``ERASED``, while the server lacks its key (``KEY_UNAVAILABLE``),
+    until the server runs a version that knows its format (``FORMAT_UNKNOWN``), or for as long as
+    its stored copy is missing or fails its integrity check (``COPY_UNVERIFIABLE``).
+    """
+
+    UNREADABLE = SESSION_OPENING_UNREADABLE
+    REDACTED = SESSION_OPENING_REDACTED
+    ERASED = SESSION_OPENING_ERASED
+    KEY_UNAVAILABLE = SESSION_OPENING_KEY_UNAVAILABLE
+    FORMAT_UNKNOWN = SESSION_OPENING_FORMAT_UNKNOWN
+    COPY_UNVERIFIABLE = SESSION_OPENING_COPY_UNVERIFIABLE
+
+
+# The envelope states that hold whatever the record's version, each its own lasting cause.
+_LASTING_ENVELOPE_STATES: Final[Mapping[RedactionState, _Provenance]] = MappingProxyType(
+    {
+        RedactionState.LOGICALLY_REDACTED: _Provenance.REDACTED,
+        RedactionState.ERASED_CLAIMED: _Provenance.ERASED,
+        RedactionState.KEY_UNAVAILABLE: _Provenance.KEY_UNAVAILABLE,
+    }
+)
+
+
 class Application(Protocol):
     runtime: BundleRuntimePort
     clock: ClockPort
@@ -153,6 +202,10 @@ class ReceiptInternalResult:
     # #1240 D5: the line asking the agent to tell the user this receipt's conclusion and its open
     # or declined reviewer notes. Fixed words and counts only (``domain.receipt_closing``).
     agent_closing_prompt: str | None = None
+    # ADR-051 decision D4: the receipt could not establish where its workspace evidence was read,
+    # and whether that can pass or lasts (``domain.workspace_provenance``). Every format carries
+    # it, JSON included; a closed reason and fixed words only.
+    workspace_provenance_reason: WorkspaceProvenanceReason | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         versions = {
@@ -210,6 +263,16 @@ class ReceiptInternalResult:
                 {}
                 if not self.agent_closing_prompt
                 else {"agent_closing_prompt": self.agent_closing_prompt}
+            ),
+            **(
+                {}
+                if self.workspace_provenance_reason is None
+                else {
+                    "workspace_provenance": cast(
+                        JsonValue,
+                        workspace_provenance_unknown_wire(self.workspace_provenance_reason),
+                    )
+                }
             ),
         }
 
@@ -493,12 +556,39 @@ def _internal_result(
     receipt_ref: ObjectRef,
     digest: str,
     result_frontier: Frontier,
+    attested_by: str | _Provenance | None = None,
 ) -> ReceiptInternalResult:
+    """The result of one receipt; ``attested_by`` is the serving service's instance id when the
+    task is claim-bound, so its text and markdown renderings end with the fixed client-attested
+    workspace-evidence block (ADR-051), or a ``_Provenance`` when the session's opening event
+    could not be read or cannot say, so they end with the fixed provenance-unknown block instead:
+    what happened, why it matters, and what to do for a passing cause or why that cause lasts
+    (decisions D4 and D4b), and the result of every format, JSON included, carries the
+    ``workspace_provenance`` member saying so with the same reason. The stored document never
+    carries either."""
+
     document_json = cast(JsonValue, receipt_document_to_json(document))
+    markdown = request.format is ReceiptFormat.MARKDOWN
+    provenance_reason: WorkspaceProvenanceReason | None = (
+        attested_by.value if isinstance(attested_by, _Provenance) else None
+    )
+    trailer: str | None = None
+    if provenance_reason is not None:
+        trailer = workspace_provenance_unknown_block(markdown=markdown, reason=provenance_reason)
+    elif type(attested_by) is str:
+        trailer = client_attested_receipt_block(
+            attested_by,
+            markdown=markdown,
+            hook_observed=(
+                PublicationChannel.HOOK_OBSERVED in document.coverage.publication_channels
+            ),
+        )
+    # The renderer reserves the closing section's room inside the 32,768-character wire bound,
+    # so a long receipt still fits it and is delivered with the section whole (decision D4).
     human = (
         None
         if request.format is ReceiptFormat.JSON
-        else render_receipt_human(document, markdown=request.format is ReceiptFormat.MARKDOWN)
+        else render_receipt_human(document, markdown=markdown, trailer=trailer)
     )
     return ReceiptInternalResult(
         "0.1",
@@ -527,6 +617,7 @@ def _internal_result(
         request.writer_id,
         document.correctness_advisory_counts,
         _agent_closing_prompt(document) or None,
+        provenance_reason,
     )
 
 
@@ -596,7 +687,117 @@ async def read_recorded_receipt(
         receipt_ref,
         digest,
         Frontier(record.ledger.ingestion_sequence, record.entry_digest),
+        await _attested_by(runtime, request_id=request.request_id),
     )
+
+
+async def _attested_by(
+    runtime: TaskRuntime, *, request_id: str | None = None
+) -> str | _Provenance | None:
+    """The serving service's instance id when the task is claim-bound, else None (ADR-051).
+
+    A claim-bound task's session opened with its connection's ``client:`` handle, so every piece
+    of workspace evidence it holds came from the client's workspace agent. Read from the
+    session's own opening event, found by its schema name, a durable fact, so a replay renders
+    the same block. None means that event was read and names no handle, or the session has none.
+
+    A ``_Provenance`` means the opening event could not say, and the receipt is built anyway
+    (owner decision D4: a receipt never refuses over this lookup). Its "Workspace evidence"
+    section then says the provenance is unknown, why that matters and whether a retry can help,
+    never nothing and never a guess. The answer names the cause, so the section's last line says
+    only what is true of it (decision D4b):
+
+    * ``_Provenance.UNREADABLE`` (passing; a retry or a restart can clear it):
+
+      - the read itself fails, whatever the failure (an ``OSError`` from storage, a malformed
+        record, a ledger that refuses with its own classified error). Nothing here can tell a
+        passing fault from a lasting one, so it is never called lasting. It is recorded as one
+        bounded diagnostic under operation ``receipt_attestation_read``, so an operator can find
+        it, and never reaches the caller as a refusal;
+      - a decodable (``AcceptedEvent``) opening whose envelope says ``present`` but whose payload
+        is None, and which the ledger does not report as ``payload_object_unverifiable``: the
+        payload object a SQLite ledger could not read for a reason that can pass (an
+        environmental fault such as EIO) while it recovered the task. The ledger keeps that gap
+        for as long as it holds the task open, and reads the object again when the service opens
+        the task afresh (after it drops an idle task or restarts). A ledger without that fact (one
+        that holds every payload in memory), or whose answer itself fails, leaves it passing.
+
+    * a lasting cause, one value per cause, so the section says only what is true of it (no retry
+      or restart reads any of them). The envelope state decides first, because it holds whatever
+      the version: ``_Provenance.REDACTED`` for ``logically_redacted`` and ``_Provenance.ERASED``
+      for ``erased_claimed`` (it will not become readable again), and
+      ``_Provenance.KEY_UNAVAILABLE`` for ``key_unavailable`` (not while the server lacks the
+      key). Then ``_Provenance.FORMAT_UNKNOWN`` for an ``UnknownEvent`` (a ``session_opened``
+      version this service cannot decode, whether or not its payload object read), and for any
+      other record whose payload is not a ``SessionOpenedPayload``: only a server running a
+      version that knows the format reads it. Last, ``_Provenance.COPY_UNVERIFIABLE`` for a
+      decodable ``present`` opening with no payload whose ledger reports
+      ``payload_object_unverifiable``: the object store refused its payload object as missing or
+      failing verification, a deterministic outcome that opening the task again repeats.
+
+    Every receipt and every replay reads the event again, so once the read succeeds (a transient
+    fault clears, or the service reopens the task after a restart and the object reads) the same
+    request renders the binding the event records. ``execute_receipt`` reads this before it
+    stages or appends anything. Cancellation is never caught.
+    """
+
+    try:
+        async for record in runtime.ledger.load_events(runtime.session_id):
+            if record.schema.name == "session_opened":
+                opening: LedgerRecord = record
+                break
+        else:
+            return None
+    except Exception as exc:  # noqa: BLE001 - D4: a lookup failure is shown, never a refusal
+        record_classified_exception_without_raising(
+            exc,
+            component="application.receipt",
+            operation="receipt_attestation_read",
+            request_id=request_id,
+        )
+        return _Provenance.UNREADABLE
+    payload = opening.payload
+    if isinstance(payload, SessionOpenedPayload):
+        if workspace_handle_valid(payload.workspace_ref):
+            return runtime.fence.service_instance_id
+        return None
+    lasting = _LASTING_ENVELOPE_STATES.get(opening.redaction)
+    if lasting is not None:
+        return lasting
+    if type(opening) is UnknownEvent or payload is not None:
+        return _Provenance.FORMAT_UNKNOWN
+    # A decodable opening whose envelope says ``present`` and whose payload object did not load.
+    if await _payload_object_unverifiable(runtime, opening, request_id=request_id):
+        return _Provenance.COPY_UNVERIFIABLE
+    # Anything else that kept it from loading can pass; opening the task afresh reads it again.
+    return _Provenance.UNREADABLE
+
+
+async def _payload_object_unverifiable(
+    runtime: TaskRuntime, opening: LedgerRecord, *, request_id: str | None
+) -> bool:
+    """Whether the task's ledger found ``opening``'s payload object missing or unverifiable.
+
+    A structural fact the SQLite ledger records while it recovers the task (decision D4b). A ledger
+    without it keeps every payload in memory and never loses one. Its failure is recorded as one
+    bounded diagnostic and answers False, so the cause stays passing: never a refusal, never a
+    lasting claim the server did not establish. Cancellation is never caught.
+    """
+
+    probe = getattr(runtime.ledger, "payload_object_unverifiable", None)
+    if not callable(probe):
+        return False
+    try:
+        answer = await cast(Callable[[str], Awaitable[object]], probe)(opening.event_id)
+    except Exception as exc:  # noqa: BLE001 - D4: a lookup failure is shown, never a refusal
+        record_classified_exception_without_raising(
+            exc,
+            component="application.receipt",
+            operation="receipt_attestation_read",
+            request_id=request_id,
+        )
+        return False
+    return answer is True
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.
@@ -638,6 +839,9 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             int(request.expected_frontier.sequence), request.expected_frontier.head_digest
         )
         records, projection = await _records_through(runtime, frontier)
+        # Read before anything is staged or appended. It never refuses: a read that fails or an
+        # opening that cannot say renders the provenance-unknown section (decision D4).
+        attested_by = await _attested_by(runtime, request_id=request.request_id)
         availability = await runtime.ledger.load_case_availability(
             runtime.session_id, frontier, projection
         )
@@ -780,7 +984,14 @@ async def execute_receipt(app: Application, request: ReceiptRequest) -> ReceiptI
             # cancellation from here on leaves an ambiguous commit outcome and must not abandon.
             await _abandon_preappend_objects(runtime, staged_objects, request_id=request.request_id)
             raise
-        return _internal_result(request, document, receipt_ref, digest, result.result_frontier)
+        return _internal_result(
+            request,
+            document,
+            receipt_ref,
+            digest,
+            result.result_frontier,
+            attested_by,
+        )
     except ProtocolValueError as exc:
         raise _error(
             PublicErrorCode.INVALID_REQUEST,

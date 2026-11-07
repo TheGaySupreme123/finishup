@@ -37,11 +37,14 @@ from finishup.cli.bootstrap import (
 from finishup.cli.bootstrap import (
     stdout_json as _shared_stdout_json,
 )
+from finishup.cli.command_scope import install_server_host_guards
+from finishup.cli.connector import connector_app
 from finishup.cli.exits import (
     exit_code_for,
     lifecycle_public_code,
     remediation_message,
 )
+from finishup.cli.gateway import gateway_app
 from finishup.cli.project import project_app
 from finishup.cli.render import (
     bounded_failure_line,
@@ -55,6 +58,9 @@ from finishup.cli.render import (
     render_human_status,
     render_local_recovery_lines,
 )
+from finishup.cli.server import server_app
+from finishup.client.attribution import connection_attribution
+from finishup.client.workspace_ref import WorkspaceRefNotPortable, start_request_for_connection
 from finishup.domain.values import JsonObject
 from finishup.legacy_names import RENAME_NOTE
 from finishup.ports.control import (
@@ -96,6 +102,7 @@ if TYPE_CHECKING:
     # Runtime resolution is deliberately lazy: the client/service trust boundary pins
     # cli.app's import graph to the ordinary service client, and finishup.service.lifecycle
     # is service-composition side (see tests/packaging/test_service_boundary_imports.py).
+    from finishup.cli.policy_server import PolicyServer
     from finishup.service.lifecycle import LifecycleError
 
 __all__ = [
@@ -244,6 +251,7 @@ app.add_typer(service_app, name="service")
 app.add_typer(instance_app, name="instance")
 service_app.add_typer(auto_unlock_app, name="auto-unlock")
 service_app.add_typer(recovery_app, name="recovery")
+service_app.add_typer(gateway_app, name="gateway")
 app.add_typer(ai_app, name="ai")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(credential_app, name="credential")
@@ -261,6 +269,8 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(observe_app, name="observe")
 observe_app.add_typer(observe_checks_app, name="checks")
 app.add_typer(project_app, name="project")
+app.add_typer(server_app, name="server")
+app.add_typer(connector_app, name="connector")
 
 
 def _recommend_operation(name: str) -> Callable[..., None]:
@@ -484,6 +494,10 @@ async def build_service_client(
 
     Ordinary CLI work is repository-bound by default. Passing ``None`` explicitly remains the
     narrow escape hatch for callers whose operation genuinely has no workspace authority.
+
+    For a FinishUP server on another machine (ADR-051) the connection claims the workspace and
+    answers the server's workspace calls while the command runs (the CLI, the menu and the
+    terminal interface all connect here); the root's connector is started when none answers.
     """
 
     locator = (
@@ -496,6 +510,7 @@ async def build_service_client(
         workspace_locator=locator,
         projection_render_mode=projection_render_mode,
         output_is_controlling_tty=output_is_controlling_tty,
+        serve_workspace=True,
     )
 
 
@@ -901,8 +916,14 @@ async def _call_workflow(
                 )
                 if refused is not None:
                     return refused
+            if type(request) is StartRequest:
+                # ADR-051: a server on another machine is sent the connection's handle, never a
+                # path; a claim the server could not key (a locked vault) sends nothing.
+                request = start_request_for_connection(request, client)
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
+            # ADR-051: a claim-bound connection's human status and receipt name their producer.
+            attribution = connection_attribution(client)
         finally:
             await client.close()
         if method in {"start", "publish_work", "check", "respond", "receipt"}:
@@ -926,9 +947,9 @@ async def _call_workflow(
         elif isinstance(branch, CheckInspectionModel):
             typer.echo(render_human_inspection(branch))
         elif isinstance(branch, StatusSuccessModel):
-            typer.echo(render_human_status(branch))
+            typer.echo(render_human_status(branch, attribution=attribution))
         elif isinstance(branch, ReceiptSuccessModel):
-            typer.echo(render_human_receipt(branch))
+            typer.echo(render_human_receipt(branch, attribution=attribution))
         else:
             typer.echo(canonical_encode(wire).decode("utf-8"))
         if isinstance(branch, OperationFailureModel):
@@ -949,6 +970,13 @@ async def _call_workflow(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error, operation=method, check_mode=check_mode)
+    except WorkspaceRefNotPortable as refusal:
+        # Refused before anything was sent; the fixed message and directive name no path.
+        _stderr(refusal.message)
+        recovery = render_error_recovery_lines(refusal.safe_details)
+        if recovery:
+            _stderr("\n".join(recovery))
+        return exit_code_for(refusal.code)
 
 
 def _finish(code: int) -> None:
@@ -1196,7 +1224,10 @@ def observe_drain_cmd(
         str | None,
         typer.Option(
             "--workspace",
-            help="Restrict delivery to one workspace; default drains all pending commitments.",
+            help=(
+                "Restrict delivery to one workspace; default drains all pending commitments "
+                "(with a server elsewhere, the current folder's)."
+            ),
         ),
     ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
@@ -2045,12 +2076,36 @@ async def _call_support(
         # Every support body passes through here, whichever branch built it, so the normalization
         # is one step rather than a property of one path.
         request = with_body_schema_version(method, request)
-        client = await build_service_client()
+        if method in _POLICY_CHANGE_METHODS:
+            refused = _zero_network_change_refused(request, json_output)
+            if refused is not None:
+                return refused
+        # ADR-051 decision 8: with a remote server selected the change is that server's, so it is
+        # named before and after. The result document is released, so the lines go to stderr.
+        policy_server = _policy_server_for(method)
+        if policy_server is not None:
+            _stderr(policy_server.before_line())
         try:
-            result = await getattr(client, method)(request, deadline_ms=deadline_ms)
-        finally:
-            await client.close()
+            client = await build_service_client()
+            try:
+                result = await getattr(client, method)(request, deadline_ms=deadline_ms)
+            finally:
+                await client.close()
+        except BaseException:
+            if policy_server is not None:
+                _stderr(policy_server.unconfirmed_line())
+            raise
         _human_or_json(result, json_output=json_output)
+        if policy_server is not None:
+            _stderr(policy_server.answer_line(result))
+        if method in _POLICY_CHANGE_METHODS and result.get("outcome") == "tightening_applied":
+            await _after_policy_change()
+        if method == "privacy_get_effective":
+            # ADR-051 decision 8: this computer's own machine-scope answer is remembered for when
+            # its service can no longer be asked (a server elsewhere selected, an idle relock).
+            from finishup.cli.zero_network_selection import remember_reported_policy
+
+            remember_reported_policy(result)
         if method == "privacy_get_effective" and not json_output and sys.stdout.isatty():
             plain = _plain_json(result)
             for line in (
@@ -2065,6 +2120,54 @@ async def _call_support(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
+
+
+_POLICY_CHANGE_METHODS: Final = frozenset({"privacy_propose_policy", "privacy_tighten_policy"})
+
+
+def _policy_server_for(method: str) -> PolicyServer | None:
+    """The remote server whose policy ``method`` changes; ``None`` for any other method or root."""
+
+    if method not in _POLICY_CHANGE_METHODS:
+        return None
+    from finishup.cli.policy_server import selected_policy_server
+
+    return selected_policy_server()
+
+
+def _zero_network_change_refused(request: JsonObject, json_output: bool) -> int | None:
+    """Before ``privacy propose|tighten`` sends anything (ADR-051 decision 8, 2026-11-07).
+
+    A candidate that would make this computer zero-network while a server elsewhere is selected
+    offers, on the owner's own terminal, to switch to this computer's everyday FinishUP first or
+    cancel; with ``--json`` or without that terminal it is refused. Returns the exit code when
+    the change is not made (the owner was told why and the one command that fixes it), else
+    ``None``.
+    """
+
+    from finishup.cli.zero_network_selection import (
+        ZeroNetworkChangeStopped,
+        candidate_forbids_network,
+        guard_policy_change,
+        interactive_terminal,
+    )
+
+    try:
+        guard_policy_change(
+            forbids_network=candidate_forbids_network(request.get("candidate_policy")),
+            interactive=not json_output and interactive_terminal(),
+        )
+    except ZeroNetworkChangeStopped:
+        return exit_code_for(PublicErrorCode.INVALID_REQUEST)
+    return None
+
+
+async def _after_policy_change() -> None:
+    """After this computer's policy changed: remember it (ADR-051 decision 8, 2026-11-07)."""
+
+    from finishup.cli.zero_network_selection import after_policy_change_async
+
+    await after_policy_change_async()
 
 
 def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
@@ -2218,11 +2321,16 @@ async def _run_credential_heuristic_command(
     from finishup.cli.privacy_setup import run_credential_heuristic_change
     from finishup.cli.provider_status import MachineScopeError
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
     from finishup.domain.privacy import CredentialHeuristic
 
     setting = CredentialHeuristic.DISABLED if action == "disable" else CredentialHeuristic.ENFORCED
     try:
-        report = await run_credential_heuristic_change(setting, machine_default=machine_default)
+        # A JSON answer keeps stdout to the document: a change that would leave a server
+        # elsewhere selected under zero-network is refused on stderr, never offered on the
+        # console (ADR-051 decision 8).
+        with machine_readable_answer(json_output):
+            report = await run_credential_heuristic_change(setting, machine_default=machine_default)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except MachineScopeError as error:
@@ -2271,6 +2379,7 @@ _CONVERSATION_SETTINGS: Final = {
 async def _run_conversation_review_command(setting_name: str, json_output: bool) -> int:
     from finishup.cli.privacy_setup import run_conversation_review_change
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
     from finishup.domain.privacy import ConversationReview
 
     token = _CONVERSATION_SETTINGS.get(setting_name)
@@ -2283,7 +2392,9 @@ async def _run_conversation_review_command(setting_name: str, json_output: bool)
         return 2
     setting = ConversationReview(token)
     try:
-        report = await run_conversation_review_change(setting)
+        # A JSON answer never offers the server choice (ADR-051 decision 8): it is refused.
+        with machine_readable_answer(json_output):
+            report = await run_conversation_review_change(setting)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except (HumanCeremonyCliError, OSError, ValueError) as error:
@@ -2420,9 +2531,12 @@ async def _run_input_root_command(action: str, value: str, json_output: bool) ->
 
     from finishup.cli.privacy_setup import run_input_root_change
     from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.cli.zero_network_selection import machine_readable_answer
 
     try:
-        report = await run_input_root_change("add" if action == "add" else "remove", value)
+        # A JSON answer never offers the server choice (ADR-051 decision 8): it is refused.
+        with machine_readable_answer(json_output):
+            report = await run_input_root_change("add" if action == "add" else "remove", value)
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     except (HumanCeremonyCliError, OSError, ValueError) as error:
@@ -2507,7 +2621,10 @@ privacy_input_roots_app = typer.Typer(
         "folder) whose files the task names, so AI-powered review can read them as read-only "
         "task inputs. Admitting applies only after the trusted local approval on this terminal; "
         "removing applies at once. Nothing is sent unless this repository's privacy policy "
-        "already sends repository excerpts."
+        "already sends repository excerpts. Run it on the computer the FinishUP service runs "
+        "on, in the repository's folder there: for a remote server that is its server host, and "
+        "the directory must exist there. For a folder on the client machine, list it for that "
+        "server there instead with 'finishup server folders add NAME FOLDER'."
     ),
     no_args_is_help=True,
 )
@@ -2612,6 +2729,104 @@ service_app.command("lock")(_service_command("lock"))
 service_app.command("stop")(_service_command("stop"))
 
 
+async def _service_start(json_output: bool) -> int:
+    """Start this root's service only when none answers, then report its status."""
+
+    from finishup.service.client import connect_service_on_demand
+
+    try:
+        client = await connect_service_on_demand(ControlClientKind.CLI, workspace_locator=None)
+        try:
+            status = await client.service_status()
+        finally:
+            await client.close()
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    _human_or_json(status, json_output=json_output)
+    return 0
+
+
+@service_app.command("start")
+def service_start(json_output: _JSON = False) -> None:
+    """Start the service on demand when it is not running, then show its status.
+
+    Idempotent: a running service is left as it is. ``finishup service stop`` is the reverse.
+    """
+
+    _finish(run_async(lambda: _service_start(json_output)))
+
+
+def _runtime_dir_session_bound(runtime: Path) -> bool:
+    """Whether the endpoint directory is removed when the owner's last login session ends."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    roots = {Path(f"/run/user/{os.getuid()}")}
+    variable = os.environ.get("XDG_RUNTIME_DIR")
+    if variable:
+        roots.add(Path(variable))
+    return any(runtime == root or root in runtime.parents for root in roots)
+
+
+def _linger_state() -> Literal["enabled", "disabled", "unknown", "not_applicable"]:
+    if not sys.platform.startswith("linux"):
+        return "not_applicable"
+    import pwd
+
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return "unknown"
+    directory = Path("/var/lib/systemd/linger")
+    if not directory.is_dir():
+        return "unknown"
+    return "enabled" if (directory / user).exists() else "disabled"
+
+
+@service_app.command("endpoint")
+def service_endpoint(json_output: _JSON = False) -> None:
+    """Show where this server host's control endpoint is and how long it lives.
+
+    Reports the endpoint path, the absolute launcher, the release, the schema-manifest digest,
+    whether the runtime directory ends with the login session, and the Linux linger state.
+    Connection-free: nothing is started.
+    """
+
+    from finishup.adapters.control.unix_socket import CONTROL_ENDPOINT_BASENAME
+    from finishup.adapters.integrations.launcher import (
+        invoking_launcher,
+        resolve_finishup_launcher,
+    )
+    from finishup.config.paths import PathSafetyError, runtime_dir
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    try:
+        runtime = runtime_dir()
+    except PathSafetyError as error:
+        _stderr(f"isolation_invalid: {error.reason_code}")
+        raise typer.Exit(2) from None
+    try:
+        launcher: JsonValue = list(resolve_finishup_launcher(invoking_launcher()))
+    except ValueError:
+        launcher = None
+    report: dict[str, JsonValue] = {
+        # ADR-048 tag namespace, like the isolation report.
+        "schema": "yoetz.service-endpoint/1",
+        "endpoint": str(runtime / CONTROL_ENDPOINT_BASENAME),
+        "launcher": launcher,
+        "release": __version__,
+        "schema_manifest_digest": schema_manifest_digest(),
+        "runtime_dir_session_bound": _runtime_dir_session_bound(runtime),
+        "linger": _linger_state(),
+    }
+    if json_output:
+        _stdout_json(cast(JsonValue, report))
+    else:
+        for key, value in report.items():
+            typer.echo(f"{key}: {canonical_encode(value).decode('utf-8')}")
+    _finish(0)
+
+
 async def _service_restart(json_output: bool) -> int:
     """Replace the running service, compatible or not, with one of this installation.
 
@@ -2692,6 +2907,20 @@ def service_restart(json_output: _JSON = False) -> None:
     _finish(run_async(lambda: _service_restart(json_output)))
 
 
+def _serve_ambient_root(value: bool) -> bool:
+    """``--ambient-root``: never read the server selection in this process (ADR-051).
+
+    A parameter callback, so it takes effect while the options are parsed: before the server-host
+    guard and the command resolve any path.
+    """
+
+    if value:
+        from finishup.config.paths import ignore_server_selection
+
+        ignore_server_selection()
+    return value
+
+
 @service_app.command("run")
 def service_run(
     startup_correlation_id: Annotated[
@@ -2702,9 +2931,19 @@ def service_run(
             help="Internal: the err_… id the spawning process looks a startup failure up under.",
         ),
     ] = None,
+    ambient_root: Annotated[
+        bool,
+        typer.Option(
+            "--ambient-root",
+            hidden=True,
+            callback=_serve_ambient_root,
+            help="Internal: serve the everyday installation its spawner uses; read no selection.",
+        ),
+    ] = False,
 ) -> None:
     """Run the persistent service in the foreground."""
 
+    del ambient_root  # applied by its parameter callback, before the server-host guard runs
     if startup_correlation_id is not None:
         from finishup.protocol.ids import IdKind, validate_id
 
@@ -3960,10 +4199,16 @@ def setup_status(
 
 
 async def _trusted_call(operation: Callable[[], Awaitable[object]], json_output: bool) -> int:
+    from finishup.cli.zero_network_selection import ZeroNetworkChangeStopped
+
     try:
         result = await operation()
         _human_or_json(result, json_output=json_output)
         return 0
+    except ZeroNetworkChangeStopped:
+        # ADR-051 decision 8: the owner cancelled, or was told why and the one fix; nothing was
+        # sent and this computer's policy is as it was.
+        return exit_code_for(PublicErrorCode.INVALID_REQUEST)
     except (OSError, ProtocolValueError, ValueError):
         return _usage_failure()
     except Exception as error:
@@ -5615,19 +5860,35 @@ def _privacy_decision_command(kind: str) -> Callable[..., None]:
         module = importlib.import_module("finishup.cli.privacy_control")
         operation = cast(Callable[[str], Awaitable[object]], getattr(module, f"decide_{kind}"))
 
+        decided: list[object] = []
+
         async def run_decision() -> object:
             if kind != "policy":
                 return await operation(pending_id)
             passphrase = _auto_unlock_store().load()
             if passphrase is None:
-                return await operation(pending_id)
+                decided.append(await operation(pending_id))
+                return decided[-1]
             auto_operation = cast(
                 Callable[[str, bytearray], Awaitable[object]],
                 getattr(module, "decide_policy_with_local_reauthentication"),
             )
-            return await auto_operation(pending_id, passphrase)
+            decided.append(await auto_operation(pending_id, passphrase))
+            return decided[-1]
 
-        _finish(run_async(lambda: _trusted_call(run_decision, json_output)))
+        async def decide() -> int:
+            from finishup.cli.zero_network_selection import machine_readable_answer
+
+            # ADR-051 decision 8: an approval that would leave this computer zero-network with a
+            # server elsewhere selected offers the two choices on the owner's console, and is
+            # refused for a JSON answer.
+            with machine_readable_answer(json_output):
+                code = await _trusted_call(run_decision, json_output)
+            if code == 0 and decided and getattr(decided[-1], "status", None) == "committed":
+                await _after_policy_change()
+            return code
+
+        _finish(run_async(decide))
 
     return command
 
@@ -5923,6 +6184,10 @@ def root(
     if version:
         typer.echo(__version__)
         raise typer.Exit(0)
+    if privacy or set_provider:
+        # The root wizards configure the server host's own privacy policy and provider, like
+        # ``privacy setup`` and ``provider``; a remote server target refuses them (ADR-051).
+        _require_server_host_or_exit("privacy setup" if privacy else "provider")
     if privacy:
         if context.invoked_subcommand is not None:
             raise typer.BadParameter("--privacy cannot be combined with a subcommand")
@@ -6402,3 +6667,22 @@ def elevated_authorize(
         return 0
 
     _finish(run_async(_run))
+
+
+def _require_server_host_or_exit(command: str) -> None:
+    from finishup.cli.command_scope import (
+        ServerHostRequired,
+        require_server_host,
+        server_host_refusal_line,
+    )
+
+    try:
+        require_server_host(command)
+    except ServerHostRequired as error:
+        _stderr(server_host_refusal_line(error, command))
+        raise typer.Exit(exit_code_for(PublicErrorCode.INVALID_REQUEST)) from None
+
+
+# Every ``server_host`` command refuses a remote server target before it runs (ADR-051). This
+# runs once, after every command above is registered; a local root calls straight through.
+install_server_host_guards(app)

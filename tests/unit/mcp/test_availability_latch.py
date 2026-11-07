@@ -149,7 +149,11 @@ class _Harness:
         original = bridge.record_public_error_without_raising
 
         async def on_demand(
-            _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+            _kind: object,
+            *,
+            workspace_locator: object = None,
+            timeout_seconds: float = 30.0,
+            serve_workspace: bool = False,
         ) -> object:
             del workspace_locator, timeout_seconds
             self.on_demand.append("connect")
@@ -161,7 +165,9 @@ class _Harness:
             assert self.on_demand_client is not None
             return self.on_demand_client
 
-        async def quiet(_kind: object, *, workspace_locator: object = None) -> object:
+        async def quiet(
+            _kind: object, *, workspace_locator: object = None, serve_workspace: bool = False
+        ) -> object:
             del workspace_locator
             self.quiet += 1
             if self.quiet_client is None:

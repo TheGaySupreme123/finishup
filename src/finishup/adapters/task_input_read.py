@@ -54,6 +54,7 @@ from finishup.observability.privacy import scan_for_sensitive_content
 from finishup.ports.change_capture import (
     MAX_TASK_INPUT_FILES,
     MAX_TASK_INPUT_TEXT_BYTES,
+    OutsideSnapshotRead,
     TaskInputFile,
     TaskInputOrigin,
     drop_space_cut_words,
@@ -63,7 +64,9 @@ __all__ = [
     "MAX_TASK_INPUT_READ_BYTES",
     "ReadDeadline",
     "clear_cut",
+    "declared_test_top",
     "list_beneath",
+    "outside_read_window",
     "read_declared_test",
     "read_text_beneath",
     "read_ends_beneath",
@@ -530,21 +533,6 @@ def read_outside_inputs(
     return tuple(inputs)
 
 
-@dataclass(frozen=True, slots=True)
-class OutsideSnapshotRead:
-    """One snapshot candidate the outside read reached (#1118 unit 1).
-
-    ``text`` is the whole file when it is UTF-8 text of at most ``max_bytes``; otherwise
-    ``None`` and ``reason`` is the closed code for why no full original was kept.
-    """
-
-    root: str
-    path: str
-    size: int
-    text: bytes | None
-    reason: Literal["too_large", "not_text", "unreadable"] | None
-
-
 def snapshot_outside_inputs(
     roots: tuple[str, ...],
     values: tuple[str, ...],
@@ -597,6 +585,96 @@ def _snapshot_row(
     return OutsideSnapshotRead(root, full, size, head, None)
 
 
+class _OutsideWalk:
+    """The trusted outside walk's admitted roots, exclusions and opened root descriptors.
+
+    ``opened`` builds one for ``roots`` and ``excluded``, or answers ``None`` when nothing could
+    be read (no admitted root, or an exclusion that cannot be identified); ``close`` closes every
+    root it opened.
+    """
+
+    def __init__(self, usable: tuple[str, ...], folded: tuple[str, ...], trust: _Trust) -> None:
+        self.usable = usable
+        self.folded = folded
+        self.trust = trust
+        self._descriptors: dict[str, int | None] = {}
+
+    @classmethod
+    def opened(cls, roots: tuple[str, ...], excluded: tuple[str, ...]) -> _OutsideWalk | None:
+        usable = tuple(root for root in roots if admitted_input_root_valid(root))
+        if not usable:
+            return None
+        identities = _excluded_identities(excluded)
+        if identities is None:
+            return None
+        folded = tuple(
+            posixpath.normpath(path).casefold() for path in excluded if path.startswith("/")
+        )
+        owners = frozenset({0, os.geteuid() if hasattr(os, "geteuid") else os.getuid()})
+        return cls(usable, folded, _Trust(owners, identities))
+
+    def located_open(self, value: str) -> tuple[str, bytes, int] | None:
+        """``(root, relative, root descriptor)`` for a value beneath an admitted root."""
+
+        if _folded_inside(value, self.folded):
+            return None
+        located = _beneath(value, self.usable)
+        if located is None:
+            return None
+        root, relative = located
+        if root not in self._descriptors:
+            self._descriptors[root] = (
+                None if _folded_inside(root, self.folded) else _open_root(root, self.trust)
+            )
+        descriptor = self._descriptors[root]
+        return None if descriptor is None else (root, relative, descriptor)
+
+    def names_something(self, value: str) -> bool:
+        """Whether ``value`` names a file or trusted directory beneath an admitted root."""
+
+        opened = self.located_open(value)
+        if opened is None or not opened[1]:
+            return False
+        entry = _entry_beneath(opened[2], opened[1], self.trust)
+        return entry is not None and (stat.S_ISREG(entry.st_mode) or self.trust.directory(entry))
+
+    def close(self) -> None:
+        for descriptor in self._descriptors.values():
+            if descriptor is not None:
+                os.close(descriptor)
+        self._descriptors.clear()
+
+
+def outside_read_window(
+    roots: tuple[str, ...],
+    values: tuple[str, ...],
+    *,
+    excluded: tuple[str, ...] = (),
+    space_cut: frozenset[str] = frozenset(),
+) -> tuple[int, ...]:
+    """The indices of ``values`` that ``read_outside_inputs`` with the same arguments looks for.
+
+    Its first 16 values, less the words the spaces of a spaced value that names something beneath
+    a root cut out (issue #1102, ``drop_space_cut_words``), decided by the same trusted metadata
+    look and in the same order. A caller that reads only some of the values (a workspace agent in
+    ``listed`` mode, ADR-051 decision 5) narrows this answer first, so it never reads a word the
+    whole value keeps out, nor a value past the read's window, where the local read would not.
+    """
+
+    window = values[:_MAX_OUTSIDE_CANDIDATES]
+    every = tuple(range(len(window)))
+    if not space_cut or not any(" " in value for value in window):
+        return every
+    walk = _OutsideWalk.opened(roots, excluded)
+    if walk is None:
+        return every  # nothing beneath a root is read at all
+    try:
+        kept = set(drop_space_cut_words(window, walk.names_something, space_cut))
+    finally:
+        walk.close()
+    return tuple(index for index, value in enumerate(window) if value in kept)
+
+
 def _outside_files(
     roots: tuple[str, ...],
     values: tuple[str, ...],
@@ -610,47 +688,23 @@ def _outside_files(
     """``(root, path, ends)`` per file the trusted outside walk reaches; ``ends`` ``None`` when
     the file failed a test. At most ``limit`` files and 16 candidates, within ``seconds``."""
 
-    usable = tuple(root for root in roots if admitted_input_root_valid(root))
-    if not usable or not values or limit < 1:
+    if not values or limit < 1:
         return
-    identities = _excluded_identities(excluded)
-    if identities is None:
+    walk = _OutsideWalk.opened(roots, excluded)
+    if walk is None:
         return
-    folded = tuple(posixpath.normpath(path).casefold() for path in excluded if path.startswith("/"))
     deadline = time.monotonic() + seconds
-    owners = frozenset({0, os.geteuid() if hasattr(os, "geteuid") else os.getuid()})
-    trust = _Trust(owners, identities)
-    descriptors: dict[str, int | None] = {}
+    trust = walk.trust
     seen: set[str] = set()
     yielded = 0
-
-    def located_open(value: str) -> tuple[str, bytes, int] | None:
-        if _folded_inside(value, folded):
-            return None
-        located = _beneath(value, usable)
-        if located is None:
-            return None
-        root, relative = located
-        if root not in descriptors:
-            descriptors[root] = None if _folded_inside(root, folded) else _open_root(root, trust)
-        descriptor = descriptors[root]
-        return None if descriptor is None else (root, relative, descriptor)
-
-    def names_something(value: str) -> bool:
-        opened = located_open(value)
-        if opened is None or not opened[1]:
-            return False
-        entry = _entry_beneath(opened[2], opened[1], trust)
-        return entry is not None and (stat.S_ISREG(entry.st_mode) or trust.directory(entry))
-
     try:
         # Issue #1102: a spaced value that names something beneath a root keeps its own words
         # out (``drop_space_cut_words``): ``/shared/legacy`` is never read for ``legacy app``.
         candidates = values[:_MAX_OUTSIDE_CANDIDATES]
-        for value in drop_space_cut_words(candidates, names_something, space_cut):
+        for value in drop_space_cut_words(candidates, walk.names_something, space_cut):
             if yielded >= limit or time.monotonic() > deadline:
                 break
-            opened = located_open(value)
+            opened = walk.located_open(value)
             if opened is None:
                 continue
             root, relative, descriptor = opened
@@ -667,13 +721,13 @@ def _outside_files(
                 if yielded >= limit or time.monotonic() > deadline:
                     break
                 full = posixpath.join(root, file.decode("utf-8"))
-                if full in seen or _folded_inside(full, folded):
+                if full in seen or _folded_inside(full, walk.folded):
                     continue
                 seen.add(full)
                 ends = _read_ends(
                     descriptor,
                     file,
-                    owners=owners,
+                    owners=trust.owners,
                     head_limit=head_limit,
                     trust=trust,
                     recorded=full,
@@ -682,9 +736,7 @@ def _outside_files(
                     yielded += 1
                 yield root, full, ends
     finally:
-        for descriptor in descriptors.values():
-            if descriptor is not None:
-                os.close(descriptor)
+        walk.close()
 
 
 class ReadDeadline(Exception):
@@ -771,6 +823,32 @@ def _beneath_system_directory(path: str) -> bool:
     return False
 
 
+def declared_test_top(location: str) -> tuple[str, str] | None:
+    """``(top, rest)`` of an absolute ``location`` as ``read_declared_test`` walks it, or ``None``.
+
+    ``top`` is the first component, replaced by its target when it is a link root owns whose
+    target is a directory at most two levels deep (``/tmp`` or ``/var`` on macOS, which lead to
+    ``/private/...``); no other link is followed. ``rest`` is the remainder below it. ``None``
+    when ``location`` has no component below the first, when the first cannot be examined, or
+    when it is a link that does not qualify.
+    """
+
+    first, _, rest = location[1:].partition("/")
+    if not first or not rest:
+        return None
+    top = "/" + first
+    try:
+        facts = os.lstat(top)
+        if stat.S_ISLNK(facts.st_mode):
+            target = os.path.realpath(top)
+            if facts.st_uid != 0 or target.count("/") > 2 or not os.path.isdir(target):
+                return None
+            top = target
+    except OSError:
+        return None
+    return top, rest
+
+
 def read_declared_test(
     location: str, *, excluded: tuple[str, ...], expired: Callable[[], bool] = lambda: False
 ) -> bytes | None:
@@ -792,19 +870,10 @@ def read_declared_test(
         or system_directory_path(location)
     ):
         return None
-    first, _, rest = location[1:].partition("/")
-    if not first or not rest:
+    walked = declared_test_top(location)
+    if walked is None:
         return None
-    top = "/" + first
-    try:
-        facts = os.lstat(top)
-        if stat.S_ISLNK(facts.st_mode):
-            target = os.path.realpath(top)
-            if facts.st_uid != 0 or target.count("/") > 2 or not os.path.isdir(target):
-                return None
-            top = target
-    except OSError:
-        return None
+    top, rest = walked
     resolved = f"{top}/{rest}"
     # By spelling (case-folded too) and by identity (#1220 review): on a case-insensitive volume
     # ``/ETC`` or ``<HOME>/LIBRARY`` names the same directory as the refused spelling.

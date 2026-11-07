@@ -45,7 +45,9 @@ from finishup.domain.receipts import (
     COMPLETION_SCOPE_UNDECLARED_GAP,
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+    KEPT_BACK_RECEIPT_ARTIFACT,
     OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
+    OUTSIDE_READS_NOT_LISTED_GAP,
     PREEXISTING_TEST_INFORMATIONAL_GAPS,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
@@ -53,6 +55,7 @@ from finishup.domain.receipts import (
     SEMANTIC_REVIEW_NOT_REQUESTED_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
     SEMANTIC_REVIEW_SKIPPED_PRIVACY_BLOCK_GAP,
+    OutsideReadsKeptBack,
     ReceiptChildFinding,
     ReceiptChildOutcome,
     ReceiptChildren,
@@ -76,7 +79,9 @@ from finishup.domain.receipts import (
     ReceiptSemanticWithheldItem,
     ReceiptVersionSlice,
     check_time_change_gap_sentence,
+    outside_reads_kept_back_sentence,
     privacy_block_sentence,
+    receipt_document_artifact_version,
     receipt_document_carries_terminal_sections,
 )
 from finishup.domain.review_input_render import (
@@ -886,6 +891,14 @@ def _check_change_gap_text(
     if later is not None:
         return later
     sentence = check_time_change_gap_sentence(code)
+    if sentence is not None and code == OUTSIDE_READS_NOT_LISTED_GAP:
+        # ADR-051 decision 5: how many, never which, then the owner's two ways out.
+        kept_back = _kept_back(context)
+        return (
+            sentence
+            if kept_back is None
+            else f"{outside_reads_kept_back_sentence(kept_back)} {sentence}"
+        )
     if sentence is not None and code == DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP:
         # tb4n4 (#1044): name the undeclared files from the applicable check's recorded
         # deliverable states, with the same sentence the Stop gate prints.
@@ -1002,10 +1015,20 @@ def _later_material_text(context: ReceiptBuildContext, code: str) -> str | None:
     return None
 
 
+def _kept_back(context: ReceiptBuildContext) -> OutsideReadsKeptBack | None:
+    """The counts the applicable check recorded beside ``outside_reads_not_listed`` (ADR-051
+    decision 5, check-recorded 1.7.0); ``None`` for any other check."""
+
+    check = context.applicable_check
+    return None if check is None else check.outside_reads_kept_back
+
+
 def _select_gaps(
     context: ReceiptBuildContext,
     historical: Mapping[str, Frontier] | None = None,
     effects: Mapping[str, ReceiptGapEffect] | None = None,
+    *,
+    kept_back_carried: bool = False,
 ) -> tuple[ReceiptGap, ...]:
     cleared = historical or {}
     plan_scope = current_plan_scope(
@@ -1058,6 +1081,14 @@ def _select_gaps(
             status=(ReceiptGapStatus.HISTORICAL if gap.code in cleared else ReceiptGapStatus.LIVE),
             cleared_at_frontier=cleared.get(gap.code),
             effect=(None if effects is None or gap.code in cleared else effects.get(gap.code)),
+            # ADR-051 decision 5: the counts ride receipt-document 1.4.0 beside the live code.
+            kept_back=(
+                _kept_back(context)
+                if kept_back_carried
+                and gap.code == OUTSIDE_READS_NOT_LISTED_GAP
+                and gap.code not in cleared
+                else None
+            ),
         )
         for gap in sorted(
             context.gaps,
@@ -3177,7 +3208,12 @@ def build_receipt(
     responses = _select_responses(context, frozenset(finding.finding_id for finding in findings))
     claim_refs = _select_claim_refs(context, findings)
     evidence_refs = _select_evidence_refs(context, claim_refs, obligations, responses)
-    gaps = _select_gaps(context, historical, gap_effects)
+    gaps = _select_gaps(
+        context,
+        historical,
+        gap_effects,
+        kept_back_carried=receipt_document_artifact_version(versions) == KEPT_BACK_RECEIPT_ARTIFACT,
+    )
     declared_coverage = (
         build_verification_coverage(context.projection, context.records)
         if settles_rejections

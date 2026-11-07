@@ -89,7 +89,8 @@ class IsolationReportContract(BaseModel):
 
     schema_tag: Literal["yoetz.isolation-report/1"] = Field(alias="schema")
     mode: Literal["isolated", "ambient"]
-    binding: Literal["ambient", "environment", "runtime_pin", "environment_and_pin"]
+    # ``selection`` (ADR-051, schema 1.1.0): the owner-only server selection decided the root.
+    binding: Literal["ambient", "environment", "runtime_pin", "environment_and_pin", "selection"]
     lifecycle: Literal["permanent", "persistent", "disposable", "unlabeled"]
     path_identity: IsolationPathIdentity
     config_content: ContentObservation | None

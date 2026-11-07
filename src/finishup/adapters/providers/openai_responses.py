@@ -261,6 +261,12 @@ PACKET_GAP_GLOSSARY: Final[Mapping[str, str]] = MappingProxyType(
             "a file or folder the task names lies outside the workspace and the owner has not "
             "admitted it, so it is not in this packet; judge what depends on it as not assessable"
         ),
+        # ADR-051 decision 5: files a remote server's listed mode kept out of the packet.
+        "outside_reads_not_listed": (
+            "some files the task names, or tests the agent declared, lie outside what the owner "
+            "lets this server read on the client machine, so they are not in this packet; judge "
+            "what depends on them as not assessable"
+        ),
         # #1118 unit 4 (AIP-2): a verification oracle after a directory change not followed.
         "verification_input_directory_unresolved": (
             "a verification command named a file after a directory change FinishUP could not "

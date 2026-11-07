@@ -124,6 +124,74 @@ def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[repor
 
 
 @pytest.fixture(autouse=True)
+def _fresh_server_selection() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Resolve the server selection afresh in every test (ADR-051).
+
+    ``active_root()`` memoizes the selection once per process, as an MCP bridge must; a test that
+    rebases the ambient directories or writes a selection would otherwise leak its answer into
+    the next test in the same process.
+    """
+
+    try:
+        from finishup.config.paths import reset_selection_memo
+    except ImportError:
+        yield
+        return
+    reset_selection_memo()
+    yield
+    reset_selection_memo()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_server_selection_read(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the zero-network item from reading the developer's real server selection (ADR-051).
+
+    After a privacy policy change, and on the setup, server, menu and terminal surfaces, FinishUP
+    reads the owner-only selection file and, when it names a remote server, asks this computer's
+    running service for its policy. A test that builds no ambient home of its own would read the
+    machine's real selection and could reach a live service, so the read answers "no selection"
+    unless a test puts ``read_selection_on_disk`` back (the zero-network tests do, in their own
+    ambient home). The import is inside the fixture for the dependency-free collection reason
+    above.
+    """
+
+    try:
+        import finishup.cli.zero_network_selection as zero_network_module
+    except ImportError:
+        return
+    monkeypatch.setattr(zero_network_module, "_selection_on_disk", lambda: None)
+    # After every privacy change made on this computer, its policy is read again so it can be
+    # remembered (maintainer decision, 2026-11-07); a test reaches no real service for it unless
+    # it puts ``_read_after_change`` back with its own stand-in for the service.
+    monkeypatch.setattr(zero_network_module, "_after_change_state", lambda: "unreadable")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_everyday_policy_marker(  # pyright: ignore[reportUnusedFunction]
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep what this computer last reported about network use out of the real state directory.
+
+    The marker (``finishup.client.everyday_policy``, ADR-051 decision 8) lives beside the server
+    registry in the everyday state directory; the connection check reads it before every hop to a
+    remote server, and a policy read writes it. Each test gets its own private folder, so a real
+    marker never refuses a test's connection and no test writes one. A test of the real location
+    puts ``_ambient_marker_path`` back inside an ambient home of its own.
+    """
+
+    try:
+        import finishup.client.everyday_policy as everyday_policy_module
+    except ImportError:
+        return
+    root = tmp_path_factory.mktemp("everyday-policy")
+    root.chmod(0o700)
+    marker = Path(root) / everyday_policy_module.MARKER_NAME
+    monkeypatch.setattr(everyday_policy_module, "_location", lambda: marker)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

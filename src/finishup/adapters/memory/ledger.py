@@ -19,6 +19,7 @@ from finishup.domain.events import (
     DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
     FINDING_EVENT_SCHEMA_VERSION,
     FINDING_SNIPPET_EVENT_SCHEMA_VERSION,
+    KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION,
     REVIEW_CHECK_EVENT_SCHEMA_VERSION,
     REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
     SEMANTIC_EVENT_SCHEMA_VERSION,
@@ -77,7 +78,10 @@ from finishup.domain.findings import (
     semantic_provenance_to_json,
 )
 from finishup.domain.privacy import DisclosureProvenance, SourceAuthorship, authorship_provenance
-from finishup.domain.receipts import CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP
+from finishup.domain.receipts import (
+    CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
+    OutsideReadsKeptBack,
+)
 from finishup.domain.values import (
     Actor,
     ActorType,
@@ -4394,6 +4398,7 @@ class MemoryLedgerAdapter:
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
         review_mode: CheckReviewMode | None = None,
+        outside_reads_kept_back: OutsideReadsKeptBack | None = None,
         correctness_advisories: tuple[JsonObject, ...] = (),
         reviewer: JsonObject | None = None,
     ) -> CheckCommitResult:
@@ -4514,6 +4519,7 @@ class MemoryLedgerAdapter:
             semantic_redacted_values=semantic_redacted_values,
             semantic_route_required=semantic_route_required,
             review_mode=review_mode,
+            outside_reads_kept_back=outside_reads_kept_back,
             deliverable_states=deliverable_states,
             review_input_manifest=review_input_manifest,
             correctness_advisories=correctness_advisories,
@@ -4567,7 +4573,10 @@ class MemoryLedgerAdapter:
             # pre-edit deferral reason. That check still carries review_mode and totals, so the
             # reason is chosen before the 1.4.0 review-output rule.
             check_schema_version = (
-                REVIEWER_CHECK_EVENT_SCHEMA_VERSION
+                # ADR-051 decision 5: 1.7.0 is chosen exactly for the kept-back counts.
+                KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION
+                if check_payload.outside_reads_kept_back is not None
+                else REVIEWER_CHECK_EVENT_SCHEMA_VERSION
                 if check_payload.reviewer is not None
                 or correctness_advisories
                 or check_payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE

@@ -847,6 +847,13 @@ async def _complete_repository_privacy_grant(
 
     if type(decision_result) is not PrivacyDecisionResult or decision_result.status != "committed":
         raise ElevatedBootstrapError("repository_privacy_grant_failed")
+    from finishup.cli.zero_network_selection import after_policy_change_async
+
+    # ADR-051 decision 8: this computer's policy changed, so it is remembered. A relayed grant
+    # never prompts: a candidate that would leave a server elsewhere selected under zero-network
+    # was refused before it was proposed, and its supplied approval is refused the same way
+    # (``privacy_control``) if such a server was selected in between.
+    await after_policy_change_async()
     return {"recipe": recipe, "outcome": "granted"}
 
 

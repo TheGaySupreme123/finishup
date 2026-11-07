@@ -30,7 +30,11 @@ from finishup.ports.control import (
     WorkspaceLocator,
 )
 from finishup.protocol.canonical import JsonValue, canonical_encode
-from finishup.protocol.errors import SERVICE_STARTUP_PHASES, PublicErrorCode
+from finishup.protocol.errors import (
+    REMOTE_CONNECTION_PHASES,
+    SERVICE_STARTUP_PHASES,
+    PublicErrorCode,
+)
 from finishup.service.control_protocol import public_error_code_for_control_reason
 
 if TYPE_CHECKING:
@@ -515,6 +519,61 @@ def control_failure(
                 payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
+    if error.reason == "service_unavailable" and error.phase in REMOTE_CONNECTION_PHASES:
+        # The selected server is on another machine (ADR-051): name the closed remote phase and
+        # its directive, never a local-service remedy. No host or name is in either. A connection
+        # lost mid-call may already have delivered the call, so this line never says that
+        # nothing was recorded; the directive says how to repeat the request safely.
+        from finishup.cli.remote_remedy import remote_summary
+        from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
+        from finishup.protocol.recovery import continuation_for_reason, directive_for
+
+        remote_directive = directive_for(continuation_for_reason(error.phase))
+        lines = [f"service_unavailable: {error.phase}: {remote_summary(error.phase)}"]
+        if remote_directive is not None:
+            lines.extend(render_recovery_directive_lines(remote_directive))
+        stderr_writer(_with_correlation("\n".join(lines), error))
+        if json_output:
+            payload = {
+                "ok": False,
+                "public_code": code.value,
+                "reason": "service_unavailable",
+                "phase": error.phase,
+                "retryable": error.retryable,
+            }
+            if error.correlation_id is not None:
+                payload["correlation_id"] = error.correlation_id
+            if remote_directive is not None:
+                payload["recovery"] = recovery_directive_json(remote_directive)
+            stdout_writer(payload)
+        return exit_code_for(code)
+    if code is PublicErrorCode.VAULT_LOCKED:
+        from finishup.cli.remote_remedy import remote_locked_directive
+
+        locked = remote_locked_directive()
+        if locked is not None:
+            # The selected server's own vault (ADR-051): it is unlocked on the server host,
+            # never by a command on this machine.
+            from finishup.cli.render import recovery_directive_json, render_recovery_directive_lines
+
+            lines = [
+                "vault_locked: the selected FinishUP server's vault is locked, and nothing was "
+                "recorded",
+                *render_recovery_directive_lines(locked),
+            ]
+            stderr_writer(_with_correlation("\n".join(lines), error))
+            if json_output:
+                payload = {
+                    "ok": False,
+                    "public_code": code.value,
+                    "reason": "vault_locked",
+                    "retryable": error.retryable,
+                    "recovery": recovery_directive_json(locked),
+                }
+                if error.correlation_id is not None:
+                    payload["correlation_id"] = error.correlation_id
+                stdout_writer(payload)
+            return exit_code_for(code)
     from finishup.service.client import accepted_but_unresponsive, handshake_failure
 
     startup = _spawned_startup_failure(error)

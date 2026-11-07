@@ -56,6 +56,13 @@ from finishup.domain.verification_coverage import (
     verification_coverage_lines,
     verification_coverage_to_json,
 )
+from finishup.domain.workspace_provenance import (
+    WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_LINE,
+    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
+    WorkspaceProvenanceReason,
+    workspace_provenance_unknown_lines,
+)
 from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
 from finishup.protocol.coverage import (
     Coverage,
@@ -64,7 +71,7 @@ from finishup.protocol.coverage import (
     weakest,
 )
 from finishup.protocol.errors import ProtocolValueError
-from finishup.protocol.ids import validate_opaque_item_id
+from finishup.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     ReceiptRedactionProfile,
     SemanticReason,
@@ -115,6 +122,14 @@ __all__ = [
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASONS",
+    "CLIENT_ATTESTED",
+    "CLIENT_ATTESTED_OBSERVATION_LINE",
+    "CLIENT_ATTESTED_WORKSPACE_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
+    "WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE",
+    "client_attested_receipt_block",
+    "workspace_provenance_unknown_block",
     "CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS",
     "COMPLETION_CLAIM_OUTSIDE_PLAN_GAP",
     "COMPLETION_PLAN_NOT_CLAIMED_GAP",
@@ -203,6 +218,14 @@ __all__ = [
     "VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP",
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
+    "OUTSIDE_READS_NOT_LISTED_GAP",
+    "OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE",
+    "KEPT_BACK_RECEIPT_ARTIFACT",
+    "MAX_KEPT_BACK_COUNT",
+    "OutsideReadsKeptBack",
+    "kept_back_from_wire",
+    "receipt_document_artifact_version",
+    "outside_reads_kept_back_sentence",
     "check_time_change_unavailable_reason_gap",
 ]
 
@@ -436,10 +459,14 @@ CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # carries only the generic code.
 CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "git_unavailable": "Git is not installed where the FinishUP service runs.",
+        "git_unavailable": (
+            "Git is not installed on the computer that read the repository: the one the FinishUP "
+            "service runs on, or, for a remote server, the client machine that holds the project."
+        ),
         "git_version_unsupported": (
-            "the Git where the FinishUP service runs is older than 2.25, the oldest Git FinishUP "
-            "supports."
+            "the Git on the computer that read the repository (the one the FinishUP service runs "
+            "on, or, for a remote server, the client machine that holds the project) is older "
+            "than 2.25, the oldest Git FinishUP supports."
         ),
         "not_git": "the check's directory is not a Git repository.",
         "unsafe_root": (
@@ -468,9 +495,46 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         "no_packet_room": (
             "the review recipe's excerpt budget is too small for any part of the change."
         ),
+        # ADR-051: a claim-bound task's workspace is read only by the FinishUP workspace agent
+        # on the client machine.
+        "workspace_agent_unavailable": (
+            "the FinishUP workspace agent on the client machine gave no usable answer to the "
+            "server's read of the workspace (it was not connected, did not answer in time, or "
+            "failed), so the server could not see the change. On the client machine, the "
+            "computer that holds the project, `finishup server status NAME` shows the connection "
+            "and `finishup server connect NAME` makes it again; checking again then can help."
+        ),
+        "workspace_agent_refused": (
+            "the FinishUP workspace agent on the client machine refused a request the check "
+            "needed as one it does not answer (for a workspace it did not claim, an operation or "
+            "argument it does not know, or a folder no owner could admit), so the server could "
+            "not see the change. This usually means the two computers run different FinishUP "
+            "releases: install the same release on both, run `finishup server connect NAME` on "
+            "the client machine, the computer that holds the project, and check again."
+        ),
     }
 )
 _CHECK_TIME_CHANGE_REASON_PREFIX: Final = CHECK_TIME_CHANGE_UNAVAILABLE_GAP + "_"
+# ADR-051: the provenance of workspace evidence a claim-bound task's workspace agent returned,
+# and the one fixed line every human rendering of such a task's receipt carries. Fixed words: no
+# host, user, path or target name ever joins it.
+CLIENT_ATTESTED: Final = "client_attested"
+CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
+    "Workspace evidence was read on the client machine by the FinishUP workspace agent and "
+    "attested over the connection; the server did not read the repository itself."
+)
+# ADR-051 (owner decision D4): the lines a receipt's "Workspace evidence" section holds instead
+# when the record that opened its session could not be read, so whether the task is claim-bound is
+# unknown: what happened, why it matters, and what to do for a passing cause or why that cause
+# lasts, one line per cause (``domain.workspace_provenance``, which also gives every receipt format
+# its ``workspace_provenance`` member).
+# ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
+# committed on the client; the service accepted them as attested and verified neither.
+CLIENT_ATTESTED_OBSERVATION_LINE: Final = (
+    "Hook observations were captured on the client machine under its own observation consent "
+    "and delivered over the connection; the server did not verify that consent or the session "
+    "commitments."
+)
 CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS: Final = frozenset(
     _CHECK_TIME_CHANGE_REASON_PREFIX + reason for reason in CHECK_TIME_CHANGE_UNAVAILABLE_REASONS
 )
@@ -491,7 +555,8 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
 )
 # Issue #1102 (RC6f): the task names a file or folder outside the workspace that no root the owner
 # admitted covers, so AI-powered review judged the work without it. Only the owner can admit a root
-# (``finishup privacy input-roots add`` on a trusted terminal); an agent cannot. A closed code with
+# (``finishup privacy input-roots add`` on a trusted terminal, or, for a remote server, ``finishup
+# server folders add`` on the client machine, ADR-051 decision 5); an agent cannot. A closed code with
 # no path, disclosed and never agent work: it is not a member of ``CHECK_TIME_CHANGE_GAPS``, never
 # bounds the receipt's conclusion and never becomes a Stop-gate item or a continuation.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP: Final = "task_input_outside_not_admitted"
@@ -503,11 +568,116 @@ TASK_INPUT_BASELINE_UNAVAILABLE_GAP: Final = "task_input_baseline_unavailable"
 # cannot resolve (``cd -``, ``cd $X``, a subshell), so that oracle was left out rather than read
 # as a same-named file elsewhere. A closed disclosure code with no path, on the same terms.
 VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directory_unresolved"
+# ADR-051 decision 5: a server in listed mode whose client's workspace agent left unread an
+# existing file the task names, or a test the agent declared, because the client's owner has not
+# listed its folder for that server (or, for a test in the project, Git ignores it or cannot
+# answer for it). Only those files are missing; the rest of the read reached review. A closed
+# disclosure code with no path, on the same terms as the codes above: it never bounds the
+# receipt's conclusion, and only the owner, on the client machine, can clear it. How many files
+# were kept back is frozen with the check change and the job's case object, recorded on the check
+# (check-recorded 1.7.0) and carried by the receipt's gap (receipt-document 1.4.0,
+# ``OutsideReadsKeptBack``), whose detail opens with the fixed count line.
+OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
     "Review lacked a task-named file or folder outside the workspace; only the owner can admit"
-    " it: `finishup privacy input-roots add <folder>`."
+    " it: `finishup privacy input-roots add <folder>` on the computer the FinishUP service runs"
+    " on, or, for a remote server, `finishup server folders add NAME FOLDER` on the client"
+    " machine."
 )
+OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
+    "Review lacked files outside the folders the owner listed for this server; only the owner can"
+    " allow them, on the client machine: `finishup server folders add NAME FOLDER` for a file"
+    " outside the project, or `finishup server folders mode NAME local` for a server they trust,"
+    " the only way for a test in the project that Git ignores."
+)
+# The most files of either kind one check says listed mode kept back (ADR-051 decision 5, open
+# question 2 closed 2026-11-07): well above the 16 task-input values and four kept copies one
+# check-time read judges, and the three declared tests one review pins. A larger count is clamped.
+MAX_KEPT_BACK_COUNT: Final = 64
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideReadsKeptBack:
+    """How many files a claim-bound check's listed mode kept from review (ADR-051 decision 5).
+
+    ``task_inputs``: the task-named inputs (and kept copies) the client's workspace agent left
+    unread; ``declared_tests``: the declared tests it refused. Bounded counts, never which file:
+    the check-recorded event (1.7.0) records them and the receipt's ``outside_reads_not_listed``
+    gap carries them (receipt-document 1.4.0). At least one is not zero.
+    """
+
+    task_inputs: int
+    declared_tests: int
+
+    def __post_init__(self) -> None:
+        for value in (self.task_inputs, self.declared_tests):
+            if type(value) is not int or not 0 <= value <= MAX_KEPT_BACK_COUNT:
+                raise ProtocolValueError("invalid_event_value_type")
+        if not (self.task_inputs or self.declared_tests):
+            raise ProtocolValueError("invalid_event_value_type")
+
+    @classmethod
+    def clamped(cls, task_inputs: int, declared_tests: int) -> OutsideReadsKeptBack | None:
+        """The counts within the bound, or ``None`` when listed mode kept nothing back."""
+
+        bounded = (
+            max(0, min(task_inputs, MAX_KEPT_BACK_COUNT)),
+            max(0, min(declared_tests, MAX_KEPT_BACK_COUNT)),
+        )
+        return cls(*bounded) if any(bounded) else None
+
+    def as_wire(self) -> dict[str, int]:
+        return {"declared_tests": self.declared_tests, "task_inputs": self.task_inputs}
+
+    @classmethod
+    def from_wire(cls, value: object) -> OutsideReadsKeptBack:
+        if not isinstance(value, Mapping) or set(cast(Mapping[str, object], value)) != {
+            "declared_tests",
+            "task_inputs",
+        }:
+            raise ProtocolValueError("invalid_event_value_type")
+        source = cast(Mapping[str, object], value)
+        return cls(cast(int, source["task_inputs"]), cast(int, source["declared_tests"]))
+
+
+def kept_back_from_wire(document: object) -> OutsideReadsKeptBack | None:
+    """The counts a receipt document's live ``outside_reads_not_listed`` gap carries, if any.
+
+    For surfaces that render a JSON receipt (the CLI, the terminal interface, the MCP summary):
+    anything malformed reads as no counts, so a surface never shows a number it cannot trust.
+    """
+
+    if not isinstance(document, Mapping):
+        return None
+    gaps = cast(Mapping[str, object], document).get("gaps")
+    if not isinstance(gaps, list | tuple):
+        return None
+    for gap in cast(Sequence[object], gaps):
+        if not isinstance(gap, Mapping):
+            continue
+        row = cast(Mapping[str, object], gap)
+        kept = row.get("kept_back")
+        if row.get("code") != OUTSIDE_READS_NOT_LISTED_GAP or not isinstance(kept, Mapping):
+            continue
+        try:
+            return OutsideReadsKeptBack.from_wire(dict(cast(Mapping[str, object], kept)))
+        except ProtocolValueError:
+            return None
+    return None
+
+
+def outside_reads_kept_back_sentence(kept: OutsideReadsKeptBack) -> str:
+    """The fixed count line that opens an ``outside_reads_not_listed`` disclosure: numbers only,
+    never a path."""
+
+    inputs = "task input" if kept.task_inputs == 1 else "task inputs"
+    tests = "declared test" if kept.declared_tests == 1 else "declared tests"
+    verb = "was" if kept.task_inputs + kept.declared_tests == 1 else "were"
+    return (
+        f"{kept.task_inputs} {inputs} and {kept.declared_tests} {tests} outside the folders this"
+        f" server may read {verb} kept back."
+    )
 
 
 def check_time_change_unavailable_reason_gap(reason: str) -> str:
@@ -537,14 +707,32 @@ def check_time_change_gap_sentence(code: str) -> str | None:
         return (
             "The task names a file or folder outside the workspace that AI-powered review may not"
             " read, so the reviewer judged the work without it. Only the owner can let review"
-            " read it, with `finishup privacy input-roots add <folder>` on a trusted terminal; an"
-            " agent cannot, and copying it into the workspace does not help."
+            " read it, with `finishup privacy input-roots add <folder>` in a trusted terminal on"
+            " the computer the FinishUP service runs on. For a remote server, they list its"
+            " folder for that server with `finishup server folders add NAME FOLDER` on the client"
+            " machine, the computer that holds the project. An agent cannot admit it, and copying"
+            " it into the workspace does not help."
+        )
+    if code == OUTSIDE_READS_NOT_LISTED_GAP:
+        return (
+            "This server reads outside the project only the folders the owner listed for it"
+            " (listed mode), so the FinishUP workspace agent on the client machine did not let it"
+            " read some files the task names or tests the agent declared that lie outside them"
+            " (or, for a test in the project, that Git ignores or cannot answer for); the reviewer"
+            " judged the work without just those files. Only the owner can change that, on the"
+            " client machine, the computer that holds the project. For a file outside the"
+            " project, list its folder with `finishup server folders add NAME FOLDER`. For a test"
+            " in the project, listing a folder does not help: stop Git ignoring it, or switch the"
+            " server to local mode, which also reads every file above, with `finishup server"
+            " folders mode NAME local`, only for a server they trust as they trust FinishUP on"
+            " that computer. Checking again then reads them. An agent cannot."
         )
     if code == TASK_INPUT_BASELINE_UNAVAILABLE_GAP:
         return (
             "Review read a task-named file outside the workspace as it is now. FinishUP kept no"
             " copy from when the task started or first named it, so the reviewer could not tell"
-            " whether the agent changed it."
+            " whether the agent changed it. A copy is kept only of a file review may read at that"
+            " moment, so letting review read its folder before the task starts keeps one."
         )
     if code == VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP:
         return (
@@ -1380,6 +1568,14 @@ class ReceiptVersionSlice:
         )
 
 
+# The receipt-document artifacts that carry the child section and the issue #905 terminal-state
+# sections: 1.3.0, and 1.4.0, its superset that adds the ``kept_back`` counts beside an
+# ``outside_reads_not_listed`` gap (ADR-051 decision 5, open question 2 closed 2026-11-07).
+_CHILD_BEARING_ARTIFACTS: Final = frozenset({"1.3.0", "1.4.0"})
+# The artifact that may carry ``ReceiptGap.kept_back``.
+KEPT_BACK_RECEIPT_ARTIFACT: Final = "1.4.0"
+
+
 def _receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | None:
     """Return the selected receipt-document artifact version from a receipt version slice.
 
@@ -1401,10 +1597,16 @@ def _receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | N
     )
 
 
+def receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | None:
+    """The receipt-document artifact version a receipt's version slice selects, if any."""
+
+    return _receipt_document_artifact_version(versions)
+
+
 def receipt_document_carries_terminal_sections(versions: ReceiptVersionSlice) -> bool:
     """Whether this receipt artifact version carries the issue #905 terminal-state sections."""
 
-    return _receipt_document_artifact_version(versions) == "1.3.0"
+    return _receipt_document_artifact_version(versions) in _CHILD_BEARING_ARTIFACTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -1486,9 +1688,18 @@ class ReceiptGap:
     cleared_at_frontier: Frontier | None = None
     # ADR-046: absent reads "not recorded" (an earlier artifact); present only on a live gap.
     effect: ReceiptGapEffect | None = None
+    # ADR-051 decision 5 (receipt-document 1.4.0): how many task inputs and declared tests a
+    # remote server's listed mode kept from review; only on a live ``outside_reads_not_listed``.
+    kept_back: OutsideReadsKeptBack | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_gap"
+        if self.kept_back is not None and (
+            type(self.kept_back) is not OutsideReadsKeptBack
+            or self.code != OUTSIDE_READS_NOT_LISTED_GAP
+            or self.status is not ReceiptGapStatus.LIVE
+        ):
+            raise ProtocolValueError(invalid)
         if self.effect is not None and (
             type(self.effect) is not ReceiptGapEffect or self.status is not ReceiptGapStatus.LIVE
         ):
@@ -1734,7 +1945,7 @@ class ReceiptDocument:
                 raise ProtocolValueError(invalid)
         if self.verification_coverage is not None and (
             type(self.verification_coverage) is not VerificationCoverage
-            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
         ):
             raise ProtocolValueError(invalid)
         try:
@@ -1793,14 +2004,14 @@ class ReceiptDocument:
         receipt_schema_version = _receipt_document_artifact_version(self.versions)
         if self.semantic_status is not None or self.semantic_reason is not None:
             if (
-                receipt_schema_version != "1.3.0"
+                receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
                 or self.semantic_status is not SemanticStatus.UNAVAILABLE
                 or self.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 or self.semantic_provenance is not None
                 or self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
             ):
                 raise ProtocolValueError(invalid)
-        if self.children.children and receipt_schema_version != "1.3.0":
+        if self.children.children and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS:
             raise ProtocolValueError("receipt_children_schema_version")
         carried_ids = frozenset(
             finding.finding_id for finding in cast(tuple[Finding, ...], findings)
@@ -1809,7 +2020,10 @@ class ReceiptDocument:
             raw_ids = _validate_tuple(getattr(self, name), 0, 100, invalid)
             ids = tuple(finding_id(value) for value in raw_ids)
             _validate_sorted_unique_strings(cast(tuple[str, ...], ids))
-            if ids and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(ids)):
+            if ids and (
+                receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
+                or not carried_ids.issuperset(ids)
+            ):
                 raise ProtocolValueError(invalid)
             object.__setattr__(self, name, ids)
         terminal_ids = [
@@ -1838,7 +2052,7 @@ class ReceiptDocument:
             raise ProtocolValueError("invalid_receipt_conclusion")
         if self.conclusion_basis is not None and (
             type(self.conclusion_basis) is not ReceiptConclusionBasis
-            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
             or (self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS)
             != (self.conclusion_basis.reason_total == 0)
         ):
@@ -1850,7 +2064,10 @@ class ReceiptDocument:
             str(item.finding_id) for item in cast(tuple[ReceiptDuplicateLink, ...], links)
         )
         _validate_sorted_unique_strings(linked)
-        if links and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(linked)):
+        if links and (
+            receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
+            or not carried_ids.issuperset(linked)
+        ):
             raise ProtocolValueError(invalid)
         disputed = tuple(
             finding_id(value)
@@ -1865,7 +2082,7 @@ class ReceiptDocument:
             for value in _validate_tuple(self.acknowledged_not_done_obligation_ids, 0, 100, invalid)
         )
         _validate_sorted_unique_strings(cast(tuple[str, ...], acknowledged_obligations))
-        if acknowledged_obligations and receipt_schema_version != "1.3.0":
+        if acknowledged_obligations and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS:
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "acknowledged_not_done_obligation_ids", acknowledged_obligations)
         if (
@@ -1882,7 +2099,7 @@ class ReceiptDocument:
             for item in cast(tuple[ReceiptDisclosure, ...], disclosures)
         )
         if disclosure_keys != tuple(sorted(set(disclosure_keys))) or (
-            disclosures and receipt_schema_version != "1.3.0"
+            disclosures and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
         ):
             raise ProtocolValueError(invalid)
         withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
@@ -1915,8 +2132,14 @@ class ReceiptDocument:
         for gap in cast(tuple[ReceiptGap, ...], gaps):
             if gap.code not in self.coverage.known_gaps:
                 raise ProtocolValueError("receipt_gap_not_in_coverage")
+            if (
+                gap.kept_back is not None
+                and _receipt_document_artifact_version(self.versions) != KEPT_BACK_RECEIPT_ARTIFACT
+            ):
+                # ADR-051 decision 5: only receipt-document 1.4.0 carries the counts.
+                raise ProtocolValueError("invalid_receipt_gap")
             if gap.effect is not None and (
-                _receipt_document_artifact_version(self.versions) != "1.3.0"
+                _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
                 or (
                     gap.effect is ReceiptGapEffect.BOUNDS
                     and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
@@ -1928,7 +2151,7 @@ class ReceiptDocument:
         # either live or historical on one receipt, never both.
         historical_codes = {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if not gap.live}
         if historical_codes and (
-            receipt_schema_version != "1.3.0"
+            receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
             or historical_codes
             & {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if gap.live}
         ):
@@ -2070,7 +2293,7 @@ def _gap_from_json(value: object) -> ReceiptGap:
     source = _closed_object(
         value,
         frozenset({"code", "subject_refs"}),
-        frozenset({"detail", "status", "cleared_at_frontier", "effect"}),
+        frozenset({"detail", "status", "cleared_at_frontier", "effect", "kept_back"}),
         invalid,
     )
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
@@ -2097,6 +2320,11 @@ def _gap_from_json(value: object) -> ReceiptGap:
         effect=(
             _enum_value(_field(source, "effect", invalid), ReceiptGapEffect, invalid)
             if "effect" in keys
+            else None
+        ),
+        kept_back=(
+            OutsideReadsKeptBack.from_wire(_field(source, "kept_back", invalid))
+            if "kept_back" in keys
             else None
         ),
     )
@@ -2363,9 +2591,9 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
     versions = _version_slice_from_json(_field(source, "versions", invalid))
     artifact_version = _receipt_document_artifact_version(versions)
     has_children = "children" in source
-    if has_children and artifact_version != "1.3.0":
+    if has_children and artifact_version not in _CHILD_BEARING_ARTIFACTS:
         raise ProtocolValueError("invalid_receipt_document")
-    if not has_children and artifact_version == "1.3.0":
+    if not has_children and artifact_version in _CHILD_BEARING_ARTIFACTS:
         raise ProtocolValueError("invalid_receipt_document")
     for name in (*_TERMINAL_ID_FIELDS, "duplicate_finding_links"):
         if name in source and not _array(source[name], invalid):
@@ -2582,6 +2810,8 @@ def _gap_to_json(value: ReceiptGap) -> dict[str, object]:
         result["cleared_at_frontier"] = _frontier_to_json(value.cleared_at_frontier)
     if value.effect is not None:
         result["effect"] = value.effect.value
+    if value.kept_back is not None:
+        result["kept_back"] = value.kept_back.as_wire()
     return result
 
 
@@ -2666,7 +2896,7 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         "redactions": [_redaction_to_json(value) for value in document.redactions],
         "sections": [_section_to_json(value) for value in document.sections],
     }
-    if _receipt_document_artifact_version(document.versions) == "1.3.0":
+    if _receipt_document_artifact_version(document.versions) in _CHILD_BEARING_ARTIFACTS:
         result["children"] = _children_to_json(document.children)
     if document.acknowledged_not_done_finding_ids:
         result["acknowledged_not_done_finding_ids"] = list(
@@ -2897,6 +3127,10 @@ def _declared_none_reason_for_render(document: ReceiptDocument) -> str | None:
 
 _HUMAN_TEXT_MAX: Final = 32_768
 _HUMAN_TEXT_MARKER_RESERVE: Final = 900
+# The longest closing section ``render_receipt_human`` admits (the "Workspace evidence" section a
+# claim-bound or provenance-unknown receipt ends with). Its room is taken from the bound before
+# any other section is placed, so the section is never cut and never pushes the text past it.
+_HUMAN_TEXT_TRAILER_MAX: Final = 2_048
 _HUMAN_TEXT_MARKER_NAMES: Final = 10
 # Who is granted room first when a long receipt must be shortened (tb4n3 RC-2, A7). Every section
 # keeps at least its heading and a "not shown" line, so no section silently disappears; these
@@ -2973,7 +3207,7 @@ def _human_block_variants(block: str) -> tuple[str, ...]:
     return tuple(variants)
 
 
-def _bound_human_text(parts: list[str], history_title: str) -> str:
+def _bound_human_text(parts: list[str], history_title: str, *, trailer: str = "") -> str:
     """Join the blocks, shortening by section when they exceed the bound (tb4n3 RC-2, A7).
 
     The old cut took the head of the joined text, so a long receipt silently lost whichever
@@ -2981,11 +3215,17 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     -- under a generic marker. Each block now keeps at least its heading and a line saying its
     content was not shown, disclosures and limitations are shortened last, and the marker names
     every shortened section.
+
+    A non-empty ``trailer`` is the closing section, kept whole after everything else: its room is
+    reserved first, so the joined text, the truncation marker included, plus the trailer never
+    exceed the bound (ADR-051, decision D4).
     """
 
+    tail = "\n\n" + trailer if trailer else ""
+    limit = _HUMAN_TEXT_MAX - len(tail)
     text = "\n\n".join(parts)
-    if len(text) <= _HUMAN_TEXT_MAX:
-        return text
+    if len(text) <= limit:
+        return text + tail
     names = [_human_block_name(part) for part in parts]
     blocks = [
         Part(
@@ -2997,7 +3237,7 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
     ]
     composed = compose_parts(
         blocks,
-        _HUMAN_TEXT_MAX - _HUMAN_TEXT_MARKER_RESERVE,
+        limit - _HUMAN_TEXT_MARKER_RESERVE,
         sep="\n\n",
         ascii_only=False,
     )
@@ -3012,8 +3252,9 @@ def _bound_human_text(parts: list[str], history_title: str) -> str:
         + "The structured receipt (format json) holds every section in full.]"
     )
     return (
-        clip_to_limit(composed.text, _HUMAN_TEXT_MAX - len(marker), marker="...", ascii_only=False)
+        clip_to_limit(composed.text, limit - len(marker), marker="...", ascii_only=False)
         + marker
+        + tail
     )
 
 
@@ -3035,15 +3276,30 @@ def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
     return [f"Continuation: {directive.token}", f"Next: {directive.directive}"]
 
 
-def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
+def render_receipt_human(
+    document: ReceiptDocument, *, markdown: bool, trailer: str | None = None
+) -> str:
     """Project the canonical receipt sections into markdown or plain-text ``human_text``.
 
     JSON receipts carry the structured document; markdown/text receipts keep ``document``
     null by format and must still expose limitations and finding-count distinctions here
     (#437, #429). Compact one-line wording remains ``render_receipt_compact``.
+
+    ``trailer`` is a closing section that is not part of the stored document: the fixed
+    "Workspace evidence" section of a claim-bound or provenance-unknown receipt (ADR-051,
+    decision D4). The text ends with it whole, and the other sections are shortened around it, so
+    the result still fits the 32,768-character wire bound; appending it afterwards could push a
+    long receipt past the bound and make it undeliverable.
     """
 
-    if type(document) is not ReceiptDocument or type(markdown) is not bool:
+    if (
+        type(document) is not ReceiptDocument
+        or type(markdown) is not bool
+        or not (
+            trailer is None
+            or (type(trailer) is str and 0 < len(trailer) <= _HUMAN_TEXT_TRAILER_MAX)
+        )
+    ):
         raise ProtocolValueError("invalid_receipt_document")
     parts: list[str] = []
     for section in document.sections:
@@ -3084,7 +3340,7 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
             )
         )
         parts.append(history_block)
-    if _receipt_document_artifact_version(document.versions) == "1.3.0":
+    if _receipt_document_artifact_version(document.versions) in _CHILD_BEARING_ARTIFACTS:
         heading = "## Children" if markdown else "Children"
         child_parts = [heading]
         if not document.children.children:
@@ -3324,13 +3580,13 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
+    if not parts:
+        compact = render_receipt_compact(document)
+        parts = [compact] if compact else []
     text = (
-        _bound_human_text(
-            parts,
-            HISTORICAL_GAPS_SECTION_TITLE,
-        )
+        _bound_human_text(parts, HISTORICAL_GAPS_SECTION_TITLE, trailer=trailer or "")
         if parts
-        else render_receipt_compact(document)
+        else ""
     )
     if not text:
         raise ProtocolValueError("invalid_receipt_document")
@@ -3592,3 +3848,52 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         prefix + "no unresolved local findings were recorded. Coverage is current cooperative "
         "local evidence; this is not proof of correctness."
     )
+
+
+def client_attested_receipt_block(
+    service_instance_id: str, *, markdown: bool, hook_observed: bool = False
+) -> str:
+    """The section a claim-bound task's text or markdown receipt ends with (ADR-051).
+
+    The fixed provenance line, then, when the task holds hook-observed evidence, the fixed
+    client-attested observation line (decision 12), then the serving service by its own instance
+    id and the closed binding token of the connection it served; nothing user-controlled.
+    """
+
+    validate_id(IdKind.SERVICE_INSTANCE, service_instance_id)
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return "\n".join(
+        (
+            heading,
+            CLIENT_ATTESTED_WORKSPACE_LINE,
+            *((CLIENT_ATTESTED_OBSERVATION_LINE,) if hook_observed else ()),
+            f"Served by FinishUP service {service_instance_id} (connection: client_claim).",
+        )
+    )
+
+
+def workspace_provenance_unknown_block(*, markdown: bool, reason: WorkspaceProvenanceReason) -> str:
+    """The section a receipt ends with when its claim binding is unknown (ADR-051, decision D4).
+
+    The record that opened the task's session could not be read. ``reason`` names the cause and
+    picks the last line, which says only what is true of it (decision D4b): a passing cause
+    (``session_opening_unreadable``: the ledger read failed or the record did not load) says to run
+    receipt again and then restart the server's service; a lasting one says why no retry or
+    restart reads the record and how long the receipt will keep saying so, with no retry or
+    restart advice (``session_opening_redacted`` and ``session_opening_erased``: it will not become
+    readable again; ``session_opening_key_unavailable``: while the server lacks its key;
+    ``session_opening_format_unknown``: until the server runs a FinishUP version that knows the
+    format; ``session_opening_copy_unverifiable``: for as long as its stored copy is missing or
+    fails its integrity check). The receipt is still built, and this section says what happened,
+    why it matters and whether a retry can help, rather than leave the section out. Fixed words;
+    nothing user-controlled. Any other ``reason`` is ``invalid_receipt_document``.
+    """
+
+    if type(markdown) is not bool:
+        raise ProtocolValueError("invalid_receipt_document")
+    try:
+        lines = workspace_provenance_unknown_lines(reason)
+    except ValueError as exc:
+        raise ProtocolValueError("invalid_receipt_document") from exc
+    heading = "## Workspace evidence" if markdown else "Workspace evidence"
+    return "\n".join((heading, *lines))

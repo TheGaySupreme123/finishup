@@ -24,6 +24,8 @@ from finishup.domain.receipt_closing import safe_closing_prompt
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+    OUTSIDE_READS_NOT_LISTED_GAP,
+    OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE,
     SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT,
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
@@ -33,7 +35,9 @@ from finishup.domain.receipts import (
     UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    kept_back_from_wire,
     limitations_name_coordinator_failure,
+    outside_reads_kept_back_sentence,
 )
 from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
@@ -48,6 +52,11 @@ from finishup.domain.review_mode_render import (
 )
 from finishup.domain.reviewer_reads import render_reviewer_lines, reviewer_record_from_wire
 from finishup.domain.task_lifecycle_render import status_task_lifecycle_line
+from finishup.domain.workspace_provenance import (
+    WORKSPACE_PROVENANCE_REASONS,
+    workspace_provenance_unknown_lines,
+    workspace_provenance_unknown_notice,
+)
 from finishup.kernel.claim_verification import CLAIM_VERIFICATION_HEADER
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
@@ -1790,11 +1799,21 @@ def _lineage_sentence(raw: object, code: str | None = None) -> str:
     return texts[0] if texts else ""
 
 
+# The owner's steps for files review could not read outside the workspace, each with its short
+# form: an input no admitted root covers (issue #1102), and files a remote server's listed mode
+# kept from review (ADR-051 decision 5).
+_OUTSIDE_OWNER_STEPS: Final = (
+    (TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE),
+    (OUTSIDE_READS_NOT_LISTED_GAP, OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE),
+)
+
+
 def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
     # Why the check-time change was unavailable (ADR-031): a fixed sentence per closed code. The
-    # owner's step for an unadmitted outside input has its own part below (issue #1102).
+    # owner's steps for outside files review could not read have their own part below.
+    owner_steps = {code for code, _short in _OUTSIDE_OWNER_STEPS}
     for code in _safe_gap_codes(source):
-        if code == TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP:
+        if code in owner_steps:
             continue
         sentence = check_time_change_gap_sentence(code)
         if sentence is not None:
@@ -1803,19 +1822,21 @@ def _check_time_change_sentence(source: Mapping[str, JsonValue]) -> str:
 
 
 def _task_input_outside_variants(source: Mapping[str, JsonValue]) -> tuple[str, ...]:
-    """Issue #1102: the owner's step when review lacked a task-named outside input, or nothing.
+    """The owner's steps when review lacked files outside the workspace, or nothing: issue #1102
+    (no admitted root covers a task-named input) and ADR-051 decision 5 (a remote server's listed
+    mode kept files from review).
 
     Its own part, so an unavailable-change sentence beside it never hides it; fixed text only.
+    The full sentences first, then the short forms.
     """
 
-    if TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP not in _safe_gap_codes(source):
+    present = set(_safe_gap_codes(source))
+    steps = tuple((code, short) for code, short in _OUTSIDE_OWNER_STEPS if code in present)
+    if not steps:
         return ()
-    sentence = check_time_change_gap_sentence(TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP)
-    return (
-        (TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE,)
-        if sentence is None
-        else (sentence, TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE)
-    )
+    full = tuple(check_time_change_gap_sentence(code) or short for code, short in steps)
+    short = tuple(short for _code, short in steps)
+    return tuple(dict.fromkeys((" ".join(full), " ".join(short))))
 
 
 def _check_fact_why_part(source: Mapping[str, JsonValue]) -> Part | None:
@@ -3074,6 +3095,26 @@ def _claim_pairing_parts(document: Mapping[str, JsonValue] | None) -> list[Part]
     return parts
 
 
+def _workspace_provenance_parts(source: Mapping[str, object]) -> list[Part]:
+    """ADR-051 decision D4: the fixed unknown-provenance lines, required, when the receipt says so.
+
+    Only a closed reason with exactly its own fixed notice is admitted; the lines rendered are
+    the domain's own constants for that reason (the passing cause says to retry, a lasting one
+    says why it lasts).
+    """
+
+    member = source.get("workspace_provenance")
+    if not isinstance(member, Mapping):
+        return []
+    fields = cast(Mapping[str, object], member)
+    reason = fields.get("reason")
+    if reason not in WORKSPACE_PROVENANCE_REASONS:
+        return []
+    if fields.get("notice") != workspace_provenance_unknown_notice(reason):
+        return []
+    return [_req(line) for line in workspace_provenance_unknown_lines(reason)]
+
+
 def summary_for_receipt(envelope: object) -> str:
     """Compose the receipt text: conclusion, frontier, limitation count and pairing first.
 
@@ -3097,8 +3138,25 @@ def summary_for_receipt(envelope: object) -> str:
         cast(Mapping[str, JsonValue], document) if isinstance(document, Mapping) else None
     )
     gap_codes = _safe_gap_codes(source)
+    kept_back = kept_back_from_wire(typed_document)
     parts: list[Part | None] = [
         _req(f"Receipt conclusion: {conclusion};"),
+        *_workspace_provenance_parts(source),
+        # ADR-051 decision 5: how many files listed mode kept back, then the owner's two ways
+        # out. An MCP receipt, paged or not, reaches the agent as its canonical JSON, which
+        # carries the number in the gap itself; this summary stands in only when that copy cannot
+        # be encoded, and keeps the number as a required part then.
+        *(
+            ()
+            if kept_back is None
+            else (
+                _req(
+                    f"{outside_reads_kept_back_sentence(kept_back)}"
+                    f" {OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE}",
+                    outside_reads_kept_back_sentence(kept_back),
+                ),
+            )
+        ),
         _req(_receipt_correctness_advisory_clause(source)),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),

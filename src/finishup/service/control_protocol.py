@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 import secrets
 import struct
 from collections.abc import Awaitable, Buffer, Callable, Mapping
@@ -32,8 +33,14 @@ from finishup.ports.control import (
     ServiceState,
     ServiceStatus,
     ServiceStopResult,
+    WorkspaceAgentDeclaration,
+    WorkspaceBinding,
+    WorkspaceCall,
+    WorkspaceClaim,
     WorkspaceLocator,
+    WorkspaceReply,
 )
+from finishup.ports.workspace_agent import workspace_handle_valid
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, SafeDetailValue
 from finishup.protocol.models import (
@@ -71,15 +78,23 @@ __all__ = [
     "client_handshake",
     "decode_control_frame",
     "encode_control_frame",
+    "is_workspace_call_frame",
+    "is_workspace_reply_frame",
     "parse_control_request",
     "parse_control_result",
+    "parse_workspace_call",
+    "parse_workspace_reply",
     "public_error_code_for_control_reason",
     "read_control_frame",
     "schema_for_method",
     "server_handshake",
     "validate_request",
     "validate_result",
+    "workspace_call_frame",
+    "workspace_reply_frame",
     "write_control_frame",
+    "write_workspace_call",
+    "write_workspace_reply",
 ]
 
 CONTROL_PROTOCOL_VERSION: Final = "1.0"
@@ -101,13 +116,14 @@ MAX_CONTROL_RECEIVE_CHUNK_BYTES: Final = 65_536
 # the bound only has to exceed that with a wide margin for a loaded machine.
 CONTROL_FRAME_READ_DEADLINE_SECONDS: Final = 60.0
 
-_CONTROL_SCHEMA_VERSION: Final = "2.9.0"
+_CONTROL_SCHEMA_VERSION: Final = "2.10.0"
 # The 0.2.3 line split request/result (2.6.1) from hello (2.6.0); the 0.3 line carries
-# every 2.6.1 addition inside its single live 2.9.0 contract, so all three agree.
+# every 2.6.1 addition inside its single live 2.10.0 contract, so all three agree.
 _CONTROL_RESULT_SCHEMA_VERSION: Final = _CONTROL_SCHEMA_VERSION
 _CONTROL_REQUEST_SCHEMA_VERSION: Final = _CONTROL_SCHEMA_VERSION
 _SCHEMA_VERSION: Final = "1.0.0"
 _MAX_IMPORT_SOURCE_BYTES: Final = 4 * 1024 * 1024
+_WORKTREE_DIGEST: Final = re.compile(r"^sha256:[0-9a-f]{64}$", re.ASCII)
 _ERROR_REASONS: Final = frozenset(
     {
         "correlation_mismatch",
@@ -126,6 +142,9 @@ _ERROR_REASONS: Final = frozenset(
         "service_generation_changed",
         "session_closed",
         "transport_failed",
+        # A hello named both a workspace path and a workspace claim, or offered a workspace
+        # agent without a claim to answer for (ADR-051).
+        "workspace_binding_conflict",
     }
 )
 _COORDINATION_CONTROL_ERROR_REASONS: Final[frozenset[str]] = frozenset(
@@ -245,6 +264,18 @@ class ControlSession:
     # issue #512) without a follow-up method the peer may forbid; it is connect-time data, never
     # a live read.
     service_status: ServiceStatus | None = field(default=None, repr=False, compare=False)
+    # How the hello bound this connection to a workspace (ADR-051): ``local_path`` for a
+    # locator the service resolves on its own disk, ``client_claim`` for a client's claim it never
+    # resolves to a path, ``none`` for neither. ``workspace_handle`` is the ``client:`` handle the
+    # service derived from a claim's commitment and worktree digest, when it could derive one,
+    # ``workspace_agent`` the agent the claim-bound client offered, and ``workspace_worktree``
+    # the claim's keyed worktree digest (one handle never serves two worktrees).
+    workspace_binding: WorkspaceBinding = field(default="none", repr=False, compare=False)
+    workspace_handle: str | None = field(default=None, repr=False, compare=False)
+    workspace_agent: WorkspaceAgentDeclaration | None = field(
+        default=None, repr=False, compare=False
+    )
+    workspace_worktree: str | None = field(default=None, repr=False, compare=False)
     _active: dict[str, _PendingCall] = field(
         default_factory=_new_pending_calls, init=False, repr=False, compare=False
     )
@@ -266,6 +297,7 @@ class ControlSession:
             raise TypeError("projection_render_mode_invalid")
         if type(self.output_is_controlling_tty) is not bool:
             raise TypeError("projection_tty_fact_invalid")
+        self._validate_workspace_binding()
         if type(self.allowed_methods) is not tuple or not self.allowed_methods:
             raise ValueError("control_allowed_methods_invalid")
         expected = tuple(
@@ -288,6 +320,37 @@ class ControlSession:
             self.peer_identity, str | bytes | bytearray | int | float | bool
         ):
             raise TypeError("peer_identity_invalid")
+
+    def _validate_workspace_binding(self) -> None:
+        binding = self.workspace_binding
+        if binding not in {"none", "local_path", "client_claim"}:
+            raise ValueError("workspace_binding_invalid")
+        claim_bound = binding == "client_claim"
+        context = self.repository_privacy_context
+        if context is not None and (
+            binding == "none" or (context.identity_kind == "client_claim") is not claim_bound
+        ):
+            raise ValueError("repository_privacy_context_invalid")
+        if self.workspace_handle is not None and (
+            not claim_bound or not workspace_handle_valid(self.workspace_handle)
+        ):
+            raise ValueError("workspace_handle_invalid")
+        if (
+            context is not None
+            and self.workspace_handle is not None
+            and context.workspace_handle != self.workspace_handle
+        ):
+            raise ValueError("workspace_handle_invalid")
+        if self.workspace_agent is not None and (
+            type(self.workspace_agent) is not WorkspaceAgentDeclaration or not claim_bound
+        ):
+            raise ValueError("workspace_agent_invalid")
+        if self.workspace_worktree is not None and (
+            not claim_bound
+            or type(self.workspace_worktree) is not str
+            or _WORKTREE_DIGEST.fullmatch(self.workspace_worktree) is None
+        ):
+            raise ValueError("workspace_worktree_invalid")
 
     @property
     def active_request_count(self) -> int:
@@ -458,6 +521,9 @@ def _validated_wire(value: object, schema_name: str) -> JsonObject:
 
 def _schema_name_for_frame(value: Mapping[str, JsonValue]) -> str:
     keys = frozenset(value)
+    # The one server-to-client frame that carries ``kind``: a branch of the result envelope.
+    if value.get("kind") == "workspace_call":
+        return "control-result"
     if "connection_nonce" in keys:
         return "control-hello"
     if "allowed_methods" in keys and "status" in keys:
@@ -487,10 +553,20 @@ def _is_bounded_import(frame: JsonObject) -> bool:
     return len(decoded) <= _MAX_IMPORT_SOURCE_BYTES
 
 
+def _is_workspace_frame(frame: JsonObject) -> bool:
+    # A workspace call or reply carries one catalog payload whose own bound keeps the frame
+    # under the ceiling (``finishup.ports.workspace_agent``), so it may use the whole frame.
+    return frame.get("kind") in {"workspace_call", "workspace_reply"}
+
+
 def _validate_frame_size(payload: bytes, frame: JsonObject) -> None:
     if len(payload) > MAX_CONTROL_FRAME_BYTES:
         _fail("frame_too_large")
-    if len(payload) > MAX_ORDINARY_CONTROL_FRAME_BYTES and not _is_bounded_import(frame):
+    if (
+        len(payload) > MAX_ORDINARY_CONTROL_FRAME_BYTES
+        and not _is_bounded_import(frame)
+        and not _is_workspace_frame(frame)
+    ):
         _fail("frame_too_large")
 
 
@@ -701,6 +777,10 @@ def parse_control_request(frame: ControlFrame) -> ControlRequest:
     """Convert one validated request frame to the exact typed port union."""
 
     wire = _validated_wire(frame, "control-request")
+    if wire["kind"] == "workspace_reply":
+        # Not a call: a session that offered no workspace agent has nothing to correlate it
+        # with. ``parse_workspace_reply`` is the one reader for it.
+        _fail("frame_invalid")
     try:
         if wire["kind"] == "cancel":
             return ControlCancelRequest(
@@ -743,6 +823,9 @@ def parse_control_result(frame: ControlFrame) -> ControlResult:
     """Convert one validated result frame to the exact typed port result."""
 
     wire = _validated_wire(frame, "control-result")
+    if wire.get("kind") == "workspace_call":
+        # A server-to-client callback, not the result of any call: ``parse_workspace_call``.
+        _fail("frame_invalid")
     try:
         method = ControlMethod(cast(str, wire["method"]))
         raw_body = wire["body"]
@@ -799,6 +882,135 @@ def parse_control_result(frame: ControlFrame) -> ControlResult:
         raise ControlProtocolError("frame_invalid") from None
 
 
+def is_workspace_call_frame(frame: ControlFrame) -> bool:
+    """Whether a decoded result-direction frame is a server-to-client ``workspace_call``."""
+
+    return frame.get("kind") == "workspace_call"
+
+
+def is_workspace_reply_frame(frame: ControlFrame) -> bool:
+    """Whether a decoded request-direction frame is a client-to-server ``workspace_reply``."""
+
+    return frame.get("kind") == "workspace_reply"
+
+
+def workspace_call_frame(call: WorkspaceCall) -> dict[str, JsonValue]:
+    """The exact wire object of one workspace call, validated against the result envelope."""
+
+    if type(call) is not WorkspaceCall:
+        raise TypeError("workspace_call_invalid")
+    wire: dict[str, JsonValue] = {
+        "arguments": call.arguments,
+        "call_id": call.call_id,
+        "deadline_ms": call.deadline_ms,
+        "kind": call.kind,
+        "operation": call.operation,
+        "protocol_version": call.protocol_version,
+        "service_generation": call.service_generation,
+        "service_instance_id": call.service_instance_id,
+    }
+    _validated_wire(wire, "control-result")
+    return wire
+
+
+def workspace_reply_frame(reply: WorkspaceReply) -> dict[str, JsonValue]:
+    """The exact wire object of one workspace reply; ``result`` and ``reason`` are always set."""
+
+    if type(reply) is not WorkspaceReply:
+        raise TypeError("workspace_reply_invalid")
+    wire: dict[str, JsonValue] = {
+        "call_id": reply.call_id,
+        "kind": reply.kind,
+        "outcome": reply.outcome,
+        "protocol_version": reply.protocol_version,
+        "reason": reply.reason,
+        "result": reply.result,
+    }
+    _validated_wire(wire, "control-request")
+    return wire
+
+
+async def write_workspace_call(stream: ControlStream, call: WorkspaceCall) -> None:
+    """Write one workspace call; the caller holds the session's write lock."""
+
+    await write_control_frame(stream, workspace_call_frame(call))
+
+
+async def write_workspace_reply(stream: ControlStream, reply: WorkspaceReply) -> None:
+    """Write one workspace reply; the caller holds the connection's write lock."""
+
+    await write_control_frame(stream, workspace_reply_frame(reply))
+
+
+def parse_workspace_call(frame: ControlFrame) -> WorkspaceCall:
+    """Convert one validated ``workspace_call`` frame to its typed model."""
+
+    wire = _validated_wire(frame, "control-result")
+    if wire.get("kind") != "workspace_call":
+        _fail("frame_invalid")
+    try:
+        return WorkspaceCall(
+            kind="workspace_call",
+            protocol_version="1.0",
+            call_id=cast(str, wire["call_id"]),
+            service_instance_id=cast(str, wire["service_instance_id"]),
+            service_generation=cast(str, wire["service_generation"]),
+            operation=cast(str, wire["operation"]),
+            arguments=cast(JsonObject, wire["arguments"]),
+            deadline_ms=cast(int, wire["deadline_ms"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ControlProtocolError("frame_invalid") from None
+
+
+def parse_workspace_reply(frame: ControlFrame) -> WorkspaceReply:
+    """Convert one validated ``workspace_reply`` frame to its typed model."""
+
+    wire = _validated_wire(frame, "control-request")
+    if wire.get("kind") != "workspace_reply":
+        _fail("frame_invalid")
+    try:
+        return WorkspaceReply(
+            kind="workspace_reply",
+            protocol_version="1.0",
+            call_id=cast(str, wire["call_id"]),
+            outcome=cast(Literal["ok", "unavailable", "refused", "failed"], wire["outcome"]),
+            result=wire["result"],
+            reason=cast(str | None, wire["reason"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ControlProtocolError("frame_invalid") from None
+
+
+def _workspace_claim_from_wire(value: object) -> WorkspaceClaim:
+    if not isinstance(value, Mapping):
+        _fail("protocol_mismatch")
+    source = cast(Mapping[str, object], value)
+    try:
+        return WorkspaceClaim(
+            identity_kind=cast(Literal["git_common_root", "directory"], source["identity_kind"]),
+            digest=cast(str, source["digest"]),
+            worktree=cast(str, source["worktree"]),
+            schema_version=cast(Literal["1.0.0"], source["schema_version"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ControlProtocolError("protocol_mismatch") from None
+
+
+def _workspace_agent_from_wire(value: object) -> WorkspaceAgentDeclaration:
+    if not isinstance(value, Mapping):
+        _fail("protocol_mismatch")
+    source = cast(Mapping[str, object], value)
+    try:
+        return WorkspaceAgentDeclaration(
+            operations=tuple(sorted(cast(tuple[str, ...], source["operations"]), key=str.encode)),
+            max_reply_bytes=cast(int, source["max_reply_bytes"]),
+            schema_version=cast(Literal["1.0.0"], source["schema_version"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ControlProtocolError("protocol_mismatch") from None
+
+
 def _status_wire(status: ServiceStatus) -> JsonObject:
     if type(status) is not ServiceStatus:
         raise TypeError("service_status_invalid")
@@ -810,9 +1022,19 @@ def _allowed_for(kind: ControlClientKind) -> tuple[ControlMethod, ...]:
 
 
 def _hello_result_wire(
-    service_status: ServiceStatus, allowed: tuple[ControlMethod, ...]
+    service_status: ServiceStatus,
+    allowed: tuple[ControlMethod, ...],
+    *,
+    workspace_binding: WorkspaceBinding | None = None,
+    workspace_handle: str | None = None,
 ) -> dict[str, JsonValue]:
-    return {
+    """The hello-result; without a binding it keeps the frozen pre-2.10 shape.
+
+    Only the manifest-mismatch answer omits the binding: it goes to a peer of another
+    installation, which must still be able to decode it to name ``manifest_mismatch`` (#436).
+    """
+
+    wire: dict[str, JsonValue] = {
         "protocol_version": CONTROL_PROTOCOL_VERSION,
         "service_version": service_status.service_version,
         "service_instance_id": service_status.service_instance_id,
@@ -821,6 +1043,11 @@ def _hello_result_wire(
         "allowed_methods": [method.value for method in allowed],
         "schema_manifest_digest": _manifest_digest(),
     }
+    if workspace_binding is not None:
+        wire["workspace_binding"] = workspace_binding
+    if workspace_handle is not None:
+        wire["workspace_handle"] = workspace_handle
+    return wire
 
 
 def _manifest_digest() -> str:
@@ -849,15 +1076,38 @@ async def client_handshake(
     client_version: str,
     *,
     workspace_locator: WorkspaceLocator | None = None,
+    workspace_claim: WorkspaceClaim | None = None,
+    workspace_agent: WorkspaceAgentDeclaration | None = None,
     projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
     output_is_controlling_tty: bool = False,
 ) -> ControlSession:
-    """Negotiate an ordinary peer-authenticated client session."""
+    """Negotiate an ordinary peer-authenticated client session.
+
+    A hello names its workspace by a ``workspace_locator`` (a path on the service's own machine)
+    or by a ``workspace_claim`` (for a server on another machine), never both; a
+    ``workspace_agent`` is offered only beside a claim. The session records the binding and
+    handle the service answered with.
+    """
 
     if type(client_kind) is not ControlClientKind:
         raise TypeError("control_client_kind_invalid")
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
         raise TypeError("workspace_locator_invalid")
+    if workspace_claim is not None and type(workspace_claim) is not WorkspaceClaim:
+        raise TypeError("workspace_claim_invalid")
+    if workspace_agent is not None and type(workspace_agent) is not WorkspaceAgentDeclaration:
+        raise TypeError("workspace_agent_invalid")
+    if (workspace_locator is not None and workspace_claim is not None) or (
+        workspace_agent is not None and workspace_claim is None
+    ):
+        raise ValueError("workspace_binding_conflict")
+    expected_binding: WorkspaceBinding = (
+        "client_claim"
+        if workspace_claim is not None
+        else "local_path"
+        if workspace_locator is not None
+        else "none"
+    )
     if type(projection_render_mode) is not ProjectionRenderMode:
         raise TypeError("projection_render_mode_invalid")
     if type(output_is_controlling_tty) is not bool:
@@ -874,6 +1124,19 @@ async def client_handshake(
         hello["workspace_locator"] = {
             "schema_version": workspace_locator.schema_version,
             "path": workspace_locator.path,
+        }
+    if workspace_claim is not None:
+        hello["workspace_claim"] = {
+            "schema_version": workspace_claim.schema_version,
+            "identity_kind": workspace_claim.identity_kind,
+            "digest": workspace_claim.digest,
+            "worktree": workspace_claim.worktree,
+        }
+    if workspace_agent is not None:
+        hello["workspace_agent"] = {
+            "schema_version": workspace_agent.schema_version,
+            "operations": list(workspace_agent.operations),
+            "max_reply_bytes": workspace_agent.max_reply_bytes,
         }
     hello["presentation_context"] = {
         "render_mode": projection_render_mode.value,
@@ -913,6 +1176,17 @@ async def client_handshake(
         allowed = tuple(ControlMethod(cast(str, method)) for method in raw_allowed)
         if allowed != _allowed_for(client_kind):
             _fail("method_forbidden")
+        # An admitted session's answer always names its binding, and it must be the one this
+        # hello asked for; a handle comes only with a claim. A handle on a session this client
+        # did not claim fails the first test (the answer says ``client_claim``, the hello asked
+        # for no claim). The second is defence in depth: the 2.10.0 hello-result schema already
+        # refuses a handle beside any other binding as ``frame_invalid`` before this runs, so it
+        # cannot fire today, and it keeps the refusal should a later schema loosen that rule.
+        raw_handle = result.get("workspace_handle")
+        if result.get("workspace_binding") != expected_binding or (
+            raw_handle is not None and expected_binding != "client_claim"
+        ):
+            _fail("protocol_mismatch")
         return ControlSession(
             protocol_version="1.0",
             client_kind=client_kind,
@@ -924,6 +1198,10 @@ async def client_handshake(
             projection_render_mode=projection_render_mode,
             output_is_controlling_tty=output_is_controlling_tty,
             service_status=status,
+            workspace_binding=expected_binding,
+            workspace_handle=cast(str | None, raw_handle),
+            workspace_agent=workspace_agent,
+            workspace_worktree=None if workspace_claim is None else workspace_claim.worktree,
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
@@ -940,8 +1218,18 @@ async def server_handshake(
         [WorkspaceLocator], Awaitable[RepositoryPrivacyContext | None]
     ]
     | None = None,
+    claim_context_resolver: Callable[[WorkspaceClaim], Awaitable[RepositoryPrivacyContext | None]]
+    | None = None,
 ) -> ControlSession:
-    """Negotiate a server session only after transport peer authentication."""
+    """Negotiate a server session only after transport peer authentication.
+
+    A hello carrying both a locator and a claim, or an agent without a claim, is refused as
+    ``workspace_binding_conflict``. ``claim_context_resolver`` turns a claim into the
+    ``client_claim`` repository identity the session keeps; a claim is never resolved to a path.
+    Without that resolver (or when it answers None, a locked vault say) a claim-bound session has
+    no repository context and no workspace handle, exactly as a locator without a resolver has no
+    context.
+    """
 
     try:
         if stream.peer_identity is not peer_identity:
@@ -970,7 +1258,39 @@ async def server_handshake(
             if type(output_is_controlling_tty) is not bool:
                 _fail("protocol_mismatch")
         raw_locator = hello.get("workspace_locator")
+        raw_claim = hello.get("workspace_claim")
+        raw_agent = hello.get("workspace_agent")
+        if (raw_locator is not None and raw_claim is not None) or (
+            raw_agent is not None and raw_claim is None
+        ):
+            _fail("workspace_binding_conflict")
         repository_context: RepositoryPrivacyContext | None = None
+        workspace_binding: WorkspaceBinding = (
+            "client_claim"
+            if raw_claim is not None
+            else "local_path"
+            if raw_locator is not None
+            else "none"
+        )
+        workspace_handle: str | None = None
+        workspace_agent: WorkspaceAgentDeclaration | None = None
+        workspace_worktree: str | None = None
+        if raw_claim is not None:
+            claim = _workspace_claim_from_wire(raw_claim)
+            workspace_worktree = claim.worktree
+            if raw_agent is not None:
+                workspace_agent = _workspace_agent_from_wire(raw_agent)
+            if claim_context_resolver is not None:
+                repository_context = await claim_context_resolver(claim)
+                if repository_context is not None:
+                    if (
+                        type(repository_context) is not RepositoryPrivacyContext
+                        or repository_context.identity_kind != "client_claim"
+                        or repository_context.workspace_locator is not None
+                    ):
+                        _fail("protocol_mismatch")
+                    # One handle per claimed worktree: the commitment is the repository's.
+                    workspace_handle = repository_context.workspace_handle
         if raw_locator is not None and repository_context_resolver is not None:
             if not isinstance(raw_locator, Mapping):
                 _fail("protocol_mismatch")
@@ -981,13 +1301,21 @@ async def server_handshake(
                     schema_version=cast(Literal["1.0.0"], locator_wire["schema_version"]),
                 )
             )
-            if (
-                repository_context is not None
-                and type(repository_context) is not RepositoryPrivacyContext
+            if repository_context is not None and (
+                type(repository_context) is not RepositoryPrivacyContext
+                or repository_context.identity_kind == "client_claim"
             ):
                 _fail("protocol_mismatch")
         allowed = _allowed_for(kind)
-        await write_control_frame(stream, _hello_result_wire(service_status, allowed))
+        await write_control_frame(
+            stream,
+            _hello_result_wire(
+                service_status,
+                allowed,
+                workspace_binding=workspace_binding,
+                workspace_handle=workspace_handle,
+            ),
+        )
         return ControlSession(
             protocol_version="1.0",
             client_kind=kind,
@@ -999,6 +1327,10 @@ async def server_handshake(
             output_is_controlling_tty=output_is_controlling_tty,
             peer_identity=peer_identity,
             connection_nonce=cast(str, hello["connection_nonce"]),
+            workspace_binding=workspace_binding,
+            workspace_handle=workspace_handle,
+            workspace_agent=workspace_agent,
+            workspace_worktree=workspace_worktree,
         )
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
@@ -1059,6 +1391,7 @@ def public_error_code_for_control_reason(reason: str) -> PublicErrorCode:
         "frame_too_large",
         "method_forbidden",
         "protocol_mismatch",
+        "workspace_binding_conflict",
     }:
         return PublicErrorCode.INVALID_REQUEST
     return PublicErrorCode.SERVICE_UNAVAILABLE

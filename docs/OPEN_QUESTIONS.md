@@ -218,8 +218,14 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
 - Live Git/filesystem artifact inspection during import review; v0.1 compares recorded evidence
   only.
 - Chunked import/object formats above the exact 4 MiB source/object cap.
-- Remote service exposure. *(Narrowed 2026-09-05: this bullet formerly also deferred Codex
-  app-server integration and additional first-party harnesses. The exact digest-bound Codex
+- Remote service exposure. *(Moved 2026-11-05: single-owner FinishUP servers — several named
+  local servers, HTTPS servers on localhost ports, a server on another machine over SSH, and
+  web-hosted servers over HTTPS — and the client workspace agent that lets such a server read the
+  agent's working tree are decided by
+  [ADR-051](adr/ADR-051-client-server-cut-and-server-targets.md) (Proposed, issue #903) and leave
+  this deferral when it is accepted. Multi-user or team hosting, remote human-control ceremonies
+  and the rest of the multi-user bullet below stay deferred.)* *(Narrowed 2026-09-05: this bullet
+  formerly also deferred Codex app-server integration and additional first-party harnesses. The exact digest-bound Codex
   app-server subscription evaluator ships (`src/finishup/adapters/providers/codex_app_server.py`,
   issue #480, E-007 status 2026-09-04), and Claude Code and Cursor ship as first-party harness
   adapters (`src/finishup/adapters/integrations/claude_code_integration.py`,
@@ -237,12 +243,16 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   because the `status` result they cause discloses only what that call would already have returned
   under the ordinary provenance rules and the `agent_context` ceiling. An exact v0.1 capability
   cell may declare either or both arms after E-013 passes; unsupported cells remain `None`.
-  Remote service exposure remains deferred. No adapter silently installs or configures hooks;
+  Remote service exposure is decided for single-owner servers by ADR-051 (Proposed); host
+  registrations are unchanged by it. No adapter silently installs or configures hooks;
   every hook install goes through the host's explicit plugin ceremony.
 - MCP prompts. v0.1 ships tools, resources, and the `instructions` string only.
 - Launchd/systemd convenience installers, multi-user service hosting, remote control, and
   independent concurrent service writers; the single-user persistent local service and
-  authenticated local IPC are v0.1 requirements.
+  authenticated local IPC are v0.1 requirements. *(2026-11-05: ADR-051 (Proposed) lets one owner
+  reach their own FinishUP service on another machine over SSH or HTTPS through the ordinary
+  control channel. Multi-user hosting, remote unlock, consent and owner-view ceremonies, and the
+  native installers stay deferred here.)*
 - Standalone public `finishup doctor` CLI command and support-bundle schema. *(2026-09-05: the
   terminal interface's read-only `/doctor` report and `finishup service diagnostics` (one durable
   owner-only diagnostic record by correlation id) ship next to `version --json` and the startup

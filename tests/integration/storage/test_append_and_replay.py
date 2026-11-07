@@ -7,10 +7,11 @@ import errno
 import hashlib
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import apsw
 import pytest
@@ -497,6 +498,96 @@ async def test_sqlite_replay_keeps_unavailable_optional_artifact_as_gap(
         reopened_db.close()
 
 
+class _PayloadOpenFails:
+    """``objects``, except that opening ``object_id`` raises ``failure`` while it is set.
+
+    The object-store port's own outcome for an object that is missing or whose bytes fail
+    verification is ``ValueError("object_verification_failed")`` (both real stores, per the port
+    conformance suite); an environmental fault is an ``OSError`` they re-raise as it is.
+    """
+
+    def __init__(self, objects: MemoryObjects, object_id: str, failure: Exception) -> None:
+        self._objects = objects
+        self._object_id = object_id
+        self.failure: Exception | None = failure
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._objects, name)
+
+    def open_verified(self, ref: ObjectRef) -> AsyncIterator[bytes]:
+        failure = self.failure
+        if failure is None or ref.object_id != self._object_id:
+            return self._objects.open_verified(ref)
+
+        async def fail() -> AsyncIterator[bytes]:
+            raise failure
+            yield b""  # pragma: no cover - makes this an async generator
+
+        return fail()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("failure", "unverifiable"),
+    [
+        (ValueError("object_verification_failed"), True),
+        (OSError(errno.EIO, "input/output error"), False),
+        (PermissionError(errno.EACCES, "permission denied"), False),
+        (KeyError("object_missing"), False),
+        (ValueError("payload_decode_failed"), False),
+    ],
+    ids=["verification_failed", "eio", "permission", "outside_port_key_error", "other_value"],
+)
+async def test_sqlite_recovery_tells_an_unverifiable_payload_object_from_a_passing_fault(
+    tmp_path: Path, failure: Exception, unverifiable: bool
+) -> None:
+    """ADR-051 decision D4b: recovery keeps the store's deterministic outcome as a structural fact.
+
+    Every failure leaves the event present with no payload, as before. Only the store's
+    ``object_verification_failed`` (the object is missing or fails verification, which opening the
+    task again repeats) is reported by ``payload_object_unverifiable``; an environmental fault, or
+    anything outside the port, can pass and is not. Reopened over intact storage, the payload
+    reads and the fact is gone.
+    """
+
+    command, objects = command_from_records(replay_records("projection-rebuild")[:2])
+    path = tmp_path / "unverifiable-payload.sqlite3"
+    ledger, db = file_sqlite_for(command, objects, path)
+    await ledger.append_batch(command)
+    appended = [record async for record in ledger.load_events(command.session_id)]
+    assert len(appended) == 2
+    # A ledger that appended the events never had to read their objects.
+    assert not await ledger.payload_object_unverifiable(appended[0].event_id)
+    db.close()
+
+    target, other = appended
+    storage = _PayloadOpenFails(objects, target.payload_ref.object_id, failure)
+    reopened_db = apsw.Connection(str(path))
+    reopened = sqlite_for(command, cast(MemoryObjects, storage), reopened_db)
+    try:
+        recovered = [record async for record in reopened.load_events(command.session_id)]
+        assert [record.event_id for record in recovered] == [target.event_id, other.event_id]
+        assert recovered[0].payload is None
+        assert recovered[0].redaction.value == "present"
+        assert recovered[1].payload is not None
+        assert await reopened.payload_object_unverifiable(target.event_id) is unverifiable
+        assert await reopened.payload_object_unverifiable(other.event_id) is False
+        # The fact belongs to this recovery: storage that reads again changes nothing until the
+        # task is opened afresh, exactly like the gap it explains.
+        storage.failure = None
+        assert await reopened.payload_object_unverifiable(target.event_id) is unverifiable
+    finally:
+        reopened_db.close()
+
+    healed, healed_db = file_sqlite_for(command, objects, path)
+    try:
+        rows = [record async for record in healed.load_events(command.session_id)]
+        assert rows[0].payload is not None
+        assert await healed.payload_object_unverifiable(target.event_id) is False
+    finally:
+        healed_db.close()
+
+
 @pytest.mark.anyio
 async def test_reused_request_with_changed_identity_conflicts() -> None:
     command, objects = command_from_records(replay_records("projection-rebuild")[:1])
@@ -926,10 +1017,10 @@ async def test_failed_recovery_is_not_replayed_for_every_later_call(tmp_path: Pa
     decoded = 0
     original = reopened._decode_durable_record  # pyright: ignore[reportPrivateUsage]
 
-    async def counting(row: tuple[object, ...]) -> LedgerRecord:
+    async def counting(row: tuple[object, ...], unverifiable_payloads: set[str]) -> LedgerRecord:
         nonlocal decoded
         decoded += 1
-        return await original(row)
+        return await original(row, unverifiable_payloads)
 
     reopened._decode_durable_record = counting  # pyright: ignore[reportPrivateUsage]
 
@@ -970,10 +1061,10 @@ async def test_transient_recovery_failure_is_retried_not_latched(
     decoded = 0
     original_decode = reopened._decode_durable_record  # pyright: ignore[reportPrivateUsage]
 
-    async def counting(row: tuple[object, ...]) -> LedgerRecord:
+    async def counting(row: tuple[object, ...], unverifiable_payloads: set[str]) -> LedgerRecord:
         nonlocal decoded
         decoded += 1
-        return await original_decode(row)
+        return await original_decode(row, unverifiable_payloads)
 
     reopened._decode_durable_record = counting  # pyright: ignore[reportPrivateUsage]
 

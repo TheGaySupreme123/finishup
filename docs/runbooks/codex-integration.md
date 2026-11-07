@@ -1469,6 +1469,120 @@ descriptors remain limited to the frozen v1.0 draft union. The CLI command uses 
 request and service boundary. Neither Codex hooks nor imported observations synthesize, replace,
 or supersede claims.
 
+## Server targets (ADR-051)
+
+Decision: **no Codex registration changes.** The external `codex mcp add` entry and the plugin
+activation-cache `.mcp.json` keep their exact launcher, arguments and isolation environment;
+project-source `.mcp.json` and every plugin hook stay the bare `finishup`. What each process talks
+to follows the FinishUP server the owner selected with `finishup server use` (see the
+[servers guide](../usage/servers.md)):
+
+| Process | Learns its target from |
+|---|---|
+| External and activation-cache MCP connected under explicit isolation | the stamped `--env` isolation root (the selection never overrides it) |
+| External and activation-cache MCP connected without isolation | the selection file |
+| Bare-`PATH` plugin hooks (`hooks observe`, `session-start`, `user-prompt-submit`, `post-tool-use`, `spool`) | the inherited environment; otherwise the selection file |
+| Agent-shell CLI calls (`finishup publish-work`, `closure-prepare`, …) | the inherited environment; otherwise the selection file |
+
+Connecting Codex while a target is selected does not stamp that target into a registration, and
+existing ambient registrations do not show as drift. `finishup server use local` returns every
+later process to the default service.
+
+- **Zero-network and a remote target are never in force together** (maintainer decision, 2026-11-07,
+  replacing 2026-11-06; ADR-051 decision 8). Adding or selecting a remote target is refused while
+  this computer's privacy policy is zero-network, live or as this computer last reported it. A
+  change that would make it zero-network while a remote target is selected asks on the owner's
+  terminal first (switch to this computer's everyday FinishUP and make the change, or cancel it and
+  keep the target; Enter, end of input or Ctrl-C cancels) and is refused without that terminal, for
+  `--json`, or for a decision relayed from an agent (`zero_network_remote_selected`, remedy
+  `finishup server use local`, then the change again); it never switches on its own. As the last
+  line of defence, every Codex hook, MCP bridge connection and CLI call to a remote target is
+  refused before anything is sent while this computer last reported zero-network: the session's
+  hooks and SessionStart context and the MCP tool error name `zero_network_remote_selected` with its
+  continuation (`zero_network_local_server_required`: ask the owner to run `finishup server use
+  local`, then restart the session). The check reads the owner-only marker of this computer's last
+  reported policy, never the service, so it costs no round trip within the hook budgets. Switching
+  (the choice, `finishup server use local` or the terminal interface's "Use local") also stops this
+  computer's connection to the target as `finishup server disconnect` does: the target's connector
+  closes its background workspace agents, so server work already under way can no longer read files
+  here. After switching, restart open Codex sessions: the running MCP bridge keeps the remote target
+  until then (and is refused), while hooks follow at once. `setup status --next`, `server status`
+  and the terminal interface show the state, live or "last reported". While a remote target is
+  selected, fresh server-host privacy commands are refused (`requires_server_host`) and `privacy
+  tighten|propose` reach the target, so the choice comes only from a FinishUP process already on
+  this computer's server (an open terminal interface or menu, or a privacy step or setup under way).
+  Host decision: supported, same code path; no MCP tool or hook carries or answers the choice,
+  because agents cannot change the policy or the selection.
+- **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
+  `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
+  interface's first run) change the target's policy and name it, by id and kind, before anything
+  is sent and in the result (stderr beside the unchanged `--json` document; the setup summary's
+  privacy line; one terminal-interface message). A widening waits on the server host for
+  `privacy decide-policy <proposal id>`, which is refused here (`requires_server_host`, naming the
+  target); every surface prints that exact command with the proposal's expiry (about five minutes,
+  in UTC), and setup's next steps name it instead of `--privacy` / `--set`. Host
+  decision: supported, same code path for Codex; no MCP tool or hook changes a privacy policy, so
+  none carries these lines.
+- **Switching mid-session.** The MCP bridge keeps the target it started with; hooks and shell
+  calls follow a new selection at once. Restart open Codex sessions after `finishup server use`.
+- **Workspace.** For a remote target the bridge, hooks and shell calls send a workspace claim, and
+  the client's workspace agent serves the server's workspace reads. Outside the project folder it
+  reads as the target's outside-read mode says: in `local` mode as a local service would, in
+  `listed` mode only beneath a folder the owner listed for the target on this machine (`finishup
+  server folders mode|add`, ADR-051 decision 5; every remote kind gets the same choice, asked by
+  `finishup server add` on the owner's own terminal, an official endpoint being `local`; once
+  chosen, no hook, MCP tool or CLI call in a Codex session prompts for it again; the same for
+  every host, with no registration change).
+  Inside it a reviewer's file read returns a file only when Git answers that it is not ignored,
+  as a local service's does; a declared test is read in `local` mode as a local service reads it
+  (Git-ignored, linked worktree or submodule included), and in `listed` mode only where Git
+  answers. In `listed` mode a file left unread (a task input or declared test outside the listed
+  folders, or such a test) costs only that file, and the receipt says so in one fixed line,
+  `outside_reads_not_listed`, naming `finishup server folders add NAME FOLDER` and `finishup
+  server folders mode NAME local` on this machine (ADR-051 decision 5). Receipts carry the
+  `client_attested` line. For a remote root the legacy spool and the observation outbox are drained
+  by the client over the ordinary control channel, not by the server's sweeper.
+- **Observation.** Hook observations stay this machine's: consent, content profiles, approved-check
+  trust, mappings and the outbox live in the selected target's client-side root, and
+  `finishup observe ...` administers them here. Each row a remote target receives carries the
+  client attestation (ADR-051 decision 12); the server accepts it as `client_attested`, and
+  receipts with hook-observed evidence carry one more fixed line.
+- **Receipt provenance.** When the server cannot read the task's opening record, a receipt is
+  still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
+  line it ends with the fixed provenance-unknown section (what happened, why it matters, and
+  whether a retry can help), and every receipt format, JSON included, carries the same words as
+  its `workspace_provenance` member, whose `reason` names the cause and whose last line says only
+  what is true of it (decision D4b). The passing cause (`session_opening_unreadable`: a failed
+  read, or a storage fault while the server loaded the record) says to run `receipt` again and, if it persists,
+  restart the server's service. Each lasting cause gives no retry or restart advice and says how
+  long the receipts will keep saying so: `session_opening_copy_unverifiable` (the server's stored
+  copy is missing or fails its integrity check, which reopening the task repeats: for as long as
+  that lasts), `session_opening_redacted` and `session_opening_erased` (the record will not become
+  readable again), `session_opening_key_unavailable` (while the server does not have the record's
+  key) and `session_opening_format_unknown` (until the server runs a FinishUP version that knows
+  the record's format). The agent sees the same words
+  in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
+  first page. A long receipt has its other sections shortened to fit and still ends with the
+  whole section.
+- **Subscription evaluator.** The Codex subscription evaluator runs where the FinishUP service
+  runs. A remote server needs its own Codex installation and login on the server host; this
+  machine's Codex home is never used for its reviews.
+- **Edge relay (approach A).** Hooks connect claim-only and never answer workspace calls; the MCP
+  bridge's connection also answers them while a call runs. Work that outlives a call (the AI-powered
+  review loop, observation verification) is answered by the target's connector, which keeps a
+  background workspace agent for the session's workspace for 15 minutes after its last use (until
+  `finishup server disconnect` or a `finishup server use` that leaves the target stops the
+  connector) and delivers the hook-captured rows every 30 seconds. A SessionStart context for an
+  unreachable or locked remote server names the closed phase and its continuation token (for example
+  `remote_unreachable` with `remote_server_test`, or `remote_vault_unlock_required`), never a local
+  `service run` or `service unlock`, a host or a target name.
+- **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
+  `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
+  applies: put the intended launcher first on `PATH`.
+- **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
+  runs for each target kind are recorded with the pull request that lands the chosen approach. No
+  Codex cell is claimed for a remote target until that evidence exists.
+
 ## Legacy Yoetz registrations
 
 FinishUP was named Yoetz through 0.2.5 (ADR-048). A Codex home and project connected by Yoetz carry
@@ -3401,7 +3515,11 @@ outside directory named without a trailing `/` is listed; an `other` follow-up r
 only from rows FinishUP recorded for the run or edit it names. When the task names a file or folder
 outside the workspace that no admitted root covers, the check records
 `task_input_outside_not_admitted`, whose fixed sentence names the owner's step
-(`finishup privacy input-roots add <folder>` on a trusted terminal); it is a disclosure only, never
+(`finishup privacy input-roots add <folder>` on a trusted terminal of the computer the FinishUP
+service runs on, or, for a remote server, `finishup server folders add NAME FOLDER` on the client
+machine, which admits the folder for that server's claim-bound sessions in either outside-read
+mode, ADR-051 decision 5 as decided 2026-11-07; host-independent, the same on every host); it is
+a disclosure only, never
 a Stop-gate item or a continuation on Codex. Codex still has no write path to admitted roots,
 and FinishUP adds no unattended one: a non-interactive harness can admit roots only through an
 owner-attended ceremony while it is provisioned. The code is decided once by the check-time read,
@@ -3412,8 +3530,15 @@ admitted roots or, with none admitted, the step `finishup privacy input-roots ad
 the CLI, MCP and receipt print the sentence. `finishup service diagnostics` counts the task inputs on
 `semantic_case_built` as integers only: `semantic_task_input_candidates`,
 `semantic_task_inputs_read`, `semantic_task_input_listings`,
-`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates` and
-`semantic_task_inputs_outside_not_admitted`.
+`semantic_task_input_excerpts_selected`, `semantic_task_input_outside_candidates`,
+`semantic_task_inputs_outside_not_admitted`; for a remote server in `listed` mode, a separate
+`semantic_outside_reads_not_listed` record, written only when not zero, counts
+`semantic_task_inputs_outside_not_listed` (how many task inputs and declared tests its workspace
+agent kept back). The receipt says the same numbers, each kind apart, in the
+`outside_reads_not_listed` gap's opening line and its `kept_back` counts (check-recorded 1.7.0,
+receipt-document 1.4.0; ADR-051 decision 5), the same on every host: the MCP receipt, paged or
+not, carries them inside the receipt itself on both channels (the gap's `detail` and `kept_back`,
+or a markdown or text receipt's `human_text`); the compact receipt summary is only a fallback.
 
 ## Possible-credential filter opt-out (issue #982)
 

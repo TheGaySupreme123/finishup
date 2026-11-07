@@ -34,6 +34,8 @@ __all__ = [
     "ProviderPosture",
     "ReadinessLayer",
     "ReceiptSummary",
+    "ServerRow",
+    "ServerSwitch",
     "TaskStatusPage",
     "StatusSnapshot",
     "StorageChoice",
@@ -295,6 +297,38 @@ class StorageChoice(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ServerRow:
+    """One FinishUP server this computer can use, as ``finishup server list`` shows it.
+
+    ``name`` and ``location`` are owner-typed display text for this owner's own terminal only.
+    """
+
+    name: str
+    kind: str
+    target_id: str | None
+    location: str | None
+    selected: bool
+
+    @property
+    def remote(self) -> bool:
+        return self.kind != "local"
+
+
+@dataclass(frozen=True, slots=True)
+class ServerSwitch:
+    """What ``/server`` changed when it switched servers, as ``finishup server use`` says it.
+
+    ``indicator`` is the new header text (``everyday`` for this computer's own server).
+    ``left_lines`` say what became of this computer's connection to the remote server the switch
+    left (by generated id and closed kind), and ``left_open`` that it did not close.
+    """
+
+    indicator: str
+    left_lines: tuple[str, ...] = ()
+    left_open: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class VaultPosture:
     """Read-only view of the local service and its vault."""
 
@@ -426,12 +460,16 @@ class PrivacyPosture:
         if not self.admitted_input_roots:
             return (
                 "Outside-workspace task inputs: none admitted"
-                " (add one with `finishup privacy input-roots add <folder>`)"
+                " (add one with `finishup privacy input-roots add <folder>` on the computer the"
+                " FinishUP service runs on; for a remote server, list a folder on this computer"
+                " with `finishup server folders add NAME FOLDER`)"
             )
         return (
             "Outside-workspace task inputs: "
             + ", ".join(self.admitted_input_roots)
-            + " (change with `finishup privacy input-roots`)"
+            + " (change with `finishup privacy input-roots` on the computer the FinishUP service"
+            " runs on; for a remote server, folders listed on this computer with `finishup server"
+            " folders add NAME FOLDER` are read too)"
         )
 
     @property

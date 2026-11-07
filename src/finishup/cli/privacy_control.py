@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from finishup.cli.unlock import (
     HumanCeremonyCliError,
@@ -30,12 +30,16 @@ from finishup.service.confidential_protocol import (
     PrivacyPolicyDecisionPreview,
 )
 
+if TYPE_CHECKING:
+    from finishup.domain.privacy import PrivacyPolicyChange
+
 __all__ = [
     "PrivacyLocalEditResult",
     "PrivacyDecisionUnconfirmed",
     "decide_disclosure",
     "decide_policy",
     "decide_policy_with_local_reauthentication",
+    "preview_forbids_network",
 ]
 
 
@@ -55,6 +59,49 @@ class PrivacyLocalEditResult:
     def __post_init__(self) -> None:
         if self.outcome != "edit":
             raise ValueError("privacy_local_edit_result_invalid")
+
+
+def preview_forbids_network(preview: PrivacyPolicyDecisionPreview) -> bool:
+    """Whether approving ``preview`` may make this computer's machine-scope policy zero-network.
+
+    The preview is the exact diff the owner approves. A ``global``/``network_egress`` change to off
+    counts in the machine ceiling of a compound proposal, and in a single-scope proposal, whose
+    preview does not name its scope, so it counts as this computer's (failing toward the guard of
+    ADR-051 decision 8). A repository grant's own row narrows only that repository.
+    """
+
+    def turns_off(changes: tuple[PrivacyPolicyChange, ...]) -> bool:
+        return any(
+            change.area == "global"
+            and change.field == "network_egress"
+            and change.after.kind == "flag"
+            and change.after.flag is False
+            for change in changes
+        )
+
+    if preview.members:
+        return any(
+            member.authority == "machine_ceiling" and turns_off(member.changes)
+            for member in preview.members
+        )
+    return turns_off(preview.changes)
+
+
+def _guard_zero_network(preview: object, *, interactive: bool) -> None:
+    """Before an approval is sent: never leave this computer zero-network with a server elsewhere.
+
+    ADR-051 decision 8 (maintainer decision of 2026-11-07). A pending proposal was guarded when it
+    was made, but a server elsewhere may have been selected since. On the owner's trusted console
+    (``interactive``, and not a machine-readable answer) the two choices are offered; otherwise the
+    approval is refused. A cancel or refusal raises ``ZeroNetworkChangeStopped`` after saying why
+    and ``finishup server use local``; nothing was sent.
+    """
+
+    if type(preview) is not PrivacyPolicyDecisionPreview:
+        return
+    from finishup.cli.zero_network_selection import guard_policy_change
+
+    guard_policy_change(forbids_network=preview_forbids_network(preview), interactive=interactive)
 
 
 async def _decide(
@@ -98,6 +145,9 @@ async def _decide(
                     decision: Literal["approve", "deny"] = (
                         "approve" if selected == b"approve" else "deny"
                     )
+                    if decision == "approve" and decision_kind == "policy":
+                        # The owner is at this terminal: offer the two choices (ADR-051 decision 8).
+                        _guard_zero_network(preview, interactive=True)
                     await session.send_action(DecisionAction(decision))
                     current = await session.wait_phase_or_result()
                     if decision_kind == "disclosure":
@@ -179,6 +229,10 @@ async def _decide_policy_supplied(
                 preview = _verify_preview(kind, target, session)
                 if type(preview) is not PrivacyPolicyDecisionPreview:
                     raise HumanCeremonyCliError("preview_invalid")
+                if decision == "approve":
+                    # A supplied decision is relayed, never answered on this console: refused
+                    # while it would leave a server elsewhere selected (ADR-051 decision 8).
+                    _guard_zero_network(preview, interactive=False)
                 current = session.opened.phase
                 if type(current) is DecisionRequiredPhase:
                     await session.send_action(DecisionAction(decision))

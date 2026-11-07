@@ -14,6 +14,33 @@ the egress gateway, key access, and structural receipts. CLI, MCP, a future UI, 
 and provider adapters are callers with bounded capabilities. An MCP caller or agent is never a
 local-human authorization principal, even when its request asserts that the user consented.
 
+When the owner selects a FinishUP server on another machine
+([ADR-051](../adr/ADR-051-client-server-cut-and-server-targets.md), Proposed), that server's
+service is this trusted service and this protocol runs there unchanged. The hop between the
+owner's FinishUP client and that server is the owner-authorized FinishUP server hop: it is not one
+of the five network channels below, and enabling it enables none of them. Adding or selecting a
+remote target is refused in the zero-network state (the ADR-009 amendment proposed by ADR-051).
+The zero-network state and a selected remote target are never in force together (ADR-051 decision
+8, maintainer decision of 2026-11-07, replacing the 2026-11-06 choice to let the owner keep the
+target). A change that would set this computer's machine-scope policy to that state while the
+selection names a remote target is decided before it is applied: on the trusted console the owner
+chooses between switching to this computer's everyday FinishUP (`finishup server use local`) and
+making the change, or cancelling the change and keeping the target, and Enter, end of input and
+Ctrl-C cancel; without that console (a machine-readable answer, a relayed decision) it is refused
+with `zero_network_remote_selected` and nothing is applied. While a remote target is selected, a
+fresh command does not set this computer's policy (the server-host privacy commands are refused
+with `requires_server_host`; `privacy tighten|propose` reach the selected server and change its
+own policy), so the choice arises only when a process that resolved this computer's server before
+the selection changed makes the change. As the last line of defence every client connection to a
+remote target is refused, before anything is sent, while this computer last reported the
+zero-network state: the client remembers each report of this computer's machine-scope policy in an
+owner-only marker outside the vault, and the connection check reads that marker, never the
+service, so a process whose selection predates the change sends nothing either. Client-owned
+processes that hold connections to a remote target open (a relay, a background workspace agent,
+an observation delivery) check the same marker before each connection and every second, and on
+finding it close what they hold and send nothing more. The owner displays read the live policy
+first and fall back to that marker ("this computer last reported").
+
 ## Content classes
 
 Every candidate item is classified before policy evaluation as exactly one of:

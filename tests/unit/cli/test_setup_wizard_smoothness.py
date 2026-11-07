@@ -971,3 +971,45 @@ def test_the_codex_wizard_prints_each_privacy_and_credential_step_once(
 
 
 _REAL_HUMAN_REPORT = wizard._emit_human_report  # pyright: ignore[reportPrivateUsage]
+
+
+# --- ADR-051 decision 8: a remote server still selected under zero-network ----------------------
+
+
+def test_setup_names_a_remote_server_still_selected_under_zero_network(
+    monkeypatch: pytest.MonkeyPatch, home: Path, tmp_path: Path
+) -> None:
+    from finishup.cli import zero_network_selection
+
+    run = _codex_only(monkeypatch, home, tmp_path, "local_only")
+    project = tmp_path / "project"
+    project.mkdir()
+    item = zero_network_selection.ZeroNetworkSelection(
+        zero_network_selection.REMOTE_SELECTED, "t_1a2b3c4d", "ssh"
+    )
+    reports: list[dict[str, object]] = []
+
+    def prompt(text: str, *_args: object, **kwargs: object) -> str:
+        run.asked.append(text)
+        if text.startswith("Project folder"):
+            return str(project)
+        default = kwargs.get("default")
+        return "1" if default is None else str(default)
+
+    async def ready(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    monkeypatch.setattr("typer.prompt", prompt)
+    monkeypatch.setattr(wizard, "_service_reachability", ready)
+
+    def capture(report: dict[str, object], **_kwargs: object) -> None:
+        reports.append(report)
+
+    monkeypatch.setattr(wizard, "_emit_human_report", capture)
+    monkeypatch.setattr(zero_network_selection, "find_zero_network_selection", lambda: item)
+
+    assert _codex_wizard() == 0
+
+    (report,) = reports
+    assert item.next_step() in cast(list[str], report["next_steps"])
+    assert "finishup server use local" in item.next_step()

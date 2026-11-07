@@ -502,6 +502,39 @@ class _HookDrainClient(Protocol):
 type HookDrainConnector = Callable[[ControlClientKind], Awaitable[_HookDrainClient]]
 
 
+def _drain_connector(connect: object, workspace_locator: str | None) -> HookDrainConnector:
+    """The connector a hook pass's own outbox drains use (ADR-051).
+
+    An injected ``connect`` is used as given. Otherwise the root decides when the drain connects:
+    a local root (the everyday server, an isolated root, a named local server) connects exactly
+    as before, naming no workspace. A server on another machine accepts a row only when it is
+    attested over a connection that claims the row's workspace (decision 12); an unbound drain
+    there is refused, or its rows are quarantined. So on a remote root the drain names the hook's
+    canonical workspace and the connect seam claims it: the hello carries the claim, never the
+    path. A pass that knows no workspace sends nothing there: its connect fails, the rows stay
+    pending, and the background drain delivers them claim-bound.
+    """
+
+    if connect is not None:
+        return cast(HookDrainConnector, connect)
+
+    async def drain_connect(kind: ControlClientKind) -> _HookDrainClient:
+        from finishup.client.targets import active_root_may_be_remote
+
+        real = cast(Callable[..., Awaitable[_HookDrainClient]], _connect_service())
+        if not active_root_may_be_remote():
+            return await real(kind)
+        if workspace_locator is None:
+            from finishup.ports.control import ControlError
+
+            raise ControlError("service_unavailable", retryable=True)
+        from finishup.ports.control import WorkspaceLocator
+
+        return await real(kind, workspace_locator=WorkspaceLocator(workspace_locator))
+
+    return drain_connect
+
+
 class _StartClient(Protocol):
     async def start(self, request: object, *, deadline_ms: int | None = None) -> object: ...
 
@@ -602,6 +635,16 @@ def _attachment_recovery_context(reason: str) -> str:
     # the agent never sees, so no timeout replay token applies: the agent's own start is the
     # recovery (issue #739).
     if reason in {"service_unavailable", "timeout"}:
+        from finishup.client.targets import active_target_is_remote
+
+        if active_target_is_remote():
+            # ADR-051: the selected server is on another machine; nothing starts a local service.
+            return (
+                "FinishUP attachment pending: service_unavailable. The selected FinishUP server "
+                "could not be reached within the hook budget. Call start before material work; "
+                "its result names the remote phase and its repair, and later turn hooks also "
+                "retry within their budget. "
+            )
         return (
             "FinishUP attachment pending: service_unavailable. The bounded service connection "
             "did not complete. Call start before material work to finish service startup and "
@@ -2704,8 +2747,15 @@ async def _try_service_ingest(
     content_capture_profile: str | None = None,
     capture_only: bool = False,
     deadline_ms: int,
+    store: LocalObservationStore | None = None,
+    workspace_commitment: str | None = None,
+    _state: Path | None = None,
 ) -> ObservationIngestResult:
-    """Attempt one typed ingest through an already-open preflight client."""
+    """Attempt one typed ingest through an already-open preflight client.
+
+    Over a claim-bound connection (a remote server target) the row is attested from ``store``
+    and this root's mapping first (ADR-051 decision 12); every other connection sends it as is.
+    """
 
     from finishup.application.observation_drain import (
         ObservationControlFailure,
@@ -2715,15 +2765,30 @@ async def _try_service_ingest(
 
     stage = "request_encode"
     try:
-        body = observation_ingest_request_to_json(
-            ObservationIngestRequest(
-                codex_session_id=codex_session_id,
-                envelope=envelope,
-                content_chunks=content_chunks,
-                content_capture_profile=content_capture_profile,
-                capture_only=capture_only,
-            )
+        request = ObservationIngestRequest(
+            codex_session_id=codex_session_id,
+            envelope=envelope,
+            content_chunks=content_chunks,
+            content_capture_profile=content_capture_profile,
+            capture_only=capture_only,
         )
+        if (
+            getattr(client, "workspace_binding", None) == "client_claim"
+            or getattr(client, "workspace_handle", None) is not None
+        ):
+            # A remote server target: the row goes out attested, without the path, or not at all.
+            if store is None or workspace_commitment is None:
+                raise ValueError("observation_attestation_unavailable")
+            from finishup.client.observation_attestation import attest_for_connection
+
+            request = attest_for_connection(
+                request,
+                client,
+                store=store,
+                workspace_commitment=workspace_commitment,
+                state=_state,
+            )
+        body = observation_ingest_request_to_json(request)
         stage = "control"
         raw = await client.observation_ingest(body, deadline_ms=deadline_ms)
         stage = "response_decode"
@@ -2923,6 +2988,9 @@ async def _stage_native_content(
                     content_capture_profile=content_capture_profile,
                     capture_only=True,
                     deadline_ms=max(1, int(left * 1_000)),
+                    store=store,
+                    workspace_commitment=workspace_commitment,
+                    _state=_state,
                 ),
                 timeout=left,
             )
@@ -3274,6 +3342,9 @@ async def _drain_outbox_leased(
                         content_chunks=chunks,
                         content_capture_profile=row_profile,
                         deadline_ms=max(1, int(remaining * 1_000)),
+                        store=store,
+                        workspace_commitment=workspace_commitment,
+                        _state=_state,
                     ),
                     timeout=remaining,
                 )
@@ -3421,6 +3492,7 @@ async def _try_auto_start(
     from pydantic import ValidationError
 
     from finishup import __version__
+    from finishup.client.workspace_ref import WorkspaceRefNotPortable, start_request_for_connection
     from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
     from finishup.protocol.ids import IdKind, new_id
     from finishup.protocol.models import OperationFailureModel, StartRequest
@@ -3480,7 +3552,10 @@ async def _try_auto_start(
             )
         else:
             client = await connect(ControlClientKind.CLI)
-        result = await client.start(request, deadline_ms=_remaining_deadline_ms())
+        # ADR-051: a server on another machine is sent the connection's handle, never the locator.
+        result = await client.start(
+            start_request_for_connection(request, client), deadline_ms=_remaining_deadline_ms()
+        )
         # A validated local predecessor selects recovery before admission. An
         # ordinary create attempt would now succeed and strand predecessor work.
     except ControlError as error:
@@ -3495,6 +3570,9 @@ async def _try_auto_start(
         )
     except TimeoutError:
         return AutoAttachOutcome(None, "timeout")
+    except WorkspaceRefNotPortable as refusal:
+        # Nothing was sent: the connection had no workspace handle to name instead of a path.
+        return AutoAttachOutcome(None, _AUTO_ATTACH_ERROR_REASONS[refusal.code])
     except Exception:
         return AutoAttachOutcome(None, "service_unavailable")
     finally:
@@ -4861,13 +4939,11 @@ def _session_start_attach(
     # SessionStart-only status/attach helpers: they drag protocol.models
     # and service.client, which no other event needs (#242).
     from finishup.cli.hooks import (
-        _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _PRIVACY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STARTUP_RECOVERY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_CORRUPT_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
-        _UNAVAILABLE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_MISMATCH_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         _WORKSPACE_UNBOUND_CONTEXT,  # pyright: ignore[reportPrivateUsage]
         SessionWorkspace,
@@ -4876,7 +4952,9 @@ def _session_start_attach(
         _read_status,  # pyright: ignore[reportPrivateUsage]
         _stale_mapping_context,  # pyright: ignore[reportPrivateUsage]
         bound_connector,
+        locked_context,
         resolve_session_workspace,
+        unavailable_context,
     )
 
     additional = ""
@@ -5016,7 +5094,7 @@ def _session_start_attach(
                         record_hook_diagnostic(f"status_{kind}", event, _state=_state)
                         record_hook_diagnostic(selection.diagnostic_reason, event, _state=_state)
                 elif kind == "locked":
-                    additional = _LOCKED_CONTEXT
+                    additional = locked_context()
                 elif kind == "retry":
                     additional = _RETRY_CONTEXT
                 elif kind == "privacy":
@@ -5033,7 +5111,7 @@ def _session_start_attach(
                     with contextlib.suppress(Exception):
                         record_hook_diagnostic(kind, event, _state=_state)
                 else:
-                    additional = _UNAVAILABLE_CONTEXT
+                    additional = unavailable_context(outcome.phase)
     return _SessionStartAttach(
         mapping=mapping,
         pending_mapping_deferred=pending_mapping_deferred,
@@ -6447,7 +6525,7 @@ def handle_observe(
                         codex_session_id=codex_session_id,
                         content_by_source_identity=content_map,
                         content_capture_profile=service_content_profile,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(connect, workspace_locator),
                         event_name=resolved_event,
                         _state=_state,
                         budget_seconds=native_content_drain_budget,
@@ -6518,7 +6596,7 @@ def handle_observe(
                     codex_session_id=codex_session_id,
                     content_by_source_identity=content_map,
                     content_capture_profile=service_content_profile,
-                    connect=cast(HookDrainConnector | None, connect),
+                    connect=_drain_connector(connect, workspace_locator),
                     event_name=resolved_event,
                     _state=_state,
                     budget_seconds=(
@@ -6553,7 +6631,7 @@ def handle_observe(
                         workspace_commitment=workspace_commitment,
                         codex_session_id=codex_session_id,
                         finishup_session_id=stop_mapping.finishup_session_id,
-                        connect=cast(HookDrainConnector | None, connect),
+                        connect=_drain_connector(connect, workspace_locator),
                         _state=_state,
                         deadline=stop_drain_deadline,
                         monotonic=_monotonic,

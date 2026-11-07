@@ -9,7 +9,7 @@ import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import pytest
 from typer.testing import CliRunner
@@ -476,11 +476,11 @@ def _wire_composed_provider_setup(
 
     original_emit_human_report = setup_module._emit_human_report  # pyright: ignore[reportPrivateUsage]
 
-    def capture_report(report: dict[str, JsonValue]) -> None:
+    def capture_report(report: dict[str, JsonValue], **kwargs: Any) -> None:
         cast(list[dict[str, object]], state["reports"]).append(
             cast(dict[str, object], json.loads(json.dumps(report)))
         )
-        original_emit_human_report(report)
+        original_emit_human_report(report, **kwargs)
 
     monkeypatch.setattr(setup_module, "_is_interactive_terminal", lambda: True)
     monkeypatch.setattr(setup_module, "_service_reachability", ready)

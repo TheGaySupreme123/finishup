@@ -129,6 +129,7 @@ Type `/` to open the filtered command list.
 | `/privacy` | choose what may leave this computer |
 | `/provider` | configure optional deeper review |
 | `/service` | manage the protected local service |
+| `/server` | list FinishUP servers and choose which one to use |
 | `/observe` | show observation selection and change local retention capacity |
 | `/doctor` | diagnose installation problems |
 | `/help` | show what FinishUP can do here |
@@ -320,6 +321,25 @@ when the check is allowed but fails, the line is unproven with "could not check 
 FinishUP finds folders under both its current and its former name, the installation folders line
 is blocked with the [upgrade guide's remedy](upgrading.md#if-something-refuses-after-the-rename)
 and the checks that would need those folders are skipped. **It never changes anything.**
+
+### `/server`
+
+`/server` lists the FinishUP servers you added — other FinishUP services on this computer, on a
+port of it, over SSH or on the web — with the one in use marked, and each one's kind, short id and
+reachability. Choosing one switches to it; choosing a server on another machine, a port or the web
+asks you to type its name, exactly as `finishup server use` does. Adding, removing and signing in
+to a server, and changing what a server on another machine may read outside your projects, happen
+on the command line, so for those `/server` shows the command to run (`finishup server folders
+mode` for the mode, and `add`, `list` and `remove` for folders). Adding a server on another
+machine, a port or the web first asks the same question as `finishup server add`: what it may read
+outside your projects, local or listed. The command it shows carries your answer, so in your
+terminal you only confirm with the server's name. As with `finishup server add`, an official
+FinishUP service is not asked: where one exists, `/server` offers it as its own choice, and the
+command it shows carries no answer, because the service reads what FinishUP on this computer
+would read. Its status view also shows the server's mode
+for reads outside your projects on this computer, why it has that mode (or how to choose one),
+and the folders listed for it. The header always shows the kind and short id
+of the server in use. See [FinishUP servers](servers.md).
 
 ### `/observe`
 

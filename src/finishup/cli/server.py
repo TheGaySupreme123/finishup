@@ -1,0 +1,2194 @@
+"""``finishup server``: choose which FinishUP server this computer's client uses (ADR-051).
+
+Every command here acts on this machine's server targets and selection (scope ``client_only``).
+Names and addresses appear only in owner displays (``list``, ``status``, ``test``) and on the
+trusted console; refusals name a target by its id or not at all, with a closed reason token.
+
+* ``add NAME --local`` makes a named local server (its own vault, ledger, and on-demand service);
+  ``add NAME --port PORT``, ``add NAME ssh://…`` and ``add NAME https://…`` record a remote target
+  after the owner types the target name on the trusted console to accept the versioned
+  disclosure. ``remove`` is the reverse.
+* ``use NAME|local`` writes or removes the owner-only selection; remote targets need the same
+  typed confirmation. ``use local`` is the reverse. A switch away from a remote target also stops
+  what this client runs for it, as ``disconnect`` does (``TargetSwitch``).
+* ``login``/``logout`` store or delete an HTTPS target's API key (platform store or owner-only
+  file); ``connect``/``disconnect`` make the target usable or stop what this client runs for it.
+* ``list``, ``status [--json]`` and ``test`` show the deciding source, the target, and a probe.
+
+An isolation root or a runtime pin outranks the selection; while one is in force every command
+that would change or use the selection is refused with ``selection_overridden``.
+
+Every remote kind has an outside-read mode (ADR-051 decision 5), the same two for each: what
+the target's server may read outside the claimed workspace on this computer, in ``local`` mode
+as a FinishUP service on this computer would, in ``listed`` mode only beneath the folders listed
+for it; in both modes a task's files beneath a listed folder are read, whatever the server's own
+policy admits (amended 2026-11-07). ``add`` asks the owner which, on the trusted console as part
+of its typed confirmation (``--outside-reads local|listed`` answers it up front), except for an
+official FinishUP endpoint, which is ``local``. ``folders mode NAME local|listed`` changes it later: ``local`` needs the
+owner to type the target name on the trusted console; ``listed`` is the way back. ``folders add
+NAME FOLDER`` lists one folder, with the same typed confirmation; ``folders remove`` is the
+reverse. ``folders list``, ``status`` and ``add`` show the mode. Once chosen, nothing asks again:
+hooks, agent tools, the CLI and the terminal interface read the record. The record is this
+client's own (``finishup.client.server_folders``) and never sent to the server.
+"""
+
+from __future__ import annotations
+
+import functools
+import re
+import sys
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Final, Literal, NoReturn, cast
+
+import typer
+
+from finishup import __version__
+from finishup.client.target_runtime import (
+    ProbeResult,
+    TargetRuntimeError,
+    runtime_for,
+)
+from finishup.client.targets import (
+    DISCLOSURE_VERSION,
+    ServerTarget,
+    TargetError,
+    TargetKind,
+    active_target_record,
+    clear_selection,
+    find_target,
+    list_targets,
+    normalize_https_url,
+    parse_ssh_url,
+    read_selected_target_id,
+    read_target,
+    reauthorized,
+    registry_lock,
+    require_current_authorization,
+    selection_source,
+    target_root,
+    validate_name,
+    write_selection,
+    write_target,
+)
+from finishup.config.installation import format_rfc3339_ms
+from finishup.config.paths import PathSafetyError
+from finishup.protocol.canonical import JsonValue, canonical_encode
+
+if TYPE_CHECKING:
+    from finishup.cli.trusted_console import TrustedForegroundConsole
+    from finishup.cli.zero_network_selection import ZeroNetworkSelection
+    from finishup.client.server_folders import FolderRecord, OutsideReadMode
+
+__all__ = [
+    "DISCLOSURE_LINES",
+    "ROOT_UNUSABLE_MESSAGE",
+    "ServerCommandRefused",
+    "TargetRow",
+    "TargetSwitch",
+    "build_status_document",
+    "refusal_message",
+    "render_target_rows",
+    "server_app",
+    "status_lines",
+    "target_rows",
+    "use_target",
+    "zero_network_connection_refusal",
+]
+
+server_app = typer.Typer(
+    help="Choose which FinishUP server this computer's agents, CLI, and terminal use.",
+    no_args_is_help=True,
+)
+
+_JSON = Annotated[bool, typer.Option("--json", help="Emit canonical JSON.")]
+_EXPLICIT_SOURCES: Final = frozenset({"environment", "runtime_pin", "environment_and_pin"})
+# p95 status round trip above which a required-mode startup gate (0.65 s for connect + status)
+# would likely deny on a cold hook (design section 8).
+_STARTUP_GATE_RISK_MS: Final = 200
+_USAGE: Final = 2
+_UNSAFE: Final = 20
+_UNAVAILABLE: Final = 20
+
+# Remedies are fixed text: no name, host, path, or other owner-typed value is ever echoed.
+_REMEDIES: Final[dict[str, tuple[str, int]]] = {
+    "selection_overridden": (
+        "FINISHUP_ISOLATED_ROOT or a runtime pin decides this process's FinishUP root, so the "
+        "server selection is not used here; run this from an ordinary shell",
+        _USAGE,
+    ),
+    "target_name_invalid": (
+        "a target name is 1 to 16 lowercase letters, digits, or hyphens, starting with a letter "
+        "or digit",
+        _USAGE,
+    ),
+    "target_name_reserved": (
+        "'local' always means this computer's everyday FinishUP server; choose another name",
+        _USAGE,
+    ),
+    "target_name_taken": (
+        "a target already has that name; choose another, or remove that target first",
+        _USAGE,
+    ),
+    "target_unknown": ("no target has that name; 'finishup server list' shows them", _USAGE),
+    "target_selected": (
+        "that target is selected; pass --select-local to switch to this computer's everyday "
+        "server and remove it",
+        _USAGE,
+    ),
+    "target_record_invalid": (
+        "a server target record is damaged; 'finishup server list' fails until it is removed "
+        "or restored",
+        _UNSAFE,
+    ),
+    "target_url_invalid": (
+        "give https://host[:port][/base] (no user, query, or fragment; plain http is refused), "
+        "ssh://[user@]host[:port], or --port PORT for this computer's loopback",
+        _USAGE,
+    ),
+    "target_tls_invalid": (
+        "give at most one of --ca-file FILE and --tls-pin sha256:<64 lowercase hex>, and only "
+        "with an HTTPS target",
+        _USAGE,
+    ),
+    "target_path_invalid": ("give absolute paths for remote and certificate files", _USAGE),
+    "target_root_too_long": (
+        "the FinishUP state folder is too deep for a local socket path; FinishUP cannot add a "
+        "server target under it",
+        _UNSAFE,
+    ),
+    "target_root_unsafe": (
+        "a FinishUP server folder is not owner-only or contains a symlink; fix its permissions "
+        "and retry",
+        _UNSAFE,
+    ),
+    "selection_invalid": (
+        "the server selection is damaged or names a server folder that is missing or unsafe; "
+        "'finishup server use local' clears it",
+        _UNSAFE,
+    ),
+    "trusted_console_required": (
+        "authorizing a remote server needs your own interactive terminal; run this command there",
+        _USAGE,
+    ),
+    "authorization_declined": ("the target name was not typed; nothing was changed", _USAGE),
+    # 'server folders' (ADR-051 decision 5): fixed text, never the folder.
+    "folders_not_applicable": (
+        "a server on this computer reads your folders under its own privacy policy; folders are "
+        "admitted only for a server on another machine, a port or the web",
+        _USAGE,
+    ),
+    "folder_invalid": (
+        "give an existing folder by its full path (starting with /), with no link on the way and "
+        "no hidden or system folder; your home folder, a folder that holds it, and its private "
+        "folders cannot be admitted",
+        _USAGE,
+    ),
+    "folder_limit": (
+        "that server may already read the most folders FinishUP allows; remove one first",
+        _USAGE,
+    ),
+    "folders_record_invalid": (
+        "the record of what that server may read outside your projects is damaged, so it reads "
+        "no folder there (mode listed); repair it on this computer with 'finishup server folders "
+        "remove NAME --all', then run this command again",
+        _UNSAFE,
+    ),
+    "folders_record_unsafe": (
+        "the record of what that server may read outside your projects is not owner-only or is "
+        "a link, so it reads no folder there (mode listed); repair it on this computer with "
+        "'finishup server folders remove NAME --all', then run this command again",
+        _UNSAFE,
+    ),
+    "outside_read_mode_invalid": (
+        "give 'local' (read outside your projects as FinishUP on this computer would) or "
+        "'listed' (only the folders you list)",
+        _USAGE,
+    ),
+    "outside_reads_not_chosen": (
+        "no answer chose what that server may read outside your projects, so nothing was added; "
+        "run the command again and type local or listed when asked, or give --outside-reads "
+        "local or --outside-reads listed",
+        _USAGE,
+    ),
+    "zero_network_in_force": (
+        "this computer's FinishUP is set to make no network connections, so it cannot use a "
+        "server on another machine; change the privacy policy on this computer first, with "
+        "'finishup privacy setup'",
+        _USAGE,
+    ),
+    # ADR-051 decision 8 (2026-11-07): a connection's own refusal, e.g. at 'server connect'.
+    "zero_network_remote_selected": (
+        "this computer's FinishUP is set to make no network connections (as it last reported), "
+        "so nothing was sent to the selected server elsewhere; run 'finishup server use local'",
+        _USAGE,
+    ),
+    "network_policy_unreadable": (
+        "this computer's FinishUP has its own privacy policy, which could not be read (its "
+        "service is stopped, locked, or did not answer), so a server on another machine is "
+        "refused; start it with 'finishup service start', unlock it if it is locked, and retry",
+        _UNAVAILABLE,
+    ),
+    "credential_not_applicable": (
+        "only HTTPS targets take an API key; SSH targets use your OpenSSH keys and agent",
+        _USAGE,
+    ),
+    "credential_invalid": (
+        "the key must be one line of 16 to 512 printable characters, from your terminal or an "
+        "owner-only (0600) key file",
+        _USAGE,
+    ),
+    "credential_unavailable": ("no key could be read; nothing was changed", _USAGE),
+    "credential_store_unavailable": (
+        "neither the platform credential store nor the owner-only key file could be used",
+        _UNAVAILABLE,
+    ),
+    "runtime_unavailable": (
+        "this FinishUP build has no client runtime for that kind of server target",
+        _UNAVAILABLE,
+    ),
+    "target_reauthorization_required": (
+        "this server target was authorized under an older disclosure of what leaves this "
+        "computer; run 'finishup server use NAME' in your own terminal to read the current one "
+        "and confirm it",
+        _USAGE,
+    ),
+    "usage": (
+        "give exactly one of --local, --port PORT, or an ssh:// or https:// address",
+        _USAGE,
+    ),
+    "remote_unreachable": (
+        "the server could not be reached; check the address and your network, then retry",
+        _UNAVAILABLE,
+    ),
+    "remote_auth_failed": (
+        "the server refused this login: load your SSH key (ssh-add) for an SSH server, or give "
+        "a valid API key for an HTTPS server",
+        _UNAVAILABLE,
+    ),
+    "remote_identity_changed": (
+        "the server's host key or certificate was not accepted; verify it another way first",
+        _UNAVAILABLE,
+    ),
+    "remote_incompatible": (
+        "this client and the server run different FinishUP releases; install the same release "
+        "on both",
+        _UNAVAILABLE,
+    ),
+    "remote_service_not_running": (
+        "the server's FinishUP gateway answers but its service does not; its operator starts it",
+        _UNAVAILABLE,
+    ),
+    "target_still_connected": (
+        "the connection this client runs for that target did not stop in time, so nothing was "
+        "removed; run the same command again",
+        _UNAVAILABLE,
+    ),
+    "remote_launcher_unknown": (
+        "no absolute finishup launcher could be found on the server; pass --remote-launcher "
+        "with the absolute path of the server's finishup",
+        _USAGE,
+    ),
+}
+
+DISCLOSURE_LINES: Final = (
+    "Authorize a FinishUP server target (disclosure {version})",
+    "",
+    "Sent to that server: task statements, published work, evidence, and check, respond,",
+    "and receipt traffic.",
+    "When it checks or reviews your work, the FinishUP workspace agent on this computer reads",
+    "what it asks for (the change being checked, bounded file excerpts for review, declared",
+    "task inputs, and results of checks you approved in .finishup/checks.toml) and sends it,",
+    "labelled as read on this computer.",
+    "No file path from this computer is sent; repositories are named by a keyed label.",
+    "That server's own privacy policy decides whether anything goes on to an AI-powered",
+    "review provider.",
+    "This is your decision on this terminal, not a vault re-authentication. Undo it with",
+    "'finishup server use local' or 'finishup server remove'.",
+    "",
+)
+
+
+class ServerCommandRefused(Exception):
+    """A refused ``finishup server`` step: closed reason and detail tokens, fixed message text."""
+
+    def __init__(
+        self, reason: str, *, detail: str | None = None, message: str | None = None
+    ) -> None:
+        self.reason = reason
+        self.detail = detail
+        self.message = message
+        super().__init__(reason)
+
+
+_DEFAULT_REMEDY: Final = "the server target did not respond as needed"
+ROOT_UNUSABLE_MESSAGE: Final = (
+    "this process's FinishUP root cannot be used; 'finishup service isolation' explains which "
+    "source decided it"
+)
+
+
+def refusal_message(error: ServerCommandRefused) -> str:
+    """The fixed text for a refusal (never owner-typed), with its closed detail."""
+
+    remedy, _code = _REMEDIES.get(error.reason, (_DEFAULT_REMEDY, _UNAVAILABLE))
+    text = error.message or remedy
+    return text if error.detail is None else f"{text} ({error.detail})"
+
+
+def _fail(reason: str, *, detail: str | None = None, message: str | None = None) -> NoReturn:
+    _remedy, code = _REMEDIES.get(reason, (_DEFAULT_REMEDY, _UNAVAILABLE))
+    text = refusal_message(ServerCommandRefused(reason, detail=detail, message=message))
+    typer.echo(f"{reason}: {text}", err=True)
+    raise typer.Exit(code)
+
+
+def _cli[**P](command: Callable[P, None]) -> Callable[P, None]:
+    """Render a ``ServerCommandRefused`` as one bounded line and its exit code."""
+
+    @functools.wraps(command)
+    def run(*args: P.args, **kwargs: P.kwargs) -> None:
+        try:
+            command(*args, **kwargs)
+        except ServerCommandRefused as error:
+            _fail(error.reason, detail=error.detail, message=error.message)
+        except TargetError as error:
+            _fail(error.reason)
+        except PathSafetyError as error:
+            # The everyday folders themselves cannot be chosen (for example data under both
+            # product names): the registry lives there, so nothing can be read or written.
+            _fail(error.reason_code, message=ROOT_UNUSABLE_MESSAGE)
+
+    return run
+
+
+def _runtime_failure(error: TargetRuntimeError) -> NoReturn:
+    if error.phase == "runtime_unavailable":
+        raise ServerCommandRefused(
+            "runtime_unavailable", detail=f"{error.reason}, phase {error.phase}"
+        )
+    raise ServerCommandRefused(
+        error.reason, detail=None if error.phase is None else f"phase {error.phase}"
+    )
+
+
+def _explicit_source_present() -> bool:
+    """Whether the isolation variable or a runtime pin decides this process's root.
+
+    Read without resolving the selection, so the ways back from a damaged or dangling selection
+    (``use local``, ``remove --select-local``) still work. A variable or pin that cannot be used is
+    still an explicit source: it fails closed with its own path-safety reason.
+    """
+
+    from finishup.config.paths import isolated_root_variable, read_runtime_pin
+
+    try:
+        return isolated_root_variable() is not None or read_runtime_pin() is not None
+    except PathSafetyError as error:
+        raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
+
+
+def _source() -> str:
+    try:
+        return selection_source()
+    except PathSafetyError as error:
+        if not _explicit_source_present():
+            # Neither the variable nor a pin is set, so the selection is what cannot be used: a
+            # damaged file, or a missing or unsafe target folder. Its remedy works from here.
+            raise ServerCommandRefused("selection_invalid") from None
+        raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
+
+
+def _require_selection_in_force() -> None:
+    """Refuse while the isolation variable or a runtime pin outranks the selection."""
+
+    if _source() in _EXPLICIT_SOURCES:
+        raise ServerCommandRefused("selection_overridden")
+
+
+def _require_no_explicit_source() -> None:
+    """``_require_selection_in_force`` without resolving the selection (the ways back)."""
+
+    if _explicit_source_present():
+        raise ServerCommandRefused("selection_overridden")
+
+
+def _target_or_fail(name: str) -> ServerTarget:
+    try:
+        return find_target(name)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+
+
+def _location(record: ServerTarget | None) -> str | None:
+    if record is None or record.kind == "local":
+        return None
+    if record.kind == "ssh":
+        host = cast(str, record.host)
+        authority = f"[{host}]" if ":" in host else host
+        user = "" if record.user is None else f"{record.user}@"
+        return f"ssh://{user}{authority}:{record.port}"
+    return record.base_url
+
+
+def _kind_label(kind: str) -> str:
+    return {
+        "local": "a named local server on this computer",
+        "local_port": "a FinishUP server on this computer's loopback, over HTTPS",
+        "ssh": "a FinishUP server on another machine, over SSH",
+        "https": "a FinishUP server over HTTPS",
+    }[kind]
+
+
+def _zero_network_in_force() -> bool:
+    """Whether this computer is in the zero-network state that refuses a remote hop (ADR-051).
+
+    Every remote kind is a hop, ``local_port`` included: a loopback port can forward anywhere.
+    This computer's own FinishUP decides (``zero_network_selection.everyday_network_state``): its
+    everyday installation's effective machine-scope policy, when it was set up. A policy that does
+    not permit network egress is the zero-network state. One that cannot be read now (the service
+    is stopped, locked, or does not answer, or the installation's identity cannot be read) falls
+    back to what this computer last reported (``client.everyday_policy``, maintainer decision of
+    2026-11-07): last reported zero-network refuses as ``zero_network_in_force``, saying when;
+    anything else (permitted, no report, or a report that cannot be read) refuses with
+    ``network_policy_unreadable``, never allows the hop. A computer whose everyday FinishUP was
+    never set up has no policy of its own, so nothing here refuses it: it is a client of the
+    server it names, and that server's own policy governs its data.
+    """
+
+    from finishup.cli.zero_network_selection import everyday_network_state
+
+    state = everyday_network_state()
+    if state == "unreadable":
+        from finishup.client.everyday_policy import last_reported_zero_network
+
+        reported = last_reported_zero_network()
+        if reported is not None:
+            raise ServerCommandRefused(
+                "zero_network_in_force",
+                message=(
+                    f"this computer's FinishUP last reported, at {reported.reported_at}, that it "
+                    "makes no network connections, and it cannot be asked now (its service is "
+                    "stopped or locked), so it cannot use a server on another machine; change "
+                    "the privacy policy on this computer first, with 'finishup privacy setup'"
+                ),
+            )
+        raise ServerCommandRefused("network_policy_unreadable")
+    return state == "zero_network"
+
+
+def _selected_or_unknown(record: ServerTarget) -> bool:
+    """Whether the selection on disk names ``record``, or cannot be read (so it may)."""
+
+    try:
+        return read_selected_target_id() == record.target_id
+    except (TargetError, PathSafetyError):
+        return True
+
+
+def zero_network_connection_refusal(record: ServerTarget | None) -> ServerCommandRefused | None:
+    """Why nothing is sent to remote ``record`` now, when this computer last reported zero-network.
+
+    The connection check (``targets.require_current_authorization``) refuses every remote target
+    while this computer last reported a zero-network policy (ADR-051 decision 8). A command that
+    acts on one target names that refusal with the one command that fixes it for that target:
+
+    * the selected target, or any target while the selection cannot be read:
+      ``zero_network_remote_selected``, fixed by ``finishup server use local``;
+    * any other remote target: nothing uses it, so switching would change nothing. This
+      computer's own policy is what stands in the way: ``zero_network_in_force``, saying when it
+      was reported and that the privacy policy on this computer must change first.
+
+    ``None`` for a record that is not remote, or while the marker does not say zero-network (it is
+    never read under an isolation variable or runtime pin). Only generated ids and a fixed-shape
+    time are in the text.
+    """
+
+    if record is None or not record.is_remote:
+        return None
+    from finishup.client.everyday_policy import last_reported_zero_network
+
+    reported = last_reported_zero_network()
+    if reported is None:
+        return None
+    if _selected_or_unknown(record):
+        return ServerCommandRefused("zero_network_remote_selected")
+    return ServerCommandRefused(
+        "zero_network_in_force",
+        message=(
+            f"this computer's FinishUP last reported, at {reported.reported_at}, that it makes no "
+            f"network connections, so nothing was sent to server target {record.target_id}; to "
+            "use a server on another machine, change the privacy policy on this computer first, "
+            "with 'finishup privacy setup'"
+        ),
+    )
+
+
+# The add-time question may be answered wrongly a few times before nothing is added.
+_MODE_ATTEMPTS: Final = 3
+
+
+def _confirm_on_trusted_console(
+    name: str,
+    kind: str,
+    *,
+    ask_mode: bool = False,
+    decided: OutsideReadMode | None = None,
+    official: bool = False,
+) -> OutsideReadMode | None:
+    """Show the versioned disclosure and require the owner to type the target name.
+
+    At ``server add`` the owner also answers what the server may read outside their projects
+    here (ADR-051 decision 5), before typing the name, which then authorizes both: with
+    ``ask_mode`` the question is asked and the answer returned; otherwise the mode already
+    decided, by ``--outside-reads`` (``decided``) or as an ``official`` endpoint, is shown. When
+    the owner chooses ``local``, answered or by the flag, the notice of what that mode lets the
+    server read, a rule-breaking server included, comes before the typed name, as with ``server
+    folders mode NAME local``. ``server use`` asks neither. Returns the mode answered, or None
+    when none was asked.
+    """
+
+    from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+
+    answered: OutsideReadMode | None = None
+    try:
+        with TrustedForegroundConsole() as console:
+            for line in DISCLOSURE_LINES:
+                console.write(line.format(version=DISCLOSURE_VERSION) + "\n")
+            console.write(f"Target: {name}, {_kind_label(kind)}.\n")
+            if ask_mode:
+                answered = _ask_outside_reads(console, name)
+            else:
+                mode_line = _decided_mode_line(decided, official=official)
+                if mode_line is not None:
+                    console.write(mode_line + "\n")
+            if (answered or decided) == "local":
+                console.write("\n")
+                for line in _LOCAL_MODE_BODY:
+                    console.write(line.format(name=name) + "\n")
+                console.write("\n")
+            console.read_choice(
+                "Type the target name to authorize it (anything else cancels): ",
+                (name.encode("ascii"),),
+            )
+    except TrustedConsoleError as error:
+        if error.reason == "trusted_console_required":
+            raise ServerCommandRefused("trusted_console_required")
+        raise ServerCommandRefused("authorization_declined")
+    return answered
+
+
+def _ask_outside_reads(console: TrustedForegroundConsole, name: str) -> OutsideReadMode:
+    """Ask which outside-read mode the new target gets; an explicit answer is required.
+
+    One plain line per mode, the same for every remote kind. Enter alone or another word asks
+    again, a few times; then, or at end of input or an interrupt, nothing is added
+    (``outside_reads_not_chosen``), with the way to answer next time.
+    """
+
+    from finishup.cli.trusted_console import TrustedConsoleError
+    from finishup.client.server_folders import OUTSIDE_READ_MODE_LINES, OUTSIDE_READ_QUESTION
+
+    console.write("\n" + OUTSIDE_READ_QUESTION + "\n")
+    for mode in ("local", "listed"):
+        console.write(f"  {mode.ljust(6)}  {OUTSIDE_READ_MODE_LINES[mode]}\n")
+    console.write(
+        f"You can change it later with 'finishup server folders mode {name} local' or "
+        f"'finishup server folders mode {name} listed'.\n"
+    )
+    for attempt in range(_MODE_ATTEMPTS):
+        if attempt:
+            console.write("Please type local or listed.\n")
+        try:
+            answer = console.read_choice("Type local or listed: ", (b"local", b"listed"))
+        except TrustedConsoleError as error:
+            if error.reason in {"empty_input", "input_invalid"}:
+                continue
+            if error.reason == "trusted_console_required":
+                raise
+            raise ServerCommandRefused("outside_reads_not_chosen") from None
+        return "local" if answer == b"local" else "listed"
+    raise ServerCommandRefused("outside_reads_not_chosen")
+
+
+def _authorize_remote(
+    name: str,
+    kind: str,
+    *,
+    ask_mode: bool = False,
+    decided: OutsideReadMode | None = None,
+    official: bool = False,
+) -> OutsideReadMode | None:
+    # Every remote kind is a network hop, ``local_port`` included (ADR-051 section 3).
+    if _zero_network_in_force():
+        raise ServerCommandRefused("zero_network_in_force")
+    return _confirm_on_trusted_console(
+        name, kind, ask_mode=ask_mode, decided=decided, official=official
+    )
+
+
+def _emit(lines: tuple[str, ...]) -> None:
+    for line in lines:
+        typer.echo(line)
+
+
+def _warn_open_sessions() -> None:
+    typer.echo(
+        "New hooks and CLI calls use it now. Restart open agent sessions: a running FinishUP "
+        "MCP bridge keeps the server it started with."
+    )
+
+
+_RELEASE: Final = re.compile(r"^[0-9][0-9A-Za-z.+-]{0,63}$", re.ASCII)
+_SSH_PROBE_SECONDS: Final = 180.0
+
+
+def _release_detail(server_release: object) -> str:
+    """Both releases for a lockstep refusal; a server value that is not a release is withheld."""
+
+    shown = (
+        server_release if type(server_release) is str and _RELEASE.match(server_release) else "?"
+    )
+    return f"client {__version__}, server {shown}"
+
+
+def _probe_ssh_endpoint(
+    user: str | None,
+    host: str,
+    port: int,
+    remote_root: str | None,
+    remote_launcher: str | None,
+) -> tuple[str, str]:
+    """Ask the server's own ``finishup service endpoint --json`` over one interactive ``ssh``.
+
+    OpenSSH asks the owner, on this terminal, to confirm a host key it does not know yet; that
+    confirmation is the host-key pin every later ``BatchMode`` connection checks. Returns the
+    server's absolute launcher (the one given, or the single absolute launcher the server
+    reports for itself, never a bare ``finishup``) and its control endpoint, after checking that
+    both sides run the same release. Nothing is written when this fails.
+    """
+
+    import json
+    import subprocess
+
+    from finishup.client.ssh_upstream import (
+        UpstreamUnavailable,
+        probe_argv,
+        remote_command_line,
+        resolve_ssh,
+    )
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    try:
+        ssh = resolve_ssh()
+    except UpstreamUnavailable as error:
+        raise ServerCommandRefused(error.reason) from None
+    command = remote_command_line(
+        remote_launcher or "finishup", remote_root, "service", "endpoint", "--json"
+    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv; the owner's own terminal
+            probe_argv(ssh, user=user, host=host, port=port, command=command),
+            stdout=subprocess.PIPE,
+            timeout=_SSH_PROBE_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ServerCommandRefused("remote_unreachable") from None
+    if completed.returncode != 0:
+        if completed.returncode == 127 and remote_launcher is None:
+            raise ServerCommandRefused("remote_launcher_unknown")
+        raise ServerCommandRefused("remote_unreachable")
+    try:
+        report = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise ServerCommandRefused("remote_incompatible") from None
+    if not isinstance(report, dict):
+        raise ServerCommandRefused("remote_incompatible")
+    fields = cast(dict[str, object], report)
+    endpoint = fields.get("endpoint")
+    if (
+        fields.get("schema") != "yoetz.service-endpoint/1"
+        or type(endpoint) is not str
+        or not endpoint.startswith("/")
+    ):
+        raise ServerCommandRefused("remote_incompatible")
+    if fields.get("schema_manifest_digest") != schema_manifest_digest():
+        raise ServerCommandRefused(
+            "remote_incompatible", detail=_release_detail(fields.get("release"))
+        )
+    launcher = remote_launcher
+    if launcher is None:
+        reported = fields.get("launcher")
+        if (
+            not isinstance(reported, list)
+            or len(cast(list[object], reported)) != 1
+            or type(cast(list[object], reported)[0]) is not str
+            or not cast(str, cast(list[object], reported)[0]).startswith("/")
+        ):
+            raise ServerCommandRefused("remote_launcher_unknown")
+        launcher = cast(str, cast(list[object], reported)[0])
+    return launcher, endpoint
+
+
+# What ``server login`` says when the server's answer means the key must not be kept (ADR-051
+# decision 7, add and login parity): why, that nothing was stored, and the fix.
+_LOGIN_REFUSED: Final[Mapping[str, str]] = {
+    "remote_auth_failed": (
+        "the server refused this API key, so it was not stored; check the key with the server's "
+        "operator ('finishup service gateway key list' on the server shows its keys) and run "
+        "'finishup server login' again"
+    ),
+    "remote_identity_changed": (
+        "the server's certificate does not match the trust recorded for it, so the key was not "
+        "sent and not stored; verify the server another way, then remove and add it again"
+    ),
+    "remote_incompatible": (
+        "that server is not running this FinishUP release (or is not a FinishUP server), so the "
+        "key was not stored; install the same release on both, then run 'finishup server login' "
+        "again"
+    ),
+}
+
+
+def _check_https_key(record: ServerTarget, secret: str) -> str | None:
+    """``GET /v1/server`` with the new key before it is stored: authenticated, same release.
+
+    ``None`` when the server accepted the key; otherwise the closed reason it did not answer
+    with. A key the server refuses, a server whose certificate does not match the recorded trust,
+    or one on another release raises, naming why nothing was stored.
+    """
+
+    import asyncio
+
+    from finishup.client.https_upstream import HttpsUpstream
+    from finishup.client.ssh_upstream import UpstreamUnavailable
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    async def check() -> dict[str, JsonValue]:
+        upstream = HttpsUpstream(record, lambda: secret)
+        try:
+            return await upstream.server_info()
+        finally:
+            await upstream.aclose()
+
+    try:
+        info = asyncio.run(check())
+    except UpstreamUnavailable as error:
+        refused = _LOGIN_REFUSED.get(error.reason)
+        if refused is not None:
+            raise ServerCommandRefused(error.reason, message=refused) from None
+        return error.reason
+    if info.get("schema_manifest_digest") != schema_manifest_digest():
+        raise ServerCommandRefused(
+            "remote_incompatible",
+            detail=_release_detail(info["release"]),
+            message=_LOGIN_REFUSED["remote_incompatible"],
+        )
+    return None
+
+
+@server_app.command("add")
+@_cli
+def server_add(
+    name: Annotated[str, typer.Argument(help="Target name: 1-16 lowercase letters, digits, -.")],
+    address: Annotated[
+        str | None,
+        # No square brackets: help renders as Rich markup, where "[/base]" is a closing tag.
+        typer.Argument(
+            help="ssh://user@host:port or https://host:port/base (user, port and base optional)."
+        ),
+    ] = None,
+    local: Annotated[
+        bool, typer.Option("--local", help="A named local server on this computer.")
+    ] = False,
+    port: Annotated[
+        int | None,
+        typer.Option("--port", min=1, max=65_535, help="A server on this computer's loopback."),
+    ] = None,
+    remote_root: Annotated[
+        str | None,
+        typer.Option("--remote-root", help="SSH: the server's absolute isolated root."),
+    ] = None,
+    remote_launcher: Annotated[
+        str | None,
+        typer.Option("--remote-launcher", help="SSH: absolute path to the server's finishup."),
+    ] = None,
+    ca_file: Annotated[
+        Path | None, typer.Option("--ca-file", help="HTTPS: CA certificate file to trust.")
+    ] = None,
+    tls_pin: Annotated[
+        str | None, typer.Option("--tls-pin", help="HTTPS: sha256:<hex> certificate pin.")
+    ] = None,
+    outside_reads: Annotated[
+        str | None,
+        typer.Option(
+            "--outside-reads",
+            metavar="local|listed",
+            help=(
+                "Remote: what it may read outside your projects here; local: what FinishUP on "
+                "this computer would read, listed: only folders you list. Asked when omitted."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Add a server target: a named local server, or a remote one after typed authorization."""
+
+    from finishup.client.server_folders import OUTSIDE_READ_MODES, official_address
+
+    _require_selection_in_force()
+    try:
+        validate_name(name)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    chosen = sum((local, port is not None, address is not None))
+    if chosen != 1:
+        raise ServerCommandRefused("usage")
+    if outside_reads is not None and outside_reads not in OUTSIDE_READ_MODES:
+        raise ServerCommandRefused("outside_read_mode_invalid")
+    if outside_reads is not None and local:
+        raise ServerCommandRefused(
+            "usage",
+            message=(
+                "--outside-reads is for a server on another machine, a port or the web; a server "
+                "on this computer reads under its own privacy policy"
+            ),
+        )
+    kind: TargetKind
+    base_url: str | None = None
+    user: str | None = None
+    host: str | None = None
+    ssh_port: int | None = None
+    try:
+        if local:
+            kind = "local"
+        elif port is not None:
+            kind = "local_port"
+            base_url = normalize_https_url(f"https://127.0.0.1:{port}", loopback_only=True)
+        elif cast(str, address).startswith("ssh://"):
+            kind = "ssh"
+            user, host, ssh_port = parse_ssh_url(cast(str, address))
+        else:
+            base_url = normalize_https_url(cast(str, address))
+            # ``https://127.0.0.1:PORT`` and ``https://[::1]:PORT`` are this computer's loopback
+            # ports (ADR-051 section 3), exactly as ``--port PORT`` records 127.0.0.1.
+            kind = "local_port" if _loopback_origin(base_url) else "https"
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    if (remote_root is not None or remote_launcher is not None) and kind != "ssh":
+        raise ServerCommandRefused("usage")
+    if (ca_file is not None or tls_pin is not None) and kind not in {"https", "local_port"}:
+        raise ServerCommandRefused("target_tls_invalid")
+    if ca_file is not None and tls_pin is not None:
+        raise ServerCommandRefused("target_tls_invalid")
+    ca_text: str | None = None
+    if ca_file is not None:
+        resolved = ca_file.expanduser()
+        resolved = resolved if resolved.is_absolute() else Path.cwd() / resolved
+        if not resolved.is_file():
+            raise ServerCommandRefused("target_path_invalid")
+        ca_text = str(resolved)
+    try:
+        taken = any(record.name == name for record in list_targets())
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    if taken:
+        raise ServerCommandRefused("target_name_taken")
+    # What it may read outside your projects here (ADR-051 decision 5): the same question for
+    # every remote kind, asked as part of the typed confirmation unless --outside-reads answered
+    # it, and never for an official FinishUP endpoint, which is 'local' as FinishUP here is.
+    mode: OutsideReadMode | None = outside_reads
+    official = official_address(kind, base_url, ca_file=ca_text, tls_pin=tls_pin)
+    if kind != "local":
+        answered = _authorize_remote(
+            name,
+            kind,
+            ask_mode=mode is None and not official,
+            decided=mode,
+            official=official,
+        )
+        mode = mode or answered
+    remote_endpoint: str | None = None
+    if kind == "ssh":
+        remote_launcher, remote_endpoint = _probe_ssh_endpoint(
+            user, cast(str, host), cast(int, ssh_port), remote_root, remote_launcher
+        )
+    try:
+        with registry_lock():
+            recorded = True
+            if kind == "local":
+                from finishup.client.targets import new_local_target
+
+                record, _root = new_local_target(name)
+            else:
+                from finishup.client.targets import new_remote_target
+
+                record, _root = new_remote_target(
+                    name,
+                    kind,
+                    base_url=base_url,
+                    ca_file=ca_text,
+                    tls_pin=tls_pin,
+                    user=user,
+                    host=host,
+                    port=ssh_port,
+                    remote_root=remote_root,
+                    remote_launcher=remote_launcher,
+                )
+                if remote_endpoint is not None and record.remote_endpoint != remote_endpoint:
+                    record = replace(record, remote_endpoint=remote_endpoint)
+                    write_target(target_root(record.target_id), record)
+                recorded = _record_added_mode(record, mode)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    typer.echo(f"Added server target {record.name} ({record.target_id}, {record.kind}).")
+    if record.is_remote:
+        _emit(_added_mode_lines(record, recorded=recorded))
+    if kind == "local":
+        _emit(
+            (
+                f"Select it with 'finishup server use {record.name}', then run 'finishup setup' "
+                "to set up its vault.",
+            )
+        )
+    elif kind in {"https", "local_port"}:
+        _emit((f"Store its API key with 'finishup server login {record.name}'.",))
+    else:
+        _emit((f"Check it with 'finishup server test {record.name}'.",))
+
+
+def _decided_mode_line(mode: OutsideReadMode | None, *, official: bool) -> str | None:
+    """The console line for a mode decided before ``server add`` asks: by ``--outside-reads``,
+    or as an official FinishUP endpoint. None when the question is asked."""
+
+    if mode == "local":
+        return (
+            "Outside your projects it will read what FinishUP on this computer would read "
+            "(mode local, from --outside-reads)."
+        )
+    if mode == "listed":
+        return (
+            "Outside your projects it will read only folders you list for it (mode listed, from "
+            "--outside-reads)."
+        )
+    if official:
+        return (
+            "Outside your projects it will read what FinishUP on this computer would read "
+            "(mode local): it is an official FinishUP server."
+        )
+    return None
+
+
+def _record_added_mode(record: ServerTarget, mode: OutsideReadMode | None) -> bool:
+    """Record the mode the owner answered for the new target; False when it could not be.
+
+    Never refuses the add: a mode that could not be written leaves the target ``listed``, the
+    fail-closed value of a target whose owner has not chosen, and ``server add`` says so and how
+    to choose. Called under ``registry_lock``.
+    """
+
+    from finishup.client.server_folders import FolderError, set_mode
+
+    if mode is None or not record.is_remote:
+        return True
+    try:
+        set_mode(target_root(record.target_id), record.target_id, mode)
+    except FolderError:
+        return False
+    return True
+
+
+def _added_mode_lines(record: ServerTarget, *, recorded: bool = True) -> tuple[str, ...]:
+    """What ``server add`` says of a new remote target's outside-read mode, and how to change it."""
+
+    from finishup.client.server_folders import outside_reads_of
+
+    found = outside_reads_of(target_root(record.target_id), record)
+    if not recorded:
+        return (
+            "Its choice of what it may read outside your projects could not be saved, so for now "
+            "it reads only folders you list there, none yet (mode listed).",
+            f"Choose again with 'finishup server folders mode {record.name} local' or "
+            f"'finishup server folders mode {record.name} listed'; trying again may help.",
+        )
+    origin = _mode_origin(found.source)
+    if found.mode == "local":
+        return (
+            f"Outside your projects it reads what FinishUP on this computer would read (mode "
+            f"local, {origin}).",
+            f"To let it read only folders you list: 'finishup server folders mode {record.name} "
+            "listed'.",
+        )
+    if found.source == "not_chosen":
+        return (
+            f"Outside your projects it reads only folders you list, none yet (mode listed, "
+            f"{origin}).",
+            _choose_line(record.name),
+        )
+    return (
+        f"Outside your projects it reads only folders you list, none yet (mode listed, {origin}).",
+        f"List one with 'finishup server folders add {record.name} FOLDER', or, if you trust it "
+        f"as you trust FinishUP on this computer: 'finishup server folders mode {record.name} "
+        "local'.",
+    )
+
+
+def _choose_line(name: str) -> str:
+    """How the owner chooses the mode of a target with none chosen yet."""
+
+    return (
+        f"Choose what it may read there: 'finishup server folders mode {name} local' (what "
+        f"FinishUP on this computer would read) or 'finishup server folders mode {name} listed' "
+        "(only folders you list)."
+    )
+
+
+def _loopback_origin(base_url: str) -> bool:
+    """Whether a normalized HTTPS address is a loopback origin with an explicit port."""
+
+    try:
+        return normalize_https_url(base_url, loopback_only=True) == base_url
+    except TargetError:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class TargetRow:
+    """One owner-display row of ``finishup server list`` (and the terminal's ``/server``)."""
+
+    selected: bool
+    name: str
+    kind: str
+    target_id: str | None
+    location: str | None
+
+
+def target_rows() -> tuple[tuple[TargetRow, ...], str]:
+    """Every target as a display row (``local`` first), and the deciding source."""
+
+    source = _source()
+    try:
+        records = list_targets()
+        selected = read_selected_target_id()
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason) from None
+    current = None if source in _EXPLICIT_SOURCES else selected
+    rows = [TargetRow(current is None, "local", "local", None, None)]
+    rows.extend(
+        TargetRow(
+            record.target_id == current,
+            record.name,
+            record.kind,
+            record.target_id,
+            _location(record),
+        )
+        for record in records
+    )
+    return tuple(rows), source
+
+
+def render_target_rows(rows: tuple[TargetRow, ...], source: str) -> tuple[str, ...]:
+    table = [
+        (
+            "*" if row.selected else " ",
+            row.name,
+            row.kind,
+            row.target_id or "-",
+            row.location or "this computer",
+        )
+        for row in rows
+    ]
+    widths = [max(len(line[index]) for line in table) for index in range(1, 4)]
+    lines = [
+        f"{mark} {name.ljust(widths[0])}  {kind.ljust(widths[1])}  "
+        f"{target_id.ljust(widths[2])}  {where}"
+        for mark, name, kind, target_id, where in table
+    ]
+    if source in _EXPLICIT_SOURCES:
+        lines.append(f"The selection is not used here: the {source} decides this process's root.")
+    return tuple(lines)
+
+
+def _show_zero_network_item(*, machine_readable: bool) -> ZeroNetworkSelection | None:
+    """Say so while this computer forbids network use and a remote server is selected.
+
+    ADR-051 decision 8 (maintainer decision, 2026-11-06): the zero-network setting does not stop
+    traffic to a server already selected, so the owner displays name it and the way out. Fixed
+    text, a generated id and closed tokens only; on standard error beside a JSON answer. Returns
+    the item it showed, so ``server status`` puts the same one in its document without asking
+    this computer's service a second time.
+    """
+
+    from finishup.cli.zero_network_selection import find_zero_network_selection
+
+    item = find_zero_network_selection()
+    if item is None:
+        return None
+    if machine_readable:
+        typer.echo(item.line(), err=True)
+        return item
+    _emit((*item.lines(), ""))
+    return item
+
+
+@server_app.command("list")
+@_cli
+def server_list() -> None:
+    """List server targets; the selected one is marked with *."""
+
+    _show_zero_network_item(machine_readable=False)
+    rows, source = target_rows()
+    _emit(render_target_rows(rows, source))
+
+
+@dataclass(frozen=True, slots=True)
+class TargetSwitch:
+    """What ``use_target`` changed: the server now selected, and the remote one it left.
+
+    ``record`` is the target now selected (``None``: this computer's everyday server). ``left``
+    is the remote target the selection named before, when the switch moved away from it. What
+    this client runs for that target was stopped as ``server disconnect`` stops it (its runtime,
+    never a process pattern), so nothing here answers that server's requests for files on this
+    computer once the switch returns; ``left_open`` says the stop did not finish (ADR-051
+    decision 8: the way out of a remote selection under zero-network stops its traffic).
+    """
+
+    record: ServerTarget | None
+    left: ServerTarget | None = None
+    left_open: bool = False
+
+    def left_lines(self) -> tuple[str, ...]:
+        """What became of the left server's connection, by generated id and closed kind only."""
+
+        if self.left is None:
+            return ()
+        server = f"{self.left.target_id} ({self.left.kind})"
+        if not self.left_open:
+            return (
+                f"Closed this computer's connection to the server {server}: it no longer "
+                "answers that server's requests for your files.",
+            )
+        return (
+            f"The connection to the server {server} did not close in time, so it may still "
+            "answer that server's requests for your files. Run 'finishup server disconnect' with "
+            "that server's name ('finishup server list' shows it).",
+        )
+
+
+def _selected_remote() -> ServerTarget | None:
+    """The remote target the selection file names now; ``None`` for none, local or unreadable.
+
+    Read under the registry lock by the switch that replaces it. A selection or record that
+    cannot be read names no target this could stop, and never keeps the switch from happening.
+    """
+
+    try:
+        target_id = read_selected_target_id()
+        if target_id is None:
+            return None
+        record = read_target(target_root(target_id))
+    except (TargetError, PathSafetyError):
+        return None
+    return record if record is not None and record.is_remote else None
+
+
+def _leave(record: ServerTarget | None, previous: ServerTarget | None) -> TargetSwitch:
+    """Stop what this client runs for ``previous`` when the selection moved away from it.
+
+    After the selection changed, so a new hook or command can no longer start it again. Only
+    that target's runtime stops it (approach A: the connector's stamped pid, then ``ssh -O
+    exit``), exactly as ``server disconnect`` does; its background workspace agents close with it.
+    """
+
+    import subprocess
+
+    if previous is None or (record is not None and record.target_id == previous.target_id):
+        return TargetSwitch(record)
+    try:
+        runtime_for(previous.kind).stop(target_root(previous.target_id))
+    except TargetRuntimeError as error:
+        # No runtime for that kind: this client runs nothing for it.
+        return TargetSwitch(record, previous, left_open=error.phase != "runtime_unavailable")
+    except (TargetError, PathSafetyError, OSError, subprocess.SubprocessError):
+        return TargetSwitch(record, previous, left_open=True)
+    return TargetSwitch(record, previous)
+
+
+def use_target(name: str, *, authorize: Callable[[str, str], None] | None = None) -> TargetSwitch:
+    """Select ``name`` (``record`` ``None`` back means this computer's everyday server).
+
+    A remote target needs the typed confirmation on the trusted console every time
+    (``authorize`` defaults to it), which also refreshes its recorded authorization. A switch
+    away from a remote target stops what this client runs for it (``TargetSwitch.left``).
+    """
+
+    if name == "local":
+        # The way back never resolves the selection it removes: a damaged selection, or one that
+        # names a missing or unsafe target folder, is exactly what it must clear.
+        _require_no_explicit_source()
+        try:
+            with registry_lock():
+                previous = _selected_remote()
+                clear_selection()
+        except TargetError as error:
+            raise ServerCommandRefused(error.reason) from None
+        return _leave(None, previous)
+    _require_selection_in_force()
+    record = _target_or_fail(name)
+    if record.is_remote:
+        (authorize or _authorize_remote)(record.name, record.kind)
+        record = reauthorized(record)
+    try:
+        with registry_lock():
+            previous = _selected_remote()
+            if record.is_remote:
+                write_target(target_root(record.target_id), record)
+            write_selection(record)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason) from None
+    return _leave(record, previous)
+
+
+@server_app.command("use")
+@_cli
+def server_use(
+    name: Annotated[str, typer.Argument(help="A target name, or 'local' for this computer.")],
+) -> None:
+    """Select the server new client processes use ('local' returns to this computer's)."""
+
+    switch = use_target(name)
+    record = switch.record
+    if record is None:
+        typer.echo("Using this computer's everyday FinishUP server.")
+    else:
+        typer.echo(f"Using server target {record.name} ({record.target_id}, {record.kind}).")
+    for line in switch.left_lines():
+        typer.echo(line, err=switch.left_open)
+    _warn_open_sessions()
+
+
+def _probe_document(result: ProbeResult | None, error: TargetRuntimeError | None) -> JsonValue:
+    if error is not None:
+        return {
+            "outcome": "unavailable",
+            "reason": error.reason,
+            "phase": error.phase,
+            "service_version": None,
+            "service_instance_id": None,
+            "service_state": None,
+            "vault_mode": None,
+            "round_trip_p95_ms": None,
+            "samples": 0,
+        }
+    assert result is not None
+    return {
+        "outcome": result.outcome,
+        "reason": result.reason,
+        "phase": result.phase,
+        "service_version": result.service_version,
+        "service_instance_id": result.service_instance_id,
+        "service_state": result.service_state,
+        "vault_mode": result.vault_mode,
+        "round_trip_p95_ms": result.round_trip_p95_ms,
+        "samples": result.samples,
+    }
+
+
+def _not_probed(reason: str) -> JsonValue:
+    """The probe of a target nothing was sent to, with the closed reason why."""
+
+    return {
+        "outcome": "not_probed",
+        "reason": reason,
+        "phase": None,
+        "service_version": None,
+        "service_instance_id": None,
+        "service_state": None,
+        "vault_mode": None,
+        "round_trip_p95_ms": None,
+        "samples": 0,
+    }
+
+
+def _resolve(name: str | None) -> tuple[ServerTarget | None, Path | None, bool]:
+    """``(record, root, everyday)`` for ``name``, or for this process's own root when omitted."""
+
+    if name is None:
+        try:
+            record = active_target_record()
+        except TargetError as error:
+            raise ServerCommandRefused(error.reason)
+        if record is not None:
+            return record, target_root(record.target_id), False
+        from finishup.config.paths import active_root
+
+        try:
+            root = active_root()
+        except PathSafetyError as error:
+            raise ServerCommandRefused(error.reason_code, message=ROOT_UNUSABLE_MESSAGE) from None
+        return None, root, root is None
+    _require_selection_in_force()
+    if name == "local":
+        return None, None, True
+    record = _target_or_fail(name)
+    return record, target_root(record.target_id), False
+
+
+def _probe(record: ServerTarget | None, root: Path | None) -> ProbeResult:
+    kind: TargetKind = "local" if record is None else record.kind
+    return runtime_for(kind).probe(root)
+
+
+def build_status_document(
+    name: str | None,
+    *,
+    now: Callable[[], datetime] | None = None,
+    zero_network: Callable[[], ZeroNetworkSelection | None] | None = None,
+) -> dict[str, JsonValue]:
+    """The ``server-target-status`` 1.0.0 document for ``name`` (or this process's root).
+
+    ``zero_network`` answers the zero-network item (ADR-051 decision 8) when the caller already
+    found it (``server status`` the item it printed, the terminal interface the one ``/server``
+    showed) or will not show it (``server test``); by default the document asks
+    ``find_zero_network_selection`` itself, which may ask this computer's service.
+    """
+
+    source = _source()
+    try:
+        selected = read_selected_target_id()
+    except TargetError:
+        selected = None
+    record, root, everyday = _resolve(name)
+    result: ProbeResult | None = None
+    failure: TargetRuntimeError | None = None
+    refused = zero_network_connection_refusal(record)
+    if refused is None:
+        try:
+            result = _probe(record, root)
+        except TargetRuntimeError as error:
+            failure = error
+    authorization: JsonValue = None
+    if record is not None and record.is_remote:
+        authorization = {
+            "authorized_at": cast(str, record.authorized_at),
+            "disclosure_version": cast(int, record.disclosure_version),
+            "current": not record.needs_reauthorization,
+        }
+    credential: str = "not_applicable"
+    if record is not None and record.kind in {"https", "local_port"}:
+        credential = record.credential or "none"
+    outside_reads: JsonValue = None
+    if record is not None and record.is_remote and root is not None:
+        # This client's own record (ADR-051 decision 5): what that server may read here outside
+        # the claimed project. Never sent to the server.
+        from finishup.client.server_folders import outside_reads_of
+
+        found = outside_reads_of(root, record)
+        outside_reads = {
+            "mode": found.mode,
+            "mode_source": found.source,
+            "folders": list(found.folders),
+        }
+    target: dict[str, JsonValue] = {
+        "target_id": None if record is None else record.target_id,
+        "name": "local" if everyday else (None if record is None else record.name),
+        "kind": "local" if record is None else record.kind,
+        "location": _location(record),
+        "credential": credential,
+        "authorization": authorization,
+        "outside_reads": outside_reads,
+    }
+    stamp = (now or (lambda: datetime.now(UTC)))()
+    document: dict[str, JsonValue] = {
+        "schema_version": "1.0.0",
+        "source": source,
+        "selection_overridden": source in _EXPLICIT_SOURCES and selected is not None,
+        "client_version": __version__,
+        "target": target,
+        # Nothing is sent to probe it while this computer is zero-network (ADR-051 decision 8).
+        "probe": (
+            _probe_document(result, failure) if refused is None else _not_probed(refused.reason)
+        ),
+        "zero_network_selection": _zero_network_selection(zero_network),
+        "observed_at": format_rfc3339_ms(stamp),
+    }
+    from finishup.protocol.server_target_status import ServerTargetStatusContract
+
+    ServerTargetStatusContract.model_validate(document)
+    return document
+
+
+def _zero_network_selection(
+    find: Callable[[], ZeroNetworkSelection | None] | None = None,
+) -> JsonValue:
+    """The status document's ``zero_network_selection`` (ADR-051 decision 8): the item while this
+    computer forbids all network use and a remote server is, or may be, selected.
+
+    The item is the one ``cli.zero_network_selection.find_zero_network_selection`` reports (or
+    ``find`` answers), as its fact: ``reason`` (``zero_network_remote_selected`` with
+    ``target_id`` and ``kind``, or ``zero_network_selection_unreadable`` with ``detail``, the
+    selection's closed reason), generated ids and closed tokens only. Null when there is nothing
+    to say: nothing or a server on this computer is selected, an isolation variable or runtime
+    pin decides this process's root, or this computer's policy permits network use, was never set
+    up, or cannot be read (its service is stopped or locked).
+    """
+
+    if find is None:
+        from finishup.cli.zero_network_selection import find_zero_network_selection
+
+        find = find_zero_network_selection
+    item = find()
+    return None if item is None else cast(JsonValue, item.fact())
+
+
+# Why a status document's target was not probed (ADR-051 decision 8), and the one way out.
+_NOT_PROBED_LINES: Final[Mapping[str, str]] = {
+    "zero_network_remote_selected": (
+        "This computer's FinishUP makes no network connections (as it last reported), so it never "
+        "uses the selected server elsewhere; run 'finishup server use local', then restart open "
+        "agent sessions."
+    ),
+    "zero_network_in_force": (
+        "This computer's FinishUP makes no network connections (as it last reported), so it uses "
+        "no server on another machine; to use one, change the privacy policy on this computer "
+        "first, with 'finishup privacy setup'."
+    ),
+}
+
+
+def status_lines(document: dict[str, JsonValue]) -> tuple[str, ...]:
+    """The owner display of a status document, a remote target's outside reads included."""
+
+    target = cast(dict[str, JsonValue], document["target"])
+    probe = cast(dict[str, JsonValue], document["probe"])
+    name = target["name"] or "this process's isolated root"
+    identity = "" if target["target_id"] is None else f"{target['target_id']}, "
+    lines = [f"Server: {name} ({identity}{target['kind']}); chosen by: {document['source']}"]
+    if target["location"] is not None:
+        lines.append(f"Address: {target['location']}")
+    if target["credential"] != "not_applicable":
+        lines.append(f"API key: {target['credential']}")
+    authorization = target["authorization"]
+    if isinstance(authorization, dict) and authorization.get("current") is False:
+        lines.append("Authorization: an older disclosure; 'finishup server use' asks again")
+    state = probe["service_state"] or probe["outcome"]
+    reason = "" if probe["reason"] is None else f" ({probe['reason']}"
+    if probe["phase"] is not None:
+        reason += f", phase {probe['phase']}"
+    reason += ")" if reason else ""
+    not_sent = _NOT_PROBED_LINES.get(str(probe["reason"])) if state == "not_probed" else None
+    if not_sent is not None:
+        lines.append(f"State: not probed, nothing was sent ({probe['reason']})")
+        lines.append(not_sent)
+    else:
+        lines.append(f"State: {state}{reason}")
+    lines.append(
+        f"Release: client {document['client_version']}, server "
+        f"{probe['service_version'] or 'unknown'}"
+    )
+    if probe["vault_mode"] is not None:
+        lines.append(f"Vault: {probe['vault_mode']}")
+    if probe["round_trip_p95_ms"] is not None:
+        lines.append(
+            f"Round trip p95: {probe['round_trip_p95_ms']} ms over {probe['samples']} status calls"
+        )
+    lines.extend(outside_read_lines(target))
+    if document["selection_overridden"]:
+        lines.append("The server selection is not used here: an isolation root decides it.")
+    return tuple(lines)
+
+
+def _mode_origin(source: str) -> str:
+    """Why a target is in its outside-read mode, in the owner's words."""
+
+    if source == "owner":
+        return "set by you"
+    if source == "official_endpoint":
+        return "an official FinishUP server"
+    if source == "unreadable":
+        return "because its record cannot be read"
+    return "not chosen yet"
+
+
+def _unreadable_record_lines(name: str) -> tuple[str, ...]:
+    """What a target whose folders record cannot be read may read, and the one repair, in the
+    owner's words: ``server status``, ``server folders list`` and the terminal's ``/server``."""
+
+    return (
+        "Folders it may read outside your projects: none, because its record of them on this "
+        "computer is damaged or not private to you",
+        f"Repair it on this computer with 'finishup server folders remove {name} --all'; it then "
+        f"reads only folders you list, none yet (mode listed), and 'finishup server folders mode "
+        f"{name} local' chooses local again.",
+    )
+
+
+# In mode local the listed folders still admit the files a task names (ADR-051 decision 5, amended
+# 2026-11-07); everything else beneath them is read as FinishUP on this computer would read it.
+_LOCAL_FOLDERS_LINE: Final = "Folders listed for it, whose files a task names it also reads:"
+
+
+def outside_read_lines(target: Mapping[str, JsonValue]) -> tuple[str, ...]:
+    """Owner-display lines of a status document's remote target: its outside-read mode, the
+    folders listed for it, and how to choose a mode when none was chosen. Empty for a target that
+    is not remote."""
+
+    outside = target.get("outside_reads")
+    if not isinstance(outside, dict):
+        return ()
+    mode = outside.get("mode")
+    source = cast(str, outside.get("mode_source"))
+    folders = [item for item in cast(list[JsonValue], outside.get("folders")) if type(item) is str]
+    origin = _mode_origin(source)
+    if mode == "local":
+        lines = [
+            f"Outside your projects: reads what FinishUP on this computer would read (mode local, "
+            f"{origin})"
+        ]
+        if folders:
+            lines.append(_LOCAL_FOLDERS_LINE)
+            lines.extend(f"  {folder}" for folder in folders)
+        return tuple(lines)
+    lines = [f"Outside your projects: reads only folders you list (mode listed, {origin})"]
+    if source == "unreadable":
+        lines.extend(_unreadable_record_lines(str(target.get("name") or "NAME")))
+    elif not folders:
+        lines.append("Folders it may read outside your projects: none")
+    else:
+        lines.append("Folders it may read outside your projects:")
+        lines.extend(f"  {folder}" for folder in folders)
+    if source == "not_chosen":
+        lines.append(_choose_line(str(target.get("name") or "NAME")))
+    return tuple(lines)
+
+
+@server_app.command("status")
+@_cli
+def server_status(
+    name: Annotated[str | None, typer.Argument(help="A target name, or 'local'.")] = None,
+    json_output: _JSON = False,
+) -> None:
+    """Show which source decides the server, the target, and one probe of it."""
+
+    item = _show_zero_network_item(machine_readable=json_output or not sys.stdout.isatty())
+    document = build_status_document(name, zero_network=lambda: item)
+    if json_output or not sys.stdout.isatty():
+        sys.stdout.buffer.write(canonical_encode(cast(JsonValue, document)) + b"\n")
+        sys.stdout.flush()
+        return
+    _emit(status_lines(document))
+
+
+@server_app.command("test")
+@_cli
+def server_test(
+    name: Annotated[str | None, typer.Argument(help="A target name, or 'local'.")] = None,
+) -> None:
+    """Probe a target and compare its round trip with the hook and startup-gate budgets."""
+
+    record, _root, _everyday = _resolve(name)
+    # These lines never show the zero-network item (``status`` and ``list`` do), so this
+    # computer's service is not asked for its policy.
+    document = build_status_document(name, zero_network=lambda: None)
+    _emit(status_lines(document))
+    probe = cast(dict[str, JsonValue], document["probe"])
+    if probe["outcome"] == "not_probed":
+        # Nothing was sent (ADR-051 decision 8): say why and the one command that fixes it.
+        refusal = zero_network_connection_refusal(record)
+        raise refusal if refusal is not None else ServerCommandRefused(str(probe["reason"]))
+    if probe["outcome"] not in {"ready", "reachable"}:
+        typer.echo("The target did not answer a status call.", err=True)
+        raise typer.Exit(_UNAVAILABLE)
+    p95 = probe["round_trip_p95_ms"]
+    if isinstance(p95, int) and p95 > _STARTUP_GATE_RISK_MS:
+        typer.echo(
+            f"Warning: {p95} ms p95 is above {_STARTUP_GATE_RISK_MS} ms; with the required "
+            "startup gate (0.65 s for connect and status) agent tools would likely be denied."
+        )
+    else:
+        typer.echo("Within the hook budgets (0.65 s startup gate, 1.0 s hook connect).")
+
+
+@server_app.command("remove")
+@_cli
+def server_remove(
+    name: Annotated[str, typer.Argument(help="The target to remove.")],
+    select_local: Annotated[
+        bool,
+        typer.Option("--select-local", help="If it is selected, switch to 'local' first."),
+    ] = False,
+) -> None:
+    """Remove a target: stop what this client runs for it, delete its key and its folder."""
+
+    _require_no_explicit_source()
+    record = _target_or_fail(name)
+    unreadable_selection = False
+    try:
+        selected = read_selected_target_id()
+    except TargetError as error:
+        if not select_local:
+            raise ServerCommandRefused(
+                "selection_invalid" if error.reason == "target_root_unsafe" else error.reason
+            ) from None
+        # A selection that cannot be read may name this target; --select-local clears it first.
+        selected, unreadable_selection = None, True
+    if selected == record.target_id and not select_local:
+        raise ServerCommandRefused("target_selected")
+    root = target_root(record.target_id)
+    if record.is_remote:
+        try:
+            runtime_for(record.kind).stop(root)
+        except TargetRuntimeError as error:
+            if error.phase != "runtime_unavailable":
+                # Never delete a root under a connector still serving it: its endpoint, status,
+                # lock and SSH master would go while it runs.
+                raise ServerCommandRefused("target_still_connected") from None
+        from finishup.client.credentials import CredentialError, KeyringOrFileCredential
+
+        try:
+            KeyringOrFileCredential(record.target_id, root, recorded=record.credential).delete()
+        except CredentialError as error:
+            raise ServerCommandRefused(error.reason)
+    try:
+        with registry_lock():
+            if selected == record.target_id or unreadable_selection:
+                clear_selection()
+            if record.kind == "local":
+                from finishup.cli.instance import dispose_instance
+                from finishup.config.installation import InstanceIdentityError
+
+                try:
+                    dispose_instance(root=root)
+                except InstanceIdentityError as error:
+                    typer.echo(
+                        f"{error.reason}: the named local server could not be removed",
+                        err=True,
+                    )
+                    raise typer.Exit(_UNSAFE) from None
+            else:
+                from finishup.client.targets import remove_target_root
+
+                remove_target_root(record)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    except PathSafetyError as error:
+        typer.echo(f"{error.reason_code}: the target folder is unsafe to remove", err=True)
+        raise typer.Exit(_UNSAFE) from None
+    typer.echo(f"Removed server target {record.name} ({record.target_id}).")
+    if selected == record.target_id or unreadable_selection:
+        typer.echo("Using this computer's everyday FinishUP server.")
+        _warn_open_sessions()
+
+
+def _read_secret_on_console() -> str:
+    from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+    from finishup.client.credentials import CredentialError, validate_secret
+
+    try:
+        with TrustedForegroundConsole() as console:
+            value = console.read_secret("API key (input hidden): ", 512)
+    except TrustedConsoleError as error:
+        if error.reason == "trusted_console_required":
+            raise ServerCommandRefused("trusted_console_required")
+        raise ServerCommandRefused("credential_unavailable")
+    try:
+        text = bytes(value).decode("ascii")
+    except UnicodeDecodeError:
+        raise ServerCommandRefused("credential_invalid")
+    finally:
+        for index in range(len(value)):
+            value[index] = 0
+    try:
+        return validate_secret(text)
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+
+
+@server_app.command("login")
+@_cli
+def server_login(
+    name: Annotated[str, typer.Argument(help="An HTTPS server target.")],
+    key_file: Annotated[
+        Path | None,
+        typer.Option("--key-file", help="Read the key once from an owner-only (0600) file."),
+    ] = None,
+) -> None:
+    """Store an HTTPS target's API key (masked prompt, or --key-file read once)."""
+
+    from finishup.client.credentials import CredentialError, KeyringOrFileCredential, read_key_file
+
+    _require_selection_in_force()
+    record = _target_or_fail(name)
+    if record.kind not in {"https", "local_port"}:
+        raise ServerCommandRefused("credential_not_applicable")
+    refusal = zero_network_connection_refusal(record)
+    if refusal is not None:
+        # The key is checked against the server before it is stored: a connection, and nothing
+        # is sent to a server elsewhere while this computer is zero-network (ADR-051 decision 8).
+        raise refusal
+    try:
+        secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+    # The key is checked against the server before it is kept: a refused key, a server whose
+    # identity does not match the recorded trust, or another release is never stored. A server
+    # that does not answer yet keeps the key, and says it is not verified yet (ADR-051 decision
+    # 7, add and login parity).
+    unanswered = _check_https_key(record, secret)
+    try:
+        root = target_root(record.target_id)
+        location = KeyringOrFileCredential(
+            record.target_id, root, recorded=record.credential
+        ).store(secret)
+        with registry_lock():
+            write_target(root, replace(record, credential=location))
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    where = "the platform credential store" if location == "keyring" else "an owner-only file"
+    if unanswered is None:
+        typer.echo(f"Stored the API key for {record.target_id} in {where}; the server accepted it.")
+        return
+    typer.echo(f"Stored the API key for {record.target_id} in {where}, not verified yet.")
+    typer.echo(
+        f"The server did not answer yet ({unanswered}), so it could not check the key. It is "
+        f"checked on the first connection; run 'finishup server test {record.name}' once the "
+        "server is up to check it now."
+    )
+
+
+@server_app.command("logout")
+@_cli
+def server_logout(name: Annotated[str, typer.Argument(help="An HTTPS server target.")]) -> None:
+    """Delete an HTTPS target's stored API key."""
+
+    from finishup.client.credentials import CredentialError, KeyringOrFileCredential
+
+    _require_selection_in_force()
+    record = _target_or_fail(name)
+    if record.kind not in {"https", "local_port"}:
+        raise ServerCommandRefused("credential_not_applicable")
+    root = target_root(record.target_id)
+    try:
+        removed = KeyringOrFileCredential(
+            record.target_id, root, recorded=record.credential
+        ).delete()
+        with registry_lock():
+            write_target(root, replace(record, credential=None))
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+    except TargetError as error:
+        raise ServerCommandRefused(error.reason)
+    typer.echo(
+        f"Deleted the API key for {record.target_id}."
+        if removed
+        else f"No API key was stored for {record.target_id}."
+    )
+
+
+def _runtime_call(name: str | None, action: Literal["ensure_ready", "stop"]) -> str:
+    record, root, everyday = _resolve(name)
+    kind: TargetKind = "local" if record is None else record.kind
+    if action == "ensure_ready":
+        # Nothing is sent while this computer is zero-network, named for this target (ADR-051
+        # decision 8), or to a target confirmed under an older disclosure; 'stop' stays usable.
+        refusal = zero_network_connection_refusal(record)
+        if refusal is not None:
+            raise refusal
+        require_current_authorization(record)
+    # The everyday server starts here even while another is selected: a spawned service is told
+    # its spawner's root (``service run --ambient-root``) and never reads the selection itself.
+    try:
+        runtime = runtime_for(kind)
+        if action == "ensure_ready":
+            runtime.ensure_ready(root)
+        else:
+            runtime.stop(root)
+    except TargetRuntimeError as error:
+        _runtime_failure(error)
+    if record is not None:
+        return f"{record.name} ({record.target_id})"
+    return "this computer's everyday server" if everyday else "this process's isolated root"
+
+
+@server_app.command("connect")
+@_cli
+def server_connect(
+    name: Annotated[str | None, typer.Argument(help="A target name, or 'local'.")] = None,
+) -> None:
+    """Make a target usable now (start its service or its connection); it also starts on demand."""
+
+    label = _runtime_call(name, "ensure_ready")
+    typer.echo(f"Connected: {label}.")
+
+
+@server_app.command("disconnect")
+@_cli
+def server_disconnect(
+    name: Annotated[str | None, typer.Argument(help="A target name, or 'local'.")] = None,
+) -> None:
+    """Stop the service or connection this client runs for a target (never by pattern)."""
+
+    label = _runtime_call(name, "stop")
+    typer.echo(f"Disconnected: {label}.")
+
+
+# --- what a server may read outside your projects (ADR-051 decision 5) ------------------------
+
+folders_app = typer.Typer(
+    help="Choose what a server on another machine may read outside your projects on this computer.",
+    no_args_is_help=True,
+)
+server_app.add_typer(folders_app, name="folders")
+
+_FOLDER_NOTICE: Final = (
+    "Let server target {name} ({target_id}) read files beneath this folder on this computer:",
+    "  {folder}",
+    "",
+    "When that server checks or reviews your work, the FinishUP workspace agent here may send it",
+    "the text of files beneath this folder that a task names, that its reviewer asks to read, or",
+    "that your agent declared as a test, within FinishUP's usual size limits. The files a task",
+    "names beneath it are read in mode local too, even where the server's own privacy policy",
+    "admits no folder; that policy still decides whether they may be sent for AI-powered review.",
+    "Hidden and credential-named files are never read and links are never followed. A server",
+    "that breaks FinishUP's rules could read any other such file beneath this folder and list",
+    "the names in its folders. Allow only a folder you would let it see.",
+    "Undo it with 'finishup server folders remove {name} FOLDER'.",
+    "",
+)
+
+# What mode ``local`` lets a server read, a rule-breaking server included (ADR-051 decision 5):
+# shown before the typed name whenever the owner chooses ``local``, at ``server add`` (the answer
+# or ``--outside-reads local``) and with ``server folders mode NAME local``.
+_LOCAL_MODE_BODY: Final = (
+    "When that server checks or reviews your work, the FinishUP workspace agent here answers its",
+    "reads outside your project folder as a FinishUP service on this computer answers them: the",
+    "server's own privacy policy chooses the folders it reads task inputs from, and the agent does",
+    "not limit it to folders you list for it. The files a task names beneath a folder you list",
+    "for it ('finishup server folders add') are read too, even where that policy names no folder",
+    "there. FinishUP's usual safety checks still hold: hidden, credential-named and system files,",
+    "your home folder's private folders and FinishUP's own folders are never read, and links are",
+    "never followed. But the server's policy does not bind a server that breaks FinishUP's rules:",
+    "such a server could read any other such file on this computer and list the names in its",
+    "folders. Choose this only for a server you trust as you trust FinishUP on this computer.",
+    "Undo it with 'finishup server folders mode {name} listed'.",
+)
+
+_LOCAL_MODE_NOTICE: Final = (
+    "Let server target {name} ({target_id}) read outside your projects on this computer as",
+    "FinishUP on this computer would (mode local):",
+    "",
+    *_LOCAL_MODE_BODY,
+    "",
+)
+
+
+def _remote_target_or_fail(name: str) -> ServerTarget:
+    record = _target_or_fail(name)
+    if not record.is_remote:
+        raise ServerCommandRefused("folders_not_applicable")
+    return record
+
+
+def _confirm_folder_on_trusted_console(record: ServerTarget, folder: str) -> None:
+    """Show what admitting ``folder`` lets ``record``'s server read; require the typed name."""
+
+    _confirm_notice(record, _FOLDER_NOTICE, folder=folder)
+
+
+def _confirm_local_mode_on_trusted_console(record: ServerTarget) -> None:
+    """Show what ``local`` mode lets ``record``'s server read; require the typed name."""
+
+    _confirm_notice(record, _LOCAL_MODE_NOTICE)
+
+
+def _confirm_notice(record: ServerTarget, notice: tuple[str, ...], *, folder: str = "") -> None:
+    from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
+
+    try:
+        with TrustedForegroundConsole() as console:
+            for line in notice:
+                console.write(
+                    line.format(name=record.name, target_id=record.target_id, folder=folder) + "\n"
+                )
+            console.read_choice(
+                "Type the target name to allow it (anything else cancels): ",
+                (record.name.encode("ascii"),),
+            )
+    except TrustedConsoleError as error:
+        if error.reason == "trusted_console_required":
+            raise ServerCommandRefused("trusted_console_required") from None
+        raise ServerCommandRefused("authorization_declined") from None
+
+
+def _record_of(record: ServerTarget) -> FolderRecord:
+    from finishup.client.server_folders import FolderError, read_record
+
+    try:
+        return read_record(target_root(record.target_id), record.target_id)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+
+
+def _mode_and_origin(record: ServerTarget, current: FolderRecord) -> tuple[str, str]:
+    """The mode ``record`` is in, given its readable ``current`` record, and why."""
+
+    from finishup.client.server_folders import mode_of
+
+    mode, source = mode_of(record, current)
+    return mode, _mode_origin(source)
+
+
+def _still_local_line(record: ServerTarget) -> str:
+    return (
+        f"It is in mode local, so outside your projects it still reads what FinishUP on this "
+        f"computer would read; 'finishup server folders mode {record.name} listed' limits it to "
+        "the folders you list."
+    )
+
+
+def _removed_aftermath(*, every: bool) -> str:
+    """What removing folders leaves (ADR-051 decision 5): the agent stops from its next read, but
+    neither a read under way nor a review the server already prepared is undone."""
+
+    them = "them" if every else "it"
+    return (
+        f"a read already under way may still return files from {them}, and a review the server "
+        "already prepared may still send what it read there."
+    )
+
+
+@folders_app.command("add")
+@_cli
+def server_folders_add(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    folder: Annotated[str, typer.Argument(help="An existing folder, by its full path.")],
+) -> None:
+    """List a folder a server may read: a task's files beneath it in either mode, and in mode
+    listed all it reads outside your projects (you confirm it here)."""
+
+    from finishup.cli.privacy_setup import admitted_root_from_path
+    from finishup.client.server_folders import (
+        MAX_FOLDERS,
+        FolderError,
+        add_folder,
+        folder_admissible,
+    )
+
+    _require_selection_in_force()
+    record = _remote_target_or_fail(name)
+    # The rule the local service uses for an admitted input root: an existing directory named
+    # by its absolute, normalized path with no link on the way, never hidden or a system tree.
+    # Then the home rules 'add_folder' applies again under the lock, checked before the owner is
+    # asked, so consent is never collected for a folder that would then be refused.
+    canonical = admitted_root_from_path(folder)
+    if canonical is None or not folder_admissible(canonical):
+        raise ServerCommandRefused("folder_invalid")
+    current = _record_of(record)
+    if canonical in current.folders:
+        typer.echo(f"{record.name} ({record.target_id}) may already read that folder.")
+        return
+    if len(current.folders) >= MAX_FOLDERS:
+        raise ServerCommandRefused("folder_limit")
+    _confirm_folder_on_trusted_console(record, canonical)
+    try:
+        with registry_lock():
+            add_folder(target_root(record.target_id), record.target_id, canonical)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    typer.echo(f"{record.name} ({record.target_id}) may now read files beneath {canonical}.")
+    if _mode_and_origin(record, current)[0] == "local":
+        typer.echo(
+            "It is in mode local, so outside your projects it also reads what FinishUP on this "
+            "computer would read; the files a task names beneath this folder are read either way."
+        )
+
+
+@folders_app.command("list")
+@_cli
+def server_folders_list(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+) -> None:
+    """Show what a server may read outside your projects: its mode and listed folders."""
+
+    from finishup.client.server_folders import FolderError, read_record
+
+    _require_no_explicit_source()
+    record = _remote_target_or_fail(name)
+    who = f"{record.name} ({record.target_id})"
+    try:
+        current = read_record(target_root(record.target_id), record.target_id)
+    except FolderError:
+        # Say what the server may read now, and the one repair, rather than refuse to show it.
+        typer.echo(
+            f"{who} may read no folder outside your projects on this computer (mode listed, "
+            f"{_mode_origin('unreadable')})."
+        )
+        _emit(_unreadable_record_lines(record.name))
+        return
+    mode, origin = _mode_and_origin(record, current)
+    if mode == "local":
+        typer.echo(
+            f"{who} reads outside your projects what FinishUP on this computer would read (mode "
+            f"local, {origin})."
+        )
+        if current.folders:
+            typer.echo(_LOCAL_FOLDERS_LINE)
+            _emit(tuple(f"  {item}" for item in current.folders))
+        typer.echo(
+            f"To let it read only folders you list: 'finishup server folders mode {record.name} "
+            "listed'."
+        )
+        return
+    if not current.folders:
+        typer.echo(
+            f"{who} may read no folder outside your projects on this computer (mode listed, "
+            f"{origin})."
+        )
+    else:
+        typer.echo(f"{who} may read files beneath (mode listed, {origin}):")
+        _emit(tuple(f"  {item}" for item in current.folders))
+    if current.mode is None:
+        # No choice recorded (an official endpoint's 'local' returned above): say how to choose.
+        typer.echo(_choose_line(record.name))
+
+
+@folders_app.command("remove")
+@_cli
+def server_folders_remove(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    folder: Annotated[
+        str | None, typer.Argument(help="A folder 'server folders list' shows.")
+    ] = None,
+    all_folders: Annotated[
+        bool,
+        typer.Option("--all", help="Remove every folder (also clears a damaged record)."),
+    ] = False,
+) -> None:
+    """Stop listing a folder for a server (from the server's next read)."""
+
+    from finishup.client.server_folders import (
+        FolderError,
+        clear_folders,
+        outside_reads_of,
+        remove_folder,
+    )
+
+    _require_no_explicit_source()
+    if (folder is None) == (not all_folders):
+        raise ServerCommandRefused("usage", message="give exactly one of FOLDER or --all")
+    record = _remote_target_or_fail(name)
+    root = target_root(record.target_id)
+    try:
+        with registry_lock():
+            outcome = (
+                clear_folders(root, record.target_id)
+                if folder is None
+                else ("cleared" if remove_folder(root, record.target_id, folder) else "absent")
+            )
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    who = f"{record.name} ({record.target_id})"
+    if outcome == "absent":
+        typer.echo(f"No such folder was admitted for {who}.")
+        return
+    if outcome == "reset_to_listed":
+        typer.echo(
+            f"{who} may no longer read any folder on this computer: its record could not be "
+            "read, so it now lists none, in mode listed. 'finishup server folders mode "
+            f"{record.name} local' lets it read what FinishUP on this computer would read."
+        )
+        return
+    which = "any folder" if folder is None else "that folder"
+    if outside_reads_of(root, record).mode == "local":
+        # In mode local a listed folder also admitted the files a task names beneath it, beyond
+        # the server's own policy (ADR-051 decision 5, 2026-11-07): removing it stops that.
+        beneath = "any folder you listed" if folder is None else "that folder"
+        typer.echo(
+            f"{who} no longer lists {which}: from its next read it no longer reads the files a "
+            f"task names beneath {beneath}, unless the server's own privacy policy covers them; "
+            + _removed_aftermath(every=folder is None)
+        )
+        typer.echo(_still_local_line(record))
+        return
+    typer.echo(
+        f"{who} may no longer read {which} on this computer, from its next read; "
+        + _removed_aftermath(every=folder is None)
+    )
+
+
+@folders_app.command("mode")
+@_cli
+def server_folders_mode(
+    name: Annotated[str, typer.Argument(help="A server on another machine, a port or the web.")],
+    mode: Annotated[
+        str,
+        typer.Argument(
+            help="local: what FinishUP on this computer would read; listed: only folders you list."
+        ),
+    ],
+) -> None:
+    """Choose what a server may read outside your projects (local needs your confirmation)."""
+
+    from finishup.client.server_folders import OUTSIDE_READ_MODES, FolderError, set_mode
+
+    if mode not in OUTSIDE_READ_MODES:
+        raise ServerCommandRefused("outside_read_mode_invalid")
+    # Widening needs the selection in force and the typed name, as 'folders add' does; the way
+    # back narrows and needs neither, as 'folders remove'.
+    if mode == "local":
+        _require_selection_in_force()
+    else:
+        _require_no_explicit_source()
+    record = _remote_target_or_fail(name)
+    current = _record_of(record)
+    who = f"{record.name} ({record.target_id})"
+    if current.mode == mode:
+        typer.echo(f"{who} is already in mode {mode}, set by you.")
+        return
+    in_force, origin = _mode_and_origin(record, current)
+    if mode == "local":
+        # A recorded 'local' is the owner's own choice, kept whatever the reviewed list of
+        # official endpoints says later, so recording it always takes the typed name, even for
+        # an official endpoint, already 'local' unrecorded. Where no trusted console can ask
+        # there, nothing is recorded and it stays 'local' as an official endpoint.
+        try:
+            _confirm_local_mode_on_trusted_console(record)
+        except ServerCommandRefused as refusal:
+            if refusal.reason != "trusted_console_required" or in_force != "local":
+                raise
+            typer.echo(
+                f"{who} is already in mode local, as {origin}; nothing was recorded. To record "
+                "mode local as your own choice, run this command in your own terminal and type "
+                "the server's name."
+            )
+            return
+    try:
+        with registry_lock():
+            set_mode(target_root(record.target_id), record.target_id, mode)
+    except FolderError as error:
+        raise ServerCommandRefused(error.reason) from None
+    other = "listed" if mode == "local" else "local"
+    if in_force == mode:
+        typer.echo(
+            f"{who} stays in mode {mode}, now set by you. 'finishup server folders mode "
+            f"{record.name} {other}' changes it."
+        )
+        return
+    if mode == "local":
+        typer.echo(
+            f"{who} now reads outside your projects what FinishUP on this computer would read "
+            f"(mode local), from its next read. Undo it with 'finishup server folders mode "
+            f"{record.name} listed'."
+        )
+        return
+    count = len(current.folders)
+    listed = "no folder" if count == 0 else f"{count} folder{'s' if count != 1 else ''}"
+    typer.echo(
+        f"{who} now reads outside your projects only beneath folders you list (mode listed), "
+        f"from its next read (a read already under way may still finish): {listed} so far. "
+        f"'finishup server folders list {record.name}' shows them."
+    )

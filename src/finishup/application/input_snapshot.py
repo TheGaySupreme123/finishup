@@ -63,6 +63,7 @@ __all__ = [
     "SnapshotReader",
     "load_input_snapshots",
     "record_input_snapshot",
+    "snapshot_possible",
     "snapshot_roots",
 ]
 
@@ -75,18 +76,24 @@ type SnapshotReader = Callable[..., tuple[OutsideSnapshotRead, ...]]
 @dataclass(frozen=True, slots=True)
 class InputSnapshotScope:
     """What a snapshot may read now: the admitted roots, directories never read from, and the
-    service's trusted reader."""
+    service's trusted reader.
+
+    ``client_record``: the reader is a claim-bound task's workspace agent, which also reads
+    beneath the folders its client's owner listed for this server (ADR-051 decision 5, amended
+    2026-11-07), so it is asked even when ``roots`` is empty.
+    """
 
     roots: tuple[str, ...]
     excluded: tuple[str, ...]
     reader: SnapshotReader
+    client_record: bool = False
 
 
-def snapshot_roots(policy: PrivacyPolicy, carries_task_inputs: bool) -> tuple[str, ...]:
-    """The roots a snapshot may read beneath under ``policy``; empty when it may read nothing.
+def snapshot_possible(policy: PrivacyPolicy, carries_task_inputs: bool) -> bool:
+    """Whether a snapshot may read anything under ``policy`` at all.
 
-    Only when a file could reach AI-powered review at all: the recipe carries task inputs, the
-    owner's conversation setting is not ``local_only``, and the external channel or the separately
+    Only when a file could reach AI-powered review: the recipe carries task inputs, the owner's
+    conversation setting is not ``local_only``, and the external channel or the separately
     enabled local model admits repository excerpts of ordinary content. Any other policy reads
     nothing ahead for a review it cannot run.
     """
@@ -105,11 +112,14 @@ def snapshot_roots(policy: PrivacyPolicy, carries_task_inputs: bool) -> tuple[st
         and ordinary in policy.local_model_data_classes
     )
     review = policy.effective_conversation_review is not ConversationReview.LOCAL_ONLY
-    return (
-        policy.admitted_input_roots
-        if carries_task_inputs and review and (external or local)
-        else ()
-    )
+    return carries_task_inputs and review and (external or local)
+
+
+def snapshot_roots(policy: PrivacyPolicy, carries_task_inputs: bool) -> tuple[str, ...]:
+    """The roots a snapshot may read beneath under ``policy``; empty when it may read nothing
+    (``snapshot_possible``)."""
+
+    return policy.admitted_input_roots if snapshot_possible(policy, carries_task_inputs) else ()
 
 
 async def _load_sets(runtime: TaskRuntime) -> tuple[TaskInputSnapshotSet, ...]:
@@ -189,7 +199,7 @@ async def record_input_snapshot(
             omitted.append((path, reason))
 
     try:
-        if scope is not None and scope.roots:
+        if scope is not None and (scope.roots or scope.client_record):
             prior = await _load_sets(runtime)
             seen = {i.path for kept in prior for i in kept.files} | {
                 path for kept in prior for path, _reason in kept.omitted

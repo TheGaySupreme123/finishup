@@ -21,7 +21,7 @@ every instance has a fresh vault, config, ledger catalog, locks, endpoints, cach
   use (the script defaults to the interpreter running it).
 - A short, owner-private base directory outside every repository and outside shared temp, for
   example `~/.yz-instances`. Unix control sockets bind beneath each instance root, so the whole
-  path `<base>/<tag>/state/run/secret-ingress.sock` must stay under 100 bytes;
+  path `<base>/<tag>/state/run/secret-ingress.sock` must fit in 103 bytes on macOS (107 on Linux);
   `finishup instance create` refuses a longer root (`instance_root_too_long`). The root must not be a
   symlink, must be owned by you, and must not sit under `/tmp` (macOS resolves it through a
   symlink and the runtime refuses it as `path_contains_symlink`).
@@ -140,6 +140,57 @@ Advancing the checkout does not change a running snapshot: the runtime holds the
 built, and `instance status` reports `runtime_provenance: drifted` if the runtime prefix or
 package version the marker recorded no longer matches. Create a new snapshot for newer code; do
 not reinstall into an existing one.
+
+## Named servers versus provisioned instances (ADR-051)
+
+`finishup server add NAME --local` and a provisioned test instance both give a FinishUP its own
+root, vault and service, but they answer different questions and must not be mixed up.
+
+| | Named local server | Provisioned test instance |
+|---|---|---|
+| Purpose | Everyday use: a second FinishUP the owner switches to with `finishup server use` | Testing one exact revision without touching the everyday install |
+| Root | `<ambient state dir>/servers/t_<8 hex>/`, a persistent instance root | `<base>/<tag>/state`, a persistent or disposable instance root |
+| How it is selected | The owner-only selection file, the lowest-precedence root source | The runtime pin in its own `runtime`, and `FINISHUP_ISOLATED_ROOT` when exported |
+| Runtime | The everyday installation's launcher | Its own wheel and runtime, built from the revision under test |
+| Removed by | `finishup server remove NAME` | `scripts/provision_test_instance.py dispose` |
+
+Precedence keeps them apart: the isolation variable, then the runtime pin, then the selection
+file, then ambient. A pinned instance therefore never sees the selection, so selecting a server
+for everyday work cannot redirect a test run, and `finishup server use` run through a pinned
+launcher or under an exported root refuses with `selection_overridden`. `finishup server status`
+names the source that decided the root.
+
+To exercise server targets end to end, provision separate instances for the server and the client
+from the same revision (lockstep: the handshake refuses a release mismatch with
+`remote_incompatible`). Keep the server's and the client's roots disjoint, run real SSH or TLS
+between them as the approach's topology section describes, and register any host with the client
+instance's absolute launcher. A target is itself an isolated root, so a process tree can also be
+pointed at a target root explicitly with `FINISHUP_ISOLATED_ROOT`, which always wins over the
+selection. Never point either instance at the everyday install's directories, and stop only the
+processes you started (`finishup server disconnect`, `finishup instance dispose`), never by
+pattern.
+
+**Edge relay (approach A).** On the server account, provision an instance and start it
+(`<server launcher> service start`); for an `https` or `local_port` target also create a key on
+its trusted console or into a new owner-only file (`service gateway key create --label L --scope
+agent --output-file F`) and run `service gateway run --listen 127.0.0.1:PORT --tls-cert C
+--tls-key K` under that account. Make the test authority with `keyUsage=critical,keyCertSign` (and
+`basicConstraints=critical,CA:TRUE`): the client verifies with Python's strict X.509 rules, which
+refuse an authority without key usage, and `server login` then fails as `remote_identity_changed`
+(`--tls-pin` does not depend on the authority). On the client account, install the same revision's wheel into an
+unpinned runtime so the selection applies, then add the target (`server add NAME
+ssh://user@host:port --remote-launcher <server launcher>`, or `server add NAME https://… --ca-file
+CA` / `--port PORT --ca-file CA` followed by `server login NAME --key-file F`) and select it
+(`server use NAME`); both ask for the typed name on the trusted console. `server add` first asks
+there what the target may read outside the owner's projects (ADR-051 decision 5); answer `local`
+or `listed`, or pass `--outside-reads local|listed` to answer it up front in a scripted run, which
+otherwise ends as `outside_reads_not_chosen` with nothing added. `server connect`, `server
+test` and `server status --json` start and show the connector. Its records are in the target root
+on the client: `state/connector-status.json`, `state/claimed-workspaces/` (one owner-only record
+per worktree a client claimed) and `log/connector.stderr`; the gateway's audit lines are in the
+server instance's log folder. Tear down with `server disconnect`, `server use local` and `server
+remove NAME` on the client, then `service gateway key revoke`, the gateway's own stop and
+`instance dispose` on the server.
 
 ## Concurrency
 

@@ -21,7 +21,7 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, cast
 
 from textual import events, on
 from textual.app import App, ComposeResult, SuspendNotSupported
@@ -51,6 +51,7 @@ from finishup.tui.models import (
     IntegrationPlan,
     LayerState,
     PrivacyChoice,
+    ServerSwitch,
 )
 from finishup.tui.render import (
     render_detection,
@@ -86,6 +87,9 @@ from finishup.tui.widgets.views import (
     TextEntryView,
     ViewDismissed,
 )
+
+if TYPE_CHECKING:
+    from finishup.cli.policy_server import PolicyServer
 
 __all__ = ["FinishUpTui"]
 
@@ -338,7 +342,15 @@ class FinishUpTui(App[int]):
         return self._stack[-1] if self._stack else None
 
     async def on_mount(self) -> None:
-        self.header_widget.set_state(version=__version__, project=str(self.runtime.project_root()))
+        # Before any command can run: whether a remote server is still selected while this
+        # computer forbids network use, or last reported so (ADR-051 decision 8), for the header
+        # and ``/server``.
+        await self.runtime.refresh_zero_network_item()
+        self.header_widget.set_state(
+            version=__version__,
+            project=str(self.runtime.project_root()),
+            server=self.runtime.server_indicator(),
+        )
         self.composer.focus_input()
         self._flow = self.run_worker(
             self._first_run_flow() if self.first_run else self._resume_flow(),
@@ -539,6 +551,7 @@ class FinishUpTui(App[int]):
             "privacy": self.command_privacy,
             "provider": self.command_provider,
             "service": self.command_service,
+            "server": self.command_server,
             "doctor": self.command_doctor,
             "help": self.command_help,
             "quit": self.command_quit,
@@ -546,12 +559,35 @@ class FinishUpTui(App[int]):
         handler = handlers.get(name)
         if handler is None:
             return
+        if not self._server_host_allows(name):
+            return
         try:
             await handler()
         except asyncio.CancelledError:
             raise
         except RuntimeError_ as error:
             self._report(error)
+
+    def _server_host_allows(self, name: str) -> bool:
+        """Refuse a server-host command while a remote server target is selected (ADR-051)."""
+
+        from finishup.cli.command_scope import (
+            ServerHostRequired,
+            require_server_host,
+            server_host_refusal_line,
+        )
+
+        try:
+            require_server_host(f"/{name}")
+        except ServerHostRequired as error:
+            self.say(
+                Level.BLOCKED,
+                f"/{name} runs on the FinishUP server host",
+                (server_host_refusal_line(error),),
+                details=(f"reason={error.reason}", f"target={error.target_id}"),
+            )
+            return False
+        return True
 
     def _report(self, error: RuntimeError_) -> None:
         from finishup.cli.render import render_local_recovery_lines
@@ -833,7 +869,7 @@ class FinishUpTui(App[int]):
         """
 
         try:
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: self.runtime.run_privacy_setup("private", conversation_review="local_only")
             )
         except SuspendNotSupported:
@@ -854,6 +890,38 @@ class FinishUpTui(App[int]):
             )
 
         return getattr(report, "outcome", "failed") in {"configured", "unchanged"}
+
+    async def _hand_over_privacy(self, operation: Callable[[], Awaitable[object]]) -> object:
+        """Hand the terminal to the trusted questionnaire, then name the server it changed.
+
+        With a server on another machine, a port or the web selected, the questionnaire changes
+        that server's policy, not this computer's (ADR-051 decision 8). It said so on the
+        handed-over terminal; this says it again here, by generated id and closed kind only, with
+        a waiting proposal's id and expiry. The server is read before the hand-over and kept: the
+        owner may switch servers during the questionnaire, and the change stays that server's. A
+        questionnaire that raised ``RuntimeError_`` is named as unconfirmed before the error goes
+        on to the caller; ``SuspendNotSupported`` means nothing ran, so nothing is said.
+        """
+
+        server = self.runtime.selected_policy_server()
+        try:
+            report = await self.hand_over_terminal(operation)
+        except RuntimeError_:
+            self._say_policy_server(server, None)
+            raise
+        self._say_policy_server(server, report)
+        return report
+
+    def _say_policy_server(self, server: PolicyServer | None, report: object | None) -> None:
+        """One message naming ``server`` and what the questionnaire did to its policy.
+
+        ``report`` is ``None`` when the questionnaire raised. Nothing is said for this computer's
+        server.
+        """
+
+        if server is not None:
+            line = server.result_line(report)
+            self.say(Level.ACTIVE, "Privacy policy of the selected FinishUP server", (line,))
 
     async def _choose_harnesses(
         self,
@@ -1484,6 +1552,7 @@ class FinishUpTui(App[int]):
             project=middle_truncate(str(self.runtime.project_root()), 48),
             harness=state,
             privacy=privacy.summary,
+            server=self.runtime.server_indicator(),
         )
         self.footer_widget.set_state(right=self._footer_right(privacy.summary, vault.ready))
 
@@ -2168,7 +2237,7 @@ class FinishUpTui(App[int]):
         """Suspend and let the trusted CLI ceremony own the decision end to end."""
 
         try:
-            report = await self.hand_over_terminal(lambda: self.runtime.run_privacy_setup(recipe))
+            report = await self._hand_over_privacy(lambda: self.runtime.run_privacy_setup(recipe))
         except SuspendNotSupported:
             self.say(
                 Level.UNPROVEN,
@@ -2405,7 +2474,7 @@ class FinishUpTui(App[int]):
             # ADR-049 review round 1: a first-run answer that adds AI-powered review lists the
             # AI recipes (Assisted review by default), never the Private recommendation a
             # subscription reviewer gets on its own.
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: (
                     self.runtime.run_privacy_setup(
                         None, conversation_review=conversation_review, ai_review_add_on=True
@@ -2794,7 +2863,7 @@ class FinishUpTui(App[int]):
             return
         try:
             # Authorize the exact provider channel before any credential-bearing probe can run.
-            report = await self.hand_over_terminal(
+            report = await self._hand_over_privacy(
                 lambda: self.runtime.run_privacy_setup(
                     None,
                     offer_recommended=conversation_review not in _ADD_ON_ANSWERS,
@@ -2925,6 +2994,186 @@ class FinishUpTui(App[int]):
                 self.say(Level.VERIFIED, f"Stopping. Service state: {state}")
             else:
                 self.say(Level.OPTIONAL, "The service is still running.")
+
+    async def command_server(self) -> None:
+        """List server targets, show one's status, or switch, as ``finishup server`` does."""
+
+        rows, lines = await self.runtime.server_rows()
+        self.say(Level.ACTIVE, "FinishUP servers", lines)
+        zero_network = await self.runtime.refresh_zero_network_item()
+        if zero_network:
+            # ADR-051 decision 8: connections to the server are refused; "Use local" below is the
+            # way out, and nothing switches until the owner chooses it.
+            self.say(Level.UNPROVEN, self.runtime.zero_network_heading(), zero_network)
+        options = [
+            Option(
+                f"use:{row.name}",
+                f"Use {row.name}",
+                "asks you to confirm on this terminal" if row.remote else row.kind,
+            )
+            for row in rows
+            if not row.selected
+        ]
+        options.extend(
+            (
+                Option("status", "Show the selected server's status"),
+                Option("add", "Add a server"),
+                Option("remove", "Remove a server"),
+                Option("login", "Store an HTTPS server's API key"),
+                Option("folders", "Choose what a server may read outside your projects"),
+            )
+        )
+        choice = await self.ask(
+            SelectionView(name="server", options=options, hint="enter to choose · esc to go back")
+        )
+        if choice is None:
+            return
+        if choice == "status":
+            self.say(Level.ACTIVE, "Server status", await self.runtime.server_status_lines())
+            return
+        if choice == "add":
+            await self._server_add()
+            return
+        if choice in {"remove", "login", "folders"}:
+            self.say(Level.OPTIONAL, "Run this in your shell", _SERVER_SHELL_COMMANDS[choice])
+            return
+        name = choice.removeprefix("use:")
+        row = next(row for row in rows if row.name == name)
+        if row.remote:
+            confirmed = await self.ask(
+                ApprovalView(
+                    name="server-use",
+                    title=f"Use the server {row.name}?",
+                    body=(
+                        "FinishUP will hand this terminal to its confirmation prompt.",
+                        "It shows what is sent to that server; type the server's",
+                        "name there to authorize it.",
+                    ),
+                    approve_label="Continue to confirmation",
+                    decline_label="Not now",
+                    default_to_safe=True,
+                )
+            )
+            if confirmed != "approve":
+                self.say(Level.OPTIONAL, "The selected server is unchanged.")
+                return
+            try:
+                switch: ServerSwitch = await self.hand_over_terminal(
+                    lambda: self.runtime.use_server(name)
+                )
+            except SuspendNotSupported:
+                self.say(
+                    Level.UNPROVEN,
+                    "This terminal cannot hand over for the confirmation",
+                    ("Run this from your shell instead:", "", f"    finishup server use {name}"),
+                )
+                return
+        else:
+            switch = await self.runtime.use_server(name)
+        self.say(
+            Level.VERIFIED,
+            "Using this computer's everyday server"
+            if switch.indicator == "everyday"
+            else f"Using the server {row.name}",
+            (
+                *(() if switch.left_open else switch.left_lines),
+                "New hooks and commands use it now. Restart open agent sessions: a running",
+                "FinishUP MCP bridge keeps the server it started with.",
+            ),
+        )
+        if switch.left_open:
+            # The switch happened, but the connection to the server it left is still open.
+            self.say(
+                Level.UNPROVEN,
+                "The connection to the server you left did not close",
+                switch.left_lines,
+            )
+        await self._refresh_header()
+
+    async def _server_add(self) -> None:
+        """``/server`` add: which kind of server, and for one on another machine, a port or the
+        web, the question ``finishup server add`` asks (ADR-051 decision 5): what it may read
+        outside your projects. The answer rides in the printed command as ``--outside-reads``, so
+        the command asks only for the typed name, in your terminal. An official FinishUP service
+        (offered only while ``OFFICIAL_ENDPOINT_HOSTS`` names one) is not asked, as ``server
+        add`` does not ask it: its command carries no ``--outside-reads``, so its ``local`` is
+        left unrecorded and follows the reviewed list."""
+
+        from finishup.client.server_folders import (
+            OFFICIAL_ENDPOINT_HOSTS,
+            OUTSIDE_READ_MODE_LINES,
+            OUTSIDE_READ_QUESTION,
+        )
+
+        official_hosts = tuple(sorted(OFFICIAL_ENDPOINT_HOSTS))
+        where = await self.ask(
+            SelectionView(
+                name="server-add",
+                title="Add a server",
+                options=(
+                    Option(
+                        "add:local",
+                        "On this computer",
+                        "a second FinishUP with its own tasks, vault and settings",
+                    ),
+                    *(
+                        (
+                            Option(
+                                "add:official",
+                                "An official FinishUP service",
+                                "on the web; it reads what FinishUP on this computer would",
+                            ),
+                        )
+                        if official_hosts
+                        else ()
+                    ),
+                    Option(
+                        "add:remote",
+                        "On another machine, a port or the web",
+                        "over SSH, a port of this computer, or HTTPS",
+                    ),
+                ),
+                hint="enter to choose · esc to go back",
+            )
+        )
+        if where is None:
+            self.say(Level.OPTIONAL, "No server was added.")
+            return
+        if where == "add:local":
+            self.say(Level.OPTIONAL, "Run this in your shell", _server_add_lines(None))
+            return
+        if where == "add:official":
+            self.say(
+                Level.OPTIONAL, "Run this in your shell", _server_add_official_lines(official_hosts)
+            )
+            return
+        mode = await self.ask(
+            SelectionView(
+                name="server-add-outside-reads",
+                title=OUTSIDE_READ_QUESTION,
+                body=(
+                    "Every kind of server is asked the same. You can change it later with",
+                    "'finishup server folders mode NAME local' or '... listed'.",
+                    *(
+                        (
+                            "An official FinishUP service is not asked: go back and choose it",
+                            "instead.",
+                        )
+                        if official_hosts
+                        else ()
+                    ),
+                ),
+                options=tuple(
+                    Option(mode, mode, OUTSIDE_READ_MODE_LINES[mode])
+                    for mode in ("listed", "local")
+                ),
+                hint="enter to choose · esc to go back",
+            )
+        )
+        if mode not in {"listed", "local"}:
+            self.say(Level.OPTIONAL, "No server was added.")
+            return
+        self.say(Level.OPTIONAL, "Run this in your shell", _server_add_lines(mode))
 
     async def command_work(self) -> None:
         recent = self.runtime.opened_titles
@@ -3134,6 +3383,64 @@ class FinishUpTui(App[int]):
             return self._active_task_title
         await self.command_work()
         return self._active_task_title
+
+
+def _server_add_lines(mode: str | None) -> tuple[str, ...]:
+    """The ``finishup server add`` commands ``/server`` prints: a server on this computer
+    (``mode`` None), or one on another machine, a port or the web with the outside-read mode the
+    owner chose here, which the command records after the typed name."""
+
+    if mode is None:
+        return (
+            "    finishup server add NAME --local",
+            "",
+            "Then select it with /server or 'finishup server use NAME', and run 'finishup setup'.",
+        )
+    return (
+        f"    finishup server add NAME ssh://user@host --outside-reads {mode}",
+        f"    finishup server add NAME --port PORT --outside-reads {mode}",
+        f"    finishup server add NAME https://host --outside-reads {mode}",
+        "",
+        "It shows what is sent to that server and asks you to type its name.",
+        "Then select it with /server or 'finishup server use NAME'.",
+    )
+
+
+def _server_add_official_lines(hosts: tuple[str, ...]) -> tuple[str, ...]:
+    """The ``finishup server add`` command ``/server`` prints for an official FinishUP service:
+    one per reviewed host, never with ``--outside-reads``, which ``server add`` would record as
+    the owner's own choice instead of following the reviewed list (ADR-051 decision 5)."""
+
+    return (
+        *(f"    finishup server add NAME https://{host}" for host in hosts),
+        "",
+        "It shows what is sent to that server and asks you to type its name. It does not ask",
+        "what the server may read outside your projects: an official FinishUP service reads",
+        "what FinishUP on this computer would read (mode local).",
+        "Then select it with /server or 'finishup server use NAME'.",
+    )
+
+
+# ``/server`` prints these for the changes that belong on the command line (ADR-051).
+_SERVER_SHELL_COMMANDS: Final[dict[str, tuple[str, ...]]] = {
+    "remove": ("    finishup server remove NAME",),
+    "login": ("    finishup server login NAME",),
+    "folders": (
+        "    finishup server folders list NAME",
+        "    finishup server folders mode NAME local",
+        "    finishup server folders mode NAME listed",
+        "    finishup server folders add NAME /full/path/to/folder",
+        "    finishup server folders remove NAME /full/path/to/folder",
+        "    finishup server folders remove NAME --all",
+        "",
+        "Mode local reads outside your projects what FinishUP on this computer would read;",
+        "mode listed reads only the folders you list. In either mode the server reads the files",
+        "a task names beneath a folder you list. Choosing local, and adding a folder, ask you to",
+        "confirm in your terminal. A change applies from the server's next read.",
+        "If the server's status says its record is damaged or not private to you, 'remove NAME",
+        "--all' repairs it: the server then reads only folders you list, none yet (mode listed).",
+    ),
+}
 
 
 def _efforts_with_default(default: str) -> tuple[str, ...]:

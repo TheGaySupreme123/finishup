@@ -8659,10 +8659,14 @@ def _build_semantic_case_once(
                 if item.origin != "outside_workspace" or item.root is not None
             )
             task_inputs = tuple(_task_input_text(item) for item in offered)
+            # ADR-051 decision 5 (amended 2026-11-07): a claim-bound task's input read beneath a
+            # folder its client's owner listed, not a root of this server's policy, is admitted
+            # by the client, which revokes it there; it is bound to no policy root, and every
+            # other egress rule still applies to it.
             task_input_roots = tuple(
                 (f"{TASK_INPUT_ITEM_PREFIX}{index + 1:02d}", item.root)
                 for index, item in enumerate(offered)
-                if item.root is not None
+                if item.root is not None and not item.client_listed
             )
 
     task_input_limit = min(selection.max_excerpt_bytes, MAX_SEMANTIC_ITEM_BYTES)

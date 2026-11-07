@@ -140,3 +140,27 @@ async def test_handler_receives_the_outcome_only_when_one_exists() -> None:
 
     assert "observations_awaited" not in calls[0]
     assert calls[1]["observations_awaited"] == outcome
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["deterministic_only", "semantic_if_configured"])
+async def test_a_claim_bound_check_never_reads_the_services_own_outbox_as_complete(
+    mode: str,
+) -> None:
+    """ADR-051 decision 12: a remote client's rows wait in its own outbox, out of reach here."""
+
+    from finishup.ports.control import RepositoryPrivacyContext
+
+    gate = asyncio.Lock()
+    probe = _Probe(gate, frozenset())
+    daemon, seen = _daemon(gate, probe)
+    claim = RepositoryPrivacyContext(
+        "hmac-sha256:" + "0a" * 32, "client_claim", workspace_handle="client:0123456789abcdef"
+    )
+
+    await daemon._dispatch_ready(
+        SimpleNamespace(), _request(mode=mode, await_observations=True), claim
+    )
+
+    assert probe.calls == []
+    assert seen[-1]["observations_awaited"] == CheckObservationsAwaited("unavailable", 0)

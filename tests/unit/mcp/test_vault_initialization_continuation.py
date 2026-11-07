@@ -104,7 +104,11 @@ def _wire(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, connections: list[obj
     attempts: list[str] = []
 
     async def on_demand(
-        _kind: object, *, workspace_locator: object = None, timeout_seconds: float = 30.0
+        _kind: object,
+        *,
+        workspace_locator: object = None,
+        timeout_seconds: float = 30.0,
+        serve_workspace: bool = False,
     ) -> object:
         del workspace_locator, timeout_seconds
         attempts.append("connect")

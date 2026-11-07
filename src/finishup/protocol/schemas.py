@@ -65,9 +65,13 @@ SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
 SCHEMA_MEMBER_COUNT: Final = (
-    244  # #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
+    256  # ADR-051 decision 5: check-recorded 1.7.0, receipt-document 1.4.0 (kept-back counts);
+    # ADR-051 D4: receipt-result 1.5.0; #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0, privacy-policy 1.3.0;
-    # #1119: host-connection batch report and nonsecret ai-status 1.0.0
+    # #1119: host-connection batch report and nonsecret ai-status 1.0.0;
+    # ADR-051: +4 control envelopes 2.10.0 (workspace claims and workspace-agent frames),
+    # isolation-report 1.1.0 and server-target-status 1.0.0; the HTTPS binding v1's
+    # rest-error 1.0.0 and server-info 1.0.0; version-manifest 2.4.0 (2.3.0 shipped in v0.3.0)
 )
 
 _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
@@ -548,7 +552,15 @@ def _derive_role(path: str) -> SchemaArtifactRole:
             return SchemaArtifactRole.SETUP_CONTRACT
         _protocol_error("schema_artifact_role_mismatch")
     if directory == "service":
-        if filename.startswith(("service-status-", "isolation-report-")):
+        if filename.startswith(
+            (
+                "service-status-",
+                "isolation-report-",
+                "server-target-status-",
+                "server-info-",
+                "rest-error-",
+            )
+        ):
             return SchemaArtifactRole.SERVICE_STATUS
         if filename.startswith(
             ("control-hello-", "control-hello-result-", "control-request-", "control-result-")
@@ -831,7 +843,7 @@ def _load_catalog_state() -> _CatalogState:
     )
     request_versions_dict = _request_result_versions(entries)
     event_versions_dict = _event_payload_versions(entries)
-    if len(request_versions_dict) != 57 or len(event_versions_dict) != 30:
+    if len(request_versions_dict) != 60 or len(event_versions_dict) != 30:
         _protocol_error("schema_catalog_incomplete")
 
     catalog = SchemaCatalog(
@@ -1040,7 +1052,7 @@ def _build_manifest_index() -> _ManifestIndex:
         id_by_identity[(name, version)] = expected_id
         entries.append((name, version, member.schema_kind, member.artifact_role))
     request_versions = _request_result_versions(entries)
-    if len(request_versions) != 57 or len(_event_payload_versions(entries)) != 30:
+    if len(request_versions) != 60 or len(_event_payload_versions(entries)) != 30:
         _protocol_error("schema_catalog_incomplete")
     return _ManifestIndex(
         member_bytes=MappingProxyType(member_bytes),
