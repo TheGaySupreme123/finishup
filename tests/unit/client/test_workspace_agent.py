@@ -855,6 +855,81 @@ def test_a_task_input_the_owner_did_not_list_is_left_unread_and_named(
     ) == ("refused", "root_not_admitted")
 
 
+def test_leaving_a_spaced_input_unread_never_reads_its_words_in_its_place(
+    repository: Path, protected: Path, tmp_path: Path
+) -> None:
+    """Issue #1102's guard holds in listed mode: from ``"/data/test data"`` the read offers the
+    whole value and its space-cut word ``/data/test``, and reads the word only where the whole
+    value names nothing. Leaving the whole value unread as unlisted never lets the word, a
+    folder the owner listed for some other reason, be read under the task's name."""
+
+    data = (tmp_path / "data").resolve()
+    (data / "test").mkdir(parents=True)
+    (data / "test" / "unrelated.md").write_text("UNRELATED_MARKER\n", encoding="utf-8")
+    (data / "test data").mkdir()
+    (data / "test data" / "real.md").write_text("REAL_MARKER\n", encoding="utf-8")
+    roots = (os.fspath(data),)
+    values = (f"{data}/test data", f"{data}/test")
+    arguments = ReadOutsideInputsArguments(
+        roots, values, limit=4, space_cut=frozenset({f"{data}/test"})
+    )
+    local = read_outside_inputs(roots, values, limit=4, space_cut=arguments.space_cut)
+    assert [item.path for item in local] == [f"{data}/test data/real.md"]
+    assert _ok(
+        _handler(repository, protected, mode="local"),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    ) == OutsideInputsRead(local)
+
+    listed = _ok(
+        _handler(repository, protected, folders=(f"{data}/test",)),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    )
+    assert listed == OutsideInputsRead((), (0,))
+    assert b"UNRELATED_MARKER" not in repr(listed).encode()
+    # Listing a folder that holds the whole value reads what the local read reads; the word
+    # stays out.
+    assert _ok(
+        _handler(repository, protected, folders=(data,)),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    ) == OutsideInputsRead(local)
+    # Where the whole value names nothing, the word is the task's own, read as locally.
+    shutil.rmtree(data / "test data")
+    word = _ok(
+        _handler(repository, protected, folders=(f"{data}/test",)),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        arguments,
+    )
+    assert word == OutsideInputsRead(
+        read_outside_inputs(roots, values, limit=4, space_cut=arguments.space_cut)
+    )
+    assert [item.path for item in word.inputs] == [f"{data}/test/unrelated.md"]
+
+
+def test_listed_mode_never_reads_past_the_local_reads_window(
+    repository: Path, protected: Path, tmp_path: Path
+) -> None:
+    """A local read looks at the first 16 values only; leaving some unread as unlisted never
+    moves a later value into that window."""
+
+    data = (tmp_path / "window").resolve()
+    (data / "listed").mkdir(parents=True)
+    (data / "other").mkdir()
+    values = tuple(f"{data}/other/{index}.md" for index in range(16)) + (f"{data}/listed/late.md",)
+    for value in values:
+        Path(value).write_text("WINDOW_MARKER\n", encoding="utf-8")
+    roots = (os.fspath(data),)
+    assert [item.path for item in read_outside_inputs(roots, values, limit=4)] == list(values[:4])
+    answer = _ok(
+        _handler(repository, protected, folders=(f"{data}/listed",)),
+        WorkspaceOperation.READ_OUTSIDE_INPUTS,
+        ReadOutsideInputsArguments(roots, values, limit=4),
+    )
+    assert answer == OutsideInputsRead((), tuple(range(16)))
+
+
 def test_listed_mode_refuses_a_reviewer_read_only_where_something_exists(
     repository: Path, protected: Path, shared: Path
 ) -> None:
