@@ -846,17 +846,20 @@ answers bounded `workspace_call`s on a connection that declared it.
   terminal interface's `/server` "Use local" all run `cli.server.use_target`, which clears the
   selection and then stops what this client runs for the remote target it left, through that
   target's runtime exactly as `server disconnect` does, never by pattern (`use` of another target
-  does the same for the one it leaves). With the edge relay that is the target's connector: it
-  makes its last bounded delivery of what the hooks already captured for that server (at most
-  2 seconds; what is left stays in this client's outbox), closes its background workspace agents,
-  so a server job already under way (the AI-powered review loop, observation verification) can no
-  longer read files here, and exits before the command returns. Every surface that switches says
-  so by generated id and kind. When the stop does not finish within its wait the selection is
-  still cleared, and the command says so on stderr with `finishup server disconnect` as the way to
-  finish it. Until open agent sessions restart, a running MCP bridge keeps the target it started
-  with: under zero-network its connections are refused, otherwise its next call starts that
-  target's connector again. A selection that cannot be read names no target, so switching away
-  from it stops nothing (`finishup server disconnect NAME` stops a target's connection).
+  does the same for the one it leaves). With the edge relay that is the target's connector: it makes
+  its last bounded delivery of what the hooks already captured for that server (at most 2 seconds;
+  what is left stays in this client's outbox; none once this computer last reported zero-network,
+  since the connector checks that record before every delivery, its last one included), closes its
+  background workspace agents, so a server job already under way (the AI-powered review loop,
+  observation verification) can no longer read files here, and exits before the command returns. The
+  choice's `1` switches before the change is made, so that delivery still precedes the zero-network
+  policy. Every surface that switches says so by generated id and kind. When the stop does not
+  finish within its wait the selection is still cleared, and the command says so on stderr with
+  `finishup server disconnect` as the way to finish it. Until open agent sessions restart, a running
+  MCP bridge keeps the target it started with: under zero-network its connections are refused,
+  otherwise its next call starts that target's connector again. A selection that cannot be read
+  names no target, so switching away from it stops nothing (`finishup server disconnect NAME` stops
+  a target's connection).
 
   **Honest limits:** everything acts on the marker, which a change made here writes when the
   change is read back (if that read fails, at this computer's next report), so connections already

@@ -120,8 +120,9 @@ Switching, whichever way you do it, also closes this computer's connection to th
 `finishup server disconnect` does. Work the server had already started for you, such as a review
 still running, can then no longer read your files. As the connection closes it sends that server,
 for at most 2 seconds, what your agents' hooks had already recorded for it; anything left stays on
-this computer. If the connection does not close in time, FinishUP still switches and tells you to
-run `finishup server disconnect` with that server's name. After switching, restart open agent
+this computer. Once this computer has reported the zero-network setting, nothing more is sent, not
+even that last delivery. If the connection does not close in time, FinishUP still switches and tells
+you to run `finishup server disconnect` with that server's name. After switching, restart open agent
 sessions: they keep the server they started with until then. Choosing the server again needs the
 setting turned off first.
 
