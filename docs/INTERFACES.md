@@ -4690,10 +4690,14 @@ remove NAME --all` and say it repairs a damaged record. The document's top-level
 `cli.server._zero_network_selection`: the `fact()` of the item `find_zero_network_selection()`
 returns (below), and null when that returns none. `server status` runs that check once and passes
 it as `zero_network`, so its stderr lines and its document carry the same item; the terminal's
-`/server` status and `server test` build the document with the default check. A selection that
-cannot be read makes `server status` refuse (`selection_invalid` for a damaged selection file), so
-the `zero_network_selection_unreadable` item reaches its owner on stderr, before the refusal, and
-no document is printed.
+`/server` status and `server test` build the document with the default check. Whether the
+`zero_network_selection_unreadable` item is printed in a document depends on what cannot be read:
+a damaged selection file makes `server status` refuse (`selection_invalid`), and so does `server
+status` with no name when the selected target's record is damaged (`target_record_invalid`); the
+item then reaches its owner on stderr, before the refusal, and no document is printed. With the
+selection file readable but the selected target's record damaged, `server status local --json`
+prints its document, and its `zero_network_selection` is that item with `detail`
+`target_record_invalid` and no `target_id` or `kind`.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds. The

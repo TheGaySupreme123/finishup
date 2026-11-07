@@ -1157,6 +1157,38 @@ def test_the_status_document_carries_an_unreadable_selection_under_zero_network(
     assert refusal.startswith("selection_invalid: ")
 
 
+def test_a_damaged_target_record_is_the_unreadable_item_in_a_printed_document(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The selection file reads, but the selected target's record does not: ``server status
+    local --json`` still answers its document, carrying the unreadable item with its closed
+    reason and no server named. Only a status that must resolve the selection refuses."""
+
+    record = _remote()
+    (targets.target_root(record.target_id) / "target.json").write_bytes(b"{not json\n")
+    _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(server_cli, "_probe", _no_probe)
+
+    document, stderr = _status_document("local")
+
+    assert document["zero_network_selection"] == {
+        "reason": "zero_network_selection_unreadable",
+        "target_id": None,
+        "kind": None,
+        "detail": "target_record_invalid",
+    }
+    assert stderr.startswith("zero_network_selection_unreadable: ")
+    assert record.target_id not in json.dumps(document["zero_network_selection"])
+    # 'server status' of the selection itself must read that record, so it refuses, after the
+    # same item reached the owner on stderr.
+    status = _invoke("server", "status", "--json")
+    assert status.exit_code != 0
+    assert status.stdout == ""
+    first, refusal = status.stderr.splitlines()[:2]
+    assert first.startswith("zero_network_selection_unreadable: ")
+    assert refusal.startswith("target_record_invalid: ")
+
+
 @pytest.mark.parametrize(
     ("selected", "state"),
     [
