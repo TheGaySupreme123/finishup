@@ -94,7 +94,7 @@ def _damage(path: Path, how: str) -> Path | None:
     if how == "not_json":
         path.write_bytes(b"{zero")
     elif how == "extra_field":
-        path.write_text(json.dumps({**body, "path": "/home/me"}))
+        path.write_text(json.dumps({**body, "path": "/srv/shared"}))
     elif how == "other_schema":
         path.write_text(json.dumps({**body, "schema": "yoetz.everyday-network-policy/2"}))
     elif how == "not_a_boolean":
