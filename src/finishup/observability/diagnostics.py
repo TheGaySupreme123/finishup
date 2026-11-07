@@ -121,6 +121,7 @@ _FIELD_ORDER: Final = (
     "semantic_task_input_listings",
     "semantic_task_input_outside_candidates",
     "semantic_task_inputs_outside_not_admitted",
+    "semantic_task_inputs_outside_not_listed",
     "semantic_task_inputs_read",
     # Loop-health counters. Both are already fenced as integers by redact_diagnostic_value; only
     # this projection list was missing them, so a saturation record reached stderr and then

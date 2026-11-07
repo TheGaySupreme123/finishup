@@ -459,6 +459,7 @@ _LOG_FIELDS: Final = frozenset(
         "semantic_task_input_listings",
         "semantic_task_input_outside_candidates",
         "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_outside_not_listed",
         "semantic_task_inputs_read",
         # Closed control-plane identity of an abandoned response write (tb4n2 NEW-8): the wire
         # method enum value and the handshake client kind, never a body or a peer identity.
@@ -650,6 +651,7 @@ _INTEGER_FIELDS: Final = frozenset(
         "semantic_task_input_listings",
         "semantic_task_input_outside_candidates",
         "semantic_task_inputs_outside_not_admitted",
+        "semantic_task_inputs_outside_not_listed",
         "semantic_task_inputs_read",
     }
 )

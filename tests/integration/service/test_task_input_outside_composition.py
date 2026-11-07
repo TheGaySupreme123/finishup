@@ -202,7 +202,7 @@ async def _composition(
     flagged: bool,
     statement: str | None = None,
     captures: list[Mapping[str, object]] | None = None,
-    not_listed: bool = False,
+    not_listed: int = 0,
 ) -> tuple[FrozenCase, TaskRuntime, _PacketPrivacy, _Evaluator, list[Mapping[str, object]]]:
     from unit.application.test_review_follow_up import (
         _stale_edit_case,  # pyright: ignore[reportPrivateUsage]
@@ -332,14 +332,15 @@ async def test_a_task_naming_an_unadmitted_outside_file_records_the_owner_step_c
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("not_listed", (True, False), ids=("not-listed", "listed"))
+@pytest.mark.parametrize("not_listed", (2, 0), ids=("not-listed", "listed"))
 async def test_inputs_a_remote_servers_listed_mode_left_unread_record_the_owner_code(
-    monkeypatch: pytest.MonkeyPatch, not_listed: bool
+    monkeypatch: pytest.MonkeyPatch, not_listed: int
 ) -> None:
     """ADR-051 decision 5: the client's agent left task-named inputs unread because its owner has
     not listed their folder for this server. The rest of the change still reaches review, and
-    the frozen flag becomes the closed code ``outside_reads_not_listed``, whose fixed sentence
-    names the owner's two ways out; replay recovers the same case."""
+    the frozen count becomes the closed code ``outside_reads_not_listed``, whose fixed sentence
+    names the owner's two ways out, and the diagnostic counts them; replay recovers the same
+    case."""
 
     frozen, runtime, privacy, evaluator, counts = await _composition(
         memory_adapter(append_command()), monkeypatch, flagged=False, not_listed=not_listed
@@ -348,11 +349,11 @@ async def test_inputs_a_remote_servers_listed_mode_left_unread_record_the_owner_
     first = await evaluator(frozen, (), runtime)
 
     assert first is not None and first.judgment is not None
-    assert (OUTSIDE_READS_NOT_LISTED_GAP in first.case_content_gaps) is not_listed
+    assert (OUTSIDE_READS_NOT_LISTED_GAP in first.case_content_gaps) is bool(not_listed)
     assert _CODE not in first.case_content_gaps
     ((packet),) = privacy.packets
-    assert (OUTSIDE_READS_NOT_LISTED_GAP.encode() in packet) is not_listed
-    assert counts[0]["semantic_task_inputs_outside_not_listed"] == int(not_listed)
+    assert (OUTSIDE_READS_NOT_LISTED_GAP.encode() in packet) is bool(not_listed)
+    assert counts[0]["semantic_task_inputs_outside_not_listed"] == not_listed
     assert first.operation_lease is not None
     again = await evaluator(FrozenCase(frozen.case, first.operation_lease), (), runtime)
     assert again is not None and again.case_content_gaps == first.case_content_gaps

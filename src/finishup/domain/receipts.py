@@ -559,8 +559,10 @@ VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directo
 # existing file the task names, or a test the agent declared, because the client's owner has not
 # listed its folder for that server (or, for a test in the project, Git ignores it or cannot
 # answer for it). Only those files are missing; the rest of the read reached review. A closed
-# disclosure code with no path and no count, on the same terms as the codes above: it never bounds
-# the receipt's conclusion, and only the owner, on the client machine, can clear it.
+# disclosure code with no path, on the same terms as the codes above: it never bounds the
+# receipt's conclusion, and only the owner, on the client machine, can clear it. How many files
+# were kept back is frozen with the check change and the job's case object and reaches the
+# ``semantic_case_built`` diagnostic; the receipt document has no field for a number.
 OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (

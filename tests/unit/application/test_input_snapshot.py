@@ -564,7 +564,7 @@ def test_equality_after_redaction_is_not_called_equality_of_the_file(tmp_path: P
     (item,), not_listed = _snapshot_inputs(
         (snapshot,), (path,), ("/shared",), lambda paths: {paths[0]: after}, set(), 4
     )
-    assert not_listed is False
+    assert not_listed == ()
     label, _cut = _task_input_text(item)
     assert "still matches it" not in label
     assert "outside its redacted values; whether those values changed is unknown" in label
@@ -661,7 +661,8 @@ def test_a_kept_copy_whose_folder_is_no_longer_listed_is_not_sent() -> None:
 
     added, not_listed = _snapshot_inputs((snapshot,), (kept, gone), ("/shared",), current, set(), 4)
     assert [(item.path, item.current_state) for item in added] == [(kept, "same")]
-    assert not_listed is True
+    # The paths whose copies were left out, so the check counts them once (never stored).
+    assert not_listed == (gone,)
 
 
 @pytest.mark.anyio

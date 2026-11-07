@@ -96,9 +96,12 @@ def test_the_task_input_counters_are_counts_only() -> None:
         "semantic_task_inputs_outside_not_listed": 0,
     }
     assert all(type(value) is int for value in counts.values())
-    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=True))
-    flagged = _task_input_counts(inputs, CheckChangeOutcome(change=listed), semantic, True, outside)
-    assert flagged["semantic_task_inputs_outside_not_listed"] == 1
+    # ADR-051 decision 5: the task inputs and the declared tests the agent kept back, counted.
+    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=2))
+    flagged = _task_input_counts(
+        inputs, CheckChangeOutcome(change=listed), semantic, True, outside, 1
+    )
+    assert flagged["semantic_task_inputs_outside_not_listed"] == 3
     empty = _task_input_counts(((), frozenset()), CheckChangeOutcome(), _build(case), False)
     assert set(empty.values()) == {0}
 
