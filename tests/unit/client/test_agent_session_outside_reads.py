@@ -6,8 +6,9 @@ connection (``BridgeBackgroundWork``) and ``finishup server connect NAME --agent
 (``run_foreground_agent``). Each builds its agent through the real binding
 (``service.client.serving_workspace_binding``) and honours the target's outside-read mode exactly
 as an agent served on the client's own connection does: the same two modes for every remote kind,
-``listed`` while none was chosen, a change of mode from the agent's next read, and never a prompt
-on any console once set up. Only the dial is a stand-in; nothing reaches a server.
+``listed`` while none was chosen, a change of mode from the agent's next read, the target it was
+built for whatever root the process resolves at a read, and never a prompt on any console once
+set up. Only the dial is a stand-in; nothing reaches a server.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from finishup.client import targets
 from finishup.client.agent_session import BridgeBackgroundWork, run_foreground_agent
 from finishup.client.server_folders import OutsideReadMode, OutsideReads, set_mode
 from finishup.client.workspace_agent import WorkspaceAgentHandler
-from finishup.config.paths import reset_selection_memo
+from finishup.config.paths import active_root, reset_selection_memo, selection_override
 from finishup.domain.values import JsonObject
 from finishup.ports.control import WorkspaceCall, WorkspaceLocator
 from finishup.ports.workspace_agent import (
@@ -116,6 +117,18 @@ def _outside_read(agent: WorkspaceAgentHandler, folder: Path) -> tuple[str, str 
     return reply.outcome, reply.reason
 
 
+def _outside_read_elsewhere(agent: WorkspaceAgentHandler, folder: Path) -> tuple[str, str | None]:
+    """The same read while this process resolves its everyday installation, not the target.
+
+    ``selection_override`` sets a process-wide answer, so the agent's read in this thread sees
+    it: only an agent that fixed its target when it was built still reads that target's record.
+    """
+
+    with selection_override(None):
+        assert active_root() is None
+        return _outside_read(agent, folder)
+
+
 def _expected(mode: OutsideReadMode | None) -> tuple[str, str | None]:
     return ("ok", None) if mode == "local" else ("refused", "root_not_admitted")
 
@@ -127,18 +140,24 @@ async def _check_agent(
     mode: OutsideReadMode | None,
     outside: Path,
 ) -> None:
-    """The agent the path built reads outside as chosen, and follows a change of mode."""
+    """The agent the path built reads outside as chosen, and follows a change of mode.
+
+    Each read is made twice: as the path serves, and while this process resolves another root,
+    so the answer is the target's whatever root the process uses at the time of the read.
+    """
 
     handler = binding.agent
     assert type(handler) is WorkspaceAgentHandler
     expected = OutsideReads(mode or "listed", (), "owner" if mode else "not_chosen")
     assert await asyncio.to_thread(handler._outside) == expected  # pyright: ignore[reportPrivateUsage]
     assert await asyncio.to_thread(_outside_read, handler, outside) == _expected(mode)
+    assert await asyncio.to_thread(_outside_read_elsewhere, handler, outside) == _expected(mode)
     # A change of mode applies from the agent's next read, with no prompt and no reconnect.
     other: OutsideReadMode = "listed" if mode == "local" else "local"
     with targets.registry_lock():
         set_mode(root, record.target_id, other)
     assert await asyncio.to_thread(_outside_read, handler, outside) == _expected(other)
+    assert await asyncio.to_thread(_outside_read_elsewhere, handler, outside) == _expected(other)
 
 
 async def _bridge_binding(workspace: WorkspaceLocator) -> tuple[ClientWorkspaceBinding, object]:
@@ -194,7 +213,9 @@ def test_a_direct_dial_agent_reads_outside_as_the_owner_chose(
             await work.aclose()
 
     async def foreground() -> None:
-        # ``server connect NAME --agent`` names the target; this process selects none.
+        # ``server connect NAME --agent`` names the target. No selection names it: the process
+        # resolves it as its root only while ``run_foreground_agent`` serves, through
+        # ``selection_override``; ``_check_agent`` also reads while the process resolves none.
         bindings: list[ClientWorkspaceBinding] = []
         dialled = asyncio.Event()
 
