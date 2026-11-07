@@ -4721,7 +4721,16 @@ running async library under `anyio.run`. `surface_after_policy_change_async(inte
 after every committed policy change and returns `clear|switched|kept|warned`: only the read above
 runs in a worker thread; on the trusted console, read on the loop's thread with
 `signal.default_int_handler` installed for the read, `1` runs `use_target("local")` and anything
-else (Enter, end of input, Ctrl-C) keeps the target; otherwise one stderr line `<reason>: <facts>
+else (Enter, end of input, Ctrl-C) keeps the target. `cli.server.use_target(name, *, authorize=None)
+-> TargetSwitch` (`record`, the target now selected or `None`; `left`, the remote target the
+selection named before when the switch moved away from it; `left_open`; `left_lines()`) stops
+`left` through `runtime_for(left.kind).stop(target_root(left.target_id))` after the selection
+changed, as `server disconnect` does (`RestTargetRuntime.stop`: `stop_agent`, then an SSH master's
+`-O exit`; it raises `TargetRuntimeError("service_unavailable", phase="agent_stop")` when the
+workspace agent still holds its lock after the wait); `server use`, the choice and the terminal
+interface's `use_server` (`tui.models.ServerSwitch`: `indicator`, `left_lines`, `left_open`) print
+its lines, and a stop that did not finish goes to stderr (UNPROVEN in the terminal interface) with
+`finishup server disconnect` while the switch stands; otherwise one stderr line `<reason>: <facts>
 … finishup server use local …`. `machine_readable_answer(enabled)` (a context variable;
 `machine_readable_requested()` reads it) suppresses the choice for a `--json` command whose
 policy change happens further down (`privacy credential-heuristic|conversations|input-roots`).
@@ -5476,7 +5485,8 @@ sent). Remote failures are `service_unavailable` with phase `remote_unreachable`
 `client.agent.run_workspace_agent`) holds `<troot>/state/agent.lock` exclusively (stamped with its
 pid for display; probes take it shared, so a probe never reads as an agent), stops when
 `stop_agent(root, *, wait_seconds=10.0)` writes `<troot>/state/agent.stop` (no signal is ever sent
-to a stamped pid), and reads the
+to a stamped pid; `server disconnect` and a `server use` that leaves the target call it through
+`RestTargetRuntime.stop`), and reads the
 noted workspaces `<troot>/state/agent-workspaces/w_<32 hex>.json` (`yoetz.agent-workspace/1`, path
 only, never sent). `WorkspaceAgentLoop(root, record, *, claim_factory, handler_factory,
 delivery_factory, …)` serves each noted workspace with, from `client.remote_workspace`:

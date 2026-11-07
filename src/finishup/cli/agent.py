@@ -1,7 +1,8 @@
 """``finishup agent run --root <target root>``: the workspace agent of a remote server (ADR-051).
 
 Client processes start it on demand for a remote server target and it stops on its own after 15
-minutes without work; ``finishup server disconnect`` stops it sooner. It answers the server's
+minutes without work; ``finishup server disconnect``, or a ``finishup server use`` that leaves the
+target, stops it sooner. It answers the server's
 bounded questions about the project folders this computer's sessions work in (see
 ``finishup.client.agent``). Scope ``client_only``: it never acts on a server host's own state.
 """

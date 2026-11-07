@@ -9,7 +9,9 @@ socket (and the launcher) from ``service endpoint --json``; ssh failures become 
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
+import os
 import socket
 import subprocess
 from collections.abc import Iterator
@@ -242,6 +244,43 @@ def test_the_master_starts_once_and_stops_through_its_control_socket(
     assert stopped == [root]
     assert recorder.calls[-1][0][-4:] == ["-O", "exit", "--", "owner@lab.example"]
     assert not (root / "run" / "api.sock").exists()
+
+
+def test_a_stop_whose_agent_still_holds_its_lock_is_not_reported_as_stopped(
+    ssh_root: tuple[ServerTarget, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-051 decision 8: ``server disconnect`` and a switch that leaves the target stop its
+    workspace agent. One that has not released its lock when the wait ends may still answer the
+    server's reads here, so the stop says so; the master is told to exit either way."""
+
+    from finishup.client import agent as agent_module
+    from finishup.config.paths import ensure_owner_only_dir
+
+    _record, root = ssh_root
+    recorder = _Recorder((0, b"", b""), (0, b"", b""))
+    monkeypatch.setattr(rest_runtime, "_run", recorder)
+    real_stop_agent = agent_module.stop_agent
+
+    def stop_at_once(path: Path) -> bool:
+        return real_stop_agent(path, wait_seconds=0.0)
+
+    monkeypatch.setattr(agent_module, "stop_agent", stop_at_once)
+    (root / "run" / "m").touch()
+    ensure_owner_only_dir(root / "state")
+    holder = os.open(root / "state" / agent_module.AGENT_LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        # An agent that has not ended yet: it holds the lock exclusively, stamped with its pid.
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        os.pwrite(holder, b"4242\n", 0)
+        with pytest.raises(TargetRuntimeError) as raised:
+            SshTargetRuntime().stop(root)
+        assert (raised.value.reason, raised.value.phase) == ("service_unavailable", "agent_stop")
+        assert (root / "state" / agent_module.AGENT_STOP_NAME).exists()
+        assert recorder.calls[-1][0][-4:] == ["-O", "exit", "--", "owner@lab.example"]
+    finally:
+        os.close(holder)
+    # Once the agent has released its lock, the same stop completes.
+    SshTargetRuntime().stop(root)
 
 
 def test_a_master_that_cannot_start_names_why(

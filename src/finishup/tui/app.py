@@ -51,6 +51,7 @@ from finishup.tui.models import (
     IntegrationPlan,
     LayerState,
     PrivacyChoice,
+    ServerSwitch,
 )
 from finishup.tui.render import (
     render_detection,
@@ -3055,7 +3056,9 @@ class FinishUpTui(App[int]):
                 self.say(Level.OPTIONAL, "The selected server is unchanged.")
                 return
             try:
-                indicator = await self.hand_over_terminal(lambda: self.runtime.use_server(name))
+                switch: ServerSwitch = await self.hand_over_terminal(
+                    lambda: self.runtime.use_server(name)
+                )
             except SuspendNotSupported:
                 self.say(
                     Level.UNPROVEN,
@@ -3064,17 +3067,25 @@ class FinishUpTui(App[int]):
                 )
                 return
         else:
-            indicator = await self.runtime.use_server(name)
+            switch = await self.runtime.use_server(name)
         self.say(
             Level.VERIFIED,
             "Using this computer's everyday server"
-            if indicator == "everyday"
+            if switch.indicator == "everyday"
             else f"Using the server {row.name}",
             (
+                *(() if switch.left_open else switch.left_lines),
                 "New hooks and commands use it now. Restart open agent sessions: a running",
                 "FinishUP MCP bridge keeps the server it started with.",
             ),
         )
+        if switch.left_open:
+            # The switch happened, but the connection to the server it left is still open.
+            self.say(
+                Level.UNPROVEN,
+                "The connection to the server you left did not close",
+                switch.left_lines,
+            )
         await self._refresh_header()
 
     async def _server_add(self) -> None:

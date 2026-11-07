@@ -43,6 +43,7 @@ from finishup.tui.models import (
     ReadinessLayer,
     ReceiptSummary,
     ServerRow,
+    ServerSwitch,
     StatusSnapshot,
     TaskStatusPage,
     VaultPosture,
@@ -1571,11 +1572,13 @@ class FinishUpRuntime:
             raise _server_failure(error) from None
         return status_lines(document)
 
-    async def use_server(self, name: str) -> str:
+    async def use_server(self, name: str) -> ServerSwitch:
         """Select ``name`` (``local``: the everyday server), as ``finishup server use`` does.
 
         A remote target asks for the same typed confirmation on the trusted console, so the
-        caller runs this with the terminal handed over. Returns the new header indicator text.
+        caller runs this with the terminal handed over. Returns the new header indicator text and
+        what became of the connection to a remote server the switch left (stopped, as ``finishup
+        server disconnect`` stops it).
         """
 
         import asyncio
@@ -1585,10 +1588,15 @@ class FinishUpRuntime:
         from finishup.config.paths import PathSafetyError
 
         try:
-            record = await asyncio.to_thread(use_target, name)
+            switch = await asyncio.to_thread(use_target, name)
         except (ServerCommandRefused, TargetError, PathSafetyError) as error:
             raise _server_failure(error) from None
-        return "everyday" if record is None else f"{record.kind} {record.target_id}"
+        record = switch.record
+        return ServerSwitch(
+            "everyday" if record is None else f"{record.kind} {record.target_id}",
+            switch.left_lines(),
+            switch.left_open,
+        )
 
     # -- service --------------------------------------------------------
 

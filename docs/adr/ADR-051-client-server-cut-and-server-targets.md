@@ -763,13 +763,33 @@ answers bounded `workspace_call`s on a connection that declared it.
   reason (`selection_invalid`, `target_root_unsafe`, `target_record_invalid`) and `finishup server
   use local` as the way back, never as "no server". While this computer's policy cannot be read,
   nothing claims the zero-network state either way, so the displays show the item only while this
-  computer's service is running and unlocked, the one source of that policy. **Honest limits:**
-  while the owner keeps the target, and after switching until open agent sessions restart (a running
-  MCP bridge keeps the target it started with), traffic to it continues; and usually nothing on this
-  computer uses its own service while a remote target is selected, so once that service relocks or
-  stops when idle the displays can no longer tell the state and say nothing, although work still
-  goes to the target. Agents cannot change the policy or the selection, so no MCP tool surfaces or
-  answers the choice.
+  computer's service is running and unlocked, the one source of that policy.
+
+  **Switching stops the traffic it names.** The choice's `1`, `finishup server use local` and the
+  terminal interface's `/server` "Use local" all run `cli.server.use_target`, which clears the
+  selection and then stops what this client runs for the remote target it left, through that
+  target's runtime exactly as `server disconnect` does, never by a pid or a pattern (`use` of
+  another target does the same for the one it leaves). With the server-native network API that is
+  the target's workspace agent (`finishup agent run --root`), which would otherwise keep answering
+  for up to 15 minutes after its last workspace note and 15 more idle: it is asked to stop through
+  its owner-only request file and waited for (up to 10 seconds); it ends its registrations and
+  cancels the calls it was answering, so a server job already under way (the AI-powered review
+  loop, observation verification) gets no more file text from here (a read already running in a
+  worker thread finishes on this computer, but its answer is not sent), and its delivery of what
+  the hooks captured stops (what is left stays in this client's outbox). Then an SSH target's
+  master exits through its control socket. Every surface that switches says so by generated id and
+  kind. When the agent still holds its lock after the wait, the selection is still cleared, and
+  the command says so on stderr with `finishup server disconnect` as the way to finish it; that
+  command itself then refuses with `service_unavailable` (phase `agent_stop`) rather than saying
+  it disconnected. **Honest limits:** while the owner keeps the target, and after switching until
+  open agent sessions restart (a running MCP bridge keeps the target it started with, and its next
+  call notes its workspace and starts that target's workspace agent again), traffic to it
+  continues; a selection that cannot be read names no target, so switching away from it stops
+  nothing (`finishup server disconnect NAME` stops a target's workspace agent); and usually
+  nothing on this computer uses its own service while a remote target is selected, so once that
+  service relocks or stops when idle the displays can no longer tell the state and say nothing,
+  although work still goes to the target. Agents cannot change the policy or the selection, so no
+  MCP tool surfaces or answers the choice.
 - **Which server's policy a command changes is said before and after** (maintainer principle "be
   clear on what happened", 2026-11-06). While a remote target is selected, `privacy tighten`,
   `privacy propose` and the privacy step of `setup run` (the trusted questionnaire, which the
@@ -1043,9 +1063,11 @@ SSH (owner-equivalent, no key)
   `yoetz.agent-workspace/1` record beneath the target root; the path never leaves the machine) and
   start the agent when none runs. It holds `<troot>/state/agent.lock` stamped with its pid,
   registers each claimed workspace, long-polls its calls, answers them in worker threads, and
-  exits 15 minutes after its last workspace; `server disconnect` asks it to stop through an
-  owner-only request file (`<troot>/state/agent.stop`) and waits for its lock, never signalling a
-  stamped pid that may by now belong to another process. Only the agent takes the lock
+  exits 15 minutes after its last workspace; `server disconnect`, and a `server use` that leaves
+  the target (decision 8), ask it to stop through an owner-only request file
+  (`<troot>/state/agent.stop`) and wait up to 10 seconds for its lock, never signalling a stamped
+  pid that may by now belong to another process; an agent still holding the lock then is reported
+  (`service_unavailable`, phase `agent_stop`), never as stopped. Only the agent takes the lock
   exclusively; probes take it shared, so a probe is never read as a running agent. For an
   SSH target, a request the agent or its background delivery loses on the transport brings the
   master back (`rest_runtime.restore_ssh_transport`, never the remote service), so a master that
@@ -1143,14 +1165,14 @@ stack the service cannot drive fails the start with `network_listener_unavailabl
 | `[network]` in the server's `config.toml` | remove the table and restart the service | `finishup service endpoint --json` |
 | `finishup service api-key create` | `finishup service api-key revoke KEY_ID` | `finishup service api-key list` |
 | `finishup server connect NAME` (SSH master, on demand too) | `finishup server disconnect NAME` | `finishup server status NAME` |
-| workspace agent (started on demand) | idle exit, or `server disconnect` | the target's `state/agent.lock` stamp |
+| workspace agent (started on demand) | idle exit, `server disconnect`, or a `server use` that leaves the target | the target's `state/agent.lock` stamp |
 
 ## Reverse states
 
 | Way in | Way out | Way to see it |
 |---|---|---|
 | `server add NAME …` | `server remove NAME [--select-local]` (disconnects, deletes the credential, disposes of the root; refuses the selected target unless `--select-local`) | `server list` |
-| `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue) | `server status` (names the deciding source) |
+| `server use NAME` | `server use local` (removes the selection file; ambient resolution returns with no residue; a remote target it leaves is stopped as `server disconnect` stops it) | `server status` (names the deciding source) |
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
 | `server add NAME …` for a remote kind records the outside-read mode the owner answered (or `--outside-reads`; an official endpoint is `local` unrecorded) | `server folders mode NAME local` or `listed` changes it; `server remove NAME` removes it with the target | `server add` output, `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server folders mode NAME local` (trusted console and typed name whenever it records `local`, an official endpoint's included; without the console an official endpoint's `local` is left unrecorded) | `server folders mode NAME listed` (applies from the workspace agent's next read; a read already in progress may finish) | `server folders list NAME`, `server status [--json]`, `/server` status |

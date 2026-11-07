@@ -28,6 +28,7 @@ from finishup.tui.models import (
     ReadinessLayer,
     ReceiptSummary,
     ServerRow,
+    ServerSwitch,
     StatusSnapshot,
     TaskStatusPage,
     VaultPosture,
@@ -168,6 +169,10 @@ class FakeRuntime:
     server_selected: str | None = None
     server_uses: list[str] = field(default_factory=lambda: [])
     server_error: RuntimeError_ | None = None
+    # What a switch says of the remote server it left (``finishup server use``), and whether that
+    # connection did not close.
+    server_left_lines: tuple[str, ...] = ()
+    server_left_open: bool = False
     # The zero-network item (ADR-051 decision 8): lines ``/server`` shows, and how often it was read.
     zero_network: tuple[str, ...] = ()
     zero_network_reads: int = 0
@@ -534,14 +539,18 @@ class FakeRuntime:
     async def server_status_lines(self, name: str | None = None) -> tuple[str, ...]:
         return (f"Server: {name or 'local'} (local); chosen by: ambient", "State: ready")
 
-    async def use_server(self, name: str) -> str:
+    async def use_server(self, name: str) -> ServerSwitch:
         if self.server_error is not None:
             raise self.server_error
         self.server_uses.append(name)
         row = next(row for row in self.servers if row.name == name)
         self.servers = tuple(replace(item, selected=item.name == name) for item in self.servers)
         self.server_selected = None if row.target_id is None else f"{row.kind} {row.target_id}"
-        return "everyday" if row.target_id is None else f"{row.kind} {row.target_id}"
+        return ServerSwitch(
+            "everyday" if row.target_id is None else f"{row.kind} {row.target_id}",
+            self.server_left_lines,
+            self.server_left_open,
+        )
 
     async def status_snapshot(self) -> StatusSnapshot:
         return StatusSnapshot(

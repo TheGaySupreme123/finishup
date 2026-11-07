@@ -1495,13 +1495,18 @@ later process to the default service.
   otherwise, or for `--json`, the facts and `finishup server use local` on stderr) and keeps showing
   it in `setup status --next`, `server status` and the terminal interface while this computer's
   FinishUP service is running and unlocked (only it can report this computer's policy; it relocks or
-  stops when idle); it never switches on its own. After switching, restart open Codex sessions: the
-  running MCP bridge keeps the remote target until then, while hooks follow at once. While a remote
-  target is selected, fresh server-host privacy commands are refused (`requires_server_host`) and
-  `privacy tighten|propose` reach the target, so the choice comes from a FinishUP process already on
-  this computer's server (an open terminal interface or menu, or a privacy step or setup under way).
-  Host decision: supported, same code path; no MCP tool, hook or SessionStart context carries or
-  answers the choice, because agents cannot change the policy or the selection.
+  stops when idle); it never switches on its own. Switching (the choice, `finishup server use local`
+  or the terminal interface's "Use local") also stops this computer's connection to the target as
+  `finishup server disconnect` does: the target's workspace agent (`finishup agent run`) is asked to
+  stop and waited for, so server work already under way gets no more file text from here, and an SSH
+  master exits. After switching, restart open Codex sessions: the running MCP bridge keeps the
+  remote target until then (and its next call starts the target's workspace agent again), while
+  hooks follow at once. While a remote target is selected, fresh server-host privacy commands are
+  refused (`requires_server_host`) and `privacy tighten|propose` reach the target, so the choice
+  comes from a FinishUP process already on this computer's server (an open terminal interface or
+  menu, or a privacy step or setup under way). Host decision: supported, same code path; no MCP
+  tool, hook or SessionStart context carries or answers the choice, because agents cannot change the
+  policy or the selection.
 - **Whose privacy policy a command changes** (ADR-051 decision 8). With a remote target selected,
   `privacy tighten|propose` and the privacy step of `setup run` (also from the menu or the terminal
   interface's first run) change the target's policy and name it, by id and kind, before anything
@@ -1559,18 +1564,18 @@ later process to the default service.
 - **Upgrades.** A remote server is never replaced from this machine; a release mismatch is
   `remote_incompatible`, naming both releases. The bare-`PATH` hook rule of issue #604 still
   applies: put the intended launcher first on `PATH`.
-- **Network API (this tree, ADR-051 approach C).** The Codex hooks and the MCP bridge reach a
-  remote server through the server's own network API. A hook pass's drains and its SessionStart
-  status read name the project folder, which the client turns into the workspace claim (the path
-  is never sent), so every observation row it delivers is attested; a remote drain with no project
-  folder sends nothing and leaves the rows for the workspace agent. The workspace agent is a
-  separate `finishup agent run` process that the first connection from a project starts: it
-  answers the server's workspace calls while a call runs and afterwards, and delivers the rows a
-  hook could not. When the server cannot be reached the SessionStart context names it in fixed
-  words with the phase's continuation (for example `Continuation: remote_server_test.`), and a
-  locked server vault is named as the server owner's to unlock; neither names a host or tells the
-  agent to start or unlock a service on this machine. Host decision: supported, same code path as
-  the other hosts.
+- **Network API (this tree, ADR-051 approach C).** The Codex hooks and the MCP bridge reach a remote
+  server through the server's own network API. A hook pass's drains and its SessionStart status read
+  name the project folder, which the client turns into the workspace claim (the path is never sent),
+  so every observation row it delivers is attested; a remote drain with no project folder sends
+  nothing and leaves the rows for the workspace agent. The workspace agent is a separate `finishup
+  agent run` process that the first connection from a project starts: it answers the server's
+  workspace calls while a call runs and afterwards, and delivers the rows a hook could not, until
+  its idle exit, `finishup server disconnect` or a `finishup server use` that leaves the target
+  stops it. When the server cannot be reached the SessionStart context names it in fixed words with
+  the phase's continuation (for example `Continuation: remote_server_test.`), and a locked server
+  vault is named as the server owner's to unlock; neither names a host or tells the agent to start
+  or unlock a service on this machine. Host decision: supported, same code path as the other hosts.
 - **Evidence.** Coverage at the time of writing is unit and integration tests; the real-environment
   runs for each target kind are recorded with the pull request that lands the chosen approach. No
   Codex cell is claimed for a remote target until that evidence exists.

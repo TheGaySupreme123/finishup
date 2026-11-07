@@ -411,12 +411,22 @@ class RestTargetRuntime:
         del record, root
 
     def stop(self, root: Path | None) -> None:
+        """Stop the target's workspace agent, then its transport (``server disconnect``, a switch).
+
+        The agent is asked through its owner-only request file and waited for (``stop_agent``);
+        an agent that still holds its lock after that wait may still answer the server's reads
+        of files here, so the stop says so (``service_unavailable``, phase ``agent_stop``)
+        rather than reporting it stopped. The transport is torn down either way.
+        """
+
         record = _record(root)
         assert root is not None
-        from finishup.client.agent import stop_agent
+        from finishup.client.agent import agent_pid, stop_agent
 
         stop_agent(root)
         self._teardown(record, root)
+        if agent_pid(root) is not None:
+            raise TargetRuntimeError("service_unavailable", phase="agent_stop")
 
     def _teardown(self, record: ServerTarget, root: Path) -> None:
         del record, root
