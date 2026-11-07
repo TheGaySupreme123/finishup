@@ -398,9 +398,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   normalized, link-free path; never hidden or a system tree), and never the home directory, a
   folder that holds it, or one in its private trees. `server folders remove NAME FOLDER|--all` is
   the way out; like a change of mode, it applies from the workspace agent's next read, and a read
-  already in progress may still return files from that folder. Listing or removing a folder
-  keeps the mode; a folder listed in `local` mode admits a task's files there too, and is all the
-  server reads outside in `listed` mode, and `add`, `list` and `status` say so.
+  already in progress may still return files from that folder (a review the server already
+  prepared may still send what it read there). Listing or removing a folder keeps the mode; a
+  folder listed in `local` mode admits a task's files there too, and is all the server reads
+  outside in `listed` mode, and `add`, `list`, `remove` and `status` say so, as does the
+  `local`-mode notice shown before the typed name.
   `add` checks the home
   rules before it asks, so the owner never consents to a folder that is then refused. The record
   is owner-only (`<target root>/config/folders.json`, `yoetz.server-folders/1`, with an optional
@@ -1183,7 +1185,7 @@ through the same relay; human-control and secret channels never leave the server
 | `server login NAME` | `server logout NAME` | `server status` (credential present or absent, never the value) |
 | `server add NAME …` for a remote kind records the outside-read mode the owner answered (or `--outside-reads`; an official endpoint is `local` unrecorded) | `server folders mode NAME local` or `listed` changes it; `server remove NAME` removes it with the target | `server add` output, `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server folders mode NAME local` (trusted console and typed name whenever it records `local`, an official endpoint's included; without the console an official endpoint's `local` is left unrecorded) | `server folders mode NAME listed` (applies from the workspace agent's next read; a read already in progress may finish) | `server folders list NAME`, `server status [--json]`, `/server` status |
-| `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; applies from the workspace agent's next read, and a read already in progress may still return files) | `server folders list NAME`, `server status [--json]`, `/server` status |
+| `server folders add NAME FOLDER` (trusted console) | `server folders remove NAME FOLDER` or `--all` (also clears a damaged record, to an empty one in `listed` mode; applies from the workspace agent's next read, in either mode, and a read already in progress may still return files, and a review the server already prepared may still send what it read) | `server folders list NAME`, `server status [--json]`, `/server` status |
 | `server connect [NAME]` | `server disconnect [NAME]` (stops only what that root's runtime stamped; never by name or pattern) | `server status`, `server test` |
 | This computer's everyday service reports its machine-scope policy (the zero-network check, `privacy show`, a privacy change here): the owner-only marker of what it last reported (decision 8) | the next report replaces it; deleting FinishUP's folders removes it; the zero-network check removes it once the everyday installation no longer exists | `server status [--json]` (`policy_read`, `last_reported_at`), `server list`, `setup status --next`, the menu home, `/server` and the header |
 | Server-side key or edge setup | its revoke or teardown, named in the topology section | the server's own key listing |

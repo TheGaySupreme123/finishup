@@ -4678,7 +4678,12 @@ records `local` only after the typed name on the trusted console, unless the own
 official endpoint is left unrecorded (it says so and exits 0) and any other target is
 `trusted_console_required`. `mode NAME listed` is its reverse and asks nothing; any other value
 is `outside_read_mode_invalid`. A change of mode or folders applies from the workspace agent's
-next read; a read already in progress may still return files. `server folders add`
+next read; a read already in progress may still return files. `server folders remove` says so in
+either mode, and that a review the server already prepared may still send what it read; in
+`local` mode it also says the server no longer reads the files a task names beneath that folder
+unless its own policy covers them. The `local`-mode notice (`cli.server._LOCAL_MODE_BODY`, at
+`server add` and `server folders mode NAME local`) says a listed folder admits a task's files
+beside the server's policy. `server folders add`
 refuses a folder that `client.server_folders.folder_admissible` rejects (`folder_invalid`: not the
 input-root shape, the home directory, a folder holding it by spelling or identity, or one in its
 private trees) before it asks on the trusted console, and `add_folder` applies the same rule again

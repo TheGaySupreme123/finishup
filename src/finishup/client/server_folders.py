@@ -9,7 +9,8 @@ never sent to the server, and nothing the server sends changes it. Every remote 
 
 * ``local``: the agent answers the server's outside reads as a FinishUP service on this computer
   would answer them. The server's own admitted-root policy chooses the roots, and the adapters'
-  own fences and the agent's protected directories still hold; no folder of this record is asked.
+  own fences and the agent's protected directories still hold; the folders of this record also
+  admit the task inputs beneath them (below), and no other read asks them.
 * ``listed``: the agent reads outside the worktree only beneath a folder this computer's owner
   listed for that target with ``finishup server folders add``; anything else is refused.
 

@@ -131,6 +131,12 @@ def test_add_list_and_remove_are_a_reverse_pair(
     assert listed.exit_code == 0 and f"  {folder}" in listed.stdout.splitlines()
     removed = _invoke("remove", "lab", folder)
     assert removed.exit_code == 0 and "no longer read" in removed.stdout
+    # From the next read, and what a removal cannot undo, said as the servers guide says it.
+    assert "a read already under way may still return files from it" in removed.stdout
+    assert "a review the server already prepared may still send what it read there" in (
+        removed.stdout
+    )
+    assert folder not in removed.stdout
     assert read_folders(root, record.target_id) == ()
     assert "may read no folder" in _invoke("list", "lab").stdout
     missing = _invoke("remove", "lab", folder)
@@ -491,6 +497,11 @@ def test_declining_mode_local_on_the_console_changes_nothing(
     assert read_record(root, record.target_id) == FolderRecord()
     notice = " ".join(line.strip() for line in shown)
     assert record.target_id in notice and "(mode local)" in notice
+    # A folder listed for it admits a task's files in mode local too (ADR-051, 2026-11-07).
+    assert (
+        "The files a task names beneath a folder you list for it ('finishup server folders "
+        "add') are read too, even where that policy names no folder there."
+    ) in notice
     assert "does not bind a server that breaks FinishUP's rules" in notice
     assert "could read any other such file on this computer" in notice
     assert "Undo it with 'finishup server folders mode lab listed'" in notice
@@ -649,9 +660,28 @@ def test_in_mode_local_list_add_and_remove_say_the_folders_admit_task_files(
     assert f"  {folder}" in listed
     removed = _invoke("remove", "devbox", folder)
     assert removed.exit_code == 0, removed.output
-    assert "no longer lists that folder" in removed.stdout
-    assert "still reads what FinishUP on this computer would read" in removed.stdout
-    assert "'finishup server folders mode devbox listed'" in removed.stdout
+    shown = " ".join(removed.stdout.split())
+    assert "no longer lists that folder" in shown
+    # Removing it stops what the folder admitted in mode local too: the files a task names
+    # beneath it, where the server's own policy does not cover them, from the next read.
+    assert (
+        "from its next read it no longer reads the files a task names beneath that folder, "
+        "unless the server's own privacy policy covers them"
+    ) in shown
+    assert "a read already under way may still return files from it" in shown
+    assert "a review the server already prepared may still send what it read there" in shown
+    assert "still reads what FinishUP on this computer would read" in shown
+    assert "'finishup server folders mode devbox listed'" in shown
+    assert folder not in removed.stdout
+    assert read_record(root, record.target_id) == FolderRecord((), "local")
+    # --all says the same of every folder listed for it.
+    add_folder(root, record.target_id, folder)
+    cleared = _invoke("remove", "devbox", "--all")
+    assert cleared.exit_code == 0, cleared.output
+    shown = " ".join(cleared.stdout.split())
+    assert "no longer lists any folder" in shown
+    assert "the files a task names beneath any folder you listed" in shown
+    assert "may still return files from them" in shown
     assert read_record(root, record.target_id) == FolderRecord((), "local")
 
 

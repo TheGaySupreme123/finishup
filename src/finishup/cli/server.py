@@ -1819,12 +1819,13 @@ _LOCAL_MODE_BODY: Final = (
     "When that server checks or reviews your work, the FinishUP workspace agent here answers its",
     "reads outside your project folder as a FinishUP service on this computer answers them: the",
     "server's own privacy policy chooses the folders it reads task inputs from, and the agent does",
-    "not limit it to folders you list for it. FinishUP's usual safety checks still hold: hidden,",
-    "credential-named and system files, your home folder's private folders and FinishUP's own",
-    "folders are never read, and links are never followed. But that policy does not bind a server",
-    "that breaks FinishUP's rules: such a server could read any other such file on this computer",
-    "and list the names in its folders. Choose this only for a server you trust as you trust",
-    "FinishUP on this computer.",
+    "not limit it to folders you list for it. The files a task names beneath a folder you list",
+    "for it ('finishup server folders add') are read too, even where that policy names no folder",
+    "there. FinishUP's usual safety checks still hold: hidden, credential-named and system files,",
+    "your home folder's private folders and FinishUP's own folders are never read, and links are",
+    "never followed. But the server's policy does not bind a server that breaks FinishUP's rules:",
+    "such a server could read any other such file on this computer and list the names in its",
+    "folders. Choose this only for a server you trust as you trust FinishUP on this computer.",
     "Undo it with 'finishup server folders mode {name} listed'.",
 )
 
@@ -1898,6 +1899,17 @@ def _still_local_line(record: ServerTarget) -> str:
         f"It is in mode local, so outside your projects it still reads what FinishUP on this "
         f"computer would read; 'finishup server folders mode {record.name} listed' limits it to "
         "the folders you list."
+    )
+
+
+def _removed_aftermath(*, every: bool) -> str:
+    """What removing folders leaves (ADR-051 decision 5): the agent stops from its next read, but
+    neither a read under way nor a review the server already prepared is undone."""
+
+    them = "them" if every else "it"
+    return (
+        f"a read already under way may still return files from {them}, and a review the server "
+        "already prepared may still send what it read there."
     )
 
 
@@ -2044,12 +2056,19 @@ def server_folders_remove(
         return
     which = "any folder" if folder is None else "that folder"
     if outside_reads_of(root, record).mode == "local":
-        typer.echo(f"{who} no longer lists {which}.")
+        # In mode local a listed folder also admitted the files a task names beneath it, beyond
+        # the server's own policy (ADR-051 decision 5, 2026-11-07): removing it stops that.
+        beneath = "any folder you listed" if folder is None else "that folder"
+        typer.echo(
+            f"{who} no longer lists {which}: from its next read it no longer reads the files a "
+            f"task names beneath {beneath}, unless the server's own privacy policy covers them; "
+            + _removed_aftermath(every=folder is None)
+        )
         typer.echo(_still_local_line(record))
         return
     typer.echo(
-        f"{who} may no longer read {which} on this computer, from its next read; a read already "
-        "under way may still return files from it."
+        f"{who} may no longer read {which} on this computer, from its next read; "
+        + _removed_aftermath(every=folder is None)
     )
 
 

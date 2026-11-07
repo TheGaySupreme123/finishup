@@ -458,6 +458,11 @@ def test_choosing_local_at_add_shows_what_it_lets_the_server_read_before_the_nam
     assert console.asked[name_prompt] == (b"gw",)
     before_name = _shown_before_ask(console, name_prompt)
     assert _RULE_BREAKING in before_name
+    # And that a folder the owner lists admits a task's files beside the server's own policy.
+    assert (
+        "The files a task names beneath a folder you list for it ('finishup server folders "
+        "add') are read too, even where that policy names no folder there."
+    ) in " ".join(before_name.split())
     assert "Undo it with 'finishup server folders mode gw listed'." in before_name
     if how == "answered":
         # After the answer, not before: the owner who answers listed never sees it.
