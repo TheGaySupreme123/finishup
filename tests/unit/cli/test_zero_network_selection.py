@@ -1164,11 +1164,11 @@ def test_server_status_json_says_nothing_when_there_is_nothing_to_say(
     assert (document["zero_network_selection"], stderr, reads) == (None, "", [1])
 
 
-def test_the_status_document_reads_the_item_itself_for_the_terminal_interface(
+def test_the_status_document_reads_the_item_itself_when_not_given_one(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The terminal interface's ``/server`` status builds the document without the CLI's stderr
-    item; the document then asks the check itself."""
+    """A caller that has not read the item (``server status`` and the terminal interface pass
+    the one they showed) gets the document's own read of the check."""
 
     record = _remote("local_port")
     _policy(monkeypatch, "zero_network")
@@ -1185,6 +1185,23 @@ def test_the_status_document_reads_the_item_itself_for_the_terminal_interface(
         "kind": "local_port",
         "detail": None,
     }
+
+
+def test_server_test_never_asks_this_computers_policy(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``server test`` shows the probe only, never the item, so it asks no service for it."""
+
+    _remote()
+    reads = _policy(monkeypatch, "zero_network")
+    monkeypatch.setattr(
+        "finishup.client.connector_runtime.ConnectorTargetRuntime.probe", _unreachable
+    )
+
+    result = _invoke("server", "test")
+
+    assert "State: unavailable (remote_unreachable)" in result.stdout
+    assert reads == []
 
 
 def test_setup_readiness_names_the_item_with_its_continuation(

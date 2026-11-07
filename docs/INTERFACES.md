@@ -4693,7 +4693,9 @@ on this computer, an isolation variable or pin, or this computer's policy permit
 never set up or cannot be read). `build_status_document(name, *, now=None, zero_network=None)` asks
 the check itself unless the caller passes the item it already found: `server status` passes the one
 it printed on stderr, so the stderr line and the field are the same item from one policy read; the
-terminal interface's `/server` status lets the document ask.
+terminal interface's `/server` status passes the item `/server` read just before while
+`still_selected` holds (else none), and `server test`, which never shows it, passes none, so neither
+asks this computer's service a second time.
 `connect`, `disconnect` and `test` dispatch through `finishup.client.target_runtime.TargetRuntime`:
 `ensure_ready(root) -> None`, `stop(root) -> None`, `probe(root) -> ProbeResult`, registered per
 kind; the foundation registers `local` and each approach registers its remote kinds (the edge

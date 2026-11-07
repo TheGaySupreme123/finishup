@@ -1229,7 +1229,9 @@ def build_status_document(
     """The ``server-target-status`` 1.0.0 document for ``name`` (or this process's root).
 
     ``zero_network`` answers the zero-network item (ADR-051 decision 8) when the caller already
-    found it; by default the document asks ``find_zero_network_selection`` itself.
+    found it (``server status`` the item it printed, the terminal interface the one ``/server``
+    showed) or will not show it (``server test``); by default the document asks
+    ``find_zero_network_selection`` itself, which may ask this computer's service.
     """
 
     source = _source()
@@ -1435,7 +1437,9 @@ def server_test(
 ) -> None:
     """Probe a target and compare its round trip with the hook and startup-gate budgets."""
 
-    document = build_status_document(name)
+    # These lines never show the zero-network item (``status`` and ``list`` do), so this
+    # computer's service is not asked for its policy.
+    document = build_status_document(name, zero_network=lambda: None)
     _emit(status_lines(document))
     probe = cast(dict[str, JsonValue], document["probe"])
     if probe["outcome"] not in {"ready", "reachable"}:

@@ -1556,18 +1556,31 @@ class FinishUpRuntime:
         )
 
     async def server_status_lines(self, name: str | None = None) -> tuple[str, ...]:
-        """``finishup server status`` for ``name`` (or the selected server), probed once."""
+        """``finishup server status`` for ``name`` (or the selected server), probed once.
+
+        The zero-network item (ADR-051 decision 8) is the one ``/server`` read just before
+        (``refresh_zero_network_item``), kept while the selection on disk still shows it: these
+        lines never show it (``/server`` already did), so this computer's service is not asked
+        for its policy a second time.
+        """
 
         import asyncio
 
         from finishup.cli.server import ServerCommandRefused, build_status_document, status_lines
+        from finishup.cli.zero_network_selection import still_selected
         from finishup.client.targets import TargetError
         from finishup.config.paths import PathSafetyError
+
+        def zero_network() -> ZeroNetworkSelection | None:
+            item = self._zero_network
+            return item if item is not None and still_selected(item) else None
 
         try:
             # Off the loop: the probe, and this client's record of what that server may read
             # outside your projects (ADR-051 decision 5), which the document carries.
-            document = await asyncio.to_thread(build_status_document, name)
+            document = await asyncio.to_thread(
+                build_status_document, name, zero_network=zero_network
+            )
         except (ServerCommandRefused, TargetError, PathSafetyError) as error:
             raise _server_failure(error) from None
         return status_lines(document)
