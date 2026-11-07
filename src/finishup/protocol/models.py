@@ -3164,6 +3164,7 @@ _PUBLISH_FIXED_SUMMARY: Final[Mapping[tuple[str, str], str]] = MappingProxyType(
         ("check_recorded", "1.4.0"): "check_recorded",
         ("check_recorded", "1.5.0"): "check_recorded",
         ("check_recorded", "1.6.0"): "check_recorded",
+        ("check_recorded", "1.7.0"): "check_recorded",
         ("receipt_recorded", "1.0.0"): "receipt_recorded",
         ("coordination_context_recorded", "1.0.0"): "coordination_context_recorded",
         ("coordination_obligation_declared", "1.0.0"): "coordination_obligation_declared",
@@ -9657,6 +9658,8 @@ _RECEIPT_STRUCTURAL_POINTERS: Final = (
     + _prefix_leaf_patterns("/document/gaps/*", ("code", "effect", "status", "subject_refs/*"))
     # Issue #1017: the frontier a later check cleared a historical gap at.
     + _prefix_leaf_patterns("/document/gaps/*/cleared_at_frontier", FRONTIER_LEAVES)
+    # ADR-051 decision 5 (receipt-document 1.4.0): bounded counts listed mode kept back.
+    + _prefix_leaf_patterns("/document/gaps/*/kept_back", ("declared_tests", "task_inputs"))
     + _prefix_leaf_patterns("/document/redactions/*", ("category", "count", "reason"))
     + _prefix_leaf_patterns("/document/sections/*", ("key",))
     + (
@@ -10040,7 +10043,7 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 2102
+        len(result) != 2105
     ):  # ... #1239 +7 status task_lifecycle (with quiet_until); #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
         # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices),
@@ -10068,6 +10071,8 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         # #1244 +6 check (the brief reply's detail marker and its closure_state subset).
         # #1240 D5 +1 receipt (agent_closing_prompt).
         # ADR-051 decision D4 +3 receipt (workspace_provenance status, reason and notice).
+        # ADR-051 decision 5 +2 receipt (an outside_reads_not_listed gap's kept_back counts),
+        # +1 check_recorded 1.7.0 event selector.
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

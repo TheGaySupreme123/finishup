@@ -284,6 +284,7 @@ from finishup.domain.receipts import (
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
+    OutsideReadsKeptBack,
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
@@ -2779,7 +2780,10 @@ def _with_baseline_gap(gaps: Sequence[str], outcome: CheckChangeOutcome) -> tupl
 
 
 def _with_not_listed_gap(
-    gaps: Sequence[str], outcome: CheckChangeOutcome, declared_tests_not_listed: int
+    gaps: Sequence[str],
+    outcome: CheckChangeOutcome,
+    declared_tests_not_listed: int,
+    kept_back: list[OutsideReadsKeptBack | None] | None = None,
 ) -> tuple[str, ...]:
     """``gaps`` plus ``outside_reads_not_listed`` when a claim-bound task's agent kept files from
     this server under its owner's listed mode (ADR-051 decision 5).
@@ -2789,6 +2793,9 @@ def _with_not_listed_gap(
     object); a closed code with no path, so new and recovered jobs agree.
     """
 
+    if kept_back is not None:
+        # ADR-051 decision 5: the counts beside the code, for the check to record (1.7.0).
+        kept_back[0] = _kept_back_counts(outcome, declared_tests_not_listed)
     inputs = outcome.change is not None and outcome.change.capture.outside_inputs_not_listed
     if not (inputs or declared_tests_not_listed):
         return tuple(gaps)
@@ -4782,6 +4789,19 @@ def _outside_not_listed_count(
     return declared_tests_not_listed + kept
 
 
+def _kept_back_counts(
+    check_change: CheckChangeOutcome, declared_tests_not_listed: int
+) -> OutsideReadsKeptBack | None:
+    """The bounded counts listed mode kept back (ADR-051 decision 5), as frozen in the check
+    change and the job's case object; ``None`` when it kept nothing back. Kept out of the
+    evaluator for its type checker's complexity bound."""
+
+    inputs = (
+        0 if check_change.change is None else check_change.change.capture.outside_inputs_not_listed
+    )
+    return OutsideReadsKeptBack.clamped(inputs, declared_tests_not_listed)
+
+
 def _record_outside_not_listed(request_id: str, count: int) -> None:
     """Record ``semantic_task_inputs_outside_not_listed`` in its own diagnostic record.
 
@@ -5547,6 +5567,44 @@ def _privacy_gated_semantic_evaluator(
         final_review: bool = False,
         task_fact_gaps: tuple[str, ...] = (),
     ) -> FinalSemanticEvaluation | None:
+        """``_evaluate_case``, with the counts listed mode kept back beside their disclosure.
+
+        ADR-051 decision 5 (open question 2 closed 2026-11-07): the case freezes how many task
+        inputs and declared tests a claim-bound task's agent kept from this server; whichever
+        way the evaluation ends, a result that discloses ``outside_reads_not_listed`` carries
+        those counts, so the check records them (check-recorded 1.7.0) for the receipt.
+        """
+
+        kept_back: list[OutsideReadsKeptBack | None] = [None]
+        result = await _evaluate_case(
+            frozen,
+            findings,
+            runtime,
+            lineage_evaluation,
+            require_complete_specification,
+            final_review,
+            task_fact_gaps,
+            kept_back=kept_back,
+        )
+        if (
+            result is None
+            or kept_back[0] is None
+            or OUTSIDE_READS_NOT_LISTED_GAP not in result.case_content_gaps
+        ):
+            return result
+        return replace(result, outside_reads_kept_back=kept_back[0])
+
+    async def _evaluate_case(
+        frozen: FrozenCase,
+        findings: tuple[object, ...],
+        runtime: TaskRuntime | None = None,
+        lineage_evaluation: LineageEvaluation | None = None,
+        require_complete_specification: bool = False,
+        final_review: bool = False,
+        task_fact_gaps: tuple[str, ...] = (),
+        *,
+        kept_back: list[OutsideReadsKeptBack | None],
+    ) -> FinalSemanticEvaluation | None:
         """One review of the frozen case: the reviewer conversation over one durable job (#1118).
 
         A recorded in-check follow-up job (issue #1047, retired) is still recovered through its
@@ -6061,7 +6119,7 @@ def _privacy_gated_semantic_evaluator(
                     else workspace_routing.reads_for(workspace_root),
                 )
             captured_content_gaps = _with_not_listed_gap(
-                captured_content_gaps, check_change, declared_tests_not_listed
+                captured_content_gaps, check_change, declared_tests_not_listed, kept_back
             )
 
             def build_case(

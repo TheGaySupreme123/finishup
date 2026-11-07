@@ -24,7 +24,7 @@ import pytest
 import finishup.service.ready_composition as ready_composition_module
 from builders.workspace_agent_fake import FakeWorkspaceAgent
 from finishup.adapters.task_input_read import read_declared_test
-from finishup.domain.receipts import OUTSIDE_READS_NOT_LISTED_GAP
+from finishup.domain.receipts import OUTSIDE_READS_NOT_LISTED_GAP, OutsideReadsKeptBack
 from finishup.kernel.declared_checks import DeclaredTestCandidate
 from finishup.service.workspace_hub import WorkspaceAgentHub
 from integration.service import test_claim_bound_sessions as claim_bound
@@ -135,6 +135,11 @@ async def test_an_outside_declared_test_is_pinned_only_beneath_an_admitted_folde
     # Not offered because the owner did not list it: the check says so, never in silence, and the
     # job's case object freezes it, so a recovered job builds the same case.
     assert (OUTSIDE_READS_NOT_LISTED_GAP in result.case_content_gaps) is not admitted
+    # ADR-051 decision 5 (open question 2): the evaluation carries the counts beside the code,
+    # for the check to record and the receipt to say.
+    assert result.outside_reads_kept_back == (
+        None if admitted else OutsideReadsKeptBack(task_inputs=0, declared_tests=2)
+    )
     ((stored),) = frozen
     assert stored[6] == (0 if admitted else 2)
 

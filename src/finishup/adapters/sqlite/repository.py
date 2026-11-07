@@ -54,6 +54,7 @@ from finishup.domain.findings import (
     SemanticProvenance,
     rank_key,
 )
+from finishup.domain.receipts import OutsideReadsKeptBack
 from finishup.domain.values import (
     Actor,
     ActorType,
@@ -3138,6 +3139,7 @@ class SqliteLedger:
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
         review_mode: CheckReviewMode | None = None,
+        outside_reads_kept_back: OutsideReadsKeptBack | None = None,
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -3179,6 +3181,7 @@ class SqliteLedger:
                     semantic_route_required=semantic_route_required,
                     deliverable_states=deliverable_states,
                     review_mode=review_mode,
+                    outside_reads_kept_back=outside_reads_kept_back,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

@@ -35,6 +35,7 @@ from finishup.domain.findings import (
     SemanticProvenance,
 )
 from finishup.domain.privacy import SourceAuthorship
+from finishup.domain.receipts import OutsideReadsKeptBack
 from finishup.domain.task_statement import SpecificationPreflight
 from finishup.domain.values import (
     Actor,
@@ -2464,6 +2465,7 @@ class LedgerPort(Protocol):
         correctness_advisories: tuple[JsonObject, ...] = (),
         reviewer: JsonObject | None = None,
         review_mode: CheckReviewMode | None = None,
+        outside_reads_kept_back: OutsideReadsKeptBack | None = None,
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

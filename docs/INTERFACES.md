@@ -1983,9 +1983,21 @@ its `-part-NN` parts, not the source file; renderings say "of the captured item"
   for a server they trust, `finishup server folders mode NAME local`, on the client machine; an
   agent cannot. It says which fits which file: listing a folder covers a file outside the
   project, while a declared test in the project that Git ignores is read only in `local` mode (or
-  once Git no longer ignores it), whatever folder is listed, the project's own included. A closed disclosure code with no path; the receipt line carries no number,
-  because the released receipt document has no field for one (ADR-051, open question 2), and a
-  `semantic_outside_reads_not_listed` diagnostic record (same request id as `semantic_case_built`,
+  once Git no longer ignores it), whatever folder is listed, the project's own included. A closed
+  disclosure code with no path. How many were kept back travels as bounded counts, never which
+  file (ADR-051 open question 2, closed 2026-11-07): `FinalSemanticEvaluation.
+  outside_reads_kept_back` (`domain.receipts.OutsideReadsKeptBack`: `task_inputs` and
+  `declared_tests`, each 0 to `MAX_KEPT_BACK_COUNT` = 64, at least one not zero, clamped), recorded
+  on the check as check-recorded 1.7.0's optional `outside_reads_kept_back` (the writer chooses
+  1.7.0 exactly when it is present; 1.6.0 and older readers refuse it), and carried on the
+  receipt's live gap as receipt-document 1.4.0's optional `kept_back` (admitted only beside this
+  code; the released 1.3.0 never carries it; receipt-result 1.5.0, unreleased, carries 1.4.0
+  documents). The gap's detail opens with the fixed line `outside_reads_kept_back_sentence`
+  ("N task inputs and M declared tests outside the folders this server may read were kept back.")
+  before the sentence above, so the JSON, markdown and text receipts, the CLI receipt (which
+  prints the line for a JSON receipt too, `kept_back_from_wire`), the terminal interface and the
+  MCP receipt summary (a required part) say the number; a check result names the code without
+  one. A `semantic_outside_reads_not_listed` diagnostic record (same request id as `semantic_case_built`,
   written only when not zero) carries the count as `semantic_task_inputs_outside_not_listed`
   (task inputs and declared tests together; `finishup service diagnostics` shows it), classified like
   `task_input_outside_not_admitted` (G4c disclosure, AI-powered baseline only). The MCP check
@@ -5863,7 +5875,9 @@ line reports its inventory, including both setup contracts and `isolation-report
 (issue #567), through `2.3.0`. Manifests carried from the 0.2 line retain their bytes. `2.3.0`
 shipped in v0.3.0 and is frozen with them; the ADR-051 inventory (control `2.10.0`,
 `isolation-report` `1.1.0`, `server-target-status` `1.0.0` and the approach's own contracts) is
-reported by `2.4.0`.
+reported by `2.4.0`, which also lists `check-recorded` `1.7.0` and `receipt-document` `1.4.0`
+(the counts listed mode kept back, ADR-051 decision 5) and names `receipt-document` `1.4.0` as
+the version new receipts are written in.
 
 `PrivacyAuditPort.list_pending_disclosures(audience) -> PendingDisclosurePage` projects only
 `PendingDisclosureEntry(pending_id, task_id, expires_at)` for proposals in `awaiting_human` or
@@ -10074,6 +10088,10 @@ the basis could not be read):
   `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
   `effect` (`bounds|disclosed`). A clean conclusion beside a limitation id or a bounding gap is
   invalid, and `reason_total` is zero exactly when the conclusion is clean.
+- `receipt-document` 1.4.0 (a new version; 1.3.0 shipped in v0.3.0): 1.3.0 plus a live
+  `outside_reads_not_listed` gap's optional `kept_back {task_inputs, declared_tests}` (ADR-051
+  decision 5). Every rule of 1.3.0 (children, terminal sections) holds for 1.4.0 too
+  (`_CHILD_BEARING_ARTIFACTS`); `kept_back` is refused on any other artifact.
 
 Text (`finishup.protocol.readiness_text`): the owner-approved `readiness_directive` sentence is
 unchanged; `predicted_receipt_variants` appends "The receipt will read X: <reasons>." (while work

@@ -41,7 +41,11 @@ from finishup.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from finishup.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP, ReceiptConclusion
+from finishup.domain.receipts import (
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+    OutsideReadsKeptBack,
+    ReceiptConclusion,
+)
 from finishup.domain.reviewer_reads import reviewer_record_from_wire
 from finishup.domain.values import (
     ActionId,
@@ -323,6 +327,10 @@ DEFERRED_CHECK_EVENT_SCHEMA_VERSION: Final = "1.5.0"
 # record is present, or for a requested review stopped at its unassessability cap (#1149).
 # 1.4.0 and 1.5.0 readers reject the field/reason, so neither rides an older version.
 REVIEWER_CHECK_EVENT_SCHEMA_VERSION: Final = "1.6.0"
+# 1.7.0 (ADR-051 decision 5, open question 2 closed 2026-11-07) is 1.6.0 plus the optional
+# ``outside_reads_kept_back`` counts and is chosen exactly when they are present; 1.6.0 and older
+# readers reject the field, so it never rides an older version.
+KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION: Final = "1.7.0"
 SEMANTIC_EVENT_SCHEMA_VERSION: Final = "1.2.0"
 SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 # 1.3.0 (unreleased on the 0.3 line) also admits the optional review-dialogue fields of issue #905
@@ -1002,6 +1010,7 @@ def _locator_key_kind(schema: EventSchema) -> str:
                         REVIEW_CHECK_EVENT_SCHEMA_VERSION,
                         DEFERRED_CHECK_EVENT_SCHEMA_VERSION,
                         REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
+                        KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION,
                     }
                 )
                 or (
@@ -3559,6 +3568,9 @@ class CheckRecordedPayload:
     # ADR-049 (1.4.0 only): the conversation review mode this check ran in and why. Absent on
     # checks that predate it and where the owner's conversation setting could not be read.
     review_mode: CheckReviewMode | None = None
+    # ADR-051 decision 5 (1.7.0 only): how many task inputs and declared tests a claim-bound
+    # check's listed mode kept from review. Absent everywhere else, so those checks keep bytes.
+    outside_reads_kept_back: OutsideReadsKeptBack | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -3723,6 +3735,11 @@ class CheckRecordedPayload:
             raise ProtocolValueError("invalid_event_value_type")
         if self.review_mode is not None and type(self.review_mode) is not CheckReviewMode:
             raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.outside_reads_kept_back is not None
+            and type(self.outside_reads_kept_back) is not OutsideReadsKeptBack
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
         object.__setattr__(
             self, "deliverable_states", validate_deliverable_states(self.deliverable_states)
         )
@@ -3851,6 +3868,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         EventSchema("check_recorded", DEFERRED_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         EventSchema("check_recorded", REVIEWER_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
+        EventSchema("check_recorded", KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         **{
             EventSchema("check_recorded", version): CheckRecordedPayload
             for version in SEMANTIC_EVENT_SCHEMA_VERSIONS
@@ -4741,6 +4759,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "reviewer",
                     "correctness_advisories",
                     "totals",
+                    "outside_reads_kept_back",
                 }
             ),
         ),
@@ -4890,9 +4909,15 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         _validate_event_schema_payload(schema, finding)
         return finding
     required, optional = _PAYLOAD_SHAPES[schema.name]
-    if schema.name == "check_recorded" and schema.version != REVIEWER_CHECK_EVENT_SCHEMA_VERSION:
+    if schema.name == "check_recorded" and schema.version not in {
+        REVIEWER_CHECK_EVENT_SCHEMA_VERSION,
+        KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION,
+    }:
         # #1118: an older check version never carried the reviewer record; its reader refuses it.
         optional = optional - {"reviewer", "correctness_advisories"}
+    if schema.name == "check_recorded" and schema.version != KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION:
+        # ADR-051 decision 5: only 1.7.0 carries the counts listed mode kept back.
+        optional = optional - {"outside_reads_kept_back"}
     if schema.name == "evidence_recorded" and schema.version != SCHEMA_VERSION:
         optional = frozenset({*optional, "digest_binding"})
     if schema == EventSchema("result_recorded", RESULT_VERIFICATION_SCHEMA_VERSION):
@@ -5353,6 +5378,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             deliverable_states=tuple(
                 DeliverableState.from_wire(item)
                 for item in _array(_optional(source, "deliverable_states") or ())
+            ),
+            outside_reads_kept_back=(
+                None
+                if (kept_back := _optional(source, "outside_reads_kept_back")) is None
+                else OutsideReadsKeptBack.from_wire(kept_back)
             ),
             totals=(
                 None
@@ -5943,6 +5973,13 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             result, "deliverable_states", tuple(item.as_wire() for item in value.deliverable_states)
         )
         _optional_value(result, "totals", value.totals)
+        _optional_value(
+            result,
+            "outside_reads_kept_back",
+            None
+            if value.outside_reads_kept_back is None
+            else cast(JsonValue, value.outside_reads_kept_back.as_wire()),
+        )
         return _json_object(result)
     if payload_type is ReceiptRecordedPayload:
         value = cast(ReceiptRecordedPayload, payload)
@@ -6034,10 +6071,20 @@ def _validate_event_schema_payload(
             or bool(payload.deliverable_states)
             or payload.review_mode is not None
         )
-        # 1.6.0 exists exactly for the reviewer record (#1118), so that gate is first. 1.5.0 exists
-        # only for the pre-edit deferral reason. A deferred check still carries review_mode and
-        # totals, so that gate is next: those fields do not promote it to 1.4.0.
+        # 1.7.0 exists exactly for the kept-back counts (ADR-051 decision 5) and is a superset
+        # of 1.6.0, so that gate is first. 1.6.0 exists exactly for the reviewer record (#1118).
+        # 1.5.0 exists only for the pre-edit deferral reason. A deferred check still carries
+        # review_mode and totals, so that gate is next: those fields do not promote it to 1.4.0.
         if (
+            payload.outside_reads_kept_back is not None
+            or schema.version == KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION
+        ):
+            if (
+                schema.version != KEPT_BACK_CHECK_EVENT_SCHEMA_VERSION
+                or payload.outside_reads_kept_back is None
+            ):
+                raise ProtocolValueError("invalid_event_schema")
+        elif (
             payload.reviewer is not None
             or payload.correctness_advisories
             or payload.semantic_reason is SemanticReason.ROUND_LIMIT_UNASSESSABLE

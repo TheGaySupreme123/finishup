@@ -220,6 +220,12 @@ __all__ = [
     "TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE",
     "OUTSIDE_READS_NOT_LISTED_GAP",
     "OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE",
+    "KEPT_BACK_RECEIPT_ARTIFACT",
+    "MAX_KEPT_BACK_COUNT",
+    "OutsideReadsKeptBack",
+    "kept_back_from_wire",
+    "receipt_document_artifact_version",
+    "outside_reads_kept_back_sentence",
     "check_time_change_unavailable_reason_gap",
 ]
 
@@ -568,8 +574,9 @@ VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP: Final = "verification_input_directo
 # answer for it). Only those files are missing; the rest of the read reached review. A closed
 # disclosure code with no path, on the same terms as the codes above: it never bounds the
 # receipt's conclusion, and only the owner, on the client machine, can clear it. How many files
-# were kept back is frozen with the check change and the job's case object and reaches the
-# ``semantic_case_built`` diagnostic; the receipt document has no field for a number.
+# were kept back is frozen with the check change and the job's case object, recorded on the check
+# (check-recorded 1.7.0) and carried by the receipt's gap (receipt-document 1.4.0,
+# ``OutsideReadsKeptBack``), whose detail opens with the fixed count line.
 OUTSIDE_READS_NOT_LISTED_GAP: Final = "outside_reads_not_listed"
 # The bounded MCP summary's shorter form of that code's sentence; it still names the owner's step.
 TASK_INPUT_OUTSIDE_NOT_ADMITTED_SHORT_SENTENCE: Final = (
@@ -584,6 +591,93 @@ OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE: Final = (
     " outside the project, or `finishup server folders mode NAME local` for a server they trust,"
     " the only way for a test in the project that Git ignores."
 )
+# The most files of either kind one check says listed mode kept back (ADR-051 decision 5, open
+# question 2 closed 2026-11-07): well above the 16 task-input values and four kept copies one
+# check-time read judges, and the three declared tests one review pins. A larger count is clamped.
+MAX_KEPT_BACK_COUNT: Final = 64
+
+
+@dataclass(frozen=True, slots=True)
+class OutsideReadsKeptBack:
+    """How many files a claim-bound check's listed mode kept from review (ADR-051 decision 5).
+
+    ``task_inputs``: the task-named inputs (and kept copies) the client's workspace agent left
+    unread; ``declared_tests``: the declared tests it refused. Bounded counts, never which file:
+    the check-recorded event (1.7.0) records them and the receipt's ``outside_reads_not_listed``
+    gap carries them (receipt-document 1.4.0). At least one is not zero.
+    """
+
+    task_inputs: int
+    declared_tests: int
+
+    def __post_init__(self) -> None:
+        for value in (self.task_inputs, self.declared_tests):
+            if type(value) is not int or not 0 <= value <= MAX_KEPT_BACK_COUNT:
+                raise ProtocolValueError("invalid_event_value_type")
+        if not (self.task_inputs or self.declared_tests):
+            raise ProtocolValueError("invalid_event_value_type")
+
+    @classmethod
+    def clamped(cls, task_inputs: int, declared_tests: int) -> OutsideReadsKeptBack | None:
+        """The counts within the bound, or ``None`` when listed mode kept nothing back."""
+
+        bounded = (
+            max(0, min(task_inputs, MAX_KEPT_BACK_COUNT)),
+            max(0, min(declared_tests, MAX_KEPT_BACK_COUNT)),
+        )
+        return cls(*bounded) if any(bounded) else None
+
+    def as_wire(self) -> dict[str, int]:
+        return {"declared_tests": self.declared_tests, "task_inputs": self.task_inputs}
+
+    @classmethod
+    def from_wire(cls, value: object) -> OutsideReadsKeptBack:
+        if not isinstance(value, Mapping) or set(cast(Mapping[str, object], value)) != {
+            "declared_tests",
+            "task_inputs",
+        }:
+            raise ProtocolValueError("invalid_event_value_type")
+        source = cast(Mapping[str, object], value)
+        return cls(cast(int, source["task_inputs"]), cast(int, source["declared_tests"]))
+
+
+def kept_back_from_wire(document: object) -> OutsideReadsKeptBack | None:
+    """The counts a receipt document's live ``outside_reads_not_listed`` gap carries, if any.
+
+    For surfaces that render a JSON receipt (the CLI, the terminal interface, the MCP summary):
+    anything malformed reads as no counts, so a surface never shows a number it cannot trust.
+    """
+
+    if not isinstance(document, Mapping):
+        return None
+    gaps = cast(Mapping[str, object], document).get("gaps")
+    if not isinstance(gaps, list | tuple):
+        return None
+    for gap in cast(Sequence[object], gaps):
+        if not isinstance(gap, Mapping):
+            continue
+        row = cast(Mapping[str, object], gap)
+        kept = row.get("kept_back")
+        if row.get("code") != OUTSIDE_READS_NOT_LISTED_GAP or not isinstance(kept, Mapping):
+            continue
+        try:
+            return OutsideReadsKeptBack.from_wire(dict(cast(Mapping[str, object], kept)))
+        except ProtocolValueError:
+            return None
+    return None
+
+
+def outside_reads_kept_back_sentence(kept: OutsideReadsKeptBack) -> str:
+    """The fixed count line that opens an ``outside_reads_not_listed`` disclosure: numbers only,
+    never a path."""
+
+    inputs = "task input" if kept.task_inputs == 1 else "task inputs"
+    tests = "declared test" if kept.declared_tests == 1 else "declared tests"
+    verb = "was" if kept.task_inputs + kept.declared_tests == 1 else "were"
+    return (
+        f"{kept.task_inputs} {inputs} and {kept.declared_tests} {tests} outside the folders this"
+        f" server may read {verb} kept back."
+    )
 
 
 def check_time_change_unavailable_reason_gap(reason: str) -> str:
@@ -1474,6 +1568,14 @@ class ReceiptVersionSlice:
         )
 
 
+# The receipt-document artifacts that carry the child section and the issue #905 terminal-state
+# sections: 1.3.0, and 1.4.0, its superset that adds the ``kept_back`` counts beside an
+# ``outside_reads_not_listed`` gap (ADR-051 decision 5, open question 2 closed 2026-11-07).
+_CHILD_BEARING_ARTIFACTS: Final = frozenset({"1.3.0", "1.4.0"})
+# The artifact that may carry ``ReceiptGap.kept_back``.
+KEPT_BACK_RECEIPT_ARTIFACT: Final = "1.4.0"
+
+
 def _receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | None:
     """Return the selected receipt-document artifact version from a receipt version slice.
 
@@ -1495,10 +1597,16 @@ def _receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | N
     )
 
 
+def receipt_document_artifact_version(versions: ReceiptVersionSlice) -> str | None:
+    """The receipt-document artifact version a receipt's version slice selects, if any."""
+
+    return _receipt_document_artifact_version(versions)
+
+
 def receipt_document_carries_terminal_sections(versions: ReceiptVersionSlice) -> bool:
     """Whether this receipt artifact version carries the issue #905 terminal-state sections."""
 
-    return _receipt_document_artifact_version(versions) == "1.3.0"
+    return _receipt_document_artifact_version(versions) in _CHILD_BEARING_ARTIFACTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -1580,9 +1688,18 @@ class ReceiptGap:
     cleared_at_frontier: Frontier | None = None
     # ADR-046: absent reads "not recorded" (an earlier artifact); present only on a live gap.
     effect: ReceiptGapEffect | None = None
+    # ADR-051 decision 5 (receipt-document 1.4.0): how many task inputs and declared tests a
+    # remote server's listed mode kept from review; only on a live ``outside_reads_not_listed``.
+    kept_back: OutsideReadsKeptBack | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_gap"
+        if self.kept_back is not None and (
+            type(self.kept_back) is not OutsideReadsKeptBack
+            or self.code != OUTSIDE_READS_NOT_LISTED_GAP
+            or self.status is not ReceiptGapStatus.LIVE
+        ):
+            raise ProtocolValueError(invalid)
         if self.effect is not None and (
             type(self.effect) is not ReceiptGapEffect or self.status is not ReceiptGapStatus.LIVE
         ):
@@ -1828,7 +1945,7 @@ class ReceiptDocument:
                 raise ProtocolValueError(invalid)
         if self.verification_coverage is not None and (
             type(self.verification_coverage) is not VerificationCoverage
-            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
         ):
             raise ProtocolValueError(invalid)
         try:
@@ -1887,14 +2004,14 @@ class ReceiptDocument:
         receipt_schema_version = _receipt_document_artifact_version(self.versions)
         if self.semantic_status is not None or self.semantic_reason is not None:
             if (
-                receipt_schema_version != "1.3.0"
+                receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
                 or self.semantic_status is not SemanticStatus.UNAVAILABLE
                 or self.semantic_reason is not SemanticReason.ROUND_LIMIT_UNASSESSABLE
                 or self.semantic_provenance is not None
                 or self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
             ):
                 raise ProtocolValueError(invalid)
-        if self.children.children and receipt_schema_version != "1.3.0":
+        if self.children.children and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS:
             raise ProtocolValueError("receipt_children_schema_version")
         carried_ids = frozenset(
             finding.finding_id for finding in cast(tuple[Finding, ...], findings)
@@ -1903,7 +2020,10 @@ class ReceiptDocument:
             raw_ids = _validate_tuple(getattr(self, name), 0, 100, invalid)
             ids = tuple(finding_id(value) for value in raw_ids)
             _validate_sorted_unique_strings(cast(tuple[str, ...], ids))
-            if ids and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(ids)):
+            if ids and (
+                receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
+                or not carried_ids.issuperset(ids)
+            ):
                 raise ProtocolValueError(invalid)
             object.__setattr__(self, name, ids)
         terminal_ids = [
@@ -1932,7 +2052,7 @@ class ReceiptDocument:
             raise ProtocolValueError("invalid_receipt_conclusion")
         if self.conclusion_basis is not None and (
             type(self.conclusion_basis) is not ReceiptConclusionBasis
-            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
             or (self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS)
             != (self.conclusion_basis.reason_total == 0)
         ):
@@ -1944,7 +2064,10 @@ class ReceiptDocument:
             str(item.finding_id) for item in cast(tuple[ReceiptDuplicateLink, ...], links)
         )
         _validate_sorted_unique_strings(linked)
-        if links and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(linked)):
+        if links and (
+            receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
+            or not carried_ids.issuperset(linked)
+        ):
             raise ProtocolValueError(invalid)
         disputed = tuple(
             finding_id(value)
@@ -1959,7 +2082,7 @@ class ReceiptDocument:
             for value in _validate_tuple(self.acknowledged_not_done_obligation_ids, 0, 100, invalid)
         )
         _validate_sorted_unique_strings(cast(tuple[str, ...], acknowledged_obligations))
-        if acknowledged_obligations and receipt_schema_version != "1.3.0":
+        if acknowledged_obligations and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS:
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "acknowledged_not_done_obligation_ids", acknowledged_obligations)
         if (
@@ -1976,7 +2099,7 @@ class ReceiptDocument:
             for item in cast(tuple[ReceiptDisclosure, ...], disclosures)
         )
         if disclosure_keys != tuple(sorted(set(disclosure_keys))) or (
-            disclosures and receipt_schema_version != "1.3.0"
+            disclosures and receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
         ):
             raise ProtocolValueError(invalid)
         withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
@@ -2009,8 +2132,14 @@ class ReceiptDocument:
         for gap in cast(tuple[ReceiptGap, ...], gaps):
             if gap.code not in self.coverage.known_gaps:
                 raise ProtocolValueError("receipt_gap_not_in_coverage")
+            if (
+                gap.kept_back is not None
+                and _receipt_document_artifact_version(self.versions) != KEPT_BACK_RECEIPT_ARTIFACT
+            ):
+                # ADR-051 decision 5: only receipt-document 1.4.0 carries the counts.
+                raise ProtocolValueError("invalid_receipt_gap")
             if gap.effect is not None and (
-                _receipt_document_artifact_version(self.versions) != "1.3.0"
+                _receipt_document_artifact_version(self.versions) not in _CHILD_BEARING_ARTIFACTS
                 or (
                     gap.effect is ReceiptGapEffect.BOUNDS
                     and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
@@ -2022,7 +2151,7 @@ class ReceiptDocument:
         # either live or historical on one receipt, never both.
         historical_codes = {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if not gap.live}
         if historical_codes and (
-            receipt_schema_version != "1.3.0"
+            receipt_schema_version not in _CHILD_BEARING_ARTIFACTS
             or historical_codes
             & {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if gap.live}
         ):
@@ -2164,7 +2293,7 @@ def _gap_from_json(value: object) -> ReceiptGap:
     source = _closed_object(
         value,
         frozenset({"code", "subject_refs"}),
-        frozenset({"detail", "status", "cleared_at_frontier", "effect"}),
+        frozenset({"detail", "status", "cleared_at_frontier", "effect", "kept_back"}),
         invalid,
     )
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
@@ -2191,6 +2320,11 @@ def _gap_from_json(value: object) -> ReceiptGap:
         effect=(
             _enum_value(_field(source, "effect", invalid), ReceiptGapEffect, invalid)
             if "effect" in keys
+            else None
+        ),
+        kept_back=(
+            OutsideReadsKeptBack.from_wire(_field(source, "kept_back", invalid))
+            if "kept_back" in keys
             else None
         ),
     )
@@ -2457,9 +2591,9 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
     versions = _version_slice_from_json(_field(source, "versions", invalid))
     artifact_version = _receipt_document_artifact_version(versions)
     has_children = "children" in source
-    if has_children and artifact_version != "1.3.0":
+    if has_children and artifact_version not in _CHILD_BEARING_ARTIFACTS:
         raise ProtocolValueError("invalid_receipt_document")
-    if not has_children and artifact_version == "1.3.0":
+    if not has_children and artifact_version in _CHILD_BEARING_ARTIFACTS:
         raise ProtocolValueError("invalid_receipt_document")
     for name in (*_TERMINAL_ID_FIELDS, "duplicate_finding_links"):
         if name in source and not _array(source[name], invalid):
@@ -2676,6 +2810,8 @@ def _gap_to_json(value: ReceiptGap) -> dict[str, object]:
         result["cleared_at_frontier"] = _frontier_to_json(value.cleared_at_frontier)
     if value.effect is not None:
         result["effect"] = value.effect.value
+    if value.kept_back is not None:
+        result["kept_back"] = value.kept_back.as_wire()
     return result
 
 
@@ -2760,7 +2896,7 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         "redactions": [_redaction_to_json(value) for value in document.redactions],
         "sections": [_section_to_json(value) for value in document.sections],
     }
-    if _receipt_document_artifact_version(document.versions) == "1.3.0":
+    if _receipt_document_artifact_version(document.versions) in _CHILD_BEARING_ARTIFACTS:
         result["children"] = _children_to_json(document.children)
     if document.acknowledged_not_done_finding_ids:
         result["acknowledged_not_done_finding_ids"] = list(
@@ -3204,7 +3340,7 @@ def render_receipt_human(
             )
         )
         parts.append(history_block)
-    if _receipt_document_artifact_version(document.versions) == "1.3.0":
+    if _receipt_document_artifact_version(document.versions) in _CHILD_BEARING_ARTIFACTS:
         heading = "## Children" if markdown else "Children"
         child_parts = [heading]
         if not document.children.children:

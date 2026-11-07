@@ -35,7 +35,9 @@ from finishup.domain.receipts import (
     UNRESOLVED_VERIFICATION_LIMITATION,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    kept_back_from_wire,
     limitations_name_coordinator_failure,
+    outside_reads_kept_back_sentence,
 )
 from finishup.domain.review_guidance import review_guidance_line
 from finishup.domain.review_input_render import (
@@ -3136,9 +3138,23 @@ def summary_for_receipt(envelope: object) -> str:
         cast(Mapping[str, JsonValue], document) if isinstance(document, Mapping) else None
     )
     gap_codes = _safe_gap_codes(source)
+    kept_back = kept_back_from_wire(typed_document)
     parts: list[Part | None] = [
         _req(f"Receipt conclusion: {conclusion};"),
         *_workspace_provenance_parts(source),
+        # ADR-051 decision 5: how many files listed mode kept back, then the owner's two ways
+        # out; required, so a paged or bounded receipt never drops the number.
+        *(
+            ()
+            if kept_back is None
+            else (
+                _req(
+                    f"{outside_reads_kept_back_sentence(kept_back)}"
+                    f" {OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE}",
+                    outside_reads_kept_back_sentence(kept_back),
+                ),
+            )
+        ),
         _req(_receipt_correctness_advisory_clause(source)),
         _req(f"{_frontier_clause(source)};"),
         _req(f"coverage limitations: {limitations};"),

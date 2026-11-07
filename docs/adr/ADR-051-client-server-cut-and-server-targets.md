@@ -440,8 +440,9 @@ answers bounded `workspace_call`s on a connection that declared it.
   under the task's name. The server freezes how many inputs were left out as the check-time
   change's `outside_inputs_not_listed` count and discloses the closed code
   `outside_reads_not_listed`, whose fixed sentence names both ways out and where to run them
-  (the count reaches the diagnostics as its own `semantic_outside_reads_not_listed` record,
-  not the receipt line: open question 2); so a listed-mode input costs
+  (the count reaches the diagnostics as its own `semantic_outside_reads_not_listed` record, and,
+  since open question 2 closed, the check (check-recorded 1.7.0) and the receipt's gap
+  (receipt-document 1.4.0), whose line says how many); so a listed-mode input costs
   only that input, never the whole check-time change, and is never passed over in silence. A
   kept copy (#1118) whose folder the owner no longer lists is not sent, as a copy whose root the
   owner no longer admits is not: the current read that compares it names it `unlisted` too.
@@ -1294,20 +1295,25 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
    privacy line, `privacy input-roots`' help and its `requires_server_host` line now name
    `finishup server folders add NAME FOLDER` on the client machine as a remote server's way in.
 2. **How many files listed mode kept back, on the receipt** (recorded 2026-11-07, refusal-guide
-   review). The refusal-guide fixes asked for a fixed receipt line with counts and no paths.
-   The count is frozen (the check change's `outside_inputs_not_listed`, the case object's
-   `declared_tests_not_listed`) and reaches the diagnostics as
-   `semantic_task_inputs_outside_not_listed` on its own `semantic_outside_reads_not_listed`
-   record (same request id as `semantic_case_built`, written only when not zero; carried on
-   `semantic_case_built` it pushed that record past the 1,024-byte line bound, and the sink
-   dropped it whole), which `finishup service diagnostics` shows. The
-   receipt line itself, `outside_reads_not_listed`, carries no number: a receipt's disclosures
-   are closed codes, and every receipt-document schema (1.0.0 to 1.3.0) was released at
-   v0.3.0, so a number there needs a new receipt-document version, a design-gated protocol
-   change outside this review. Ways the maintainer could close it: accept the line without a
-   number; or add an optional disclosure-count field in a receipt-document 1.4.0 that every
-   rendering (text, markdown, JSON, the MCP summary, the CLI check output) prints beside the
-   sentence. Undecided.
+   review; **closed 2026-11-07 by maintainer decision, "add the count now"**). The count was
+   frozen (the check change's `outside_inputs_not_listed`, the case object's
+   `declared_tests_not_listed`) and reached only the diagnostics, because every receipt-document
+   schema (1.0.0 to 1.3.0) shipped in v0.3.0. Decision: the receipt says how many task inputs
+   and declared tests listed mode kept back. Implemented without amending a released file: the
+   evaluation carries the bounded counts (`OutsideReadsKeptBack`, each 0 to 64, at least one not
+   zero, clamped) beside its `outside_reads_not_listed` code; the check records them on the new
+   check-recorded 1.7.0 (1.6.0 plus the optional `outside_reads_kept_back`, chosen exactly when
+   it is present, so every other check keeps its bytes), because a receipt is built from the
+   ledger alone; the receipt's live `outside_reads_not_listed` gap carries them as `kept_back`
+   on the new receipt-document 1.4.0 (1.3.0 plus that optional member, admitted only beside
+   that code on a live gap), which the version manifest now names; receipt-result 1.5.0, still
+   unreleased, was amended in place to carry receipt-document 1.4.0. The gap's detail opens with
+   one fixed line, "N task inputs and M declared tests outside the folders this server may read
+   were kept back.", then the owner's two ways out, so the JSON, markdown and text receipts, the
+   CLI receipt (which also prints the line for a JSON receipt), the terminal interface (which
+   shows either) and the MCP receipt summary (a required part, so a bounded or paged receipt
+   never drops it) all say the number. A check result (the CLI's check output and the MCP check
+   summary) still names the code without a number: its schema is unchanged.
 
 ## Founder questions answered by the maintainer (2026-11-05)
 

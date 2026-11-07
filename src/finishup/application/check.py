@@ -105,6 +105,7 @@ from finishup.domain.receipts import (
     TASK_INPUT_BASELINE_UNAVAILABLE_GAP,
     TASK_INPUT_OUTSIDE_NOT_ADMITTED_GAP,
     VERIFICATION_INPUT_DIRECTORY_UNRESOLVED_GAP,
+    OutsideReadsKeptBack,
     check_time_change_unavailable_reason_gap,
     semantic_coverage_gap_code,
 )
@@ -2484,6 +2485,9 @@ class FinalSemanticEvaluation:
     # reviewer's copy had a credential-like value replaced, or the item withheld. Never values.
     semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
     case_content_gaps: tuple[str, ...] = ()
+    # ADR-051 decision 5: how many task inputs and declared tests a claim-bound case's listed mode
+    # kept from review, beside its ``outside_reads_not_listed`` gap; recorded on the check (1.7.0).
+    outside_reads_kept_back: OutsideReadsKeptBack | None = None
     # Missing-item kinds the effective review selection or channel can never carry (issue #907).
     # Computed where the case is composed, so the check can classify what a reviewer names.
     unsuppliable_missing_kinds: tuple[str, ...] = ()
@@ -2558,6 +2562,14 @@ class FinalSemanticEvaluation:
             type(self.case_content_gaps) is not tuple
             or self.case_content_gaps != tuple(sorted(set(self.case_content_gaps)))
             or not set(self.case_content_gaps) <= _SEMANTIC_EVALUATION_GAPS
+            or (
+                self.outside_reads_kept_back is not None
+                and (
+                    type(self.outside_reads_kept_back) is not OutsideReadsKeptBack
+                    # The counts stand only beside the disclosure they count for.
+                    or OUTSIDE_READS_NOT_LISTED_GAP not in self.case_content_gaps
+                )
+            )
         ):
             raise _invalid("semantic_judgment_invalid")
         if self.case_included_refs is not None and (
@@ -6682,6 +6694,7 @@ def _judgment_rejected_evaluation(
         semantic_withheld_item_ids=result.semantic_withheld_item_ids,
         semantic_redacted_values=result.semantic_redacted_values,
         case_content_gaps=result.case_content_gaps,
+        outside_reads_kept_back=result.outside_reads_kept_back,
         # The review ran and the provider answered: what it was sent (the provider-bound manifest,
         # or why there is none) and the conversation's record of what it read stay on the check,
         # so a rejected answer never hides what was disclosed.
@@ -7555,6 +7568,8 @@ async def execute_check_commit(
             # ADR-045: how each declared output file stood at this check and what was concluded
             # from it and from the earlier checks of the same path; empty when none was read.
             "deliverable_states": recorded_deliverables,
+            # ADR-051 decision 5: present only beside ``outside_reads_not_listed`` (validated).
+            "outside_reads_kept_back": semantic_result.outside_reads_kept_back,
             "review_input_manifest": recorded_manifest,
             "reviewer": _reviewer_wire(semantic_result.reviewer),
             "totals": build_check_totals(

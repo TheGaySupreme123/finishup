@@ -27,7 +27,8 @@ _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
 # +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
 # ADR-049: +1 member, decision-recorded 1.1.0 (an event schema, not a request/result version).
 _EXPECTED_MEMBER_COUNT = (
-    254  # ADR-051 +1 version-manifest 2.4.0; #1239 +1 contact-expectation-declared 1.0.0;
+    256  # ADR-051 decision 5 +2 check-recorded 1.7.0, receipt-document 1.4.0;
+    # ADR-051 +1 version-manifest 2.4.0; #1239 +1 contact-expectation-declared 1.0.0;
 )
 # ADR-051 decision D4 +1 receipt-result 1.5.0 (the optional ``workspace_provenance`` member);
 # #1170 +1 result-recorded 1.1.0;

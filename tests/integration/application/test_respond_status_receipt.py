@@ -10586,3 +10586,73 @@ async def test_a_self_verified_rerun_question_gets_the_receipt_status_predicted(
         if receipt.document is not None:
             listed = cast(dict[str, Any], receipt.document).get("self_verified_finding_ids", [])
             assert question.finding_id not in listed
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+async def test_the_receipt_says_how_many_files_listed_mode_kept_back(
+    backend: Literal["memory", "sqlite"],
+) -> None:
+    """ADR-051 decision 5, open question 2 (maintainer decision 2026-11-07): a check whose review
+    disclosed ``outside_reads_not_listed`` records how many task inputs and declared tests listed
+    mode kept back on check-recorded 1.7.0, and the receipt's gap carries the same counts on
+    receipt-document 1.4.0 and says the number before the owner's two ways out."""
+
+    from finishup.domain.receipts import (
+        OUTSIDE_READS_NOT_LISTED_GAP,
+        OutsideReadsKeptBack,
+        outside_reads_kept_back_sentence,
+    )
+
+    kept = OutsideReadsKeptBack(task_inputs=2, declared_tests=1)
+
+    async def kept_back_review(
+        frozen: object,
+        findings: object,
+        runtime: object | None = None,
+        lineage_evaluation: object | None = None,
+    ) -> object:
+        succeeded = cast(FinalSemanticEvaluation, await _semantic_succeeds(frozen, findings))
+        return replace(
+            succeeded,
+            case_content_gaps=(OUTSIDE_READS_NOT_LISTED_GAP,),
+            outside_reads_kept_back=kept,
+        )
+
+    seed = 216900
+    app, runtime, _ = _build_app(
+        semantic="required", ledger_backend=backend, semantic_evaluator=kept_back_review
+    )
+
+    def current_versions(_runtime: object) -> ReceiptVersionSlice:
+        # The artifact the version manifest names for a new receipt.
+        return replace(
+            _versions(), schema_versions=(SchemaVersionEntry("receipts/receipt-document", "1.4.0"),)
+        )
+
+    app = replace(app, receipt_version_resolver=current_versions)
+    started, checked, _refs = await _routine_advisory_task(app, seed=seed)
+    assert OUTSIDE_READS_NOT_LISTED_GAP in checked.coverage.known_gaps
+    ledger, _objects = runtime.resources[started.task_id]
+    records = tuple([r async for r in ledger.load_events(started.session_id)])
+    (check_record,) = (r for r in records if r.schema.name == "check_recorded")
+    assert check_record.schema.version == "1.7.0"
+    assert getattr(check_record.payload, "outside_reads_kept_back") == kept
+    receipt = await app.receipt(
+        ReceiptRequest.model_validate(
+            {
+                **_receipt_wire(
+                    request_seed=seed + 20,
+                    task_id=started.task_id,
+                    session=started.session_id,
+                    writer=started.writer_id,
+                    frontier=checked.result_frontier,
+                ),
+                "format": "json",
+                "include": "full",
+            }
+        )
+    )
+    document = cast(Any, receipt.document)
+    (gap,) = (gap for gap in document["gaps"] if gap["code"] == OUTSIDE_READS_NOT_LISTED_GAP)
+    assert dict(gap["kept_back"]) == {"declared_tests": 1, "task_inputs": 2}
+    assert str(gap["detail"]).startswith(outside_reads_kept_back_sentence(kept))

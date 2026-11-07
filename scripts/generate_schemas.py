@@ -2777,6 +2777,50 @@ def _check_recorded_v1_6_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _outside_reads_kept_back_schema() -> dict[str, JsonValue]:
+    """ADR-051 decision 5: how many task inputs and declared tests listed mode kept back.
+
+    Bounded counts, never which file; at least one is not zero.
+    """
+
+    from finishup.domain.receipts import MAX_KEPT_BACK_COUNT
+
+    count: dict[str, JsonValue] = {
+        "maximum": MAX_KEPT_BACK_COUNT,
+        "minimum": 0,
+        "type": "integer",
+    }
+    return {
+        "additionalProperties": False,
+        "anyOf": [
+            {"properties": {"task_inputs": {"minimum": 1}}},
+            {"properties": {"declared_tests": {"minimum": 1}}},
+        ],
+        "properties": {"declared_tests": dict(count), "task_inputs": dict(count)},
+        "required": ["declared_tests", "task_inputs"],
+        "type": "object",
+    }
+
+
+def _check_recorded_v1_7_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """ADR-051 decision 5 (open question 2 closed 2026-11-07): 1.6.0 plus the optional
+    ``outside_reads_kept_back`` counts.
+
+    1.6.0 shipped in v0.3.0, so it is never amended: a 1.6.0 reader keeps rejecting the field,
+    and the writer chooses 1.7.0 exactly when the counts are present.
+    """
+
+    document = _load_versioned_template(entry, "events/check-recorded-1.6.0.schema.json")
+    properties = cast(dict[str, JsonValue], document["properties"])
+    if "outside_reads_kept_back" in properties:
+        raise SchemaGenerationError(
+            "check_recorded_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    properties["outside_reads_kept_back"] = _outside_reads_kept_back_schema()
+    document["title"] = f"FinishUP check recorded {entry.schema_version}"
+    return document
+
+
 def _check_request_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Select the current built-in packs, including the dedicated coordination policy."""
 
@@ -7902,6 +7946,36 @@ def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _receipt_document_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """ADR-051 decision 5 (open question 2 closed 2026-11-07): 1.3.0 plus an optional
+    ``kept_back`` count on an ``outside_reads_not_listed`` gap.
+
+    1.3.0 shipped in v0.3.0, so it is never amended. ``kept_back`` is admitted only beside that
+    code and only on a live gap: how many task inputs and declared tests a remote server's
+    listed mode kept from review, never which.
+    """
+
+    document = _load_versioned_template(entry, "receipts/receipt-document-1.3.0.schema.json")
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    gap = cast(dict[str, JsonValue], definitions["receipt_gap"])
+    properties = cast(dict[str, JsonValue], gap["properties"])
+    if "kept_back" in properties:
+        raise SchemaGenerationError(
+            "receipt_document_schema_template_invalid", entries=(entry.relative_path,)
+        )
+    properties["kept_back"] = _outside_reads_kept_back_schema()
+    cast(list[JsonValue], gap.setdefault("allOf", [])).append(
+        {
+            "if": {"required": ["kept_back"]},
+            "then": {
+                "not": {"required": ["status"]},
+                "properties": {"code": {"const": "outside_reads_not_listed"}},
+            },
+        }
+    )
+    return document
+
+
 def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """ADR-051 decision D4: 1.4.0 plus the optional ``workspace_provenance`` member.
 
@@ -7920,7 +7994,13 @@ def _receipt_result_v1_5_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
         workspace_provenance_unknown_notice,
     )
 
-    document = _load_versioned_template(entry, "operations/receipt-result-1.4.0.schema.json")
+    # ADR-051 decision 5 (open question 2, 2026-11-07): 1.5.0 is still unreleased, so it is
+    # amended in place to carry receipt-document 1.4.0, the version with the kept-back counts.
+    document = _load_versioned_template(
+        entry,
+        "operations/receipt-result-1.4.0.schema.json",
+        replacements={"receipt-document-1.3.0": "receipt-document-1.4.0"},
+    )
     definitions = cast(dict[str, JsonValue], document["$defs"])
     success = cast(dict[str, JsonValue], definitions["success"])
     properties = cast(dict[str, JsonValue], success["properties"])
@@ -12356,6 +12436,18 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "events/check-recorded-1.7.0.schema.json",
+        "check-recorded",
+        "1.7.0",
+        "event",
+        "event-payload",
+        lambda: (
+            __import__(
+                "finishup.domain.events", fromlist=["CheckRecordedPayload"]
+            ).CheckRecordedPayload
+        ),
+    ),
+    _RegistryEntry(
         "events/claim-recorded-1.0.0.schema.json",
         "claim-recorded",
         "1.0.0",
@@ -13671,6 +13763,16 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         ),
     ),
     _RegistryEntry(
+        "receipts/receipt-document-1.4.0.schema.json",
+        "receipt-document",
+        "1.4.0",
+        "request_result",
+        "receipt-document",
+        lambda: (
+            __import__("finishup.domain.receipts", fromlist=["ReceiptDocument"]).ReceiptDocument
+        ),
+    ),
+    _RegistryEntry(
         "service/control-hello-1.0.0.schema.json",
         "control-hello",
         "1.0.0",
@@ -14249,6 +14351,9 @@ _BUILDER_OWNED_SCHEMA_PATHS: Final[frozenset[str]] = frozenset(
         "events/check-recorded-1.4.0.schema.json",
         "events/check-recorded-1.5.0.schema.json",
         "events/check-recorded-1.6.0.schema.json",
+        # The counts listed mode kept back (ADR-051 decision 5, open question 2).
+        "events/check-recorded-1.7.0.schema.json",
+        "receipts/receipt-document-1.4.0.schema.json",
         "events/finding-recorded-1.4.0.schema.json",
         "findings/provider-judgment-1.1.0.schema.json",
         "findings/provider-judgment-1.2.0.schema.json",
@@ -14713,6 +14818,9 @@ def build_schema_documents(
         elif entry.relative_path == "events/check-recorded-1.6.0.schema.json":
             normalized = _check_recorded_v1_6_schema(entry)
             _admit_review_blocked(cast(JsonValue, normalized))
+        elif entry.relative_path == "events/check-recorded-1.7.0.schema.json":
+            # Copied from the reviewed 1.6.0 bytes, which already admit ``review_blocked``.
+            normalized = _check_recorded_v1_7_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.1.0.schema.json":
             normalized = _provider_judgment_v1_1_schema(entry)
         elif entry.relative_path == "findings/provider-judgment-1.2.0.schema.json":
@@ -14911,6 +15019,8 @@ def build_schema_documents(
         elif entry.relative_path == "receipts/receipt-document-1.3.0.schema.json":
             normalized = _receipt_document_v1_3_schema(entry)
             _admit_review_blocked(cast(JsonValue, normalized))
+        elif entry.relative_path == "receipts/receipt-document-1.4.0.schema.json":
+            normalized = _receipt_document_v1_4_schema(entry)
         elif entry.relative_path in {
             "version/version-manifest-2.0.0.schema.json",
             "version/version-manifest-2.1.0.schema.json",

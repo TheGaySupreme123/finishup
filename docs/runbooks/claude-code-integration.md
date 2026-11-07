@@ -2449,7 +2449,9 @@ the CLI, MCP and receipt print the sentence. `finishup service diagnostics` coun
 `semantic_task_inputs_outside_not_admitted`; for a remote server in `listed` mode, a separate
 `semantic_outside_reads_not_listed` record, written only when not zero, counts
 `semantic_task_inputs_outside_not_listed` (how many task inputs and declared tests its workspace
-agent kept back).
+agent kept back). The receipt says the same numbers, each kind apart, in the
+`outside_reads_not_listed` gap's opening line and its `kept_back` counts (check-recorded 1.7.0,
+receipt-document 1.4.0; ADR-051 decision 5), the same on every host.
 
 ## Possible-credential filter opt-out (issue #982)
 

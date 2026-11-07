@@ -13,12 +13,15 @@ from finishup.domain.findings import SELF_VERIFIED_GUIDANCE
 from finishup.domain.receipts import (
     COORDINATOR_FAILURE_LIMITATION,
     DEFERRED_BEFORE_FIRST_EDIT_TEXT,
+    OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE,
     UNRESOLVED_VERIFICATION_GAP,
     UNRESOLVED_VERIFICATION_LIMITATION,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     check_time_change_gap_sentence,
     historical_gaps_from_wire,
+    kept_back_from_wire,
     limitations_name_coordinator_failure,
+    outside_reads_kept_back_sentence,
     privacy_block_sentence,
     review_deferred_before_first_edit,
     semantic_redacted_value_agent_lines,
@@ -1282,6 +1285,14 @@ def render_human_receipt(
 
             lines.append("Verification coverage (agent-declared)")
             lines.extend(verification_coverage_wire_lines(cast(Mapping[str, object], declared)))
+        kept_back = kept_back_from_wire(document)
+        if kept_back is not None and result.human_text is None:
+            # ADR-051 decision 5: a JSON receipt says how many files listed mode kept back and
+            # the owner's two ways out; markdown and text carry the same in ``human_text``.
+            lines.append(
+                f"{outside_reads_kept_back_sentence(kept_back)}"
+                f" {OUTSIDE_READS_NOT_LISTED_SHORT_SENTENCE}"
+            )
         historical = historical_gaps_from_wire(document)
         if historical:
             lines.append(

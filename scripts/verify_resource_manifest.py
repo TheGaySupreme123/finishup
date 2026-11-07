@@ -302,6 +302,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        "schemas/events/check-recorded-1.7.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
         "schemas/events/finding-recorded-1.4.0.schema.json",
         "json_schema",
         "application/schema+json",
@@ -1347,6 +1353,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     (
         "schemas/receipts/receipt-document-1.3.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "schemas/receipts/receipt-document-1.4.0.schema.json",
         "json_schema",
         "application/schema+json",
         True,

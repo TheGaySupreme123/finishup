@@ -65,7 +65,8 @@ SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"
 SCHEMA_MEMBER_COUNT: Final = (
-    254  # ADR-051 D4: receipt-result 1.5.0; #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
+    256  # ADR-051 decision 5: check-recorded 1.7.0, receipt-document 1.4.0 (kept-back counts);
+    # ADR-051 D4: receipt-result 1.5.0; #1239: contact-expectation-declared 1.0.0; #1170: result-recorded 1.1.0; #1139: +4 lossless result-delivery schemas;
     # #1118: reviewer-reply 1.0.0, check-result/-recorded 1.6.0, privacy-policy 1.3.0;
     # #1119: host-connection batch report and nonsecret ai-status 1.0.0;
     # ADR-051: +4 control envelopes 2.10.0 (workspace claims and workspace-agent frames),
