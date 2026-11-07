@@ -706,6 +706,15 @@ answers bounded `workspace_call`s on a connection that declared it.
   file store at `<target root>/config/credential` where no platform store is usable.
 - `server login` reads the key from a masked prompt or, for automation, from a `--key-file`
   (owner-only, read once); `server logout` deletes it; `server remove` deletes it with the root.
+- `server login` checks the key with the server before storing it, alike for every approach
+  (maintainer decision of 2026-11-07: the approaches and remote kinds behave the same; refusal is
+  the last resort; say what happened, why, and the fix). A key the server refuses
+  (`remote_auth_failed`), a server whose certificate does not match the recorded trust
+  (`remote_identity_changed`, refused inside the TLS handshake before the key is sent) or that
+  runs another release (`remote_incompatible`) stores nothing, and the message says why, that
+  nothing was stored, and the fix. A server that cannot be reached keeps the key, and the command
+  says it is not verified yet, that it is checked on the first connection, and that `server test
+  NAME` checks it once the server is up.
 - The credential never appears in argv, the environment, `target.json`, a host registration, a
   log, hook output, an MCP frame or JSON output.
 - SSH keys, `ssh-agent` and `known_hosts` stay with OpenSSH. FinishUP stores no SSH key, never asks

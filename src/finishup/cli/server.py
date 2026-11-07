@@ -733,8 +733,33 @@ def _probe_ssh_endpoint(
     return launcher, endpoint
 
 
-def _check_https_key(record: ServerTarget, secret: str) -> None:
-    """``GET /v1/server`` with the new key before it is stored: authenticated, same release."""
+# What ``server login`` says when the server's answer means the key must not be kept (ADR-051
+# decision 7, add and login parity): why, that nothing was stored, and the fix.
+_LOGIN_REFUSED: Final[Mapping[str, str]] = {
+    "remote_auth_failed": (
+        "the server refused this API key, so it was not stored; check the key with the server's "
+        "operator ('finishup service gateway key list' on the server shows its keys) and run "
+        "'finishup server login' again"
+    ),
+    "remote_identity_changed": (
+        "the server's certificate does not match the trust recorded for it, so the key was not "
+        "sent and not stored; verify the server another way, then remove and add it again"
+    ),
+    "remote_incompatible": (
+        "that server is not running this FinishUP release (or is not a FinishUP server), so the "
+        "key was not stored; install the same release on both, then run 'finishup server login' "
+        "again"
+    ),
+}
+
+
+def _check_https_key(record: ServerTarget, secret: str) -> str | None:
+    """``GET /v1/server`` with the new key before it is stored: authenticated, same release.
+
+    ``None`` when the server accepted the key; otherwise the closed reason it did not answer
+    with. A key the server refuses, a server whose certificate does not match the recorded trust,
+    or one on another release raises, naming why nothing was stored.
+    """
 
     import asyncio
 
@@ -752,9 +777,17 @@ def _check_https_key(record: ServerTarget, secret: str) -> None:
     try:
         info = asyncio.run(check())
     except UpstreamUnavailable as error:
-        raise ServerCommandRefused(error.reason) from None
+        refused = _LOGIN_REFUSED.get(error.reason)
+        if refused is not None:
+            raise ServerCommandRefused(error.reason, message=refused) from None
+        return error.reason
     if info.get("schema_manifest_digest") != schema_manifest_digest():
-        raise ServerCommandRefused("remote_incompatible", detail=_release_detail(info["release"]))
+        raise ServerCommandRefused(
+            "remote_incompatible",
+            detail=_release_detail(info["release"]),
+            message=_LOGIN_REFUSED["remote_incompatible"],
+        )
+    return None
 
 
 @server_app.command("add")
@@ -1697,7 +1730,14 @@ def server_login(
         raise refusal
     try:
         secret = read_key_file(key_file) if key_file is not None else _read_secret_on_console()
-        _check_https_key(record, secret)
+    except CredentialError as error:
+        raise ServerCommandRefused(error.reason)
+    # The key is checked against the server before it is kept: a refused key, a server whose
+    # identity does not match the recorded trust, or another release is never stored. A server
+    # that does not answer yet keeps the key, and says it is not verified yet (ADR-051 decision
+    # 7, add and login parity).
+    unanswered = _check_https_key(record, secret)
+    try:
         root = target_root(record.target_id)
         location = KeyringOrFileCredential(
             record.target_id, root, recorded=record.credential
@@ -1709,7 +1749,15 @@ def server_login(
     except TargetError as error:
         raise ServerCommandRefused(error.reason)
     where = "the platform credential store" if location == "keyring" else "an owner-only file"
-    typer.echo(f"Stored the API key for {record.target_id} in {where}.")
+    if unanswered is None:
+        typer.echo(f"Stored the API key for {record.target_id} in {where}; the server accepted it.")
+        return
+    typer.echo(f"Stored the API key for {record.target_id} in {where}, not verified yet.")
+    typer.echo(
+        f"The server did not answer yet ({unanswered}), so it could not check the key. It is "
+        f"checked on the first connection; run 'finishup server test {record.name}' once the "
+        "server is up to check it now."
+    )
 
 
 @server_app.command("logout")

@@ -1227,6 +1227,109 @@ def test_a_shared_key_file_is_refused(
     assert _KEY not in result.output
 
 
+_REAL_KEY_CHECK = server_cli._check_https_key  # pyright: ignore[reportPrivateUsage]
+
+
+def _server_answers(monkeypatch: pytest.MonkeyPatch, answer: Exception | dict[str, object]) -> None:
+    """Run login's real key check against a server whose ``GET /v1/server`` gives ``answer``."""
+
+    from finishup.client.https_upstream import HttpsUpstream
+
+    async def server_info(_self: HttpsUpstream) -> dict[str, object]:
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(server_cli, "_check_https_key", _REAL_KEY_CHECK)
+    monkeypatch.setattr(HttpsUpstream, "server_info", server_info)
+
+
+def _login_with_key_file(home: Path) -> Result:
+    key_file = home / "key"
+    key_file.write_text(_KEY, encoding="ascii")
+    key_file.chmod(0o600)
+    return _invoke("login", "fu", "--key-file", str(key_file))
+
+
+@pytest.mark.parametrize(
+    "answer", ["remote_auth_failed", "remote_identity_changed", "remote_incompatible", "release"]
+)
+def test_login_keeps_no_key_the_server_refuses(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    no_platform_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    """ADR-051 decision 7 (add and login parity): a refused key, a certificate that does not
+    match the recorded trust, or another release stores nothing, and the message says why."""
+
+    from finishup.client.ssh_upstream import UpstreamUnavailable
+
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+    (record,) = targets.list_targets()
+    if answer == "release":
+        # The server answered, but with another release's schema manifest.
+        _server_answers(
+            monkeypatch, {"schema_manifest_digest": "sha256:" + "0" * 64, "release": "0.2.9"}
+        )
+    else:
+        _server_answers(monkeypatch, UpstreamUnavailable(answer))
+    result = _login_with_key_file(home)
+    reason = "remote_incompatible" if answer == "release" else answer
+    assert result.exit_code == 20
+    assert result.stderr.startswith(f"{reason}:")
+    assert "not stored" in result.stderr
+    if answer == "remote_auth_failed":
+        assert "the server refused this API key" in result.stderr
+    assert _KEY not in result.output
+    assert not (targets.target_root(record.target_id) / "config" / "credential").exists()
+    assert targets.list_targets()[0].credential is None
+
+
+@pytest.mark.parametrize("phase", ["remote_unreachable", "remote_service_not_running"])
+def test_login_keeps_a_key_while_the_server_is_down_and_says_so(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    no_platform_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    """Refusal is the last resort: a server that does not answer yet keeps the key, reported as
+    not verified yet, checked on the first connection."""
+
+    from finishup.client.ssh_upstream import UpstreamUnavailable
+
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+    _server_answers(monkeypatch, UpstreamUnavailable(phase))
+    result = _login_with_key_file(home)
+    assert result.exit_code == 0, result.output
+    assert "not verified yet" in result.stdout
+    assert f"did not answer yet ({phase})" in result.stdout
+    assert "It is checked on the first connection" in result.stdout
+    assert "'finishup server test fu'" in result.stdout
+    assert targets.list_targets()[0].credential == "file"
+    assert _KEY not in result.output
+
+
+def test_login_says_the_server_accepted_the_key(
+    home: Path,
+    authorized: list[tuple[str, str]],
+    no_platform_store: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from finishup.protocol.schemas import schema_manifest_digest
+
+    assert _invoke("add", "fu", "https://fu.example").exit_code == 0
+    _server_answers(
+        monkeypatch, {"schema_manifest_digest": schema_manifest_digest(), "release": "0.3.0"}
+    )
+    result = _login_with_key_file(home)
+    assert result.exit_code == 0, result.output
+    assert "the server accepted it" in result.stdout
+    assert "not verified" not in result.stdout
+
+
 def test_ssh_targets_take_no_api_key(home: Path, authorized: list[tuple[str, str]]) -> None:
     assert _invoke("add", "lab", "ssh://lab.example").exit_code == 0
     assert _invoke("login", "lab").stderr.startswith("credential_not_applicable:")

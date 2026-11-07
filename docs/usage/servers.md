@@ -187,6 +187,12 @@ environment variable, a settings file, a log, a message your agent can read, or 
 allows what your agents need while an `operator` key also allows management reads such as privacy
 status.
 
+`login` checks the key with the server before keeping it. If the server refuses the key, or runs
+another FinishUP release, or its certificate is not the one you trusted, nothing is stored and
+FinishUP says why and what to do. If the server cannot be reached right now, FinishUP stores the key
+and says it is not verified yet: it is checked on the first connection, and `finishup server test
+NAME` checks it as soon as the server is up.
+
 SSH servers need no FinishUP sign-in. Your SSH keys, `ssh-agent` and known hosts stay with SSH;
 FinishUP stores no SSH key and never asks for an SSH password.
 
@@ -545,8 +551,9 @@ finishup server login work --key-file ~/work.key
 finishup server use work
 ```
 
-`server login` checks the key with the server before it stores it. Only the connection helper
-reads the key afterwards; your agent and its tools never see it.
+`server login` checks the key with the server before it stores it, and keeps it, not verified yet,
+only while the server cannot be reached (see [Sign in](#sign-in-to-a-web-server)). Only the
+connection helper reads the key afterwards; your agent and its tools never see it.
 
 - **Key scopes.** An `agent` key allows what your agent's tools and hooks need: the six FinishUP
   operations and the service status. An `operator` key also allows project and review commands,
