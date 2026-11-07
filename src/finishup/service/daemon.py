@@ -3973,12 +3973,24 @@ class _LockedHumanEffects:
                             )
                         else:
                             raise ValueError("privacy_policy_preview_member_unrenderable")
-                    preview_policy = PrivacyPolicyDecisionPreview(
-                        target.pending_id,
-                        prepared.exact_diff_digest,
-                        (),
-                        tuple(preview_members),
-                    )
+                    if [member.authority for member in preview_members] == ["machine_ceiling"]:
+                        # A machine-only proposal is a single-layer transition. The store keeps
+                        # it as one synthetic installation-ceiling `replace` member (#1322), but
+                        # a single layer's whole diff travels in `changes`; the member form is
+                        # for repository and compound transitions only. The diff is the one
+                        # just derived from the CAS-checked row and the exact candidate.
+                        preview_policy = PrivacyPolicyDecisionPreview(
+                            target.pending_id,
+                            prepared.exact_diff_digest,
+                            preview_members[0].changes,
+                        )
+                    else:
+                        preview_policy = PrivacyPolicyDecisionPreview(
+                            target.pending_id,
+                            prepared.exact_diff_digest,
+                            (),
+                            tuple(preview_members),
+                        )
                 else:
                     base = await store.effective_policy(proposal.scope)
                     changes = privacy_policy_changes(base.policy, proposal.proposed_policy)
