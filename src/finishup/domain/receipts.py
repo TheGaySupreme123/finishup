@@ -58,7 +58,6 @@ from finishup.domain.verification_coverage import (
 )
 from finishup.domain.workspace_provenance import (
     WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     WorkspaceProvenanceReason,
@@ -127,7 +126,6 @@ __all__ = [
     "CLIENT_ATTESTED_OBSERVATION_LINE",
     "CLIENT_ATTESTED_WORKSPACE_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE",
-    "WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_LINE",
     "WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE",
     "client_attested_receipt_block",
@@ -521,9 +519,9 @@ CLIENT_ATTESTED_WORKSPACE_LINE: Final = (
 )
 # ADR-051 (owner decision D4): the lines a receipt's "Workspace evidence" section holds instead
 # when the record that opened its session could not be read, so whether the task is claim-bound is
-# unknown: what happened, why it matters, and what to do for a passing cause or why it lasts for a
-# lasting one (``domain.workspace_provenance``, which also gives every receipt format its
-# ``workspace_provenance`` member).
+# unknown: what happened, why it matters, and what to do for a passing cause or why that cause
+# lasts, one line per cause (``domain.workspace_provenance``, which also gives every receipt format
+# its ``workspace_provenance`` member).
 # ADR-051 decision 12: a claim-bound task's hook observations were consented, captured and
 # committed on the client; the service accepted them as attested and verified neither.
 CLIENT_ATTESTED_OBSERVATION_LINE: Final = (
@@ -3739,15 +3737,17 @@ def client_attested_receipt_block(
 def workspace_provenance_unknown_block(*, markdown: bool, reason: WorkspaceProvenanceReason) -> str:
     """The section a receipt ends with when its claim binding is unknown (ADR-051, decision D4).
 
-    The record that opened the task's session could not be read. ``reason`` says whether that can
-    pass (``session_opening_unreadable``: the ledger read failed or the record did not load, so the
-    last line says to run receipt again and then restart the server's service) or lasts
-    (``session_opening_unrecoverable``: the record is redacted or erased, its key is gone, or this
-    FinishUP version cannot decode it, so the last line says it will not become readable again and
-    the receipt will keep saying so, with no retry or restart advice). The receipt is still built,
-    and this section says what happened, why it matters and whether a retry can help, rather than
-    leave the section out. Fixed words; nothing user-controlled. Any other ``reason`` is
-    ``invalid_receipt_document``.
+    The record that opened the task's session could not be read. ``reason`` names the cause and
+    picks the last line, which says only what is true of it (decision D4b): a passing cause
+    (``session_opening_unreadable``: the ledger read failed or the record did not load) says to run
+    receipt again and then restart the server's service; a lasting one says why no retry or
+    restart reads the record and how long the receipt will keep saying so, with no retry or
+    restart advice (``session_opening_redacted`` and ``session_opening_erased``: it will not become
+    readable again; ``session_opening_key_unavailable``: while the server lacks its key;
+    ``session_opening_format_unknown``: until the server runs a FinishUP version that knows the
+    format). The receipt is still built, and this section says what happened, why it matters and
+    whether a retry can help, rather than leave the section out. Fixed words; nothing
+    user-controlled. Any other ``reason`` is ``invalid_receipt_document``.
     """
 
     if type(markdown) is not bool:

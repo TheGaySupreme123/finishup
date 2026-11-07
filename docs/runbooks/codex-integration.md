@@ -1540,13 +1540,14 @@ later process to the default service.
   still made and never refused for it (ADR-051, decision D4): instead of the `client_attested`
   line it ends with the fixed provenance-unknown section (what happened, why it matters, and
   whether a retry can help), and every receipt format, JSON included, carries the same words as
-  its `workspace_provenance` member, whose `reason` names the kind of cause (decision D4b). A
-  passing cause (`session_opening_unreadable`: a failed read, or a record the server could not
-  load) says to run `receipt` again and, if it persists, restart the server's service. A lasting
-  cause (`session_opening_unrecoverable`: the record was redacted or erased, its key is gone, or
-  the server's version cannot decode it) says the record will not become readable again and the
-  task's receipts will keep saying so, with no retry or restart advice; only an upgrade to a
-  version that knows the record's format changes the last case. The agent sees the same words
+  its `workspace_provenance` member, whose `reason` names the cause and whose last line says only
+  what is true of it (decision D4b). The passing cause (`session_opening_unreadable`: a failed
+  read, or a record the server could not load) says to run `receipt` again and, if it persists,
+  restart the server's service. Each lasting cause gives no retry or restart advice and says how
+  long the receipts will keep saying so: `session_opening_redacted` and `session_opening_erased`
+  (the record will not become readable again), `session_opening_key_unavailable` (while the
+  server does not have the record's key) and `session_opening_format_unknown` (until the server
+  runs a FinishUP version that knows the record's format). The agent sees the same words
   in the MCP receipt text and its summary, and in the member at the head of a paged receipt's
   first page. A long receipt has its other sections shortened to fit and still ends with the
   whole section.

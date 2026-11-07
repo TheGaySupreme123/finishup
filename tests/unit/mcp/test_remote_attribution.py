@@ -21,16 +21,15 @@ from finishup.application.result_delivery import decode_handle, page_result
 from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.result_delivery import HOST_RESULT_BUDGET_BYTES, mcp_delivery_bytes
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
     workspace_provenance_unknown_lines,
     workspace_provenance_unknown_wire,
@@ -90,21 +89,20 @@ def test_a_receipt_keeps_its_exact_canonical_copy_ahead_of_the_attribution() -> 
     )
 
 
-_REASONS: tuple[WorkspaceProvenanceReason, ...] = (
-    SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
-)
-# The line only that reason's section ends with, and the line the other reason's ends with.
-_OWN_AND_OTHER: dict[str, tuple[str, str]] = {
-    SESSION_OPENING_UNREADABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-    ),
-    SESSION_OPENING_UNRECOVERABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-    ),
-}
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = WORKSPACE_PROVENANCE_REASONS
+
+
+def _own_and_others(reason: WorkspaceProvenanceReason) -> tuple[str, tuple[str, ...]]:
+    """The line only ``reason``'s section ends with, and the lines every other reason's ends with
+    (the passing cause's retry line, and each lasting cause's own "Why it lasts" line)."""
+
+    own = workspace_provenance_unknown_lines(reason)[-1]
+    others = tuple(
+        workspace_provenance_unknown_lines(other)[-1]
+        for other in WORKSPACE_PROVENANCE_REASONS
+        if other != reason
+    )
+    return own, others
 
 
 @pytest.mark.parametrize("reason", _REASONS)
@@ -151,9 +149,9 @@ def test_a_json_receipt_of_unknown_provenance_says_so_and_names_only_the_service
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(attributed)
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE in _text(attributed)
     assert reason in _text(attributed)
-    own, other = _OWN_AND_OTHER[reason]
+    own, others = _own_and_others(reason)
     assert own in _text(attributed)
-    assert other not in _text(attributed)
+    assert not any(line in _text(attributed) for line in others)
 
 
 def test_the_member_alone_keeps_the_client_line_off_any_receipt_text() -> None:
@@ -178,16 +176,16 @@ def test_the_receipt_summary_says_an_unknown_provenance_in_fixed_words(
     summary = summary_for_receipt(_unknown_json_receipt(reason))
     for line in workspace_provenance_unknown_lines(reason):
         assert line in summary
-    assert _OWN_AND_OTHER[reason][1] not in summary
+    assert not any(line in summary for line in _own_and_others(reason)[1])
     assert WORKSPACE_PROVENANCE_UNKNOWN_LINE not in summary_for_receipt(_receipt())
 
 
 def test_the_receipt_summary_admits_no_notice_beside_another_reasons_token() -> None:
     """A member whose notice is not its own reason's fixed text adds no line to the summary."""
 
-    source = public_model_to_wire(_unknown_json_receipt(SESSION_OPENING_UNRECOVERABLE))
+    source = public_model_to_wire(_unknown_json_receipt(SESSION_OPENING_REDACTED))
     source["workspace_provenance"] = {
-        **workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE),
+        **workspace_provenance_unknown_wire(SESSION_OPENING_REDACTED),
         "notice": workspace_provenance_unknown_wire(SESSION_OPENING_UNREADABLE)["notice"],
     }
     summary = getattr(summaries_module, "_workspace_provenance_parts")(source)
@@ -374,7 +372,7 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
 
     reasons: dict[str, WorkspaceProvenanceReason] = {
         "unknown": SESSION_OPENING_UNREADABLE,
-        "unknown_lasting": SESSION_OPENING_UNRECOVERABLE,
+        "unknown_lasting": SESSION_OPENING_REDACTED,
     }
     reason = reasons.get(provenance)
     block = (
@@ -400,7 +398,7 @@ async def test_every_page_of_a_paged_receipt_adds_only_the_producing_service(
         assert _text(result) == "\n".join((unattributed, _REACHED))
         if reason is not None:
             assert CLIENT_ATTESTED_WORKSPACE_LINE not in _text(result)
-            assert _OWN_AND_OTHER[reason][1] not in _text(result)
+            assert not any(line in _text(result) for line in _own_and_others(reason)[1])
         items = cast(list[dict[str, JsonValue]], page["items"])
         delivered += "".join(
             cast(str, item["value"]) for item in items if item["path"] == "/human_text"

@@ -7966,11 +7966,12 @@ class ReceiptWorkspaceProvenanceModel(_ClosedModel):
 
     Present on every receipt format exactly when the record that opened the task's session could
     not be read or could not say whether the task is claim-bound; the receipt is built anyway.
-    ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``) saying whether the cause can
-    pass (``session_opening_unreadable``) or lasts (``session_opening_unrecoverable``).
-    ``notice`` is exactly that reason's fixed text: what happened, why it matters, and what to do
-    for a passing cause or why it lasts for a lasting one; nothing in it is user-controlled, and a
-    notice of the other reason is refused.
+    ``reason`` is a closed token (``WORKSPACE_PROVENANCE_REASONS``) naming the cause: the one that
+    can pass (``session_opening_unreadable``) or one that lasts (``session_opening_redacted``,
+    ``session_opening_erased``, ``session_opening_key_unavailable``,
+    ``session_opening_format_unknown``). ``notice`` is exactly that reason's fixed text: what
+    happened, why it matters, and what to do for the passing cause or why that cause lasts; nothing
+    in it is user-controlled, and a notice of another reason is refused.
     """
 
     status: Literal["unknown"]

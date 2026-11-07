@@ -7,6 +7,7 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from types import MappingProxyType
 from typing import Final, Literal, Protocol, cast
 
 from finishup.application import closure_basis as _closure_basis
@@ -53,8 +54,11 @@ from finishup.domain.values import (
     timestamp_from_datetime,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
     WorkspaceProvenanceReason,
     workspace_provenance_unknown_wire,
 )
@@ -132,15 +136,30 @@ _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
 class _Provenance(Enum):
     """A claim binding that the session's opening event cannot establish (ADR-051, decision D4).
 
-    Each value is the closed ``reason`` the receipt's ``workspace_provenance`` member carries, and
-    picks the last line of its "Workspace evidence" section: ``UNREADABLE`` can pass (the read
-    failed or the record did not load), so the section says to retry; ``UNRECOVERABLE`` lasts (the
-    record is redacted or erased, its key is gone, or this version cannot decode it), so it says
-    the record will not become readable again and the receipt will keep saying so.
+    Each value is the closed ``reason`` the receipt's ``workspace_provenance`` member carries, one
+    per cause, and picks the last line of its "Workspace evidence" section, which says only what is
+    true of that cause (decision D4b): ``UNREADABLE`` can pass (the read failed or the record did
+    not load), so the section says to retry; every other value lasts, so the section says why no
+    retry or restart reads the record and how long the receipt will keep saying so: for good when
+    it was ``REDACTED`` or ``ERASED``, while the server lacks its key (``KEY_UNAVAILABLE``), or
+    until the server runs a version that knows its format (``FORMAT_UNKNOWN``).
     """
 
     UNREADABLE = SESSION_OPENING_UNREADABLE
-    UNRECOVERABLE = SESSION_OPENING_UNRECOVERABLE
+    REDACTED = SESSION_OPENING_REDACTED
+    ERASED = SESSION_OPENING_ERASED
+    KEY_UNAVAILABLE = SESSION_OPENING_KEY_UNAVAILABLE
+    FORMAT_UNKNOWN = SESSION_OPENING_FORMAT_UNKNOWN
+
+
+# The envelope states that hold whatever the record's version, each its own lasting cause.
+_LASTING_ENVELOPE_STATES: Final[Mapping[RedactionState, _Provenance]] = MappingProxyType(
+    {
+        RedactionState.LOGICALLY_REDACTED: _Provenance.REDACTED,
+        RedactionState.ERASED_CLAIMED: _Provenance.ERASED,
+        RedactionState.KEY_UNAVAILABLE: _Provenance.KEY_UNAVAILABLE,
+    }
+)
 
 
 class Application(Protocol):
@@ -540,8 +559,8 @@ def _internal_result(
     task is claim-bound, so its text and markdown renderings end with the fixed client-attested
     workspace-evidence block (ADR-051), or a ``_Provenance`` when the session's opening event
     could not be read or cannot say, so they end with the fixed provenance-unknown block instead:
-    what happened, why it matters, and what to do for a passing cause or why it lasts for a
-    lasting one (decision D4), and the result of every format, JSON included, carries the
+    what happened, why it matters, and what to do for a passing cause or why that cause lasts
+    (decisions D4 and D4b), and the result of every format, JSON included, carries the
     ``workspace_provenance`` member saying so with the same reason. The stored document never
     carries either."""
 
@@ -682,7 +701,8 @@ async def _attested_by(
     A ``_Provenance`` means the opening event could not say, and the receipt is built anyway
     (owner decision D4: a receipt never refuses over this lookup). Its "Workspace evidence"
     section then says the provenance is unknown, why that matters and whether a retry can help,
-    never nothing and never a guess. The answer says which kind of cause it is:
+    never nothing and never a guess. The answer names the cause, so the section's last line says
+    only what is true of it (decision D4b):
 
     * ``_Provenance.UNREADABLE`` (passing; a retry or a restart can clear it):
 
@@ -697,11 +717,15 @@ async def _attested_by(
         that gap for as long as it holds the task open, and reads the object again when the
         service opens the task afresh (after it drops an idle task or restarts).
 
-    * ``_Provenance.UNRECOVERABLE`` (lasting; no retry or restart reads it): the opening is
-      ``logically_redacted`` or ``erased_claimed``, it is ``key_unavailable``, or it is an
-      ``UnknownEvent`` (a ``session_opened`` version this service cannot decode, whether or not
-      its payload object read), or any other record that carries a payload that is not a
-      ``SessionOpenedPayload``.
+    * a lasting cause, one value per cause, so the section says only what is true of it (no retry
+      or restart reads any of them). The envelope state decides first, because it holds whatever
+      the version: ``_Provenance.REDACTED`` for ``logically_redacted`` and ``_Provenance.ERASED``
+      for ``erased_claimed`` (it will not become readable again), and
+      ``_Provenance.KEY_UNAVAILABLE`` for ``key_unavailable`` (not while the server lacks the
+      key). Then ``_Provenance.FORMAT_UNKNOWN`` for an ``UnknownEvent`` (a ``session_opened``
+      version this service cannot decode, whether or not its payload object read), and for any
+      other record whose payload is not a ``SessionOpenedPayload``: only a server running a
+      version that knows the format reads it.
 
     Every receipt and every replay reads the event again, so once the read succeeds (a transient
     fault clears, or the service reopens the task after a restart and the object reads) the same
@@ -729,14 +753,14 @@ async def _attested_by(
         if workspace_handle_valid(payload.workspace_ref):
             return runtime.fence.service_instance_id
         return None
-    if (
-        type(opening) is not UnknownEvent
-        and opening.redaction is RedactionState.PRESENT
-        and payload is None
-    ):
-        # Its payload object did not load; opening the task afresh reads it again.
-        return _Provenance.UNREADABLE
-    return _Provenance.UNRECOVERABLE
+    lasting = _LASTING_ENVELOPE_STATES.get(opening.redaction)
+    if lasting is not None:
+        return lasting
+    if type(opening) is UnknownEvent or payload is not None:
+        return _Provenance.FORMAT_UNKNOWN
+    # A decodable opening whose envelope says ``present`` and whose payload object did not load;
+    # opening the task afresh reads it again.
+    return _Provenance.UNREADABLE
 
 
 # Kept for existing internal audit/test consumers; both names are the same read-only path.

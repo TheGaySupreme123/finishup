@@ -26,15 +26,19 @@ from finishup.domain.receipts import (
     CLIENT_ATTESTED_OBSERVATION_LINE,
     CLIENT_ATTESTED_WORKSPACE_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
+    WorkspaceProvenanceReason,
     workspace_provenance_unknown_lines,
 )
 from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
@@ -410,18 +414,29 @@ def _unknown_version(payload: object) -> UnknownEvent:
     return record
 
 
+def _unknown_version_in(redaction: RedactionState) -> UnknownEvent:
+    record = _unknown_version(None)
+    object.__setattr__(record, "redaction", redaction)
+    return record
+
+
 @pytest.mark.parametrize(
-    "record",
+    ("record", "cause"),
     [
-        _record(None, redaction="logically_redacted"),
-        _record(None, redaction="erased_claimed"),
-        _record(None, redaction="key_unavailable"),
+        (_record(None, redaction="logically_redacted"), SESSION_OPENING_REDACTED),
+        (_record(None, redaction="erased_claimed"), SESSION_OPENING_ERASED),
+        (_record(None, redaction="key_unavailable"), SESSION_OPENING_KEY_UNAVAILABLE),
         # A session_opened version this service cannot decode keeps its raw payload, or None
         # when recovery could not read the object either; reading the object later still leaves
         # a version this service cannot decode.
-        _record({"workspace_ref": _HANDLE}),
-        _unknown_version({"workspace_ref": _HANDLE}),
-        _unknown_version(None),
+        (_record({"workspace_ref": _HANDLE}), SESSION_OPENING_FORMAT_UNKNOWN),
+        (_unknown_version({"workspace_ref": _HANDLE}), SESSION_OPENING_FORMAT_UNKNOWN),
+        (_unknown_version(None), SESSION_OPENING_FORMAT_UNKNOWN),
+        # The envelope state holds whatever the version: a redacted record of an unknown version
+        # never reads again, even once the server knows its format.
+        (_unknown_version_in(RedactionState.LOGICALLY_REDACTED), SESSION_OPENING_REDACTED),
+        (_unknown_version_in(RedactionState.ERASED_CLAIMED), SESSION_OPENING_ERASED),
+        (_unknown_version_in(RedactionState.KEY_UNAVAILABLE), SESSION_OPENING_KEY_UNAVAILABLE),
     ],
     ids=[
         "logically_redacted",
@@ -430,20 +445,24 @@ def _unknown_version(payload: object) -> UnknownEvent:
         "unknown_version_payload",
         "unknown_event",
         "unknown_event_unread",
+        "unknown_event_redacted",
+        "unknown_event_erased",
+        "unknown_event_key_unavailable",
     ],
 )
-def test_an_opening_event_no_retry_can_read_leaves_the_binding_unknown_for_good(
-    record: object,
+def test_an_opening_event_no_retry_can_read_names_its_own_lasting_cause(
+    record: object, cause: WorkspaceProvenanceReason
 ) -> None:
-    """A lasting cause: the receipt is built and says the record will not become readable again,
-    never that a retry or a restart would help."""
+    """A lasting cause: the receipt is built and its last line says why that cause lasts, never
+    that a retry or a restart would help, and never what is true only of another cause."""
 
     from finishup.application import receipt
 
     attested_by: Any = getattr(receipt, "_attested_by")
-    lasting = getattr(receipt, "_Provenance").UNRECOVERABLE
+    lasting = getattr(receipt, "_Provenance")(cause)
     assert asyncio.run(attested_by(_runtime(_Ledger((record,))))) is lasting
-    assert lasting.value == SESSION_OPENING_UNRECOVERABLE
+    assert lasting.value == cause
+    assert cause != SESSION_OPENING_UNREADABLE
 
 
 def test_an_opening_whose_payload_did_not_load_is_a_passing_cause() -> None:
@@ -454,30 +473,33 @@ def test_an_opening_whose_payload_did_not_load_is_a_passing_cause() -> None:
     assert asyncio.run(attested_by(_runtime(_Ledger((_record(None),))))) is passing
 
 
+@pytest.mark.parametrize("reason", WORKSPACE_PROVENANCE_REASONS)
 @pytest.mark.parametrize("markdown", [False, True])
-def test_the_unknown_provenance_block_is_fixed_words(markdown: bool) -> None:
-    """Decision D4: what happened, why it matters, and what to do for a passing cause or why it
-    lasts for a lasting one, in fixed words only."""
+def test_the_unknown_provenance_block_is_fixed_words(
+    markdown: bool, reason: WorkspaceProvenanceReason
+) -> None:
+    """Decision D4: what happened, why it matters, and what to do for the passing cause or why
+    that cause lasts, in fixed words only."""
 
     heading = "## Workspace evidence" if markdown else "Workspace evidence"
-    passing = workspace_provenance_unknown_block(
-        markdown=markdown, reason=SESSION_OPENING_UNREADABLE
-    )
-    lasting = workspace_provenance_unknown_block(
-        markdown=markdown, reason=SESSION_OPENING_UNRECOVERABLE
-    )
-    assert passing.splitlines() == [
-        heading,
+    block = workspace_provenance_unknown_block(markdown=markdown, reason=reason)
+    assert block.splitlines() == [heading, *workspace_provenance_unknown_lines(reason)]
+    assert block.splitlines()[1:3] == [
         WORKSPACE_PROVENANCE_UNKNOWN_LINE,
         WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     ]
-    assert lasting.splitlines() == [
-        heading,
-        WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-    ]
+    if reason == SESSION_OPENING_UNREADABLE:
+        assert block.endswith("\n" + WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE)
+    else:
+        # A lasting cause gives no retry or restart advice.
+        assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in block
+        assert "finishup service restart" not in block
+        assert block.splitlines()[-1].startswith("Why it lasts: ")
+    # Nothing in any section says the evidence was read on the client: it says that is unknown.
+    assert CLIENT_ATTESTED_WORKSPACE_LINE not in block
+
+
+def test_the_passing_section_is_the_fixed_retry_words() -> None:
     assert workspace_provenance_unknown_lines(SESSION_OPENING_UNREADABLE) == (
         "Provenance unknown: the record of how this task's session was opened could not be "
         "read from the server's ledger.",
@@ -486,15 +508,11 @@ def test_the_unknown_provenance_block_is_fixed_words(markdown: bool) -> None:
         "What to do: run receipt again. If this persists, restart the server's FinishUP service "
         "(`finishup service restart` on the server host), then run receipt again.",
     )
-    # A lasting cause gives no retry or restart advice.
-    assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in lasting
-    assert "finishup service restart" not in lasting
-    # Nothing in either section says the evidence was read on the client: it says that is unknown.
-    assert CLIENT_ATTESTED_WORKSPACE_LINE not in passing
-    assert CLIENT_ATTESTED_WORKSPACE_LINE not in lasting
 
 
-@pytest.mark.parametrize("reason", ["session_opening_lost", "", None])
+@pytest.mark.parametrize(
+    "reason", ["session_opening_lost", "session_opening_unrecoverable", "", None]
+)
 def test_the_unknown_provenance_block_admits_only_a_closed_reason(reason: object) -> None:
     from finishup.protocol.errors import ProtocolValueError
 
