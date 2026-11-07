@@ -5258,30 +5258,40 @@ user-controlled is ever rendered beside it.
   `record_classified_exception_without_raising` under component `application.receipt` and
   operation `receipt_attestation_read`, and leaves the binding unknown; cancellation propagates.
   An opening record that carries no decoded `SessionOpenedPayload` leaves the binding unknown
-  too. `_attested_by` answers a `_Provenance` whose value is the closed reason (decision D4b):
-  `_Provenance.UNREADABLE` (`session_opening_unreadable`, a passing cause) for a failed read and
+  too. `_attested_by` answers a `_Provenance` whose value is the closed reason naming the cause,
+  so the section's last line says only what is true of it (decision D4b):
+  `_Provenance.UNREADABLE` (`session_opening_unreadable`, the passing cause) for a failed read and
   for an `AcceptedEvent` opening whose envelope is `present` but whose payload is None, which is
   what `SqliteLedger` recovery keeps when it cannot read a payload object (`KeyError`, `OSError`
-  or `ValueError` from `open_verified`) and keeps for as long as that ledger holds the task;
-  `_Provenance.UNRECOVERABLE` (`session_opening_unrecoverable`, a lasting cause) for an opening
-  that is `logically_redacted`, `erased_claimed` or `key_unavailable`, for any `UnknownEvent`
-  (a `session_opened` version this service cannot decode, its payload read or not), and for any
-  other non-`SessionOpenedPayload` payload. A failed read is never called lasting: nothing there
-  tells a passing fault from a lasting one. The receipt is built and its text and markdown
-  renderings end with `workspace_provenance_unknown_block(markdown=..., reason=...)`: the
-  "Workspace evidence" heading and `workspace_provenance_unknown_lines(reason)`, never with no
-  section. Both reasons share `WORKSPACE_PROVENANCE_UNKNOWN_LINE` (what happened: "Provenance
-  unknown: the record of how this task's session was opened could not be read from the server's
-  ledger.") and `WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE` (why it matters). A passing cause
-  ends with `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` (run receipt again; if it persists,
-  `finishup service restart` on the server host, then run receipt again); a lasting one ends with
-  `WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE` ("Why it lasts: the record is redacted or erased,
-  its key is gone, or it is in a format this FinishUP version cannot decode, so it will not
+  or `ValueError` from `open_verified`) and keeps for as long as that ledger holds the task. The
+  lasting causes are decided by envelope state first, whatever the version
+  (`_LASTING_ENVELOPE_STATES`): `_Provenance.REDACTED` (`session_opening_redacted`) for
+  `logically_redacted`, `_Provenance.ERASED` (`session_opening_erased`) for `erased_claimed`,
+  `_Provenance.KEY_UNAVAILABLE` (`session_opening_key_unavailable`) for `key_unavailable`; then
+  `_Provenance.FORMAT_UNKNOWN` (`session_opening_format_unknown`) for any `UnknownEvent` (a
+  `session_opened` version this service cannot decode, its payload read or not) and any other
+  non-`SessionOpenedPayload` payload. A failed read is never called lasting: nothing there tells a
+  passing fault from a lasting one. The receipt is built and its text and markdown renderings end
+  with `workspace_provenance_unknown_block(markdown=..., reason=...)`: the "Workspace evidence"
+  heading and `workspace_provenance_unknown_lines(reason)`, never with no section. Every reason
+  shares `WORKSPACE_PROVENANCE_UNKNOWN_LINE` (what happened: "Provenance unknown: the record of
+  how this task's session was opened could not be read from the server's ledger.") and
+  `WORKSPACE_PROVENANCE_UNKNOWN_IMPACT_LINE` (why it matters). The passing cause ends with
+  `WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE` (run receipt again; if it persists, `finishup service
+  restart` on the server host, then run receipt again). Each lasting cause ends with its own
+  "Why it lasts:" line and gives no retry or restart advice: `WORKSPACE_PROVENANCE_REDACTED_LINE`
+  and `WORKSPACE_PROVENANCE_ERASED_LINE` ("the record was redacted" or "erased", "so it will not
   become readable again and this task's receipts will keep saying so. Running receipt again or
-  restarting the service will not change this."), which gives no retry or restart advice. Any
-  other reason is `invalid_receipt_document`. The words live in `domain.workspace_provenance`
-  (standard library only, so the protocol models admit exactly them; `SESSION_OPENING_UNREADABLE`
-  and `SESSION_OPENING_UNRECOVERABLE` name the tokens) and `domain.receipts` re-exports the lines.
+  restarting the service will not change this."), `WORKSPACE_PROVENANCE_KEY_UNAVAILABLE_LINE`
+  ("the server does not have the key that decrypts the record, so running receipt again or
+  restarting the service will not read it, and this task's receipts will keep saying so while
+  that key is unavailable.") and `WORKSPACE_PROVENANCE_FORMAT_UNKNOWN_LINE` ("the record is in a
+  format this FinishUP version cannot decode, so running receipt again or restarting the service
+  will not read it, and this task's receipts will keep saying so until the server runs a FinishUP
+  version that knows this format."). Only the redacted and erased lines say the record will not
+  become readable again. Any other reason is `invalid_receipt_document`. The words live in
+  `domain.workspace_provenance` (standard library only, so the protocol models admit exactly
+  them; `SESSION_OPENING_*` name the tokens) and `domain.receipts` re-exports the shared lines.
   Either "Workspace evidence" section is rendered with the receipt, never appended to it:
   `_internal_result` passes it as `render_receipt_human(document, markdown=, trailer=)`, and the
   renderer reserves the section's room (`"\n\n"` plus the section, at most
@@ -5296,10 +5306,10 @@ user-controlled is ever rendered beside it.
   (receipt-result 1.5.0, `ReceiptSuccessModel.workspace_provenance`,
   `ReceiptWorkspaceProvenanceModel`; 1.4.0 shipped in v0.3.0 and is never amended; control-result
   2.10.0 carries 1.5.0 bodies), built by `workspace_provenance_unknown_wire(reason)`: `status`
-  `unknown`; `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS`
+  `unknown`; `reason`, a closed token from `WORKSPACE_PROVENANCE_REASONS` naming the cause
   (`session_opening_unreadable`: the read failed or the record did not load, which can pass;
-  `session_opening_unrecoverable`: the record is redacted or erased, its key is gone, or this
-  version cannot decode it, which lasts); and `notice`, exactly
+  `session_opening_redacted`, `session_opening_erased`, `session_opening_key_unavailable`,
+  `session_opening_format_unknown`: the lasting causes above); and `notice`, exactly
   `workspace_provenance_unknown_notice(reason)` (that reason's three lines joined by newlines).
   Each reason admits only its own notice: `ReceiptWorkspaceProvenanceModel` refuses another as
   `workspace_provenance_notice_invalid`, and the 1.5.0 schema pairs them with a `oneOf` beside
@@ -5311,9 +5321,10 @@ user-controlled is ever rendered beside it.
   Every receipt and replay reads the opening record again, so once the read succeeds (a transient
   fault clears, or the task's ledger is opened afresh after the runtime evicts the idle entry or
   the service restarts, and the object reads) the same request renders the binding the record
-  holds. A `session_opening_unrecoverable` receipt keeps its section, and says it will, through
-  every retry and restart; an `UnknownEvent` opening reads only once the service is upgraded to a
-  version that knows its format (`docs/usage/servers.md` says so).
+  holds. A lasting cause keeps its section, and says it will, through every retry and restart:
+  for good when the opening was redacted or erased, while the key is unavailable, and until the
+  service runs a version that knows the format of an `UnknownEvent` opening
+  (`docs/usage/servers.md` says so).
 - Client side (`finishup.client.attribution`): `connection_attribution(connection) ->
   ServiceAttribution | None` reads a connection's `workspace_binding`, `service_instance_id` and
   `transport`; it is None unless the binding is `client_claim`, and a claim-bound connection with

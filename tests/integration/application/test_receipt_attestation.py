@@ -4,10 +4,11 @@ ADR-051: a claim-bound task's text and markdown receipts end with the client-att
 decided from the session's opening event. Decision D4: when that event cannot be read, the
 receipt is still built and its section says what happened, why it matters and whether a retry
 can help. A passing cause (a failed read, a record that did not load) says to retry, and a retry
-once the read succeeds renders the binding; a lasting cause (a redacted or erased record, a key
-that is gone, a version this service cannot decode) says the record will not become readable
-again, and every retry keeps saying so. These drive the real ``Application`` facade over the
-memory and SQLite ledgers of the respond/status/receipt harness.
+once the read succeeds renders the binding; each lasting cause (a redacted or an erased record, a
+key the server does not have, a format this version cannot decode) says, in its own words, why no
+retry or restart reads it and how long the receipt will keep saying so, and every retry keeps
+saying so. These drive the real ``Application`` facade over the memory and SQLite ledgers of the
+respond/status/receipt harness.
 """
 
 from __future__ import annotations
@@ -38,16 +39,20 @@ from finishup.domain.events import (
 )
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_ERASED,
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_KEY_UNAVAILABLE,
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
+    workspace_provenance_unknown_lines,
     workspace_provenance_unknown_wire,
 )
 from finishup.ports.control import ControlClientKind, ControlMethod, RepositoryPrivacyContext
@@ -177,7 +182,7 @@ async def test_an_opening_recovery_could_not_read_leaves_the_receipt_unknown_unt
     assert recorded.as_json()["workspace_provenance"] == workspace_provenance_unknown_wire(
         SESSION_OPENING_UNREADABLE
     )
-    assert WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE not in recorded.human_text
+    assert "Why it lasts" not in recorded.human_text
 
     # Storage reads normally again, but this ledger keeps the gap: a replay still cannot say.
     storage.failure = None
@@ -254,7 +259,7 @@ async def test_a_failed_attestation_read_records_the_receipt_and_a_retry_recover
     assert recorded.human_text.count("Workspace evidence") == 1
     # A failed read can pass: the receipt says to run it again, then restart, and nothing else.
     assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE)
-    assert WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE not in recorded.human_text
+    assert "Why it lasts" not in recorded.human_text
 
     # The fault clears: running the same receipt again reads the opening, and this task is
     # not claim-bound, so the replay carries no workspace-evidence section at all.
@@ -406,36 +411,41 @@ class _OpeningReadsAs:
         return self._events(session_id, **kwargs)
 
 
-_LASTING_OPENINGS: dict[str, Callable[[LedgerRecord], LedgerRecord]] = {
-    "logically_redacted": lambda record: _reminted(
-        record, redaction=RedactionState.LOGICALLY_REDACTED, payload=None
+# Each lasting cause: how a ledger returns the opening, and the reason the receipt names.
+_LASTING_OPENINGS: dict[
+    str, tuple[Callable[[LedgerRecord], LedgerRecord], WorkspaceProvenanceReason]
+] = {
+    "logically_redacted": (
+        lambda record: _reminted(record, redaction=RedactionState.LOGICALLY_REDACTED, payload=None),
+        SESSION_OPENING_REDACTED,
     ),
-    "erased_claimed": lambda record: _reminted(
-        record, redaction=RedactionState.ERASED_CLAIMED, payload=None
+    "erased_claimed": (
+        lambda record: _reminted(record, redaction=RedactionState.ERASED_CLAIMED, payload=None),
+        SESSION_OPENING_ERASED,
     ),
-    "key_unavailable": lambda record: _reminted(
-        record, redaction=RedactionState.KEY_UNAVAILABLE, payload=None
+    "key_unavailable": (
+        lambda record: _reminted(record, redaction=RedactionState.KEY_UNAVAILABLE, payload=None),
+        SESSION_OPENING_KEY_UNAVAILABLE,
     ),
-    "undecodable_version": _undecodable,
+    "undecodable_version": (_undecodable, SESSION_OPENING_FORMAT_UNKNOWN),
 }
 
 
 @pytest.mark.parametrize("cause", sorted(_LASTING_OPENINGS))
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-async def test_a_lasting_cause_says_the_record_will_not_clear_and_every_retry_keeps_saying_so(
+async def test_a_lasting_cause_says_why_it_lasts_and_every_retry_keeps_saying_so(
     backend: Literal["memory", "sqlite"], cause: str
 ) -> None:
-    """Decision D4b: a redacted or erased opening, one whose key is gone, or one this version
-    cannot decode will not become readable again. The receipt is recorded and says so in every
+    """Decision D4b: a redacted or an erased opening, one whose key the server does not have, or
+    one this version cannot decode is not read by any retry or restart. The receipt is recorded
+    and says why, in that cause's own words and nothing true only of another cause, in every
     format, with no retry or restart advice, and a replay or a new receipt says the same."""
 
     app, runtime, _ = _build_app(seed_offset=54, ledger_backend=backend)
     started, checked, _obligation = await _bootstrap_finding(app, seed=6000)
     ledger, objects = runtime.resources[started.task_id]
-    runtime.resources[started.task_id] = (
-        cast(Any, _OpeningReadsAs(ledger, _LASTING_OPENINGS[cause])),
-        objects,
-    )
+    lasting, reason = _LASTING_OPENINGS[cause]
+    runtime.resources[started.task_id] = (cast(Any, _OpeningReadsAs(ledger, lasting)), objects)
     receipts_before = objects.refs_for_kind(ObjectKind.RECEIPT)
     request = ReceiptRequest.model_validate(
         {
@@ -449,17 +459,23 @@ async def test_a_lasting_cause_says_the_record_will_not_clear_and_every_retry_ke
             "format": "text",
         }
     )
-    lasting_block = "\n\n" + workspace_provenance_unknown_block(
-        markdown=False, reason=SESSION_OPENING_UNRECOVERABLE
-    )
-    member = workspace_provenance_unknown_wire(SESSION_OPENING_UNRECOVERABLE)
+    lasting_block = "\n\n" + workspace_provenance_unknown_block(markdown=False, reason=reason)
+    member = workspace_provenance_unknown_wire(reason)
+    own_line = workspace_provenance_unknown_lines(reason)[-1]
+    other_lines = [
+        workspace_provenance_unknown_lines(other)[-1]
+        for other in WORKSPACE_PROVENANCE_REASONS
+        if other != reason
+    ]
 
     recorded = await app.receipt(request)
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 1
     assert recorded.human_text is not None
     assert recorded.human_text.endswith(lasting_block)
     assert recorded.human_text.count("Workspace evidence") == 1
-    assert recorded.human_text.endswith(WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE)
+    assert recorded.human_text.endswith(own_line)
+    assert own_line.startswith("Why it lasts: ")
+    assert not any(line in recorded.human_text for line in other_lines)
     assert WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE not in recorded.human_text
     assert "finishup service restart" not in recorded.human_text
     assert recorded.as_json()["workspace_provenance"] == member
@@ -468,7 +484,7 @@ async def test_a_lasting_cause_says_the_record_will_not_clear_and_every_retry_ke
         assert projected.workspace_provenance is not None
         assert projected.workspace_provenance.model_dump() == member
 
-    # Running the same receipt again changes nothing: the record will not become readable.
+    # Running the same receipt again changes nothing: no retry reads the record.
     replayed = await app.receipt(request)
     assert replayed.receipt_id == recorded.receipt_id
     assert replayed.human_text == recorded.human_text
@@ -499,15 +515,12 @@ async def test_a_lasting_cause_says_the_record_will_not_clear_and_every_retry_ke
             continue
         assert fresh.human_text is not None
         assert fresh.human_text.endswith(
-            "\n\n"
-            + workspace_provenance_unknown_block(
-                markdown=True, reason=SESSION_OPENING_UNRECOVERABLE
-            )
+            "\n\n" + workspace_provenance_unknown_block(markdown=True, reason=reason)
         )
     assert len(objects.refs_for_kind(ObjectKind.RECEIPT)) == len(receipts_before) + 3
 
 
-@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
+@pytest.mark.parametrize("reason", WORKSPACE_PROVENANCE_REASONS)
 @pytest.mark.parametrize("receipt_format", ["text", "markdown", "json"])
 async def test_an_unknown_binding_ends_a_human_receipt_with_the_fixed_unknown_block(
     receipt_format: Literal["text", "markdown", "json"],
@@ -636,7 +649,7 @@ def _render_long(monkeypatch: pytest.MonkeyPatch, length: int) -> None:
     monkeypatch.setattr(receipt_module, "render_receipt_human", render)
 
 
-@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
+@pytest.mark.parametrize("reason", WORKSPACE_PROVENANCE_REASONS)
 @pytest.mark.parametrize("length", [32_400, 32_768])
 @pytest.mark.parametrize("receipt_format", ["text", "markdown"])
 async def test_a_long_receipt_of_unknown_provenance_is_delivered_with_its_section(

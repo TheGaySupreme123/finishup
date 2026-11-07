@@ -21,15 +21,13 @@ from finishup.cli.render import render_human_receipt, render_human_status
 from finishup.client.attribution import ServiceAttribution
 from finishup.domain.receipts import (
     CLIENT_ATTESTED_WORKSPACE_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
     WORKSPACE_PROVENANCE_UNKNOWN_LINE,
-    WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
     client_attested_receipt_block,
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
     workspace_provenance_unknown_lines,
     workspace_provenance_unknown_wire,
@@ -95,21 +93,20 @@ def test_a_text_receipt_carrying_the_service_block_gets_only_the_transport() -> 
     assert rendered.count(CLIENT_ATTESTED_WORKSPACE_LINE) == 1
 
 
-_REASONS: tuple[WorkspaceProvenanceReason, ...] = (
-    SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
-)
-# The line only that reason's section ends with, and the line the other reason's ends with.
-_OWN_AND_OTHER: dict[str, tuple[str, str]] = {
-    SESSION_OPENING_UNREADABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-    ),
-    SESSION_OPENING_UNRECOVERABLE: (
-        WORKSPACE_PROVENANCE_UNKNOWN_LASTING_LINE,
-        WORKSPACE_PROVENANCE_UNKNOWN_RETRY_LINE,
-    ),
-}
+_REASONS: tuple[WorkspaceProvenanceReason, ...] = WORKSPACE_PROVENANCE_REASONS
+
+
+def _own_and_others(reason: WorkspaceProvenanceReason) -> tuple[str, tuple[str, ...]]:
+    """The line only ``reason``'s section ends with, and the lines every other reason's ends with
+    (the passing cause's retry line, and each lasting cause's own "Why it lasts" line)."""
+
+    own = workspace_provenance_unknown_lines(reason)[-1]
+    others = tuple(
+        workspace_provenance_unknown_lines(other)[-1]
+        for other in WORKSPACE_PROVENANCE_REASONS
+        if other != reason
+    )
+    return own, others
 
 
 @pytest.mark.parametrize("reason", _REASONS)
@@ -151,9 +148,9 @@ def test_a_json_receipt_of_unknown_provenance_shows_the_section_and_only_the_tra
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
     for line in workspace_provenance_unknown_lines(reason):
         assert rendered.count(line) == 1
-    own, other = _OWN_AND_OTHER[reason]
+    own, others = _own_and_others(reason)
     assert own in rendered
-    assert other not in rendered
+    assert not any(line in rendered for line in others)
 
 
 @pytest.mark.parametrize("reason", _REASONS)
@@ -167,9 +164,9 @@ def test_a_text_receipt_of_unknown_provenance_shows_its_section_once(
     assert rendered == render_human_receipt(receipt) + "\n" + _REACHED
     assert rendered.count(WORKSPACE_PROVENANCE_UNKNOWN_LINE) == 1
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
-    own, other = _OWN_AND_OTHER[reason]
+    own, others = _own_and_others(reason)
     assert rendered.count(own) == 1
-    assert other not in rendered
+    assert not any(line in rendered for line in others)
 
 
 @pytest.mark.parametrize("reason", _REASONS)
@@ -187,7 +184,7 @@ def test_a_withheld_text_receipt_of_unknown_provenance_still_shows_the_section(
     rendered = render_human_receipt(receipt, attribution=_ATTRIBUTION)
     assert workspace_provenance_unknown_block(markdown=False, reason=reason) in rendered
     assert CLIENT_ATTESTED_WORKSPACE_LINE not in rendered
-    assert _OWN_AND_OTHER[reason][1] not in rendered
+    assert not any(line in rendered for line in _own_and_others(reason)[1])
     assert rendered.endswith("\n" + _REACHED)
 
 
@@ -341,5 +338,5 @@ def test_the_receipt_command_says_an_unknown_provenance_in_every_output(
     success = cast(ReceiptSuccessModel, result.root)
     assert out == render_human_receipt(success, attribution=_ATTRIBUTION) + "\n"
     assert workspace_provenance_unknown_block(markdown=False, reason=reason) in out
-    assert _OWN_AND_OTHER[reason][1] not in out
+    assert not any(line in out for line in _own_and_others(reason)[1])
     assert out.endswith(_REACHED + "\n")

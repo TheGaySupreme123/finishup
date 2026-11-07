@@ -28,8 +28,10 @@ from finishup.domain.receipts import (
     workspace_provenance_unknown_block,
 )
 from finishup.domain.workspace_provenance import (
+    SESSION_OPENING_FORMAT_UNKNOWN,
+    SESSION_OPENING_REDACTED,
     SESSION_OPENING_UNREADABLE,
-    SESSION_OPENING_UNRECOVERABLE,
+    WORKSPACE_PROVENANCE_REASONS,
     WorkspaceProvenanceReason,
 )
 from finishup.ports.control import ControlClientKind, ControlMethod
@@ -116,13 +118,13 @@ def test_a_line_the_text_already_carries_is_not_repeated() -> None:
     assert attribution_lines(None, shown=shown) == ()
 
 
-@pytest.mark.parametrize("reason", [SESSION_OPENING_UNREADABLE, SESSION_OPENING_UNRECOVERABLE])
+@pytest.mark.parametrize("reason", WORKSPACE_PROVENANCE_REASONS)
 @pytest.mark.parametrize("markdown", [False, True])
 def test_a_receipt_whose_provenance_is_unknown_names_only_the_producing_service(
     markdown: bool, reason: WorkspaceProvenanceReason
 ) -> None:
-    """The service could not say where the task's evidence was read, whether that can pass or
-    lasts; the client never overrules that with the connection's line saying it was read on this
+    """The service could not say where the task's evidence was read, whatever the cause and
+    whether it can pass or lasts; the client never overrules that with the connection's line saying it was read on this
     machine (ADR-051)."""
 
     attribution = ServiceAttribution(_SERVICE_ID, "ssh")
@@ -151,7 +153,8 @@ def test_a_receipt_whose_result_says_the_provenance_is_unknown_names_only_the_pr
         "Conclusion: clean",
         client_attested_receipt_block(_SERVICE_ID, markdown=False),
         workspace_provenance_unknown_block(markdown=True, reason=SESSION_OPENING_UNREADABLE),
-        workspace_provenance_unknown_block(markdown=True, reason=SESSION_OPENING_UNRECOVERABLE),
+        workspace_provenance_unknown_block(markdown=True, reason=SESSION_OPENING_REDACTED),
+        workspace_provenance_unknown_block(markdown=True, reason=SESSION_OPENING_FORMAT_UNKNOWN),
         # A page can hold part of the provenance-unknown line, cut where a fragment ends.
         workspace_provenance_unknown_block(markdown=False, reason=SESSION_OPENING_UNREADABLE)[:80],
     ],
