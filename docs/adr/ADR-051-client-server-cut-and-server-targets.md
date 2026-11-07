@@ -741,7 +741,14 @@ answers bounded `workspace_call`s on a connection that declared it.
     (`guard_policy_change`; every path that proposes or tightens this computer's policy: the
     privacy setup ceremony and its credential-heuristic, conversation and input-root changes,
     `privacy propose|tighten`, `finishup setup`, `finishup ai`, the menu's wizard, the terminal
-    interface's privacy flows, and the relayed elevated grant). On the trusted foreground
+    interface's privacy flows, and the relayed elevated grant), and again before the approval of a
+    pending proposal is sent, since a remote target may have been selected after the proposal was
+    made (`privacy_control`: the interactive ceremony after the owner answers approve, `privacy
+    decide-policy` and the questionnaire's decision included; a supplied, relayed decision is
+    refused). The decision's own preview, the exact diff approved, decides
+    (`preview_forbids_network`: `global`/`network_egress` turned off in the machine ceiling of a
+    compound proposal, or in a single-scope proposal, whose preview does not name its scope and so
+    counts as this computer's). On the trusted foreground
     console it names the target by id and kind and offers exactly two choices: `1` switch to this
     computer's everyday FinishUP (`finishup server use local`) and make the change, or `2` cancel
     the change and keep the target. Enter, end of input, Ctrl-C and any other answer cancel. The

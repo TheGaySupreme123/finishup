@@ -4199,10 +4199,16 @@ def setup_status(
 
 
 async def _trusted_call(operation: Callable[[], Awaitable[object]], json_output: bool) -> int:
+    from finishup.cli.zero_network_selection import ZeroNetworkChangeStopped
+
     try:
         result = await operation()
         _human_or_json(result, json_output=json_output)
         return 0
+    except ZeroNetworkChangeStopped:
+        # ADR-051 decision 8: the owner cancelled, or was told why and the one fix; nothing was
+        # sent and this computer's policy is as it was.
+        return exit_code_for(PublicErrorCode.INVALID_REQUEST)
     except (OSError, ProtocolValueError, ValueError):
         return _usage_failure()
     except Exception as error:
@@ -5871,7 +5877,13 @@ def _privacy_decision_command(kind: str) -> Callable[..., None]:
             return decided[-1]
 
         async def decide() -> int:
-            code = await _trusted_call(run_decision, json_output)
+            from finishup.cli.zero_network_selection import machine_readable_answer
+
+            # ADR-051 decision 8: an approval that would leave this computer zero-network with a
+            # server elsewhere selected offers the two choices on the owner's console, and is
+            # refused for a JSON answer.
+            with machine_readable_answer(json_output):
+                code = await _trusted_call(run_decision, json_output)
             if code == 0 and decided and getattr(decided[-1], "status", None) == "committed":
                 await _after_policy_change()
             return code

@@ -1517,6 +1517,13 @@ async def propose_privacy_candidate(
 
 
 async def _decide(proposal_id: str) -> object:
+    """Decide ``proposal_id`` in the trusted ceremony; remember this computer's policy after.
+
+    An approval that would leave this computer zero-network while a server elsewhere is selected
+    (selected after the proposal was made) is guarded in the ceremony itself (ADR-051 decision 8):
+    it raises ``ZeroNetworkChangeStopped`` when the owner cancels or it is refused.
+    """
+
     from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore
     from finishup.cli.privacy_control import (
         decide_policy,
@@ -1953,7 +1960,21 @@ async def _privacy_setup_questionnaire(
         )
     typer.echo("")
     typer.echo("Final widening decision (trusted local ceremony)")
-    decision = await _decide(proposal_id)
+    from finishup.cli.zero_network_selection import ZeroNetworkChangeStopped
+
+    try:
+        decision = await _decide(proposal_id)
+    except ZeroNetworkChangeStopped as stopped:
+        # ADR-051 decision 8: a server elsewhere was selected after the proposal was made; the
+        # owner cancelled, or was told why and the one fix. Nothing was approved.
+        return PrivacySetupReport(
+            "cancelled",
+            current.profile.value,
+            proposal_id,
+            stopped.reason,
+            snapshot.grant_state,
+            snapshot.migration_state,
+        )
     status = getattr(decision, "status", None)
     if status == "committed":
         await _warn_if_agent_route_cannot_dispatch(candidate)
@@ -2068,10 +2089,18 @@ async def _decided_report(
 ) -> PrivacySetupReport:
     typer.echo("")
     typer.echo("Final widening decision (trusted local ceremony)")
-    decision = await _decide(proposal_id)
-    status = getattr(decision, "status", None)
+    from finishup.cli.zero_network_selection import ZeroNetworkChangeStopped
+
     grant = None if snapshot is None else snapshot.grant_state
     migration = None if snapshot is None else snapshot.migration_state
+    try:
+        decision = await _decide(proposal_id)
+    except ZeroNetworkChangeStopped as stopped:
+        # ADR-051 decision 8: nothing was approved (see ``_decide``).
+        return PrivacySetupReport(
+            "cancelled", current.profile.value, proposal_id, stopped.reason, grant, migration
+        )
+    status = getattr(decision, "status", None)
     if status == "committed":
         return PrivacySetupReport(
             "configured", candidate.profile.value, proposal_id, None, "granted", migration

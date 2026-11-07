@@ -72,7 +72,8 @@ commands either refuse to run (`requires_server_host`) or, like `finishup privac
 `finishup privacy propose`, change the selected server's own policy and say which server, by its
 id and kind, before and after the change. FinishUP that was already working with this computer's
 own FinishUP when the server was selected (an open terminal interface or menu, or a privacy step
-or setup already under way) could still turn the mode on here. Before it does, FinishUP asks on
+or setup already under way) could still turn the mode on here, for example by approving a privacy
+decision proposed before the server was selected. Before it does, FinishUP asks on
 your own terminal: switch to this computer's own FinishUP and make the change, or cancel the
 change and keep the server. Enter, end of input, Ctrl-C or any answer but the switch cancels;
 FinishUP never switches on its own. Without your terminal to ask in, for a command that answers

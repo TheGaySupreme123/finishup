@@ -4761,7 +4761,17 @@ stdout). Otherwise one stderr line `<reason>: this change would … nothing was 
 `INVALID_REQUEST`, stdout empty, nothing sent), and `privacy_setup._propose_pending`,
 `_tighten_machine` and `_propose_machine` (`interactive=prompt and _interactive_terminal()`; the
 relayed `propose_privacy_candidate` passes `prompt=False`); the questionnaire reports
-`PrivacySetupReport("cancelled", reason=<token>)`. `machine_readable_answer(enabled)` (a context
+`PrivacySetupReport("cancelled", reason=<token>)`. Before an approval of a pending proposal is
+sent, `cli.privacy_control` guards it again from its preview (`preview_forbids_network(preview:
+PrivacyPolicyDecisionPreview) -> bool`: a `global` `network_egress` change to off in a
+`machine_ceiling` member, or in a single-scope `changes` diff): the interactive ceremony with
+`interactive=True` once the owner answers approve, a supplied decision (`decide_policy(...,
+decision=, passphrase=)`, the relayed grant) with `interactive=False`. A stop cancels the ceremony
+session and raises `ZeroNetworkChangeStopped`: `privacy decide-policy` (which sets
+`machine_readable_answer(json_output)`) exits with `INVALID_REQUEST` through `_trusted_call`,
+stdout empty; the questionnaire's decision reports `PrivacySetupReport("cancelled", <proposal id>,
+reason=<token>)`; the relayed grant reports `repository_privacy_grant_failed` after the refusal
+line. `machine_readable_answer(enabled)` (a context
 variable) marks a `--json` command whose change happens further down (`privacy
 credential-heuristic|conversations|input-roots`). While a remote target is selected only a process
 that resolved the everyday root before the selection changed can make such a change, since

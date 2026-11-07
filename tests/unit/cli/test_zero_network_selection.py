@@ -1702,6 +1702,314 @@ def test_decide_policy_remembers_after_a_committed_decision(
     assert steps == ([("after", None)] if applied else [])
 
 
+# --- a decision on a proposal made before a server elsewhere was selected -----------------------
+#
+# A pending proposal was guarded when it was made. If a server elsewhere is selected before the
+# owner decides it, approving it would leave both in force; the guard runs again before the
+# approval is sent, from the exact diff the owner approves.
+
+_PREVIEW_DIGEST = "sha256:" + "d" * 64
+
+
+def _network_off_preview(compound: str | None = None) -> object:
+    from finishup.domain.privacy import (
+        PrivacyPolicyChange,
+        PrivacyPolicyChangeValue,
+        sort_privacy_changes,
+    )
+    from finishup.service.confidential_protocol import (
+        PrivacyPolicyDecisionPreview,
+        PrivacyPolicyTransitionPreviewMember,
+    )
+
+    off = PrivacyPolicyChange(
+        "global",
+        "network_egress",
+        None,
+        PrivacyPolicyChangeValue.of_flag(True),
+        PrivacyPolicyChangeValue.of_flag(False),
+        False,
+    )
+    widen = PrivacyPolicyChange(
+        "agent_context",
+        "categories",
+        None,
+        PrivacyPolicyChangeValue.of_labels(("declared_file_type",)),
+        PrivacyPolicyChangeValue.of_labels(("claim_text", "declared_file_type")),
+        True,
+    )
+    changes = sort_privacy_changes((off, widen))
+    if compound is None:
+        return PrivacyPolicyDecisionPreview("ppr_1", _PREVIEW_DIGEST, changes)
+    if compound == "machine":
+        members = (
+            PrivacyPolicyTransitionPreviewMember("machine_ceiling", "replace", changes),
+            PrivacyPolicyTransitionPreviewMember("repository_grant", "insert", (widen,)),
+        )
+    else:
+        members = (PrivacyPolicyTransitionPreviewMember("repository_grant", "replace", changes),)
+    return PrivacyPolicyDecisionPreview("ppr_1", _PREVIEW_DIGEST, (), members)
+
+
+def _network_on_preview() -> object:
+    from finishup.domain.privacy import PrivacyPolicyChange, PrivacyPolicyChangeValue
+    from finishup.service.confidential_protocol import PrivacyPolicyDecisionPreview
+
+    on = PrivacyPolicyChange(
+        "global",
+        "network_egress",
+        None,
+        PrivacyPolicyChangeValue.of_flag(False),
+        PrivacyPolicyChangeValue.of_flag(True),
+        True,
+    )
+    return PrivacyPolicyDecisionPreview("ppr_1", _PREVIEW_DIGEST, (on,))
+
+
+def test_a_preview_forbids_network_when_this_computers_ceiling_turns_it_off() -> None:
+    from finishup.cli.privacy_control import preview_forbids_network
+    from finishup.service.confidential_protocol import PrivacyPolicyDecisionPreview
+
+    def forbids(preview: object) -> bool:
+        return preview_forbids_network(cast(PrivacyPolicyDecisionPreview, preview))
+
+    # A single-scope proposal does not name its scope: it counts as this computer's.
+    assert forbids(_network_off_preview()) is True
+    assert forbids(_network_off_preview("machine")) is True
+    # A repository grant narrows only that repository.
+    assert forbids(_network_off_preview("repository")) is False
+    assert forbids(_network_on_preview()) is False
+
+
+class _CeremonySession:
+    def __init__(self, preview: object) -> None:
+        from types import SimpleNamespace
+
+        self.preview = preview
+        self.actions: list[str] = []
+        self.cancelled = False
+        self.decision_attempted = False
+        self.opened = SimpleNamespace(phase=None)
+
+    async def __aenter__(self) -> _CeremonySession:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def send_action(self, action: object) -> None:
+        self.actions.append(cast(str, getattr(action, "decision")))
+
+    async def wait_phase_or_result(self) -> object:
+        return None
+
+    async def cancel(self) -> None:
+        self.cancelled = True
+
+
+def _ceremony(
+    monkeypatch: pytest.MonkeyPatch, preview: object, *, choice: bytes = b"approve"
+) -> _CeremonySession:
+    """The trusted decision ceremony with its service and terminal replaced: the owner sees
+    ``preview`` and answers ``choice``; a sent approval commits."""
+
+    import finishup.cli.privacy_control as privacy_control
+
+    session = _CeremonySession(preview)
+
+    class _Client:
+        async def open(self, _kind: object, _target: object) -> _CeremonySession:
+            return session
+
+        async def close(self) -> None:
+            return None
+
+    class _Terminal:
+        def __enter__(self) -> _Terminal:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def write(self, _value: str) -> None:
+            return None
+
+        def read_choice(self, _prompt: str, allowed: tuple[bytes, ...]) -> bytes:
+            assert choice in allowed
+            return choice
+
+    async def drive(*_args: object, **_kwargs: object) -> tuple[object, None]:
+        return _decision("committed" if session.actions == ["approve"] else "denied"), None
+
+    monkeypatch.setattr(privacy_control, "HumanControlClient", _Client)
+    monkeypatch.setattr(privacy_control, "_ForegroundTerminal", _Terminal)
+
+    def verify(*_args: object) -> object:
+        return session.preview
+
+    def render(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr(privacy_control, "_verify_preview", verify)
+    monkeypatch.setattr(privacy_control, "_render_preview", render)
+    monkeypatch.setattr(privacy_control, "_drive_session", drive)
+    return session
+
+
+@pytest.mark.parametrize("answer", [b"2", b"1"])
+def test_approving_a_zero_network_proposal_after_a_server_elsewhere_was_selected_asks_first(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    capsys: pytest.CaptureFixture[str],
+    answer: bytes,
+) -> None:
+    """The verifier's case: the questionnaire's decision, from a process on this computer's
+    server, after 'finishup server use lab' ran in another terminal."""
+
+    import finishup.cli.privacy_setup as privacy_setup
+
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    session = _ceremony(monkeypatch, _network_off_preview())
+    monkeypatch.setattr(
+        "finishup.adapters.keys.os_keyring.AutoUnlockPassphraseStore", _NoStoredPassphrase
+    )
+    console.answer = answer
+
+    if answer == b"2":
+        with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+            asyncio.run(privacy_setup._decide("ppr_1"))  # pyright: ignore[reportPrivateUsage]
+        assert (stopped.value.reason, stopped.value.cancelled) == (
+            zero_network.REMOTE_SELECTED,
+            True,
+        )
+        # Nothing was approved, the ceremony was cancelled, and the server stays selected.
+        assert session.actions == [] and session.cancelled is True
+        assert targets.read_selected_target_id() == record.target_id
+        assert "Cancelled: nothing was changed." in capsys.readouterr().out
+    else:
+        decision = asyncio.run(privacy_setup._decide("ppr_1"))  # pyright: ignore[reportPrivateUsage]
+        assert getattr(decision, "status", None) == "committed"
+        # Switched first, then approved: never both in force.
+        assert session.actions == ["approve"]
+        assert targets.read_selected_target_id() is None
+        assert "Using this computer's everyday FinishUP server." in capsys.readouterr().out
+    assert len(console.instances) == 1
+    shown = _shown(console)
+    assert "1  Switch to this computer's everyday FinishUP and make this change" in shown
+    assert f"2  Cancel this change and keep using the server {record.target_id} (ssh)" in shown
+
+
+@pytest.mark.parametrize(
+    ("preview", "choice", "sent"),
+    [
+        ("repository", b"approve", ["approve"]),
+        ("network_on", b"approve", ["approve"]),
+        ("off", b"deny", ["deny"]),
+    ],
+)
+def test_a_decision_that_leaves_this_computer_able_to_connect_is_not_asked_about(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    preview: str,
+    choice: bytes,
+    sent: list[str],
+) -> None:
+    import finishup.cli.privacy_control as privacy_control
+
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    shown = {
+        "repository": _network_off_preview("repository"),
+        "network_on": _network_on_preview(),
+        "off": _network_off_preview(),
+    }[preview]
+    session = _ceremony(monkeypatch, shown, choice=choice)
+
+    asyncio.run(privacy_control.decide_policy("ppr_1"))
+
+    assert session.actions == sent
+    assert console.instances == []
+    assert targets.read_selected_target_id() == record.target_id
+
+
+def test_a_relayed_approval_is_refused_and_never_asks(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import finishup.cli.privacy_control as privacy_control
+
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    session = _ceremony(monkeypatch, _network_off_preview("machine"))
+    passphrase = bytearray(b"relayed-reauthentication")
+
+    with pytest.raises(zero_network.ZeroNetworkChangeStopped) as stopped:
+        asyncio.run(
+            privacy_control.decide_policy("ppr_1", decision="approve", passphrase=passphrase)
+        )
+
+    assert stopped.value.cancelled is False
+    assert session.actions == [] and session.cancelled is True
+    assert console.instances == []
+    assert targets.read_selected_target_id() == record.target_id
+    err = capsys.readouterr().err
+    assert err.startswith("zero_network_remote_selected: ")
+    assert "Run 'finishup server use local' in your own terminal" in err
+    assert passphrase == bytearray(len(passphrase))
+
+
+def test_decide_policy_json_refuses_the_approval_and_never_asks(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    console: type[_Console],
+) -> None:
+    record = _stale_process_with_a_remote_selected(monkeypatch)
+    session = _ceremony(monkeypatch, _network_off_preview())
+    monkeypatch.setattr(cli, "_auto_unlock_store", lambda: _NoStoredPassphrase(None))
+    steps: list[str] = []
+
+    async def after() -> None:
+        steps.append("after")
+
+    monkeypatch.setattr(zero_network, "after_policy_change_async", after)
+
+    # Not ``_invoke``: this process keeps the root it resolved before the other terminal chose.
+    result = _RUNNER.invoke(cli.app, ["privacy", "decide-policy", "ppr_1", "--json"])
+
+    assert result.exit_code == 2, result.output
+    assert result.stdout == ""
+    assert result.stderr.startswith("zero_network_remote_selected: ")
+    assert "invalid_request" not in result.stderr
+    assert session.actions == [] and session.cancelled is True
+    assert console.instances == []
+    assert steps == []
+    assert targets.read_selected_target_id() == record.target_id
+
+
+def test_the_questionnaire_reports_a_guarded_decision_as_cancelled_with_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.cli.privacy_setup as privacy_setup
+
+    async def stopped(_proposal_id: str) -> object:
+        raise zero_network.ZeroNetworkChangeStopped(zero_network.REMOTE_SELECTED, cancelled=True)
+
+    monkeypatch.setattr(privacy_setup, "_decide", stopped)
+    report = asyncio.run(
+        privacy_setup._decided_report(  # pyright: ignore[reportPrivateUsage]
+            "ppr_1", local_only_policy(), minimal_external_policy(), None
+        )
+    )
+
+    assert (report.outcome, report.proposal_id, report.reason) == (
+        "cancelled",
+        "ppr_1",
+        zero_network.REMOTE_SELECTED,
+    )
+
+
 # --- visible while it lasts -------------------------------------------------------------------
 
 

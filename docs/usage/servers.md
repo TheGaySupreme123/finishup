@@ -96,7 +96,9 @@ changes](#whose-privacy-policy-a-command-changes)). To change this computer's po
 FinishUP that was already working with this computer's own FinishUP when you chose the server can
 still change this computer's policy: a terminal interface or menu that was open then, or a privacy
 step or setup that was under way. If such a change would turn the zero-network setting on, FinishUP
-asks you before it changes anything. It never switches for you.
+asks you before it changes anything, and so it does when you approve a privacy decision that was
+proposed before you chose the server and would turn the setting on: after you answer approve, and
+before the approval is sent. It never switches for you.
 
 In your own terminal it asks:
 
