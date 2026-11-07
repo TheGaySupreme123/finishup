@@ -646,8 +646,12 @@ answers bounded `workspace_call`s on a connection that declared it.
   not match; its sentence says so and names `finishup server disconnect NAME` on the client,
   which stops the `finishup agent run` still on the old release so that checking again starts it
   from the new one (`server connect` readies only the connection here). The
-  unavailable sentence names `finishup server status NAME` and `finishup server connect NAME`
-  on the client and that checking again can help. Files listed mode kept from review are the
+  unavailable sentence says that using FinishUP from the project starts the workspace agent when
+  none is running, so checking again can help, and names `finishup server status NAME` and
+  `finishup server disconnect NAME` on the client for a retry that fails again: a connection
+  starts `finishup agent run` only when no agent holds its lock, so an agent that runs but is
+  stuck is replaced only once `server disconnect` has stopped it. Files listed mode kept from
+  review are the
   disclosure `outside_reads_not_listed` (decision 5), never a check-time change gap: the rest of
   the change still reaches review.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never

@@ -490,13 +490,18 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
             "the review recipe's excerpt budget is too small for any part of the change."
         ),
         # ADR-051: a claim-bound task's workspace is read only by the FinishUP workspace agent
-        # on the client machine.
+        # on the client machine. Here that agent is ``finishup agent run``: a client connection
+        # naming the project starts it only when none holds its lock, and ``server connect``
+        # readies only the connection, so a stuck agent is replaced by ``server disconnect``.
         "workspace_agent_unavailable": (
             "the FinishUP workspace agent on the client machine gave no usable answer to the "
             "server's read of the workspace (it was not connected, did not answer in time, or "
             "failed), so the server could not see the change. On the client machine, the "
-            "computer that holds the project, `finishup server status NAME` shows the connection "
-            "and `finishup server connect NAME` makes it again; checking again then can help."
+            "computer that holds the project, any FinishUP tool or hook used in the project "
+            "starts the workspace agent when none is running, so checking again then can help. "
+            "If it fails again, `finishup server status NAME` there shows the connection, and "
+            "`finishup server disconnect NAME` stops a workspace agent that is stuck, so the "
+            "next one starts fresh; then check again."
         ),
         "workspace_agent_refused": (
             "the FinishUP workspace agent on the client machine refused a request the check "

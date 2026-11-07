@@ -223,10 +223,17 @@ def test_a_refusal_says_what_it_now_means_and_where_to_reconnect() -> None:
 
 
 def test_an_unavailable_agent_names_where_to_reconnect_and_that_a_retry_can_help() -> None:
+    """Here the workspace agent is ``finishup agent run``: using FinishUP from the project
+    starts it only when none holds its lock, and ``server connect`` readies only the connection.
+    So the sentence says a retry from the project can help, and names ``server disconnect`` for
+    an agent that is running but stuck (never ``server connect``, which would not replace it)."""
+
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_unavailable"]
     assert "`finishup server status NAME`" in sentence
-    assert "`finishup server connect NAME`" in sentence
+    assert "`finishup server disconnect NAME`" in sentence
+    assert "server connect" not in sentence
     assert "client machine, the computer that holds the project" in sentence
+    assert "starts the workspace agent when none is running" in sentence
     assert "checking again then can help" in sentence
     assert "/" not in sentence
 
