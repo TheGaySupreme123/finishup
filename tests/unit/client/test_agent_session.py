@@ -111,11 +111,17 @@ def _workspace(tmp_path: Path) -> WorkspaceLocator:
 
 
 def _admitted(binding: ClientWorkspaceBinding) -> tuple[str, ...]:
-    """The folders outside the workspace the binding's agent admits, read now."""
+    """The folders outside the workspace the binding's agent admits, read now.
+
+    The targets here have no outside-read mode chosen, so they are in ``listed`` mode, which
+    reads only the folders listed for the target the agent serves (ADR-051 decision 5).
+    """
 
     agent = binding.agent
     assert type(agent) is WorkspaceAgentHandler
-    return agent._folders()  # pyright: ignore[reportPrivateUsage]
+    outside = agent._outside()  # pyright: ignore[reportPrivateUsage]
+    assert outside.mode == "listed"
+    return outside.folders
 
 
 # -- the foreground agent --------------------------------------------------------------------------
