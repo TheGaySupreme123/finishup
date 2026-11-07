@@ -31,6 +31,7 @@ _review_inputs = ready_composition._review_inputs  # pyright: ignore[reportPriva
 _outside_not_admitted = ready_composition._outside_not_admitted  # pyright: ignore[reportPrivateUsage]
 _task_input_counts = ready_composition._task_input_counts  # pyright: ignore[reportPrivateUsage]
 _outside_candidate_count = ready_composition._outside_candidate_count  # pyright: ignore[reportPrivateUsage]
+_outside_not_listed_count = ready_composition._outside_not_listed_count  # pyright: ignore[reportPrivateUsage]
 
 _EXPANDED = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 _OUTSIDE = "/shared/legacy app/main.c"
@@ -92,18 +93,16 @@ def test_the_task_input_counters_are_counts_only() -> None:
         "semantic_task_input_excerpts_selected": 2,
         "semantic_task_input_outside_candidates": 1,
         "semantic_task_inputs_outside_not_admitted": 1,
-        # ADR-051 decision 5: no claim-bound listed-mode skip in this change.
-        "semantic_task_inputs_outside_not_listed": 0,
     }
     assert all(type(value) is int for value in counts.values())
-    # ADR-051 decision 5: the task inputs and the declared tests the agent kept back, counted.
-    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=2))
-    flagged = _task_input_counts(
-        inputs, CheckChangeOutcome(change=listed), semantic, True, outside, 1
-    )
-    assert flagged["semantic_task_inputs_outside_not_listed"] == 3
     empty = _task_input_counts(((), frozenset()), CheckChangeOutcome(), _build(case), False)
     assert set(empty.values()) == {0}
+    # ADR-051 decision 5: the task inputs and the declared tests the agent kept back, counted
+    # for their own record (``semantic_case_built`` is at the diagnostic line bound).
+    assert _outside_not_listed_count(CheckChangeOutcome(change=change)) == 0
+    listed = replace(change, capture=replace(change.capture, outside_inputs_not_listed=2))
+    assert _outside_not_listed_count(CheckChangeOutcome(change=listed), 1) == 3
+    assert _outside_not_listed_count(CheckChangeOutcome(), 2) == 2
 
 
 def test_the_outside_candidate_counter_tells_undecided_from_none_named() -> None:

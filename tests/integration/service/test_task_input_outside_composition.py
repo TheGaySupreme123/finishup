@@ -222,8 +222,8 @@ async def _composition(
     recorded = ready_composition_module.record_bounded_counts_without_raising
 
     def record(**kwargs: Any) -> str:
-        if kwargs.get("operation") == "semantic_case_built":
-            counts.append(cast(Mapping[str, object], kwargs["counts"]))
+        if kwargs.get("operation") in {"semantic_case_built", "semantic_case_outside_not_listed"}:
+            counts.append({"operation": kwargs["operation"], **kwargs["counts"]})
         return recorded(**kwargs)
 
     async def resolve(**kwargs: object) -> CapturedContentResolution:
@@ -353,7 +353,19 @@ async def test_inputs_a_remote_servers_listed_mode_left_unread_record_the_owner_
     assert _CODE not in first.case_content_gaps
     ((packet),) = privacy.packets
     assert (OUTSIDE_READS_NOT_LISTED_GAP.encode() in packet) is bool(not_listed)
-    assert counts[0]["semantic_task_inputs_outside_not_listed"] == not_listed
+    # The count has its own record, written only when not zero, beside the case-built one.
+    assert "semantic_task_inputs_outside_not_listed" not in counts[0]
+    kept_back = [row for row in counts if row["operation"] == "semantic_case_outside_not_listed"]
+    assert kept_back == (
+        [
+            {
+                "operation": "semantic_case_outside_not_listed",
+                "semantic_task_inputs_outside_not_listed": not_listed,
+            }
+        ]
+        if not_listed
+        else []
+    )
     assert first.operation_lease is not None
     again = await evaluator(FrozenCase(frozen.case, first.operation_lease), (), runtime)
     assert again is not None and again.case_content_gaps == first.case_content_gaps

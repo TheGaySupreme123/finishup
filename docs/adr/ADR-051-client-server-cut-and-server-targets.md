@@ -1269,8 +1269,10 @@ decisions above; the maintainer chooses one. Its own topology section replaces t
 2. **How many files listed mode kept back, on the receipt** (recorded 2026-11-07, refusal-guide
    review). The refusal-guide fixes asked for a fixed receipt line with counts and no paths.
    The count is frozen (the check change's `outside_inputs_not_listed`, the case object's
-   `declared_tests_not_listed`) and reaches the `semantic_case_built` diagnostic as
-   `semantic_task_inputs_outside_not_listed`, which `finishup service diagnostics` shows. The
+   `declared_tests_not_listed`) and reaches the diagnostics as
+   `semantic_task_inputs_outside_not_listed`, in its own `semantic_case_outside_not_listed`
+   record beside `semantic_case_built` (which is at the diagnostic line bound), and
+   `finishup service diagnostics` shows it. The
    receipt line itself, `outside_reads_not_listed`, carries no number: a receipt's disclosures
    are closed codes, and every receipt-document schema (1.0.0 to 1.3.0) was released at
    v0.3.0, so a number there needs a new receipt-document version, a design-gated protocol

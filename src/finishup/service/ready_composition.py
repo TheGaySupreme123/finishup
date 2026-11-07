@@ -4733,18 +4733,16 @@ def _task_input_counts(
     semantic_case: SemanticCase,
     outside_not_admitted: bool,
     outside_candidates: int = 0,
-    declared_tests_not_listed: int = 0,
 ) -> dict[str, int]:
     """Issue #1102 pilot counters for ``semantic_case_built``; counts only, never a path.
 
     How many task inputs the statement and the recorded verification named, how many the
     check-time read kept (directory listings among them), how many the packet selected, how
     many named outside candidates could lexically be an unadmitted input (before any ``lstat``),
-    whether a named outside input lacked an admitted root, and how many existing task inputs and
-    declared tests a claim-bound task's agent kept back under its owner's listed mode (ADR-051
-    decision 5), as frozen in the check change and the job's case object. A candidate count beside a 0 flag
+    and whether a named outside input lacked an admitted root. A candidate count beside a 0 flag
     says FinishUP saw such a path but could not count it (no ``task_start`` base, nothing on disk,
     written during the task), which a 0 flag alone cannot tell from "none named" (review goal-r2-3).
+    What listed mode kept back has its own record (``_record_outside_not_listed``).
     """
 
     read = () if check_change.change is None else check_change.change.capture.inputs
@@ -4760,15 +4758,48 @@ def _task_input_counts(
         ),
         "semantic_task_input_outside_candidates": outside_candidates,
         "semantic_task_inputs_outside_not_admitted": int(outside_not_admitted),
-        # ADR-051 decision 5: how many task-named inputs and declared tests a claim-bound task's
-        # agent kept back under its owner's listed mode (never which, never a path).
-        "semantic_task_inputs_outside_not_listed": declared_tests_not_listed
-        + (
-            0
-            if check_change.change is None
-            else check_change.change.capture.outside_inputs_not_listed
-        ),
     }
+
+
+def _outside_not_listed_count(
+    check_change: CheckChangeOutcome, declared_tests_not_listed: int = 0
+) -> int:
+    """How many task-named inputs and declared tests a claim-bound task's agent kept back under
+    its owner's listed mode (ADR-051 decision 5), as frozen in the check change and the job's
+    case object; never which, never a path."""
+
+    frozen = (
+        0 if check_change.change is None else check_change.change.capture.outside_inputs_not_listed
+    )
+    return declared_tests_not_listed + frozen
+
+
+def _record_case_built(request_id: str, not_listed: int, counts: Mapping[str, int]) -> None:
+    """Record ``semantic_case_built`` and, beside it, what listed mode kept back.
+
+    How many files listed mode kept from this case's review (ADR-051 decision 5) is its own
+    ``semantic_case_outside_not_listed`` record, written only when not zero, for the reason
+    ``_record_case_narrowing`` has one: ``semantic_case_built`` is already at the diagnostic line
+    bound (1,024 bytes), and a line over it is dropped whole, so one more field there would lose
+    every case-built record. One integer under the same request id; never which, never a path.
+    """
+
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_case_built",
+        outcome="built",
+        request_id=request_id,
+        counts=counts,
+    )
+    if not_listed <= 0:
+        return
+    record_bounded_counts_without_raising(
+        component="semantic_composition",
+        operation="semantic_case_outside_not_listed",
+        outcome="kept_back",
+        request_id=request_id,
+        counts={"semantic_task_inputs_outside_not_listed": not_listed},
+    )
 
 
 def _outside_candidate_count(
@@ -6143,12 +6174,10 @@ def _privacy_gated_semantic_evaluator(
             input_manifest = semantic_case.packet.input_manifest
             # Structural composition diagnostics only: never persist content, paths or hashes.
             # These counters precede privacy minimization and do not certify provider delivery.
-            record_bounded_counts_without_raising(
-                component="semantic_composition",
-                operation="semantic_case_built",
-                outcome="built",
-                request_id=frozen.lease.operation_id,
-                counts={
+            _record_case_built(
+                frozen.lease.operation_id,
+                _outside_not_listed_count(check_change, declared_tests_not_listed),
+                {
                     "semantic_capture_parts_resolved": len(captured_content),
                     "semantic_diff_parts_resolved": sum(
                         part.manifest.content_kind.value in {"workspace_diff", "changed_file"}
@@ -6198,7 +6227,6 @@ def _privacy_gated_semantic_evaluator(
                             policy.admitted_input_roots,
                             declared_output_paths(frozen.case.projection),
                         ),
-                        declared_tests_not_listed,
                     ),
                 },
             )
