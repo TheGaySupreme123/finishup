@@ -651,9 +651,11 @@ answers bounded `workspace_call`s on a connection that declared it.
   leaves an unlisted input unread instead of refusing the read (decision 5, amended 2026-11-07),
   a check-time refusal is now a request the agent does not answer (a handle it did not claim, an
   unknown operation or argument, a root no owner could admit), in practice two releases that do
-  not match; its sentence says so and names `finishup server connect NAME` on the client. The
-  unavailable sentence names `finishup server status NAME` and `finishup server connect NAME`
-  on the client and that checking again can help. Files listed mode kept from review are the
+  not match; its sentence says so and names a restarted agent session or `finishup server
+  connect NAME --agent` on the client. The unavailable sentence names `finishup server status
+  NAME`, the agent session or `finishup server connect NAME --agent` on the client, and that
+  checking again can help: in direct dial a workspace agent is the agent session's MCP bridge or
+  that foreground command, and plain `server connect` serves no workspace calls. Files listed mode kept from review are the
   disclosure `outside_reads_not_listed` (decision 5), never a check-time change gap: the rest of
   the change still reaches review.
 - **No silent fallback.** A remote root never spawns or supersedes a local service and never

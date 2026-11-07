@@ -495,16 +495,18 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
             "the FinishUP workspace agent on the client machine gave no usable answer to the "
             "server's read of the workspace (it was not connected, did not answer in time, or "
             "failed), so the server could not see the change. On the client machine, the "
-            "computer that holds the project, `finishup server status NAME` shows the connection "
-            "and `finishup server connect NAME` makes it again; checking again then can help."
+            "computer that holds the project, `finishup server status NAME` shows the connection; "
+            "keep the agent session open, or, without one, run `finishup server connect NAME "
+            "--agent` in the project folder; checking again then can help."
         ),
         "workspace_agent_refused": (
             "the FinishUP workspace agent on the client machine refused a request the check "
             "needed as one it does not answer (for a workspace it did not claim, an operation or "
             "argument it does not know, or a folder no owner could admit), so the server could "
             "not see the change. This usually means the two computers run different FinishUP "
-            "releases: install the same release on both, run `finishup server connect NAME` on "
-            "the client machine, the computer that holds the project, and check again."
+            "releases: install the same release on both, restart the agent session (or run "
+            "`finishup server connect NAME --agent`) on the client machine, the computer that "
+            "holds the project, and check again."
         ),
     }
 )

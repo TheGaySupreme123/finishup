@@ -212,7 +212,10 @@ def test_a_refusal_says_what_it_now_means_and_where_to_reconnect() -> None:
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_refused"]
     assert "read of the workspace" not in sentence
     assert "same release on both" in sentence
-    assert "`finishup server connect NAME`" in sentence
+    # Direct dial: the agent session's bridge or the foreground agent serves workspace calls;
+    # plain ``server connect`` only makes the connection usable.
+    assert "restart the agent session" in sentence
+    assert "`finishup server connect NAME --agent`" in sentence
     assert "on the client machine, the computer that holds the project" in sentence
     assert "check again" in sentence
     assert "folders" not in sentence
@@ -222,7 +225,8 @@ def test_a_refusal_says_what_it_now_means_and_where_to_reconnect() -> None:
 def test_an_unavailable_agent_names_where_to_reconnect_and_that_a_retry_can_help() -> None:
     sentence = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS["workspace_agent_unavailable"]
     assert "`finishup server status NAME`" in sentence
-    assert "`finishup server connect NAME`" in sentence
+    assert "keep the agent session open" in sentence
+    assert "`finishup server connect NAME --agent` in the project folder" in sentence
     assert "client machine, the computer that holds the project" in sentence
     assert "checking again then can help" in sentence
     assert "/" not in sentence

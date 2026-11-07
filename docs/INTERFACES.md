@@ -5169,15 +5169,16 @@ input unread, `outside_reads_not_listed`), so this is a request the agent does n
 FinishUP workspace agent on the client machine refused a request the check needed as one it does
 not answer (for a workspace it did not claim, an operation or argument it does not know, or a
 folder no owner could admit), so the server could not see the change. This usually means the two
-computers run different FinishUP releases: install the same release on both, run `finishup server
-connect NAME` on the client machine, the computer that holds the project, and check again."; and
+computers run different FinishUP releases: install the same release on both, restart the agent
+session (or run `finishup server connect NAME --agent`) on the client machine, the computer that
+holds the project, and check again."; and
 `check_time_change_unavailable_workspace_agent_unavailable` for every other loss (no agent, a
 dropped connection, a deadline, a busy agent, an undecodable reply, an agent that failed): "the
 FinishUP workspace agent on the client machine gave no usable answer to the server's read of the
 workspace (it was not connected, did not answer in time, or failed), so the server could not see
 the change. On the client machine, the computer that holds the project, `finishup server status
-NAME` shows the connection and `finishup server connect NAME` makes it again; checking again then
-can help." A reviewer read the agent refused reads as nothing. A reviewer whose file
+NAME` shows the connection; keep the agent session open, or, without one, run `finishup server
+connect NAME --agent` in the project folder; checking again then can help." A reviewer read the agent refused reads as nothing. A reviewer whose file
 read finds the agent gone ends `workspace_agent_unavailable`
 (`application.reviewer_loop.WORKSPACE_AGENT_UNAVAILABLE_ENDING`), which becomes an unavailable
 semantic result with failure class `transport`, never a judgment.
@@ -5422,8 +5423,8 @@ wait `unavailable`.
 |---|---|---|
 | `workspace_binding_conflict` | a hello carries both `workspace_claim` and `workspace_locator`, or a `start` names a `client:` handle on a connection without a claim | name the workspace by its absolute root (the bridge and CLI pick the form) |
 | `workspace_ref_not_portable` | a claim-bound `start` names an absolute or relative `workspace_ref`, or a handle other than the connection's | send the connection's `workspace_handle`, or no workspace (the bridge and CLI rewrite the absolute root to the handle) |
-| `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | no directive (`REASON_CODE_DIRECTIVE_EXEMPTIONS`): it is recorded as the check-time change gap `check_time_change_unavailable_workspace_agent_unavailable`, never raised as an error, and that gap's fixed sentence names `finishup server status NAME` and `finishup server connect NAME` on the client and that checking again can help |
-| `workspace_agent_refused` | the agent refused a read the check-time change needed as one it does not answer (a workspace it did not claim, an unknown operation or argument, a root no owner could admit) | no directive, on the same terms: the gap `check_time_change_unavailable_workspace_agent_refused` names the release mismatch and `finishup server connect NAME` on the client. The directives `workspace_agent_reconnect` and `workspace_agent_refusal_review` were removed (2026-11-07): nothing raised an error carrying these reasons, so they never reached an agent. Files listed mode keeps from a server are not refusals of the check but the disclosure `outside_reads_not_listed` |
+| `workspace_agent_unavailable` | no workspace agent answered within the hub's wait | no directive (`REASON_CODE_DIRECTIVE_EXEMPTIONS`): it is recorded as the check-time change gap `check_time_change_unavailable_workspace_agent_unavailable`, never raised as an error, and that gap's fixed sentence names `finishup server status NAME`, the agent session or `finishup server connect NAME --agent` on the client (direct dial: plain `server connect` serves no workspace calls), and that checking again can help |
+| `workspace_agent_refused` | the agent refused a read the check-time change needed as one it does not answer (a workspace it did not claim, an unknown operation or argument, a root no owner could admit) | no directive, on the same terms: the gap `check_time_change_unavailable_workspace_agent_refused` names the release mismatch and a restarted agent session or `finishup server connect NAME --agent` on the client. The directives `workspace_agent_reconnect` and `workspace_agent_refusal_review` were removed (2026-11-07): nothing raised an error carrying these reasons, so they never reached an agent. Files listed mode keeps from a server are not refusals of the check but the disclosure `outside_reads_not_listed` |
 | `requires_server_host` | a `server_host` command runs while a remote target is active | run it on the server host (for SSH, through `ssh -t`) |
 | `target_root_is_remote` | a service is asked to run in a root whose `target.json` names a remote kind or cannot be read: the daemon refuses at composition, before any bundle, state or singleton exists (`LifecycleError`, recorded as a startup failure), and an on-demand start refuses to spawn one (`service_unavailable` with this phase, at once). A human `service run`/`service start` on a readable remote record meets the server-host guard first (`requires_server_host`) | the service runs on the server; use `finishup server test` here, or `finishup server use local` |
 | `selection_overridden` | `server use` while the isolation variable or a runtime pin decides the root | unset the variable or use an unpinned runtime |
